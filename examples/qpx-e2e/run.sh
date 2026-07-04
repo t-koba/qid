@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${SCRIPT_DIR}"
 
-CARGO_RUN=(cargo run --manifest-path "${REPO_ROOT}/Cargo.toml")
+CARGO_BUILD=(cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" --locked)
+CARGO_RUN=(cargo run --manifest-path "${REPO_ROOT}/Cargo.toml" --locked)
 
 if [[ -n "${QID_QPX_E2E_TMP_DIR:-}" ]]; then
     E2E_TMP_DIR="${QID_QPX_E2E_TMP_DIR}"
@@ -67,6 +68,9 @@ wait_for_http() {
     done
     return 1
 }
+
+info "building qidd and qidc"
+"${CARGO_BUILD[@]}" --quiet --bin qidd --bin qidc
 
 info "starting qidd"
 "${CARGO_RUN[@]}" --quiet --bin qidd -- -c "${QID_CONFIG}" >"${QIDD_LOG}" 2>&1 &

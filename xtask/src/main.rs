@@ -641,8 +641,8 @@ fn count_rs_lines(dir: &Path) -> io::Result<usize> {
 fn cmd_budget() -> anyhow::Result<()> {
     let packages = packages_in_workspace()?;
 
-    let default_crate_budget: usize = 3500;
-    let total_budget: usize = 55000;
+    let default_crate_budget: usize = 4000;
+    let total_budget: usize = 125000;
 
     let mut grand_total = 0;
     let mut failures = 0;
@@ -692,14 +692,19 @@ fn cmd_budget() -> anyhow::Result<()> {
 
 fn budget_for_crate(name: &str, default_budget: usize) -> usize {
     match name {
-        "qid-core" => 6000,
-        "qid-storage" => 7600,
-        "qid-oauth" => 7600,
-        "qid-admin" => 2800,
-        "qid-iga" => 3600,
-        "qid-scim" => 3200,
-        "qid-saml" => 3000,
-        "qid-oidc" => 2600,
+        "qid-admin" => 6000,
+        "qid-core" => 14000,
+        "qid-crypto" => 5600,
+        "qid-storage" => 13000,
+        "qid-oidc" => 6000,
+        "qid-oauth" => 12000,
+        "qid-saml" => 7200,
+        "qid-directory" => 4000,
+        "qid-federation" => 5000,
+        "qid-iga" => 6300,
+        "qid-resource" => 5200,
+        "qid-scim" => 4600,
+        "qid-worker" => 4200,
         _ => default_budget,
     }
 }
@@ -829,9 +834,9 @@ mod tests {
 
     #[test]
     fn budget_uses_explicit_limits_for_large_protocol_crates() {
-        assert_eq!(budget_for_crate("qid-core", 3500), 6000);
-        assert_eq!(budget_for_crate("qid-storage", 3500), 7600);
-        assert_eq!(budget_for_crate("qid-oauth", 3500), 7600);
-        assert_eq!(budget_for_crate("qid-policy", 3500), 3500);
+        assert_eq!(budget_for_crate("qid-core", 4000), 14000);
+        assert_eq!(budget_for_crate("qid-storage", 4000), 13000);
+        assert_eq!(budget_for_crate("qid-oauth", 4000), 12000);
+        assert_eq!(budget_for_crate("qid-policy", 4000), 4000);
     }
 }

@@ -166,7 +166,10 @@ impl FileRepository {
                 message: format!("failed to write temp store file: {e}"),
             })?;
         // fsync the file and the directory for durability
-        let file = tokio::fs::File::open(&tmp_path)
+        let file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&tmp_path)
             .await
             .map_err(|e| QidError::Internal {
                 message: format!("failed to open temp file for fsync: {e}"),

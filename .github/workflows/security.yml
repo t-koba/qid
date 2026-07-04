@@ -37,7 +37,7 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-          arguments: --all
+          arguments: --all-features
       - name: Cargo audit
         uses: actions-rust-lang/audit@v1
 

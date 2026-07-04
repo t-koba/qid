@@ -207,6 +207,8 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let store = dir.join("qid-store.json");
         let config = dir.join("qid.yaml");
+        let store_url =
+            serde_json::to_string(&store.to_string_lossy()).expect("store path should serialize");
         std::fs::write(
             &config,
             format!(
@@ -216,12 +218,11 @@ server:
   public_base_url: "https://id.example.com"
 storage:
   primary:
-    url: "{}"
+    url: {store_url}
 realms:
   - id: corp
     issuer: "https://id.example.com/realms/corp"
-"#,
-                store.display()
+"#
             ),
         )
         .expect("config file");

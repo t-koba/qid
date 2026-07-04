@@ -1,0 +1,38 @@
+[package]
+name = "qid-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+qid-core = { workspace = true }
+qid-http = { workspace = true }
+qid-crypto = { workspace = true }
+qid-observability = { workspace = true }
+qid-oauth = { workspace = true }
+qid-ops = { workspace = true }
+metrics = { workspace = true }
+qid-policy = { workspace = true }
+qid-risk = { workspace = true }
+qid-session = { workspace = true }
+qid-storage = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "1"
+tokio = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+jsonwebtoken = { workspace = true }
+
+[dev-dependencies]
+qid-core = { workspace = true, features = ["test-utils"] }
+tokio = { workspace = true }

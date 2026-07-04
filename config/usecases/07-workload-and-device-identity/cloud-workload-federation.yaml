@@ -1,0 +1,74 @@
+profile: workload
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/07-workload-and-device-identity/cloud-workload-federation.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+crypto:
+  keyrings:
+    - name: cloud-workload-ca
+      realm_id: cloud
+      purposes:
+        - other:workload_ca
+      signer:
+        type: local
+
+realms:
+  - id: cloud
+    issuer: "https://id.example.com/realms/cloud"
+    display_name: "Cloud Workload Federation"
+    clients:
+      - client_id: "cloud-identity-broker"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "cloud-identity-broker-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+          - urn:ietf:params:oauth:grant-type:token-exchange
+    protocols:
+      workload:
+        spiffe_workload_api: true
+        x509_svid: true
+        jwt_svid: true
+        short_lived_credentials: true
+        rats_eat: true
+        token_exchange: true
+        workload_ca_key_ref: "cloud-workload-ca"
+      oauth:
+        private_key_jwt:
+          enabled: true
+        mtls:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://workloads/cloud"
+            resources:
+              - "https://id.example.com/workload/v1"
+            scopes:
+              - workload.attest
+              - workload.svid
+              - cloud.exchange
+            introspection_client_ids:
+              - cloud-identity-broker
+            require_sender_constraint: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

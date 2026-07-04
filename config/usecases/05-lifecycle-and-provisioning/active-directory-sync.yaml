@@ -1,0 +1,81 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/05-lifecycle-and-provisioning/active-directory-sync.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: workforce-sample-token
+      realm_id: workforce
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: workforce
+    issuer: "https://id.example.com/realms/workforce"
+    display_name: "Workforce Directory"
+    clients:
+      - client_id: "employee-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-employee-portal-secret"
+        redirect_uris:
+          - "https://employee.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      directory:
+        enabled: true
+        default_provider_id: corp-ad
+        providers:
+          - id: corp-ad
+            type: active-directory
+            enabled: true
+            connection:
+              url: "ldaps://ad.example.com:636"
+              bind_dn: "CN=qid-sync,OU=Service Accounts,DC=example,DC=com"
+              bind_password: "secret://qid/directory/corp-ad-bind-password"
+              base_dn: "DC=example,DC=com"
+              connect_timeout_seconds: 10
+              tls_insecure_skip_verify: false
+            sync:
+              user_search_filter: "(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+              group_search_filter: "(objectClass=group)"
+              sync_interval_minutes: 15
+              deactivate_missing: true
+              full_sync_on_start: true
+            attribute_mapping:
+              uid: sAMAccountName
+              mail: mail
+              display_name: displayName
+              department: department
+              manager_dn: manager
+              enabled: "!(userAccountControl:1.2.840.113556.1.4.803:=2)"
+        hr_connectors:
+          - csv:
+              file_path: "/var/lib/qid/hr/workforce.csv"
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

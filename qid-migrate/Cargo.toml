@@ -1,0 +1,25 @@
+[package]
+name = "qid-migrate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "qid-migrate"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+qid-storage = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

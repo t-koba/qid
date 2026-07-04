@@ -1,0 +1,75 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/04-federation-and-sso/inbound-oidc-broker.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: partners-sample-token
+      realm_id: partners
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: partners
+    issuer: "https://id.example.com/realms/partners"
+    display_name: "Partner Federation"
+    clients:
+      - client_id: "partner-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-partner-portal-secret"
+        redirect_uris:
+          - "https://partners.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      federation:
+        enabled: true
+        inbound_providers:
+          - id: partner-oidc
+            kind: oidc
+            issuer: "https://login.partner.example.com"
+            enabled: true
+            domains:
+              - partner.example.com
+            client_id: "qid-partner-broker"
+            client_secret: "secret://qid/federation/partner-oidc-client-secret"
+            token_url: "https://login.partner.example.com/oauth2/token"
+            userinfo_url: "https://login.partner.example.com/oidc/userinfo"
+            jwks_uri: "https://login.partner.example.com/.well-known/jwks.json"
+            jit_provisioning: true
+            account_linking: true
+            claim_mappings:
+              - source: sub
+                target: external_subject
+                required: true
+              - source: email
+                target: email
+                required: true
+              - source: groups
+                target: groups
+                required: false
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: false
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

@@ -1,0 +1,32 @@
+[package]
+name = "qid-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile"]
+radius-tls = ["dep:rustls", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:tokio-rustls"]
+
+[dependencies]
+hmac = { workspace = true }
+md-5 = "0.10"
+qid-core = { workspace = true }
+quinn = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { version = "1.14", optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = "1"
+tokio = { workspace = true, features = ["net", "rt", "sync"] }
+tokio-rustls = { version = "0.26", optional = true }
+tracing = { workspace = true }

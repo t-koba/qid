@@ -1,0 +1,129 @@
+profile: fapi
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/12-composition/edge-pep-plus-fapi-api.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  http_message_signatures:
+    enabled: true
+    keys:
+      - key_id: "composition-2026-06"
+        shared_secret: "0123456789abcdef0123456789abcdef"
+    max_age_seconds: 180
+
+crypto:
+  keyrings:
+    - name: corp-oidc
+      realm_id: corp
+      purposes:
+        - oidc_token
+      signer:
+        type: local
+    - name: corp-pep-assertion
+      realm_id: corp
+      purposes:
+        - pep_assertion
+      signer:
+        type: local
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "FAPI API with Edge PEP"
+    clients:
+      - client_id: "finance-web"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "finance-web-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        redirect_uris:
+          - "https://finance.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      oidc:
+        authorization_code:
+          enabled: true
+          pkce_required: true
+          require_signed_request_object: true
+      oauth:
+        introspection:
+          enabled: true
+          jwt_response: true
+        par:
+          enabled: true
+          required_for:
+            - finance-web
+        rar:
+          enabled: true
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+        mtls:
+          enabled: true
+        private_key_jwt:
+          enabled: true
+        jarm:
+          enabled: true
+        require_pushed_authorization_requests: true
+        resource_servers:
+          - audience: "api://corp/finance"
+            resources:
+              - "https://api.example.com/finance"
+            scopes:
+              - finance.read
+              - finance.write
+            introspection_client_ids:
+              - finance-api
+            require_sender_constraint: true
+            high_risk: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        allowed:
+          - webauthn
+          - totp
+        totp:
+          enabled: true
+    pep_registrations:
+      enabled: true
+      registrations:
+        - name: qpx-finance-edge
+          audience: "urn:qid:pep:corp/qpx-finance-edge"
+          capabilities:
+            - effect: challenge
+            - effect: inject_headers
+            - effect: local_response
+            - effect: policy_tags
+          assertion:
+            header: "x-qid-assertion"
+            ttl_seconds: 45
+            alg: ES256
+          decision:
+            endpoint: "/pep/decision/v1/evaluate"
+            fail_policy: deny
+    policy:
+      default_decision: deny
+      bundles:
+        - name: payments
+          source: "file://../../policies/payments.json"
+          mode: enforce
+        - name: pep-edge
+          source: "file://../../policies/pep-edge.json"
+          mode: enforce

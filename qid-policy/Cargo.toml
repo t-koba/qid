@@ -1,0 +1,28 @@
+[package]
+name = "qid-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+cedar-embedded = ["dep:cedar-policy"]
+
+[dependencies]
+async-trait = { workspace = true }
+metrics = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+cedar-policy = { version = "4.11", optional = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }

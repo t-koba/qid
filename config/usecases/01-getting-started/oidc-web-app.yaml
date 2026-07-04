@@ -1,0 +1,85 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/01-getting-started/oidc-web-app.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  tls:
+    cert: "/etc/qid/tls/id.example.com.crt"
+    key: "/etc/qid/tls/id.example.com.key"
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Corp Workforce"
+    clients:
+      - client_id: "corp-web"
+        id: "client-corp-web"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-web-client-secret"
+        redirect_uris:
+          - "https://app.example.com/oauth/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      oidc:
+        enabled: true
+        authorization_code:
+          enabled: true
+          pkce_required: true
+        implicit:
+          enabled: false
+        ropc:
+          enabled: false
+        logout:
+          backchannel: true
+          frontchannel: true
+        default_scope: "openid profile email"
+      oauth:
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 1800
+          refresh_token_ttl_seconds: 1209600
+          id_token_ttl_seconds: 1800
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+        rp_name: "Corp Identity"
+      password:
+        enabled: true
+    sessions:
+      browser:
+        cookie_name: "__Host-qid"
+        same_site: Lax
+        idle_timeout_minutes: 30
+        absolute_timeout_hours: 12
+      refresh_tokens:
+        rotation: true
+        reuse_detection: revoke_family
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

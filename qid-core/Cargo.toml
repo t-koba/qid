@@ -1,0 +1,45 @@
+[package]
+name = "qid-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+figment = { workspace = true }
+hmac = { workspace = true }
+idna = "1"
+lru = { workspace = true }
+unicode-normalization = "0.1"
+jsonwebtoken = { workspace = true }
+p256 = { workspace = true }
+redis = { version = "0.27", optional = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+rsa = { workspace = true, features = ["sha2"] }
+rand = { workspace = true }
+urlencoding = { workspace = true }
+thiserror = "1"
+tracing = { workspace = true }
+ulid = { workspace = true }
+url = { workspace = true }
+
+[features]
+redis-cache = ["redis"]
+test-utils = []
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+tokio = { workspace = true }

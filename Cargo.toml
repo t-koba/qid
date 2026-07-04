@@ -1,0 +1,136 @@
+[workspace]
+members = [
+    "qid-admin",
+    "qid-core",
+    "qid-crypto",
+    "qid-storage",
+    "qid-http",
+    "qid-session",
+    "qid-mfa",
+    "qid-webauthn",
+    "qid-oidc",
+    "qid-oauth",
+    "qid-policy",
+    "qid-proxy",
+    "qid-observability",
+    "qid-diagnostics",
+    "qidd",
+    "qidc",
+    "qid-migrate",
+    "qid-resource",
+    "qid-saml",
+    "qid-scim",
+    "qid-directory",
+    "qid-sync",
+    "qid-network",
+    "qid-agent",
+    "qid-dev",
+    "qid-risk",
+    "qid-iga",
+    "qid-federation",
+    "qid-vc",
+    "qid-worker",
+    "qid-ops",
+    "xtask",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["qid contributors"]
+repository = "https://github.com/t-koba/qid"
+homepage = "https://github.com/t-koba/qid"
+documentation = "https://github.com/t-koba/qid/tree/main/docs"
+description = "qid identity platform and external decision service workspace"
+rust-version = "1.96"
+
+[workspace.dependencies]
+anyhow = "1"
+argon2 = "0.5"
+async-trait = "0.1"
+base64 = "0.22"
+axum = "0.7"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+clap = { version = "4", features = ["derive", "env"] }
+figment = { version = "0.10", features = ["env", "toml", "yaml"] }
+insta = { version = "1", features = ["json"] }
+jsonwebtoken = "9"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+openssl = { version = "0.10", features = ["vendored"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+p256 = { version = "0.13", features = ["pem", "ecdsa", "pkcs8"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sha1 = "0.10"
+aes = "0.8"
+aes-gcm = "0.10"
+flate2 = "1"
+hkdf = "0.12"
+chacha20poly1305 = "0.10"
+ciborium = "0.2"
+rsa = "0.9"
+roxmltree = "0.20"
+x509-parser = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+hmac = "0.12"
+data-encoding = "2"
+hex = "0.4"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "migrate", "any"] }
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+http-body-util = "0.1"
+tower-http = { version = "0.5", features = ["cors"] }
+tempfile = "3"
+ulid = "1"
+urlencoding = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
+webauthn-rs = { version = "0.5", default-features = false, features = ["danger-allow-state-serialisation", "conditional-ui"] }
+x25519-dalek = { version = "2", features = ["reusable_secrets", "static_secrets"] }
+subtle = "2"
+zeroize = { version = "1", features = ["derive"] }
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+lru = "0.16.3"
+proptest = "1.6"
+quinn = "0.11"
+rustls = "0.23"
+rustls-pemfile = "2"
+rcgen = { version = "0.13", features = ["x509-parser"] }
+time = "0.3"
+
+# qid internal crates
+qid-admin = { version = "0.1.0", path = "qid-admin" }
+qid-core = { version = "0.1.0", path = "qid-core" }
+qid-crypto = { version = "0.1.0", path = "qid-crypto" }
+qid-http = { version = "0.1.0", path = "qid-http" }
+qid-observability = { version = "0.1.0", path = "qid-observability" }
+qid-mfa = { version = "0.1.0", path = "qid-mfa" }
+qid-network = { version = "0.1.0", path = "qid-network" }
+qid-webauthn = { version = "0.1.0", path = "qid-webauthn" }
+qid-oauth = { version = "0.1.0", path = "qid-oauth" }
+qid-oidc = { version = "0.1.0", path = "qid-oidc" }
+qid-policy = { version = "0.1.0", path = "qid-policy" }
+qid-proxy = { version = "0.1.0", path = "qid-proxy" }
+qid-resource = { version = "0.1.0", path = "qid-resource" }
+qid-saml = { version = "0.1.0", path = "qid-saml" }
+qid-scim = { version = "0.1.0", path = "qid-scim" }
+qid-directory = { version = "0.1.0", path = "qid-directory" }
+qid-agent = { version = "0.1.0", path = "qid-agent" }
+qid-dev = { version = "0.1.0", path = "qid-dev" }
+qid-diagnostics = { version = "0.1.0", path = "qid-diagnostics" }
+qid-risk = { version = "0.1.0", path = "qid-risk" }
+qid-iga = { version = "0.1.0", path = "qid-iga" }
+qid-federation = { version = "0.1.0", path = "qid-federation" }
+qid-vc = { version = "0.1.0", path = "qid-vc" }
+qid-worker = { version = "0.1.0", path = "qid-worker" }
+qid-ops = { version = "0.1.0", path = "qid-ops" }
+qid-session = { version = "0.1.0", path = "qid-session" }
+qid-storage = { version = "0.1.0", path = "qid-storage" }

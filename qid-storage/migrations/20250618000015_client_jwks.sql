@@ -1,0 +1,1 @@
+ALTER TABLE clients ADD COLUMN jwks TEXT NOT NULL DEFAULT '{"keys":[]}';

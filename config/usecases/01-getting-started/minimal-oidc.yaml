@@ -1,0 +1,41 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/01-getting-started/minimal-oidc.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "127.0.0.1:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Corp OIDC"
+    clients:
+      - client_id: "corp-spa"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

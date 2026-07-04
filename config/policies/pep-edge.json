@@ -1,0 +1,15 @@
+{
+  "version": "2026-06-28",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "id": "allow-managed-device-egress",
+      "effect": "allow",
+      "actions": ["connect", "http.forward"],
+      "conditions": {
+        "device_trust": "managed",
+        "destination_reputation": "known_good"
+      }
+    }
+  ]
+}

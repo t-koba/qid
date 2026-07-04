@@ -1,0 +1,84 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/07-workload-and-device-identity/cicd-deployment-bot.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: automation-sample-token
+      realm_id: automation
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: automation
+    issuer: "https://id.example.com/realms/automation"
+    display_name: "CI/CD Deployment Bots"
+    clients:
+      - client_id: "deploy-bot"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "deploy-bot-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        private_key_jwt:
+          enabled: true
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 180
+        resource_servers:
+          - audience: "api://automation/deploy"
+            resources:
+              - "https://deploy.example.com/api"
+            scopes:
+              - deploy.plan
+              - deploy.apply
+            introspection_client_ids:
+              - deploy-bot
+            require_sender_constraint: true
+            high_risk: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: api
+          source: "file://../../policies/api.json"
+          mode: enforce
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        allowed:
+          - passkey
+          - client_certificate
+        client_certificate:
+          enabled: true
+          allowed_certificate_attributes:
+            - san_uri

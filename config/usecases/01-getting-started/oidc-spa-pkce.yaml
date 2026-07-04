@@ -1,0 +1,90 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/01-getting-started/oidc-spa-pkce.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: customers-sample-token
+      realm_id: customers
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  cors:
+    allowed_origins:
+      - "https://spa.example.com"
+    allowed_methods:
+      - GET
+      - POST
+      - OPTIONS
+    allowed_headers:
+      - authorization
+      - content-type
+      - dpop
+    allow_credentials: true
+
+realms:
+  - id: customers
+    issuer: "https://id.example.com/realms/customers"
+    display_name: "Customer Identity"
+    clients:
+      - client_id: "customer-spa"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "https://spa.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      oidc:
+        authorization_code:
+          enabled: true
+          pkce_required: true
+        implicit:
+          enabled: false
+        ropc:
+          enabled: false
+        default_scope: "openid profile email"
+      oauth:
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 900
+          refresh_token_ttl_seconds: 604800
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+        rp_name: "Customer Identity"
+      mfa:
+        allowed:
+          - webauthn
+          - totp
+        totp:
+          enabled: true
+    sessions:
+      refresh_tokens:
+        rotation: true
+        reuse_detection: revoke_family
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

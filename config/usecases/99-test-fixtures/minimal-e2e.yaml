@@ -1,0 +1,49 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/99-test-fixtures/minimal-e2e.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: e2e-sample-token
+      realm_id: e2e
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "127.0.0.1:18080"
+  public_base_url: "http://localhost:18080"
+
+realms:
+  - id: e2e
+    issuer: "http://localhost:18080/realms/e2e"
+    display_name: "E2E"
+    clients:
+      - client_id: "e2e-spa"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "http://localhost:5173/callback"
+        grant_types:
+          - authorization_code
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: false
+        rp_id: "localhost"
+        rp_origin: "http://localhost:5173"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

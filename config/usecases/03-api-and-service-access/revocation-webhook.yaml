@@ -1,0 +1,68 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/revocation-webhook.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: apps-sample-token
+      realm_id: apps
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: apps
+    issuer: "https://id.example.com/realms/apps"
+    display_name: "Token Revocation Events"
+    clients:
+      - client_id: "web-app"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-web-app-secret"
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      oidc:
+        authorization_code:
+          enabled: true
+          pkce_required: true
+      oauth:
+        revocation:
+          enabled: true
+          webhook_url: "https://events.example.com/qid/token-revoked"
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 900
+          refresh_token_ttl_seconds: 604800
+    sessions:
+      refresh_tokens:
+        rotation: true
+        reuse_detection: revoke_family
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

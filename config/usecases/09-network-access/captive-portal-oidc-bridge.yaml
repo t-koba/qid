@@ -1,0 +1,119 @@
+profile: network-aaa
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/09-network-access/captive-portal-oidc-bridge.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: access-sample-token
+      realm_id: access
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: access
+    issuer: "https://id.example.com/realms/access"
+    display_name: "Captive Portal OIDC Bridge"
+    clients:
+      - client_id: "captive-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-captive-portal-secret"
+        redirect_uris:
+          - "https://portal.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+      - client_id: "network-controller"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "network-controller-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+    protocols:
+      network_aaa:
+        radius: true
+        radius_authentication_bind: "0.0.0.0:1812"
+        radius_tls: true
+        radius_tls_bind: "0.0.0.0:2083"
+        radius_tls_certificate_path: "/etc/qid/network/radius-tls.crt"
+        radius_tls_private_key_path: "/etc/qid/network/radius-tls.key"
+        radius_tls_client_ca_path: "/etc/qid/network/client-ca.crt"
+        eap: true
+        eap_tls: true
+        capport: true
+        coa: true
+        coa_bind: "0.0.0.0:3799"
+        accounting: true
+        accounting_bind: "0.0.0.0:1813"
+        directory_authority: true
+        shared_secret: "change-me-radius-shared-secret"
+      oauth:
+        mtls:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://qid/captive-portal"
+            resources:
+              - "https://id.example.com/captive-portal/v1"
+            scopes:
+              - network.access
+              - network.accounting
+              - captive.portal
+            introspection_client_ids:
+              - network-controller
+            require_sender_constraint: true
+      directory:
+        enabled: true
+        default_provider_id: access-directory
+        providers:
+          - id: access-directory
+            type: active-directory
+            enabled: true
+            connection:
+              url: "ldaps://ad.example.com:636"
+              bind_dn: "CN=qid-network,OU=Service Accounts,DC=example,DC=com"
+              bind_password: "secret://qid/directory/network-ad-bind-password"
+              base_dn: "DC=example,DC=com"
+              tls_insecure_skip_verify: false
+            sync:
+              user_search_filter: "(objectClass=user)"
+              group_search_filter: "(objectClass=group)"
+              sync_interval_minutes: 5
+              deactivate_missing: true
+              full_sync_on_start: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

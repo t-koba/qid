@@ -1,0 +1,175 @@
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  paths:
+    health: /health
+    ready: /ready
+    jwks: /jwks
+    token: /oauth2/token
+    authorize: /oauth2/authorize
+    backchannel_authentication: /oauth2/backchannel-authentication
+    introspect: /oauth2/introspect
+    revoke: /oauth2/revoke
+    authzen_evaluation: /access/v1/evaluation
+    userinfo: /oidc/userinfo
+    logout: /oidc/logout
+    assertion: /pep/:realm/assertion
+    well_known_openid_configuration: /.well-known/openid-configuration
+    auth_password: /api/v1/:realm/auth/password
+    auth_webauthn_start: /api/v1/:realm/auth/webauthn/start
+    auth_webauthn_finish: /api/v1/:realm/auth/webauthn/finish
+    auth_webauthn_auth_start: /api/v1/:realm/auth/webauthn/auth/start
+    auth_webauthn_auth_finish: /api/v1/:realm/auth/webauthn/auth/finish
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/qid-example.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-main
+      realm_id: corp
+      purposes: ["oidc_token"]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+    - name: corp-pep-assertion
+      realm_id: corp
+      purposes: ["pep_assertion"]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Corp Identity"
+    clients:
+      - client_id: "corp-web"
+        id: "client-corp-web"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+      - client_id: "corp-ciba"
+        id: "client-corp-ciba"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_post
+        client_secret: "change-me-ciba-secret"
+        grant_types:
+          - "urn:openid:params:grant-type:ciba"
+    protocols:
+      oidc:
+        enabled: true
+        authorization_code:
+          enabled: true
+          pkce_required: true
+        implicit:
+          enabled: false
+        ropc:
+          enabled: false
+        logout:
+          backchannel: true
+          frontchannel: true
+      oauth:
+        introspection:
+          enabled: true
+          jwt_response: true
+        revocation: true
+        dpop: true
+        private_key_jwt: true
+        device_authorization: true
+        ciba: true
+        dynamic_client_registration: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 3600
+          refresh_token_ttl_seconds: 2592000
+          id_token_ttl_seconds: 3600
+        default_scope: api
+        resource_servers:
+          - audience: "api://corp/payments"
+            resources:
+              - "https://api.example.com/payments"
+            scopes:
+              - payments
+            introspection_client_ids:
+              - payments-gateway
+            high_risk: true
+            require_sender_constraint: true
+      federation:
+        enabled: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+        rp_name: "qid"
+      password:
+        enabled: true
+        hash: argon2id
+      mfa:
+        allowed: ["webauthn", "totp", "recovery_code"]
+        totp:
+          enabled: true
+          digits: 6
+          period: 30
+    sessions:
+      browser:
+        cookie_name: "__Host-qid"
+        same_site: Lax
+        idle_timeout_minutes: 30
+        absolute_timeout_hours: 12
+      refresh_tokens:
+        rotation: true
+    pep_registrations:
+      enabled: true
+      registrations:
+        - name: egress-main
+          audience: "urn:qid:pep:corp/egress-main"
+          assertion:
+            header: "x-qid-assertion"
+            ttl_seconds: 60
+            alg: ES256
+          decision:
+            endpoint: "/pep/decision/v1/evaluate"
+            fail_policy: deny
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://./policies/authenticated-read.json"
+          mode: enforce
+
+ops:
+  cache:
+    kind: disabled
+    key_prefix: qid
+    ttl_seconds: 60
+  cluster:
+    leader_lease_ttl_seconds: 30
+    multi_region_active_active: false
+  backup:
+    enabled: false
+  emergency:
+    read_only: false
+
+observability:
+  logs:
+    format: json
+    redact_pii: true
+  metrics:
+    listen: "127.0.0.1:9464"
+  audit:
+    sink:
+      type: file
+      path: "/var/log/qid/audit.jsonl"

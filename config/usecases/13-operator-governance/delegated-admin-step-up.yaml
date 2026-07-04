@@ -1,0 +1,90 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/13-operator-governance/delegated-admin-step-up.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: operations-sample-token
+      realm_id: operations
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+admin:
+  security:
+    require_reason: true
+    require_step_up: true
+    required_acr: "urn:qid:acr:phishing-resistant"
+    required_amr:
+      - webauthn
+      - passkey
+    max_elevation_seconds: 900
+    require_approval: false
+    breakglass_enabled: false
+
+realms:
+  - id: operations
+    issuer: "https://id.example.com/realms/operations"
+    display_name: "Delegated Operations Admin"
+    clients:
+      - client_id: "ops-console"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-ops-console-secret"
+        redirect_uris:
+          - "https://ops.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      directory:
+        enabled: true
+        default_provider_id: ops-directory
+        providers:
+          - id: ops-directory
+            type: ldap
+            enabled: true
+            connection:
+              url: "ldaps://ldap.example.com:636"
+              bind_dn: "uid=qid-ops,ou=svc,dc=example,dc=com"
+              bind_password: "secret://qid/directory/ops-bind-password"
+              base_dn: "dc=example,dc=com"
+              tls_insecure_skip_verify: false
+            sync:
+              user_search_filter: "(objectClass=person)"
+              group_search_filter: "(objectClass=groupOfNames)"
+              sync_interval_minutes: 15
+              deactivate_missing: true
+              full_sync_on_start: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+      mfa:
+        required_for_admins: true
+        allowed:
+          - passkey
+          - totp
+        totp:
+          enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: admin
+          source: "file://../../policies/admin.json"
+          mode: enforce

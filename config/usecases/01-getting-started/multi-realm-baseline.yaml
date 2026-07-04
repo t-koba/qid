@@ -1,0 +1,86 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/01-getting-started/multi-realm-baseline.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: workforce-oidc
+      realm_id: workforce
+      purposes:
+        - oidc_token
+      signer:
+        type: local
+    - name: customers-oidc
+      realm_id: customers
+      purposes:
+        - oidc_token
+      signer:
+        type: local
+
+realms:
+  - id: workforce
+    issuer: "https://id.example.com/realms/workforce"
+    display_name: "Workforce"
+    tenant_id: "tenant-workforce"
+    clients:
+      - client_id: "workforce-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-workforce-secret"
+        redirect_uris:
+          - "https://portal.example.com/callback"
+        grant_types:
+          - authorization_code
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        required_for_admins: true
+        allowed:
+          - webauthn
+          - totp
+        totp:
+          enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: workforce
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce
+  - id: customers
+    issuer: "https://id.example.com/realms/customers"
+    display_name: "Customers"
+    tenant_id: "tenant-customers"
+    clients:
+      - client_id: "customer-app"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: false
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: customers
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

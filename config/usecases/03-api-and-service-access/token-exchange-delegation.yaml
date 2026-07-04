@@ -1,0 +1,85 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/token-exchange-delegation.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: services-sample-token
+      realm_id: services
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: services
+    issuer: "https://id.example.com/realms/services"
+    display_name: "Delegated API Access"
+    clients:
+      - client_id: "frontdoor-api"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "frontdoor-api-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+          - urn:ietf:params:oauth:grant-type:token-exchange
+      - client_id: "orders-worker"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "orders-worker-signing"
+              use: sig
+              alg: ES256
+              x: "ccccccccccccccccccccccccccccccccccccccc"
+              y: "ddddddddddddddddddddddddddddddddddddddd"
+        grant_types:
+          - client_credentials
+          - urn:ietf:params:oauth:grant-type:token-exchange
+    protocols:
+      oauth:
+        private_key_jwt:
+          enabled: true
+        mtls:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://services/orders"
+            resources:
+              - "https://api.example.com/orders"
+            scopes:
+              - orders.read
+              - orders.write
+              - on_behalf_of
+            introspection_client_ids:
+              - frontdoor-api
+              - orders-worker
+            require_sender_constraint: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: api
+          source: "file://../../policies/api.json"
+          mode: enforce

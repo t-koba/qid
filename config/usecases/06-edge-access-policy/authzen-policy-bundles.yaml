@@ -1,0 +1,57 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/06-edge-access-policy/authzen-policy-bundles.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  paths:
+    authzen_evaluation: "/access/v1/evaluation"
+    pep_decision: "/pep/decision/v1/evaluate"
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "AuthZEN Policy"
+    clients:
+      - client_id: "policy-client"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-policy-client-secret"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        resource_servers:
+          - audience: "api://qid/authzen"
+            resources:
+              - "https://id.example.com/access/v1/evaluation"
+            scopes:
+              - access.evaluate
+            introspection_client_ids:
+              - policy-client
+            require_sender_constraint: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce
+        - name: admin
+          source: "file://../../policies/admin.json"
+          mode: enforce

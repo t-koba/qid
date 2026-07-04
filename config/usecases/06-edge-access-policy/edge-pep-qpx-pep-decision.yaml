@@ -1,0 +1,104 @@
+profile: edge-pep
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/06-edge-access-policy/edge-pep-qpx-pep-decision.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  http_message_signatures:
+    enabled: true
+    keys:
+      - key_id: "qpx-edge-2026-06"
+        shared_secret: "0123456789abcdef0123456789abcdef"
+    max_age_seconds: 120
+    require_content_digest: true
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-oidc
+      realm_id: corp
+      purposes:
+        - oidc_token
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+    - name: corp-pep-assertion
+      realm_id: corp
+      purposes:
+        - pep_assertion
+      signer:
+        type: local
+      rotation:
+        overlap_days: 7
+        max_age_days: 45
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Corp Edge PEP"
+    clients:
+      - client_id: "qpx-egress"
+        client_type: confidential
+        token_endpoint_auth_method: tls_client_auth
+        mtls_certificate_thumbprints:
+          - "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        mtls:
+          enabled: true
+        introspection:
+          enabled: true
+          jwt_response: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://corp/edge-policy"
+            resources:
+              - "https://id.example.com/access/v1/evaluation"
+            scopes:
+              - policy.evaluate
+            introspection_client_ids:
+              - qpx-egress
+            require_sender_constraint: true
+    pep_registrations:
+      enabled: true
+      registrations:
+        - name: qpx-egress-main
+          audience: "urn:qid:pep:corp/qpx-egress-main"
+          capabilities:
+            - effect: challenge
+            - effect: inject_headers
+            - effect: local_response
+            - effect: override_upstream
+            - effect: cache_bypass
+            - effect: mirror_upstreams
+            - effect: force_inspect
+            - effect: force_tunnel
+            - effect: rate_limit
+            - effect: rate_limit_profile
+            - effect: policy_tags
+          assertion:
+            header: "x-qid-assertion"
+            ttl_seconds: 45
+            alg: ES256
+          decision:
+            endpoint: "/pep/decision/v1/evaluate"
+            fail_policy: deny
+            cache:
+              positive_ttl_seconds: 15
+              negative_ttl_seconds: 3
+    policy:
+      default_decision: deny
+      bundles:
+        - name: pep-edge
+          source: "file://../../policies/pep-edge.json"
+          mode: enforce

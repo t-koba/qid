@@ -1,0 +1,82 @@
+profile: workload
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/07-workload-and-device-identity/spiffe-workload-svid.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: workload-ca
+      realm_id: mesh
+      purposes:
+        - other:workload_ca
+      signer:
+        type: local
+
+realms:
+  - id: mesh
+    issuer: "https://id.example.com/realms/mesh"
+    display_name: "Workload Mesh"
+    clients:
+      - client_id: "spiffe-workload-api"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "spiffe-workload-api-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+          - urn:ietf:params:oauth:grant-type:token-exchange
+    protocols:
+      workload:
+        spiffe_workload_api: true
+        x509_svid: true
+        jwt_svid: true
+        short_lived_credentials: true
+        rats_eat: true
+        token_exchange: true
+        workload_ca_key_ref: "workload-ca"
+      oauth:
+        mtls:
+          enabled: true
+        private_key_jwt:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+          refresh_token_ttl_seconds: 3600
+          id_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "qid-workload-api"
+            resources:
+              - "https://id.example.com/workload/v1"
+            scopes:
+              - workload.svid
+              - workload.attest
+            introspection_client_ids:
+              - spiffe-workload-api
+            require_sender_constraint: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

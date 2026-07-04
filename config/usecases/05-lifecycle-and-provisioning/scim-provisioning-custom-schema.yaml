@@ -1,0 +1,91 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/05-lifecycle-and-provisioning/scim-provisioning-custom-schema.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: workforce-sample-token
+      realm_id: workforce
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: workforce
+    issuer: "https://id.example.com/realms/workforce"
+    display_name: "SCIM Workforce"
+    clients:
+      - client_id: "scim-provisioner"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-scim-provisioner-secret"
+        grant_types:
+          - client_credentials
+    protocols:
+      scim:
+        enabled: true
+        base_path: "/scim/v2"
+        cursor_secret: "0123456789abcdef0123456789abcdef"
+        event_callback_allowed_hosts:
+          - "events.example.com"
+          - "*.provisioning.example.com"
+        custom_schemas:
+          - id: "urn:ietf:params:scim:schemas:extension:qid:2.0:Workforce"
+            name: "QidWorkforce"
+            description: "Workforce attributes used for access review and policy."
+            attributes:
+              - name: costCenter
+                type: string
+                multi_valued: false
+                required: false
+                case_exact: false
+                mutability: readWrite
+                returned: default
+              - name: employmentType
+                type: string
+                multi_valued: false
+                required: false
+                case_exact: false
+                mutability: readWrite
+                returned: default
+              - name: riskTier
+                type: integer
+                multi_valued: false
+                required: false
+                case_exact: false
+                mutability: readWrite
+                returned: default
+      oauth:
+        resource_servers:
+          - audience: "api://qid/scim"
+            resources:
+              - "https://id.example.com/scim/v2"
+            scopes:
+              - scim.read
+              - scim.write
+            introspection_client_ids:
+              - scim-provisioner
+            require_sender_constraint: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: scim
+          source: "file://../../policies/scim.json"
+          mode: enforce

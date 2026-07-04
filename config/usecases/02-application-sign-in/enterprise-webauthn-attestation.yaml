@@ -1,0 +1,63 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/02-application-sign-in/enterprise-webauthn-attestation.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: workforce-sample-token
+      realm_id: workforce
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: workforce
+    issuer: "https://id.example.com/realms/workforce"
+    display_name: "Managed Passkey Attestation"
+    clients:
+      - client_id: "workforce-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-workforce-portal-secret"
+        redirect_uris:
+          - "https://work.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+        rp_name: "Managed Workforce"
+        attestation: enterprise
+      mfa:
+        required_for_admins: true
+        allowed:
+          - passkey
+          - client_certificate
+        client_certificate:
+          enabled: true
+          allowed_certificate_attributes:
+            - subject_cn
+            - san_uri
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

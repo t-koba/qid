@@ -1,0 +1,69 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/02-application-sign-in/client-certificate-mfa.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: privileged-sample-token
+      realm_id: privileged
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  tls:
+    cert: "/etc/qid/tls/id.example.com.crt"
+    key: "/etc/qid/tls/id.example.com.key"
+
+realms:
+  - id: privileged
+    issuer: "https://id.example.com/realms/privileged"
+    display_name: "Privileged Access"
+    clients:
+      - client_id: "privileged-console"
+        client_type: confidential
+        token_endpoint_auth_method: tls_client_auth
+        mtls_certificate_thumbprints:
+          - "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+        redirect_uris:
+          - "https://privileged.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      oauth:
+        mtls:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 600
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        required_for_admins: true
+        allowed:
+          - webauthn
+          - client_certificate
+        client_certificate:
+          enabled: true
+          allowed_certificate_attributes:
+            - "subject:OU=Privileged"
+            - "san:URI:spiffe://corp.example/privileged/"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: admin
+          source: "file://../../policies/admin.json"
+          mode: enforce

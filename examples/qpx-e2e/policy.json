@@ -1,0 +1,19 @@
+{
+  "version": "1",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "name": "allow-qpx-e2e-direct",
+      "type": "allow",
+      "action": "forward.direct",
+      "resource_host": "*",
+      "inject_headers": {
+        "x-qid-policy": "allow-qpx-e2e-direct"
+      },
+      "pep": {
+        "force_tunnel": true,
+        "cache_bypass": true
+      }
+    }
+  ]
+}

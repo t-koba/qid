@@ -1,0 +1,49 @@
+[package]
+name = "qid-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+acme = []
+hpke-rfc9180 = ["dep:hpke"]
+pqc = ["dep:ml-kem", "ml-kem/getrandom"]
+
+[dependencies]
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+jsonwebtoken = { workspace = true }
+p256 = { workspace = true }
+qid-core = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hkdf = { workspace = true }
+aes-gcm = { workspace = true }
+chacha20poly1305 = { workspace = true }
+ciborium = "0.2"
+data-encoding = { workspace = true }
+hex = { workspace = true }
+ml-kem = { version = "0.3", optional = true }
+rsa = { workspace = true, features = ["sha2"] }
+hpke = { version = "0.11", optional = true }
+thiserror = { workspace = true }
+x25519-dalek = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }

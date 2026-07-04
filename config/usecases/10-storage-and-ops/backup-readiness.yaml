@@ -1,0 +1,55 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/10-storage-and-ops/backup-readiness.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+ops:
+  cluster:
+    cluster_id: "qid-prod"
+    region: "us-east-1"
+    node_id: "qid-prod-a"
+    leader_lease_ttl_seconds: 30
+  backup:
+    enabled: true
+    object_store_uri: "s3://qid-prod-backups/daily"
+    migration_version: "20250628000002"
+  emergency:
+    read_only: false
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Backup Ready"
+    clients:
+      - client_id: "corp-web"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-corp-web-secret"
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

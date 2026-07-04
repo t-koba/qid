@@ -1,0 +1,114 @@
+profile: vc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/08-verifiable-credentials/verifier-presentation-only.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  http_message_signatures:
+    enabled: true
+    shared_secret: "0123456789abcdef0123456789abcdef"
+    key_id: "vc-verifier-2026-06"
+    max_age_seconds: 300
+    require_content_digest: true
+
+crypto:
+  keyrings:
+    - name: vc-verifier
+      realm_id: verifier
+      purposes:
+        - other:vc_issuer
+      signer:
+        type: local
+
+realms:
+  - id: verifier
+    issuer: "https://id.example.com/realms/verifier"
+    display_name: "Presentation Verifier"
+    clients:
+      - client_id: "verifier-console"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "verifier-console-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+    protocols:
+      vc:
+        oid4vci: true
+        oid4vp: true
+        haip: true
+        vc_data_model_2_0: true
+        jose_cose: true
+        status_list: true
+        holder_binding_required: true
+        issuer_key_ref: "vc-verifier"
+      oidc:
+        authorization_code:
+          enabled: true
+          pkce_required: true
+          require_signed_request_object: true
+      oauth:
+        introspection:
+          enabled: true
+          jwt_response: true
+        par:
+          enabled: true
+          required_for:
+            - verifier-console
+        rar:
+          enabled: true
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+        mtls:
+          enabled: true
+        private_key_jwt:
+          enabled: true
+        jarm:
+          enabled: true
+        require_pushed_authorization_requests: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://qid/vc-verifier"
+            resources:
+              - "https://id.example.com/vc/v1/presentation"
+            scopes:
+              - vc.verify
+            introspection_client_ids:
+              - verifier-console
+            require_sender_constraint: true
+            high_risk: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        allowed:
+          - passkey
+          - client_certificate
+        client_certificate:
+          enabled: true
+          allowed_certificate_attributes:
+            - san_uri
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

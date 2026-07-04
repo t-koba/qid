@@ -1,0 +1,81 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/05-lifecycle-and-provisioning/hr-driven-jml.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: workforce-sample-token
+      realm_id: workforce
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: workforce
+    issuer: "https://id.example.com/realms/workforce"
+    display_name: "Joiner Mover Leaver"
+    clients:
+      - client_id: "hr-lifecycle-worker"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "hr-lifecycle-worker-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+    protocols:
+      directory:
+        enabled: true
+        hr_connectors:
+          - webhook:
+              url: "https://hr.example.com/qid/events"
+              secret: "secret://qid/hr/webhook-secret"
+          - csv:
+              file_path: "/var/lib/qid/imports/workforce.csv"
+        providers:
+          - id: workforce-directory
+            type: ldap
+            enabled: true
+            connection:
+              url: "ldaps://ldap.example.com:636"
+              bind_dn: "uid=qid-sync,ou=svc,dc=example,dc=com"
+              bind_password: "secret://qid/directory/workforce-bind-password"
+              base_dn: "dc=example,dc=com"
+              tls_insecure_skip_verify: false
+            sync:
+              user_search_filter: "(objectClass=person)"
+              group_search_filter: "(objectClass=groupOfNames)"
+              sync_interval_minutes: 15
+              deactivate_missing: true
+              full_sync_on_start: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

@@ -1,0 +1,64 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/02-application-sign-in/device-flow-tv.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: consumers-sample-token
+      realm_id: consumers
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: consumers
+    issuer: "https://id.example.com/realms/consumers"
+    display_name: "Consumer Devices"
+    clients:
+      - client_id: "living-room-tv"
+        client_type: public
+        token_endpoint_auth_method: none
+        grant_types:
+          - "urn:ietf:params:oauth:grant-type:device_code"
+          - refresh_token
+    protocols:
+      oauth:
+        device_authorization:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 900
+          refresh_token_ttl_seconds: 2592000
+        resource_servers:
+          - audience: "api://media/catalog"
+            resources:
+              - "https://media.example.com/catalog"
+            scopes:
+              - media.read
+            introspection_client_ids:
+              - media-api
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

@@ -1,0 +1,119 @@
+profile: fapi
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/fapi2-baseline.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: bank-sample-token
+      realm_id: bank
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  http_message_signatures:
+    enabled: true
+    shared_secret: "0123456789abcdef0123456789abcdef"
+    key_id: "fapi-shared-2026-06"
+    max_age_seconds: 300
+    require_content_digest: true
+
+realms:
+  - id: bank
+    issuer: "https://id.example.com/realms/bank"
+    display_name: "FAPI Bank"
+    clients:
+      - client_id: "payments-web"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "payments-web-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        redirect_uris:
+          - "https://payments.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      oidc:
+        authorization_code:
+          enabled: true
+          pkce_required: true
+          require_signed_request_object: true
+          request_object_signing_alg_values:
+            - ES256
+            - EdDSA
+        implicit:
+          enabled: false
+        ropc:
+          enabled: false
+      oauth:
+        introspection:
+          enabled: true
+          jwt_response: true
+        par:
+          enabled: true
+          required_for:
+            - payments-web
+        rar:
+          enabled: true
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+        mtls:
+          enabled: true
+        private_key_jwt:
+          enabled: true
+        jarm:
+          enabled: true
+        require_pushed_authorization_requests: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 600
+          refresh_token_ttl_seconds: 86400
+          id_token_ttl_seconds: 600
+        resource_servers:
+          - audience: "api://bank/accounts"
+            resources:
+              - "https://api.bank.example.com/accounts"
+            scopes:
+              - accounts.read
+              - accounts.write
+            introspection_client_ids:
+              - accounts-api
+            require_sender_constraint: true
+            high_risk: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        allowed:
+          - webauthn
+          - totp
+        totp:
+          enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: payments
+          source: "file://../../policies/payments.json"
+          mode: enforce

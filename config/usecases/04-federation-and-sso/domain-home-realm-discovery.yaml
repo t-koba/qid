@@ -1,0 +1,80 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/04-federation-and-sso/domain-home-realm-discovery.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: partners-sample-token
+      realm_id: partners
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: partners
+    issuer: "https://id.example.com/realms/partners"
+    display_name: "Domain Based Home Realm Discovery"
+    clients:
+      - client_id: "shared-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-shared-portal-secret"
+        redirect_uris:
+          - "https://portal.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      federation:
+        enabled: true
+        inbound_providers:
+          - id: supplier-a
+            kind: oidc
+            issuer: "https://login.supplier-a.example"
+            enabled: true
+            domains:
+              - supplier-a.example
+            client_id: "qid-supplier-a"
+            client_secret: "secret://qid/federation/supplier-a"
+            token_url: "https://login.supplier-a.example/oauth/token"
+            userinfo_url: "https://login.supplier-a.example/oidc/userinfo"
+            jwks_uri: "https://login.supplier-a.example/.well-known/jwks.json"
+            jit_provisioning: true
+            account_linking: true
+          - id: supplier-b
+            kind: social
+            issuer: "https://accounts.example-idp.com"
+            enabled: true
+            domains:
+              - supplier-b.example
+            social_provider: generic
+            client_id: "qid-supplier-b"
+            client_secret: "secret://qid/federation/supplier-b"
+            token_url: "https://accounts.example-idp.com/oauth/token"
+            userinfo_url: "https://accounts.example-idp.com/userinfo"
+            jit_provisioning: true
+            account_linking: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: false
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

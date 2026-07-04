@@ -1,0 +1,61 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/06-edge-access-policy/pep-assertion.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  http_message_signatures:
+    enabled: true
+    shared_secret: "0123456789abcdef0123456789abcdef"
+    key_id: "pep-assertion-2026-06"
+
+crypto:
+  keyrings:
+    - name: corp-pep-assertion
+      realm_id: corp
+      purposes:
+        - pep_assertion
+      signer:
+        type: local
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "PEP Assertion"
+    clients:
+      - client_id: "edge-adapter"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-edge-adapter-secret"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        mtls:
+          enabled: true
+    pep_registrations:
+      enabled: true
+      registrations:
+        - name: reverse-edge
+          audience: "urn:qid:pep:corp/reverse-edge"
+          capabilities:
+            - effect: inject_headers
+            - effect: local_response
+            - effect: policy_tags
+          assertion:
+            header: "x-qid-assertion"
+            ttl_seconds: 60
+            alg: ES256
+          decision:
+            endpoint: "/pep/decision/v1/evaluate"
+            fail_policy: deny
+    policy:
+      default_decision: deny
+      bundles:
+        - name: pep-edge
+          source: "file://../../policies/pep-edge.json"
+          mode: enforce

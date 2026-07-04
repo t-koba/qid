@@ -1,0 +1,25 @@
+[package]
+name = "qid-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+qid-core = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+urlencoding = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

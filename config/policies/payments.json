@@ -1,0 +1,15 @@
+{
+  "version": "2026-06-28",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "id": "allow-sender-constrained-payments",
+      "effect": "allow",
+      "actions": ["payments.read", "payments.write"],
+      "conditions": {
+        "sender_constrained": true,
+        "phishing_resistant_mfa": true
+      }
+    }
+  ]
+}

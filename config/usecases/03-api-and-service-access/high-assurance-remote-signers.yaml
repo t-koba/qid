@@ -1,0 +1,214 @@
+profile: high-assurance
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/high-assurance-remote-signers.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  tls:
+    cert: "/etc/qid/tls/id.example.com.crt"
+    key: "/etc/qid/tls/id.example.com.key"
+  http_message_signatures:
+    enabled: true
+    keys:
+      - key_id: "ha-ingress-2026-06"
+        shared_secret: "0123456789abcdef0123456789abcdef"
+    max_age_seconds: 180
+    require_content_digest: true
+
+admin:
+  security:
+    require_reason: true
+    require_step_up: true
+    required_acr: "urn:qid:acr:phishing-resistant"
+    required_amr:
+      - hwk
+      - webauthn
+      - passkey
+    max_elevation_seconds: 600
+    require_approval: true
+    max_approval_age_seconds: 900
+    breakglass_enabled: false
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: ha-oidc
+      realm_id: bank
+      purposes:
+        - oidc_token
+      signer:
+        type: kms
+        uri: "aws-kms://alias/qid-ha-oidc"
+        public_jwk:
+          kty: EC
+          kid: ha-oidc
+          alg: ES256
+          crv: P-256
+          x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      rotation:
+        overlap_days: 7
+        max_age_days: 45
+    - name: ha-audit
+      realm_id: bank
+      purposes:
+        - audit_log
+      signer:
+        type: kms
+        uri: "aws-kms://alias/qid-ha-audit"
+        public_jwk:
+          kty: EC
+          kid: ha-audit
+          alg: ES256
+          crv: P-256
+          x: "ccccccccccccccccccccccccccccccccccccccc"
+          y: "ddddddddddddddddddddddddddddddddddddddd"
+      rotation:
+        overlap_days: 7
+        max_age_days: 45
+
+ops:
+  cache:
+    kind: valkey
+    endpoints:
+      - "redis://valkey-a.internal.example.com:6379"
+      - "redis://valkey-b.internal.example.com:6379"
+    key_prefix: qid-ha
+    ttl_seconds: 60
+  cluster:
+    cluster_id: "qid-ha-prod"
+    region: "us-east-1"
+    node_id: "qid-ha-prod-a"
+    leader_lease_ttl_seconds: 15
+  backup:
+    enabled: true
+    object_store_uri: "s3://qid-prod-backups/high-assurance"
+    migration_version: "20250628000002"
+  emergency:
+    read_only: false
+
+realms:
+  - id: bank
+    issuer: "https://id.example.com/realms/bank"
+    display_name: "High Assurance Bank"
+    clients:
+      - client_id: "banking-web"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "banking-web-signing"
+              use: sig
+              alg: ES256
+              x: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+              y: "fffffffffffffffffffffffffffffffffffffff"
+        redirect_uris:
+          - "https://banking.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      oidc:
+        authorization_code:
+          enabled: true
+          pkce_required: true
+          require_signed_request_object: true
+          request_object_signing_alg_values:
+            - ES256
+        implicit:
+          enabled: false
+        ropc:
+          enabled: false
+      oauth:
+        introspection:
+          enabled: true
+          jwt_response: true
+        par:
+          enabled: true
+          required_for:
+            - banking-web
+        rar:
+          enabled: true
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+        mtls:
+          enabled: true
+        private_key_jwt:
+          enabled: true
+        jarm:
+          enabled: true
+        require_pushed_authorization_requests: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+          refresh_token_ttl_seconds: 43200
+          id_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://bank/high-risk"
+            resources:
+              - "https://api.bank.example.com/high-risk"
+            scopes:
+              - transfer.read
+              - transfer.write
+            introspection_client_ids:
+              - high-risk-api
+            require_sender_constraint: true
+            high_risk: true
+    authentication:
+      passwordless_only: true
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+        rp_name: "High Assurance Bank"
+        attestation: enterprise
+      password:
+        enabled: false
+      mfa:
+        required_for_admins: true
+        allowed:
+          - webauthn
+        client_certificate:
+          enabled: true
+          allowed_certificate_attributes:
+            - "subject:OU=Privileged"
+            - "san:URI:spiffe://bank.example/admin/"
+    sessions:
+      browser:
+        idle_timeout_minutes: 10
+        absolute_timeout_hours: 4
+      refresh_tokens:
+        rotation: true
+        reuse_detection: revoke_family
+    policy:
+      default_decision: deny
+      bundles:
+        - name: payments
+          source: "file://../../policies/payments.json"
+          mode: enforce
+
+observability:
+  logs:
+    format: json
+    redact_pii: true
+  metrics:
+    listen: "127.0.0.1:9464"
+  audit:
+    sink:
+      type: file
+      path: "/var/log/qid/high-assurance-audit.jsonl"
+    include:
+      - subject
+      - client_id
+      - acr
+      - amr
+      - policy_decision

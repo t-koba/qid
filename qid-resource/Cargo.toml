@@ -1,0 +1,38 @@
+[package]
+name = "qid-resource"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+description = "Resource APIs for qid: device registry, SCIM, PAR, FedCM, workload identity"
+
+[dependencies]
+qid-core.workspace = true
+qid-http.workspace = true
+qid-storage.workspace = true
+qid-crypto.workspace = true
+qid-observability.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+base64.workspace = true
+ulid.workspace = true
+sha2.workspace = true
+url.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+time.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+qid-core = { workspace = true, features = ["test-utils"] }
+qid-storage = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+urlencoding = { workspace = true }

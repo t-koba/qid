@@ -1,0 +1,68 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/02-application-sign-in/sms-recovery-step-up.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: consumer-sample-token
+      realm_id: consumer
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: consumer
+    issuer: "https://id.example.com/realms/consumer"
+    display_name: "Recovery Step-Up"
+    clients:
+      - client_id: "consumer-web"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-consumer-web-secret"
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+        max_failed_attempts: 5
+        lockout_duration_seconds: 900
+      mfa:
+        allowed:
+          - passkey
+          - totp
+          - sms
+        sms:
+          enabled: true
+        totp:
+          enabled: true
+          digits: 6
+          period: 30
+    sessions:
+      refresh_tokens:
+        rotation: true
+        reuse_detection: revoke_family
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

@@ -1,0 +1,60 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/06-edge-access-policy/http-message-signatures-rotation.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  http_message_signatures:
+    enabled: true
+    keys:
+      - key_id: "ingress-2026-06"
+        shared_secret: "0123456789abcdef0123456789abcdef"
+      - key_id: "ingress-2026-09"
+        shared_secret: "fedcba9876543210fedcba9876543210"
+    max_age_seconds: 300
+    require_content_digest: true
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Signed Ingress"
+    clients:
+      - client_id: "signed-ingress-client"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-signed-ingress-secret"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        resource_servers:
+          - audience: "api://qid/signed-ingress"
+            resources:
+              - "https://id.example.com/pep/decision/v1/evaluate"
+            scopes:
+              - ingress.check
+            introspection_client_ids:
+              - signed-ingress-client
+            require_sender_constraint: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

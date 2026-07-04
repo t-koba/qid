@@ -1,0 +1,36 @@
+[package]
+name = "qid-federation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+qid-core = { workspace = true }
+qid-saml = { workspace = true }
+qid-storage = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+urlencoding = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+jsonwebtoken = { workspace = true }
+aes = { workspace = true }
+sha1 = { workspace = true }
+hmac = { workspace = true }
+roxmltree = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+qid-core = { workspace = true, features = ["test-utils"] }
+qid-crypto = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true }

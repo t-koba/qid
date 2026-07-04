@@ -1,0 +1,88 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/04-federation-and-sso/inbound-saml-broker.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: suppliers-sample-token
+      realm_id: suppliers
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: suppliers
+    issuer: "https://id.example.com/realms/suppliers"
+    display_name: "Supplier Federation"
+    clients:
+      - client_id: "supplier-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-supplier-portal-secret"
+        redirect_uris:
+          - "https://suppliers.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      federation:
+        enabled: true
+        inbound_providers:
+          - id: supplier-saml
+            kind: saml
+            issuer: "https://idp.supplier.example.com/metadata"
+            enabled: true
+            domains:
+              - supplier.example.com
+            jit_provisioning: true
+            account_linking: true
+            claim_mappings:
+              - source: NameID
+                target: external_subject
+                required: true
+              - source: email
+                target: email
+                required: true
+            saml_signing_certificates:
+              - |
+                -----BEGIN CERTIFICATE-----
+                MIIC/zCCAeegAwIBAgIUBklt5yFAf9IfAMSY3gfu71ytLNkwDQYJKoZIhvcNAQEL
+                BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA2MjMxNjAwMThaFw0yNzA2MjMxNjAw
+                MThaMA8xDTALBgNVBAMMBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
+                AoIBAQC+s1dflRD/3v+RyxIvc38/kZqJOiihSPSgAn5bxza4TLK7WSwzFS4S4kaG
+                wdYecsP9LB6NrOl2Hfx5y1nBOQQLHbQGMt9gzToVHcofQLn+2qqlOqtilGaNfYm6
+                FURG71zn1WLgDT1cUuwHUjSLKjsIPuS12+mKwseyqK17g/VSWHs9aDTHZyzxAQjd
+                v+4pD4r65We9L7N7ZWCogjBFmFrkExsn7csH1tMWgq5SQtuJzH4ksq8+iW+1uRoL
+                5lg1gE9ICpogIAOtQhTMCvhmlJ0go5+eB2aX999ejTLkbllGG7L4Q3/wZ3j9bq7/
+                jH4ElAfwASJn97wjePmVisPLzq+NAgMBAAGjUzBRMB0GA1UdDgQWBBRSr8sT8LIG
+                mRyacAk/70h0hB1PCzAfBgNVHSMEGDAWgBRSr8sT8LIGmRyacAk/70h0hB1PCzAP
+                BgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBfqg5gAEXnXeEkQuNf
+                CqEMxeueHdLbRFAx36DgKVLju79dQthuzf1ivjBcxxIoXrA+Nfi1/cTxOH9nvEnk
+                1vxhuPxsvSriC9pyTeMaV5pqmUG0hvaGpyRw2UHn1b3dIhG2wCtbVIDMtzDOOB4w
+                VlgZPT+tfVzEVy9p2FTTJV62cwpo8+az/narUloBdH7sqK3Vdb0OLNFC4hvUaa03
+                YC/puz1Ykv6XmDxAOVTkZ+xLJncQq7+l942aYoDdnb0+U2RbFxnSdF3ldu7f+TpN
+                xXH34azFfDbpP5BnN1dZUOrFzmBUg/qlEXwe3eWCHGgA13q5p8PNw+SxETUnV9T6
+                Cw5L
+                -----END CERTIFICATE-----
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: false
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

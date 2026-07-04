@@ -1,0 +1,69 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/10-storage-and-ops/emergency-read-only.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+admin:
+  security:
+    require_reason: true
+    require_step_up: true
+    required_acr: "urn:qid:acr:phishing-resistant"
+    required_amr:
+      - hwk
+      - webauthn
+      - passkey
+    require_approval: true
+    max_approval_age_seconds: 900
+    breakglass_enabled: true
+
+ops:
+  backup:
+    enabled: true
+    object_store_uri: "s3://qid-prod-backups/emergency"
+    migration_version: "20250628000002"
+  emergency:
+    read_only: true
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Emergency Read Only"
+    clients:
+      - client_id: "corp-web"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-corp-web-secret"
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: admin
+          source: "file://../../policies/admin.json"
+          mode: enforce

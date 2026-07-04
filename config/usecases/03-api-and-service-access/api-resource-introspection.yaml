@@ -1,0 +1,74 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/api-resource-introspection.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Corp API"
+    clients:
+      - client_id: "payments-gateway"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-payments-gateway-secret"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        introspection:
+          enabled: true
+          jwt_response: true
+        revocation:
+          enabled: true
+          webhook_url: "https://ops.example.com/qid/revocations"
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 900
+        resource_servers:
+          - audience: "api://corp/payments"
+            resources:
+              - "https://api.example.com/payments"
+            scopes:
+              - payments.read
+              - payments.write
+            introspection_client_ids:
+              - payments-gateway
+            require_sender_constraint: true
+            high_risk: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        allowed:
+          - webauthn
+          - totp
+        totp:
+          enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: api
+          source: "file://../../policies/api.json"
+          mode: enforce

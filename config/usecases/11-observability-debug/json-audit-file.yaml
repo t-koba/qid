@@ -1,0 +1,58 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/11-observability-debug/json-audit-file.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+observability:
+  logs:
+    format: json
+    redact_pii: true
+  metrics:
+    listen: "127.0.0.1:9464"
+  audit:
+    sink:
+      type: file
+      path: "/var/log/qid/audit.jsonl"
+    include:
+      - subject
+      - client_id
+      - realm_id
+      - policy_decision
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Audited Realm"
+    clients:
+      - client_id: "corp-web"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-corp-web-secret"
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

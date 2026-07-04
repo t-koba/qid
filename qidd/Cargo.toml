@@ -1,0 +1,52 @@
+[package]
+name = "qidd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "qidd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+metrics = { workspace = true }
+axum-server = { workspace = true }
+clap = { workspace = true }
+qid-admin = { workspace = true }
+qid-core = { workspace = true }
+qid-crypto = { workspace = true }
+qid-diagnostics = { workspace = true }
+qid-directory = { workspace = true }
+qid-federation = { workspace = true }
+qid-http = { workspace = true }
+qid-iga = { workspace = true }
+qid-network = { workspace = true, features = ["radius-tls"] }
+qid-oauth = { workspace = true }
+qid-oidc = { workspace = true }
+qid-observability = { workspace = true }
+qid-policy = { workspace = true }
+qid-proxy = { workspace = true }
+qid-resource = { workspace = true }
+qid-risk = { workspace = true }
+qid-saml = { workspace = true }
+qid-scim = { workspace = true }
+qid-session = { workspace = true }
+qid-storage = { workspace = true }
+qid-vc = { workspace = true }
+rcgen = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

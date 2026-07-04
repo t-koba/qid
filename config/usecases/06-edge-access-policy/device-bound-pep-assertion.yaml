@@ -1,0 +1,81 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/06-edge-access-policy/device-bound-pep-assertion.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+crypto:
+  keyrings:
+    - name: device-pep-assertion
+      realm_id: devices
+      purposes:
+        - pep_assertion
+      signer:
+        type: local
+
+realms:
+  - id: devices
+    issuer: "https://id.example.com/realms/devices"
+    display_name: "Device Bound PEP Assertions"
+    clients:
+      - client_id: "device-agent"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "device-agent-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        private_key_jwt:
+          enabled: true
+        mtls:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://devices/pep"
+            resources:
+              - "https://id.example.com/devices/v1"
+            scopes:
+              - device.heartbeat
+              - device.assert
+            introspection_client_ids:
+              - device-agent
+            require_sender_constraint: true
+    pep_registrations:
+      enabled: true
+      registrations:
+        - name: device-aware-edge
+          audience: "urn:qid:pep:devices/device-aware-edge"
+          capabilities:
+            - effect: challenge
+            - effect: inject_headers
+            - effect: local_response
+            - effect: policy_tags
+          assertion:
+            header: "x-qid-device-assertion"
+            ttl_seconds: 60
+            alg: ES256
+          decision:
+            endpoint: "/pep/decision/v1/evaluate"
+            fail_policy: deny
+    policy:
+      default_decision: deny
+      bundles:
+        - name: pep-edge
+          source: "file://../../policies/pep-edge.json"
+          mode: enforce

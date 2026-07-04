@@ -1,0 +1,76 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/mtls-confidential-client.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: api-sample-token
+      realm_id: api
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: api
+    issuer: "https://id.example.com/realms/api"
+    display_name: "mTLS API Clients"
+    clients:
+      - client_id: "settlement-gateway"
+        client_type: confidential
+        token_endpoint_auth_method: tls_client_auth
+        mtls_certificate_thumbprints:
+          - "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+        grant_types:
+          - client_credentials
+    protocols:
+      oauth:
+        mtls:
+          enabled: true
+        introspection:
+          enabled: true
+          jwt_response: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://qid/settlement"
+            resources:
+              - "https://api.example.com/settlement"
+            scopes:
+              - settlement.read
+              - settlement.write
+            introspection_client_ids:
+              - settlement-gateway
+            require_sender_constraint: true
+            high_risk: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: api
+          source: "file://../../policies/api.json"
+          mode: enforce
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      mfa:
+        allowed:
+          - passkey
+          - client_certificate
+        client_certificate:
+          enabled: true
+          allowed_certificate_attributes:
+            - san_uri

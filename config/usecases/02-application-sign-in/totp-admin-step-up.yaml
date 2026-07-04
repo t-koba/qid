@@ -1,0 +1,72 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/02-application-sign-in/totp-admin-step-up.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: ops-sample-token
+      realm_id: ops
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+admin:
+  security:
+    require_reason: true
+    require_step_up: true
+    required_acr: "urn:qid:acr:phishing-resistant"
+    required_amr:
+      - pwd
+      - otp
+    max_elevation_seconds: 900
+    require_approval: true
+    max_approval_age_seconds: 1800
+    breakglass_enabled: true
+
+realms:
+  - id: ops
+    issuer: "https://id.example.com/realms/ops"
+    display_name: "Operations"
+    clients:
+      - client_id: "ops-console"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-ops-console-secret"
+        redirect_uris:
+          - "https://ops.example.com/callback"
+        grant_types:
+          - authorization_code
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: false
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+      mfa:
+        required_for_admins: true
+        allowed:
+          - totp
+          - webauthn
+        totp:
+          enabled: true
+          digits: 6
+          period: 30
+    policy:
+      default_decision: deny
+      bundles:
+        - name: admin
+          source: "file://../../policies/admin.json"
+          mode: enforce

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.96"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - name: Clippy workspace
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  doc:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Build docs
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --locked --no-deps
+
+  config-samples:
+    name: Config Samples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Validate sample configs
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: bash ./scripts/check-config-samples.sh
+
+  structure:
+    name: Structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: cargo run -p xtask -- structure
+      - run: cargo run -p xtask -- budget
+      - name: Lint blocking reqwest clients
+        run: |
+          ! grep -rn 'reqwest::blocking::Client::new()' --include='*.rs' src/ */src/ 2>/dev/null | grep -v target || {
+            echo "ERROR: blocking Client::new() without builder/timeout found"
+            exit 1
+          }

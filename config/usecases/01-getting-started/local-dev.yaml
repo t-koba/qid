@@ -1,0 +1,55 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/01-getting-started/local-dev.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: dev-sample-token
+      realm_id: dev
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "127.0.0.1:8080"
+  public_base_url: "http://localhost:8080"
+  cors:
+    allowed_origins:
+      - "http://localhost:5173"
+      - "http://localhost:3000"
+    allow_credentials: true
+
+realms:
+  - id: dev
+    issuer: "http://localhost:8080/realms/dev"
+    display_name: "Local Development"
+    clients:
+      - client_id: "dev-spa"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "http://localhost:5173/callback"
+        grant_types:
+          - authorization_code
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "localhost"
+        rp_origin: "http://localhost:5173"
+        rp_name: "qid local"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

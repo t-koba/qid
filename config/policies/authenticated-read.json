@@ -1,0 +1,14 @@
+{
+  "version": "2026-06-28",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "id": "allow-authenticated-read",
+      "effect": "allow",
+      "actions": ["read", "userinfo", "introspect"],
+      "conditions": {
+        "authenticated": true
+      }
+    }
+  ]
+}

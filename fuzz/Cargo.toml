@@ -1,0 +1,47 @@
+[workspace]
+
+[package]
+name = "qid-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+qid-crypto = { path = "../qid-crypto" }
+qid-core = { path = "../qid-core" }
+qid-network = { path = "../qid-network" }
+qid-policy = { path = "../qid-policy" }
+qid-saml = { path = "../qid-saml" }
+serde_json = "1"
+
+[[bin]]
+name = "jwt"
+path = "fuzz_targets/jwt.rs"
+
+[[bin]]
+name = "scim_filter"
+path = "fuzz_targets/scim_filter.rs"
+
+[[bin]]
+name = "saml_xml"
+path = "fuzz_targets/saml_xml.rs"
+
+[[bin]]
+name = "policy"
+path = "fuzz_targets/policy.rs"
+
+[[bin]]
+name = "radius"
+path = "fuzz_targets/radius.rs"
+
+[[bin]]
+name = "tacacs"
+path = "fuzz_targets/tacacs.rs"
+
+[[bin]]
+name = "eap"
+path = "fuzz_targets/eap.rs"

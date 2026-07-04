@@ -1,0 +1,15 @@
+{
+  "version": "2026-06-28",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "id": "allow-step-up-admin",
+      "effect": "allow",
+      "actions": ["admin.read", "admin.write"],
+      "conditions": {
+        "acr": "urn:qid:acr:phishing-resistant",
+        "amr": ["hwk", "webauthn", "passkey"]
+      }
+    }
+  ]
+}

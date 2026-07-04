@@ -1,0 +1,67 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/jwt-bearer-assertion-grant.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: federation-sample-token
+      realm_id: federation
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: federation
+    issuer: "https://id.example.com/realms/federation"
+    display_name: "JWT Bearer Assertion Bridge"
+    clients:
+      - client_id: "external-assertion-broker"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "external-assertion-broker-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - urn:ietf:params:oauth:grant-type:jwt-bearer
+          - client_credentials
+    protocols:
+      oauth:
+        private_key_jwt:
+          enabled: true
+        mtls:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://federation/assertion-bridge"
+            resources:
+              - "https://id.example.com/federation/assertions"
+            scopes:
+              - assertion.exchange
+            introspection_client_ids:
+              - external-assertion-broker
+            require_sender_constraint: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

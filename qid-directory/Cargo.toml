@@ -1,0 +1,29 @@
+[package]
+name = "qid-directory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+qid-core = { workspace = true }
+qid-storage = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+ldap3 = { workspace = true }
+
+[dev-dependencies]
+qid-core = { workspace = true, features = ["test-utils"] }
+qid-crypto = { workspace = true }
+tokio = { workspace = true }

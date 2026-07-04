@@ -1,0 +1,114 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/12-composition/multi-realm-ciam-and-workforce.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: workforce-sample-token
+      realm_id: workforce
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+    - name: customers-sample-token
+      realm_id: customers
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  cors:
+    allowed_origins:
+      - "https://app.example.com"
+      - "https://shop.example.com"
+    allow_credentials: true
+
+realms:
+  - id: workforce
+    issuer: "https://id.example.com/realms/workforce"
+    display_name: "Workforce"
+    tenant_id: "tenant-workforce"
+    clients:
+      - client_id: "employee-portal"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-employee-portal-secret"
+        redirect_uris:
+          - "https://app.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      directory:
+        enabled: true
+        default_provider_id: corp-ldap
+        providers:
+          - id: corp-ldap
+            type: ldap
+            enabled: true
+            connection:
+              url: "ldaps://ldap.example.com:636"
+              bind_dn: "uid=qid-sync,ou=service,dc=example,dc=com"
+              bind_password: "secret://qid/directory/ldap-bind-password"
+              base_dn: "dc=example,dc=com"
+            sync:
+              user_search_filter: "(objectClass=inetOrgPerson)"
+              group_search_filter: "(objectClass=groupOfNames)"
+              sync_interval_minutes: 30
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: workforce
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce
+  - id: customers
+    issuer: "https://id.example.com/realms/customers"
+    display_name: "Customers"
+    tenant_id: "tenant-customers"
+    clients:
+      - client_id: "shop-web"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "https://shop.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      fedcm:
+        enabled: true
+      oauth:
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: customers
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

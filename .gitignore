@@ -1,0 +1,59 @@
+# Rust build output
+/target/
+**/target/
+
+# Local daemon and CLI state
+/qid-state/
+**/qid-state/
+**/qpx-state/
+/qid-store.json
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.log
+*.pid
+*.pcapng
+*.tmp
+
+# Generated release and compliance artifacts
+/dist/
+/bom.json
+/bom.xml
+
+# Generated config sample runtime state
+/config/usecases/data/runtime/
+
+# Test, fuzz, mutation, and coverage output
+/mutants.out/
+/mutants.out.old/
+/coverage/
+/htmlcov/
+/tarpaulin-report.html
+/lcov.info
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+junit*.xml
+coverage*.xml
+*.sarif
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/target/
+/fuzz/coverage/
+
+# Local environment and editor files
+.claude/
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

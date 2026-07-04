@@ -1,0 +1,14 @@
+{
+  "version": "2026-06-28",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "id": "allow-provisioning-client",
+      "effect": "allow",
+      "actions": ["scim.read", "scim.write"],
+      "conditions": {
+        "client_id": "scim-provisioner"
+      }
+    }
+  ]
+}

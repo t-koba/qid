@@ -1,0 +1,67 @@
+profile: oidc
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/03-api-and-service-access/dpop-sender-constrained-api.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: corp-sample-token
+      realm_id: corp
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    display_name: "Sender Constrained API"
+    clients:
+      - client_id: "field-service-spa"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris:
+          - "https://field.example.com/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+    protocols:
+      oauth:
+        dpop:
+          enabled: true
+          replay_cache: true
+          nonce: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 600
+        resource_servers:
+          - audience: "api://corp/field-service"
+            resources:
+              - "https://api.example.com/field-service"
+            scopes:
+              - field.read
+              - field.write
+            introspection_client_ids:
+              - field-api
+            require_sender_constraint: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+    policy:
+      default_decision: deny
+      bundles:
+        - name: api
+          source: "file://../../policies/api.json"
+          mode: enforce

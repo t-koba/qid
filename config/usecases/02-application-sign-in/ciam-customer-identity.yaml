@@ -1,0 +1,91 @@
+profile: ciam
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/02-application-sign-in/ciam-customer-identity.json"
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: customers-sample-token
+      realm_id: customers
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+  cors:
+    allowed_origins:
+      - "https://shop.example.com"
+    allow_credentials: true
+
+realms:
+  - id: customers
+    issuer: "https://id.example.com/realms/customers"
+    display_name: "Customer Identity"
+    clients:
+      - client_id: "shop-web"
+        client_type: confidential
+        token_endpoint_auth_method: client_secret_basic
+        client_secret: "change-me-shop-web-secret"
+        redirect_uris:
+          - "https://shop.example.com/callback"
+        grant_types:
+          - authorization_code
+    protocols:
+      ciam:
+        consent: true
+        progressive_profile: true
+        identity_proofing: true
+        privacy_dashboard: true
+      fedcm:
+        enabled: true
+      federation:
+        enabled: true
+        inbound_providers:
+          - id: google
+            kind: social
+            issuer: "https://accounts.google.com"
+            enabled: true
+            domains:
+              - "shop.example.com"
+            social_provider: google
+            client_id: "google-client-id"
+            client_secret: "secret://qid/social/google-client-secret"
+            token_url: "https://oauth2.googleapis.com/token"
+            userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo"
+            jit_provisioning: true
+            account_linking: true
+            claim_mappings:
+              - source: sub
+                target: external_subject
+                required: true
+              - source: email
+                target: email
+                required: true
+      oidc:
+        discovery: true
+        userinfo: true
+        authorization_code:
+          enabled: true
+          pkce_required: true
+    authentication:
+      passkeys:
+        enabled: true
+        preferred: true
+        rp_id: "id.example.com"
+        rp_origin: "https://id.example.com"
+      password:
+        enabled: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

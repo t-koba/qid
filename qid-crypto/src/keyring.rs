@@ -462,9 +462,7 @@ impl HttpRemoteSignerTransport {
 
 impl Default for HttpRemoteSignerTransport {
     fn default() -> Self {
-        Self {
-            client: reqwest::blocking::Client::new(),
-        }
+        Self::new().expect("remote signer HTTP client default timeout must be valid")
     }
 }
 

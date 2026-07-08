@@ -462,7 +462,7 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    let user_hash = sha2::Sha256::digest(user_uuid.as_bytes());
+    let user_handle = user_uuid.as_bytes();
     let users = match state.repo.list_users(&RealmId(realm.clone())).await {
         Ok(u) => u,
         Err(e) => return qid_http::error_response(e),
@@ -470,7 +470,7 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
 
     let matched_user = users.into_iter().find(|u| {
         let expected = sha2::Sha256::digest(u.id.as_bytes());
-        expected[..16] == user_hash[..16]
+        expected[..16] == user_handle[..]
     });
 
     let user = match matched_user {

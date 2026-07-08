@@ -28,7 +28,7 @@ url = { workspace = true }
 tokio = { workspace = true }
 ulid = { workspace = true }
 uuid = { version = "1" }
-webauthn-rs = { workspace = true }
+passkey-auth = { workspace = true }
 base64 = { workspace = true }
 metrics = { workspace = true }
 sha2 = { workspace = true }

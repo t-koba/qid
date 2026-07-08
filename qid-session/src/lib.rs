@@ -37,11 +37,8 @@ mod tests {
 
     #[test]
     fn test_webauthn_builder_valid_params() {
-        use url::Url;
-        use webauthn_rs::prelude::WebauthnBuilder;
-        let origin = Url::parse("https://login.example.com").unwrap();
-        let builder = WebauthnBuilder::new("login.example.com", &origin).unwrap();
-        let _webauthn = builder.rp_name("qid-test").build().unwrap();
+        WebAuthnService::new("login.example.com", "qid-test", "https://login.example.com")
+            .expect("webauthn service");
     }
 
     #[test]

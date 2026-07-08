@@ -1,21 +1,23 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use passkey_auth::{
+    AuthenticationResponse, AuthenticationState, PasskeyCredential, RegistrationResponse,
+    RegistrationState, Webauthn,
+};
 use qid_core::{
     error::{QidError, QidResult},
     models::WebAuthnCredential,
 };
 use sha2::Digest;
 use url::Url;
-use webauthn_rs::prelude::*;
 
-/// Injected WebAuthn in-memory state for registration and authentication
-/// ceremonies.
 #[derive(Debug, Default)]
 pub struct WebAuthnState {
-    reg: Mutex<HashMap<String, PasskeyRegistration>>,
-    auth: Mutex<HashMap<String, PasskeyAuthentication>>,
-    disc_auth: Mutex<HashMap<String, DiscoverableAuthentication>>,
+    reg: Mutex<HashMap<String, RegistrationState>>,
+    auth: Mutex<HashMap<String, AuthenticationState>>,
+    disc_auth: Mutex<HashMap<String, AuthenticationState>>,
 }
 
 impl WebAuthnState {
@@ -23,45 +25,41 @@ impl WebAuthnState {
         Arc::new(Self::default())
     }
 
-    fn insert_reg(&self, user_name: &str, state: PasskeyRegistration) -> QidResult<()> {
+    fn insert_reg(&self, state_key: &str, state: RegistrationState) -> QidResult<()> {
         let mut map = self.reg.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn reg lock poisoned: {e}"),
         })?;
-        map.insert(user_name.to_string(), state);
+        map.insert(state_key.to_string(), state);
         Ok(())
     }
 
-    fn remove_reg(&self, user_name: &str) -> QidResult<PasskeyRegistration> {
+    fn remove_reg(&self, state_key: &str) -> QidResult<RegistrationState> {
         let mut map = self.reg.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn reg lock poisoned: {e}"),
         })?;
-        map.remove(user_name).ok_or_else(|| QidError::BadRequest {
+        map.remove(state_key).ok_or_else(|| QidError::BadRequest {
             message: "no registration in progress".to_string(),
         })
     }
 
-    fn insert_auth(&self, user_name: &str, state: PasskeyAuthentication) -> QidResult<()> {
+    fn insert_auth(&self, state_key: &str, state: AuthenticationState) -> QidResult<()> {
         let mut map = self.auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn auth lock poisoned: {e}"),
         })?;
-        map.insert(user_name.to_string(), state);
+        map.insert(state_key.to_string(), state);
         Ok(())
     }
 
-    fn remove_auth(&self, user_name: &str) -> QidResult<PasskeyAuthentication> {
+    fn remove_auth(&self, state_key: &str) -> QidResult<AuthenticationState> {
         let mut map = self.auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn auth lock poisoned: {e}"),
         })?;
-        map.remove(user_name).ok_or_else(|| QidError::BadRequest {
+        map.remove(state_key).ok_or_else(|| QidError::BadRequest {
             message: "no authentication in progress".to_string(),
         })
     }
 
-    fn insert_disc_auth(
-        &self,
-        ceremony_key: &str,
-        state: DiscoverableAuthentication,
-    ) -> QidResult<()> {
+    fn insert_disc_auth(&self, ceremony_key: &str, state: AuthenticationState) -> QidResult<()> {
         let mut map = self.disc_auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn disc auth lock poisoned: {e}"),
         })?;
@@ -69,7 +67,7 @@ impl WebAuthnState {
         Ok(())
     }
 
-    fn remove_disc_auth(&self, ceremony_key: &str) -> QidResult<DiscoverableAuthentication> {
+    fn remove_disc_auth(&self, ceremony_key: &str) -> QidResult<AuthenticationState> {
         let mut map = self.disc_auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn disc auth lock poisoned: {e}"),
         })?;
@@ -88,21 +86,19 @@ pub struct WebAuthnService {
     webauthn: Webauthn,
 }
 
+pub struct WebAuthnAuthOutcome {
+    pub credential_id: Vec<u8>,
+    pub counter: u64,
+}
+
 impl WebAuthnService {
     pub fn new(rp_id: &str, rp_name: &str, rp_origin: &str) -> QidResult<Self> {
-        let origin = Url::parse(rp_origin).map_err(|e| QidError::BadRequest {
+        Url::parse(rp_origin).map_err(|e| QidError::BadRequest {
             message: format!("invalid rp_origin: {e}"),
         })?;
-        let rbuilder = WebauthnBuilder::new(rp_id, &origin).map_err(|e| QidError::Internal {
-            message: format!("webauthn init: {e}"),
-        })?;
-        let webauthn = rbuilder
-            .rp_name(rp_name)
-            .build()
-            .map_err(|e| QidError::Internal {
-                message: format!("webauthn build: {e}"),
-            })?;
-        Ok(Self { webauthn })
+        Ok(Self {
+            webauthn: Webauthn::new(rp_id, rp_name, rp_origin),
+        })
     }
 
     pub fn start_registration(
@@ -113,18 +109,13 @@ impl WebAuthnService {
         user_name: &str,
         user_display_name: &str,
     ) -> QidResult<serde_json::Value> {
-        let uid = uuid::Uuid::from_slice(&sha2::Sha256::digest(user_unique_id.as_bytes())[..16])
-            .map_err(|e| QidError::Internal {
-                message: format!("uuid from hash: {e}"),
-            })?;
-        let (ccr, reg_state) = self
-            .webauthn
-            .start_passkey_registration(uid, user_name, user_display_name, Some(Vec::new()))
-            .map_err(|e| QidError::Internal {
-                message: format!("webauthn start registration: {e}"),
-            })?;
+        let user_handle = stable_user_handle(user_unique_id);
+        let existing = Vec::new();
+        let (challenge, reg_state) =
+            self.webauthn
+                .start_registration(&user_handle, user_name, user_display_name, &existing);
         webauthn_state.insert_reg(state_key, reg_state)?;
-        serde_json::to_value(&ccr).map_err(|e| QidError::Internal {
+        serde_json::to_value(&challenge).map_err(|e| QidError::Internal {
             message: format!("serialization error: {e}"),
         })
     }
@@ -136,28 +127,28 @@ impl WebAuthnService {
         user_id: &str,
         response: serde_json::Value,
     ) -> QidResult<WebAuthnCredential> {
-        let rcr: RegisterPublicKeyCredential =
+        let response: RegistrationResponse =
             serde_json::from_value(response).map_err(|e| QidError::BadRequest {
                 message: format!("invalid registration response: {e}"),
             })?;
         let reg_state = webauthn_state.remove_reg(state_key)?;
         let passkey = self
             .webauthn
-            .finish_passkey_registration(&rcr, &reg_state)
+            .finish_registration(&reg_state, &response)
             .map_err(|e| QidError::Crypto {
                 message: format!("webauthn finish registration: {e}"),
             })?;
-        let cred_id = passkey.cred_id();
+        let credential_id = passkey.id.as_bytes().to_vec();
         let pk_json = serde_json::to_vec(&passkey).map_err(|e| QidError::Internal {
             message: format!("serialize passkey: {e}"),
         })?;
         Ok(WebAuthnCredential {
-            id: qid_core::util::base64_url_encode(cred_id.as_ref()),
+            id: qid_core::util::base64_url_encode(&credential_id),
             user_id: user_id.to_string(),
-            credential_id: cred_id.as_ref().to_vec(),
+            credential_id,
             public_key: pk_json,
-            counter: 0,
-            aaguid: Vec::new(),
+            counter: passkey.counter as u64,
+            aaguid: passkey.aaguid.to_vec(),
             device_name: None,
             created_at: qid_core::util::now_seconds(),
         })
@@ -167,21 +158,21 @@ impl WebAuthnService {
         &self,
         webauthn_state: &WebAuthnState,
         state_key: &str,
-        passkeys: &[Passkey],
+        user_unique_id: &str,
+        credentials: &[WebAuthnCredential],
     ) -> QidResult<serde_json::Value> {
+        let passkeys = parse_passkeys(credentials)?;
         if passkeys.is_empty() {
             return Err(QidError::NotFound {
                 resource: "webauthn credentials".to_string(),
             });
         }
-        let (rcr, auth_state) = self
-            .webauthn
-            .start_passkey_authentication(passkeys)
-            .map_err(|e| QidError::Internal {
-                message: format!("webauthn start authentication: {e}"),
-            })?;
+        let (challenge, auth_state) = self.webauthn.start_authentication_with_creds_for_user(
+            &stable_user_handle(user_unique_id),
+            &passkeys,
+        );
         webauthn_state.insert_auth(state_key, auth_state)?;
-        serde_json::to_value(&rcr).map_err(|e| QidError::Internal {
+        serde_json::to_value(&challenge).map_err(|e| QidError::Internal {
             message: format!("serialization error: {e}"),
         })
     }
@@ -191,76 +182,128 @@ impl WebAuthnService {
         webauthn_state: &WebAuthnState,
         state_key: &str,
         response: serde_json::Value,
-    ) -> QidResult<AuthenticationResult> {
-        let rar: PublicKeyCredential =
-            serde_json::from_value(response).map_err(|e| QidError::BadRequest {
-                message: format!("invalid authentication response: {e}"),
-            })?;
+        credentials: &[WebAuthnCredential],
+    ) -> QidResult<WebAuthnAuthOutcome> {
+        let response = parse_authentication_response(response)?;
         let auth_state = webauthn_state.remove_auth(state_key)?;
-        self.webauthn
-            .finish_passkey_authentication(&rar, &auth_state)
+        let passkey = matching_passkey(credentials, &response)?;
+        let outcome = self
+            .webauthn
+            .finish_authentication(&auth_state, &response, &passkey)
             .map_err(|e| QidError::Crypto {
                 message: format!("webauthn finish authentication: {e}"),
-            })
+            })?;
+        Ok(WebAuthnAuthOutcome {
+            credential_id: outcome.credential_id.as_bytes().to_vec(),
+            counter: outcome.new_counter as u64,
+        })
     }
 
-    /// Start a discoverable (conditional UI / usernameless) authentication.
     pub fn start_discoverable_authentication(
         &self,
         webauthn_state: &WebAuthnState,
         ceremony_key: &str,
     ) -> QidResult<serde_json::Value> {
-        let (rcr, disc_state) = self
-            .webauthn
-            .start_discoverable_authentication()
-            .map_err(|e| QidError::Internal {
-                message: format!("webauthn start discoverable auth: {e}"),
-            })?;
-        webauthn_state.insert_disc_auth(ceremony_key, disc_state)?;
-        serde_json::to_value(&rcr).map_err(|e| QidError::Internal {
+        let (challenge, auth_state) = self.webauthn.start_authentication(&[]);
+        webauthn_state.insert_disc_auth(ceremony_key, auth_state)?;
+        serde_json::to_value(&challenge).map_err(|e| QidError::Internal {
             message: format!("serialization error: {e}"),
         })
     }
 
-    /// Identify the user from a discoverable authentication response.
     pub fn identify_discoverable_authentication(
         &self,
         response: &serde_json::Value,
     ) -> QidResult<(uuid::Uuid, Vec<u8>)> {
-        let rar: PublicKeyCredential =
-            serde_json::from_value(response.clone()).map_err(|e| QidError::BadRequest {
-                message: format!("invalid discoverable auth response: {e}"),
+        let response = parse_authentication_response(response.clone())?;
+        let user_handle = response
+            .user_handle
+            .as_deref()
+            .ok_or_else(|| QidError::BadRequest {
+                message: "discoverable WebAuthn response is missing userHandle".to_string(),
             })?;
-        let (uid, cred_id) = self
-            .webauthn
-            .identify_discoverable_authentication(&rar)
-            .map_err(|e| QidError::Crypto {
-                message: format!("webauthn identify discoverable auth: {e}"),
-            })?;
-        Ok((uid, cred_id.to_vec()))
+        let user_handle = decode_credential_bytes(user_handle)?;
+        let user_uuid = uuid::Uuid::from_slice(&user_handle).map_err(|e| QidError::BadRequest {
+            message: format!("invalid discoverable WebAuthn userHandle: {e}"),
+        })?;
+        Ok((user_uuid, response_credential_id(&response)?))
     }
 
-    /// Finish a discoverable authentication with the identified user's passkeys.
     pub fn finish_discoverable_authentication(
         &self,
         webauthn_state: &WebAuthnState,
         ceremony_key: &str,
         response: serde_json::Value,
-        passkeys: &[Passkey],
-    ) -> QidResult<AuthenticationResult> {
-        let rar: PublicKeyCredential =
-            serde_json::from_value(response).map_err(|e| QidError::BadRequest {
-                message: format!("invalid discoverable auth response: {e}"),
-            })?;
-        let disc_state = webauthn_state.remove_disc_auth(ceremony_key)?;
-        let discoverable_keys: Vec<DiscoverableKey> =
-            passkeys.iter().map(DiscoverableKey::from).collect();
-        self.webauthn
-            .finish_discoverable_authentication(&rar, disc_state, &discoverable_keys)
+        credentials: &[WebAuthnCredential],
+    ) -> QidResult<WebAuthnAuthOutcome> {
+        let response = parse_authentication_response(response)?;
+        let auth_state = webauthn_state.remove_disc_auth(ceremony_key)?;
+        let passkey = matching_passkey(credentials, &response)?;
+        let outcome = self
+            .webauthn
+            .finish_authentication(&auth_state, &response, &passkey)
             .map_err(|e| QidError::Crypto {
                 message: format!("webauthn finish discoverable auth: {e}"),
-            })
+            })?;
+        Ok(WebAuthnAuthOutcome {
+            credential_id: outcome.credential_id.as_bytes().to_vec(),
+            counter: outcome.new_counter as u64,
+        })
     }
+}
+
+fn stable_user_handle(user_unique_id: &str) -> Vec<u8> {
+    sha2::Sha256::digest(user_unique_id.as_bytes())[..16].to_vec()
+}
+
+fn parse_passkeys(credentials: &[WebAuthnCredential]) -> QidResult<Vec<PasskeyCredential>> {
+    credentials
+        .iter()
+        .map(|credential| {
+            serde_json::from_slice::<PasskeyCredential>(&credential.public_key).map_err(|e| {
+                QidError::Internal {
+                    message: format!("stored WebAuthn credential is invalid: {e}"),
+                }
+            })
+        })
+        .collect()
+}
+
+fn matching_passkey(
+    credentials: &[WebAuthnCredential],
+    response: &AuthenticationResponse,
+) -> QidResult<PasskeyCredential> {
+    let response_id = response_credential_id(response)?;
+    for credential in credentials {
+        if credential.credential_id == response_id {
+            return serde_json::from_slice::<PasskeyCredential>(&credential.public_key).map_err(
+                |e| QidError::Internal {
+                    message: format!("stored WebAuthn credential is invalid: {e}"),
+                },
+            );
+        }
+    }
+    Err(QidError::NotFound {
+        resource: "matching webauthn credential".to_string(),
+    })
+}
+
+fn parse_authentication_response(value: serde_json::Value) -> QidResult<AuthenticationResponse> {
+    serde_json::from_value(value).map_err(|e| QidError::BadRequest {
+        message: format!("invalid authentication response: {e}"),
+    })
+}
+
+fn response_credential_id(response: &AuthenticationResponse) -> QidResult<Vec<u8>> {
+    decode_credential_bytes(&response.id)
+}
+
+fn decode_credential_bytes(value: &str) -> QidResult<Vec<u8>> {
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|e| QidError::BadRequest {
+            message: format!("invalid base64url WebAuthn identifier: {e}"),
+        })
 }
 
 #[cfg(test)]
@@ -276,7 +319,6 @@ mod tests {
 
     #[test]
     fn webauthn_discoverable_ceremony_id_format() {
-        // ceremony IDs are hex formatted with disc_ prefix
         let realm = "corp";
         let ceremony_id = format!("disc_{:016x}", 42u64);
         let ceremony_key = format!("{}:{}", realm, ceremony_id);
@@ -288,12 +330,10 @@ mod tests {
     fn webauthn_state_isolation_between_ceremony_types() {
         let state = WebAuthnState::new();
 
-        // Each ceremony type has its own Mutex<HashMap>, verified by
-        // basic lock access.
-        let _reg = state.reg.lock().unwrap();
-        let _auth = state.auth.lock().unwrap();
-        drop(_reg);
-        drop(_auth);
+        let reg = state.reg.lock().unwrap();
+        let auth = state.auth.lock().unwrap();
+        drop(reg);
+        drop(auth);
 
         let disc_map = state.disc_auth.lock().unwrap();
         assert!(disc_map.is_empty());

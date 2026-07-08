@@ -460,12 +460,6 @@ impl HttpRemoteSignerTransport {
     }
 }
 
-impl Default for HttpRemoteSignerTransport {
-    fn default() -> Self {
-        Self::new().expect("remote signer HTTP client default timeout must be valid")
-    }
-}
-
 impl RemoteSignerTransport for HttpRemoteSignerTransport {
     fn sign(&self, request: RemoteSigningRequest) -> Result<RemoteSigningResponse, String> {
         use base64::Engine;

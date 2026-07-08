@@ -254,13 +254,8 @@ pub async fn webauthn_auth_start<R: Repository>(
         ),
     };
 
-    let passkeys: Vec<_> = creds
-        .iter()
-        .filter_map(|c| serde_json::from_slice::<webauthn_rs::prelude::Passkey>(&c.public_key).ok())
-        .collect();
-
     let state_key = webauthn_state_key(&realm, &user_id);
-    match webauthn.start_authentication(&webauthn_state, &state_key, &passkeys) {
+    match webauthn.start_authentication(&webauthn_state, &state_key, &user_id, &creds) {
         Ok(challenge) => {
             let body = Json(WebAuthnStartResponse { challenge });
             (StatusCode::OK, body).into_response()
@@ -304,9 +299,13 @@ pub async fn webauthn_auth_finish<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
+    let creds = match state.repo.get_webauthn_credentials(&user.id).await {
+        Ok(c) => c,
+        Err(e) => return qid_http::error_response(e),
+    };
     let state_key = webauthn_state_key(&realm, &user.id);
     let auth_result =
-        match webauthn.finish_authentication(&webauthn_state, &state_key, req.response) {
+        match webauthn.finish_authentication(&webauthn_state, &state_key, req.response, &creds) {
             Ok(r) => {
                 metrics::counter!("qid_webauthn_ceremonies_total", "ceremony" => "authenticate")
                     .increment(1);
@@ -316,16 +315,12 @@ pub async fn webauthn_auth_finish<R: Repository>(
         };
 
     // Verify signCount monotonicity (credential cloning detection)
-    let creds = match state.repo.get_webauthn_credentials(&user.id).await {
-        Ok(c) => c,
-        Err(e) => return qid_http::error_response(e),
-    };
-    let used_cred_id = auth_result.cred_id();
+    let used_cred_id = auth_result.credential_id.as_slice();
     if let Some(cred) = creds
         .iter()
-        .find(|c| c.credential_id.as_slice() == used_cred_id.as_ref())
+        .find(|c| c.credential_id.as_slice() == used_cred_id)
     {
-        let new_counter = auth_result.counter() as u64;
+        let new_counter = auth_result.counter;
         // WebAuthn L3 §6.1.1: authenticators that do not implement a
         // signature counter always return 0.  Allow 0→0 transitions.
         if (new_counter != 0 || cred.counter != 0) && new_counter <= cred.counter {
@@ -492,16 +487,11 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    let passkeys: Vec<webauthn_rs::prelude::Passkey> = creds
-        .iter()
-        .filter_map(|c| serde_json::from_slice::<webauthn_rs::prelude::Passkey>(&c.public_key).ok())
-        .collect();
-
     let auth_result = match webauthn.finish_discoverable_authentication(
         &webauthn_state,
         &ceremony_key,
         req.response,
-        &passkeys,
+        &creds,
     ) {
         Ok(r) => {
             metrics::counter!("qid_webauthn_ceremonies_total", "ceremony" => "authenticate")
@@ -512,12 +502,12 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
     };
 
     // Verify signCount monotonicity (credential cloning detection)
-    let used_cred_id = auth_result.cred_id();
+    let used_cred_id = auth_result.credential_id.as_slice();
     if let Some(cred) = creds
         .iter()
-        .find(|c| c.credential_id.as_slice() == used_cred_id.as_ref())
+        .find(|c| c.credential_id.as_slice() == used_cred_id)
     {
-        let new_counter = auth_result.counter() as u64;
+        let new_counter = auth_result.counter;
         // WebAuthn L3 §6.1.1: authenticators that do not implement a
         // signature counter always return 0.  Allow 0→0 transitions.
         if (new_counter != 0 || cred.counter != 0) && new_counter <= cred.counter {

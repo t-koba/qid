@@ -138,7 +138,7 @@ pub struct FileRepository {
     store: Arc<tokio::sync::RwLock<Store>>,
     path: PathBuf,
     save_lock: Arc<tokio::sync::Mutex<()>>,
-    _process_lock: Arc<File>,
+    _process_lock: Arc<ProcessLock>,
     dirty: Arc<AtomicBool>,
     flush_mode: FileFlushMode,
 }
@@ -271,25 +271,54 @@ impl FileRepository {
     }
 }
 
-fn acquire_process_lock(path: &std::path::Path) -> QidResult<File> {
+#[derive(Debug)]
+struct ProcessLock {
+    _file: File,
+}
+
+fn acquire_process_lock(path: &std::path::Path) -> QidResult<ProcessLock> {
     let lock_path = path.with_extension("lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&lock_path)
+            .map_err(|e| QidError::Internal {
+                message: format!(
+                    "file storage is already locked by another process; use SQL storage for multi-process deployments: {e}"
+                ),
+            })?;
+        return Ok(ProcessLock { _file: file });
+    }
+
+    #[cfg(not(windows))]
+    {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| QidError::Internal {
+                message: format!("failed to open store lock file: {e}"),
+            })?;
+        rustix::fs::flock(
+            &file,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        )
         .map_err(|e| QidError::Internal {
-            message: format!("failed to open store lock file: {e}"),
-        })?;
-    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(
-        |e| QidError::Internal {
             message: format!(
                 "file storage is already locked by another process; use SQL storage for multi-process deployments: {e}"
             ),
-        },
-    )?;
-    Ok(file)
+        })?;
+        Ok(ProcessLock { _file: file })
+    }
 }
 
 fn audit_retention_key(realm_id: Option<&str>) -> String {

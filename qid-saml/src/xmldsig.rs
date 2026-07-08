@@ -173,18 +173,45 @@ pub fn verify_saml_xml_signature(inputs: SamlSignatureInputs<'_>) -> QidResult<(
 }
 
 fn reject_insecure(document: &str) -> QidResult<()> {
-    let lowered = document.to_ascii_lowercase();
-    if lowered.contains("sha1")
-        || lowered.contains("dsa-sha1")
-        || lowered.contains("rsa-sha1")
-        || lowered.contains("ecdsa-sha1")
-        || lowered.contains("md5")
-    {
-        return Err(QidError::BadRequest {
-            message: "SAML XMLDSig rejects SHA-1/MD5 signatures or digests".to_string(),
-        });
+    for algorithm in signature_algorithm_values(document) {
+        let lowered = algorithm.to_ascii_lowercase();
+        if lowered.contains("sha1") || lowered.contains("md5") {
+            return Err(QidError::BadRequest {
+                message: "SAML XMLDSig rejects SHA-1/MD5 signatures or digests".to_string(),
+            });
+        }
     }
     Ok(())
+}
+
+fn signature_algorithm_values(document: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    for tag in ["SignatureMethod", "DigestMethod"] {
+        let mut rest = document;
+        while let Some(start) = find_open_tag(rest, tag) {
+            let tag_end = rest[start..]
+                .find('>')
+                .map(|offset| start + offset)
+                .unwrap_or(rest.len());
+            let open_tag = &rest[start..tag_end];
+            if let Some(value) = extract_attr_from_open_tag(open_tag, "Algorithm") {
+                values.push(value);
+            }
+            rest = &rest[tag_end..];
+            if rest.is_empty() {
+                break;
+            }
+        }
+    }
+    values
+}
+
+fn extract_attr_from_open_tag(open_tag: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let pos = open_tag.find(&needle)? + needle.len();
+    let rest = &open_tag[pos..];
+    let stop = rest.find('"')?;
+    Some(rest[..stop].to_string())
 }
 
 fn extract_signature(document: &str) -> Option<&str> {

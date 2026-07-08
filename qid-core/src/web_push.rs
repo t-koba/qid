@@ -74,10 +74,16 @@ pub fn vapid_sign(subscription: &WebPushSubscription, private_key_pem: &[u8]) ->
         "exp": now + 86400,
         "sub": "mailto:admin@example.com",
     });
-    let header_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_string(&header).unwrap());
-    let claims_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_string(&claims).unwrap());
+    let header_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::to_string(&header).map_err(|e| QidError::Internal {
+            message: format!("failed to encode VAPID header: {e}"),
+        })?,
+    );
+    let claims_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::to_string(&claims).map_err(|e| QidError::Internal {
+            message: format!("failed to encode VAPID claims: {e}"),
+        })?,
+    );
     let signing_input = format!("{header_b64}.{claims_b64}");
     let signature: p256::ecdsa::Signature = key.sign(signing_input.as_bytes());
     let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());

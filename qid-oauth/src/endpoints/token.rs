@@ -173,6 +173,9 @@ async fn handle_token<R: Repository>(
     )
     .await?;
 
+    let metric_start = std::time::Instant::now();
+    let metric_grant_type = metric_grant_type_label(&req.grant_type);
+    let metric_realm = client.realm_id.clone();
     let result = match req.grant_type.as_str() {
         "authorization_code" => authorization_code_grant(state, req, &client, cnf.as_ref()).await,
         "client_credentials" => {
@@ -196,9 +199,19 @@ async fn handle_token<R: Repository>(
             message: "unsupported grant_type".to_string(),
         }),
     };
+    metrics::histogram!(
+        "qid_token_issue_duration_seconds",
+        "grant_type" => metric_grant_type,
+        "realm" => metric_realm.clone()
+    )
+    .record(metric_start.elapsed().as_secs_f64());
     if result.is_ok() {
-        metrics::counter!("qid_token_issued_total", "grant_type" => metric_grant_type_label(&req.grant_type))
-            .increment(1);
+        metrics::counter!(
+            "qid_token_issued_total",
+            "grant_type" => metric_grant_type,
+            "realm" => metric_realm
+        )
+        .increment(1);
     }
     result
 }

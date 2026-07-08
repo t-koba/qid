@@ -17,6 +17,15 @@ impl ScimRepository for FileRepository {
     }
 
     async fn list_scim_users(&self, realm_id: &RealmId) -> QidResult<Vec<ScimUser>> {
+        self.list_scim_users_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_scim_users_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<ScimUser>> {
         let store = self.store.read().await;
         let mut users: Vec<_> = store
             .scim_users
@@ -25,7 +34,16 @@ impl ScimRepository for FileRepository {
             .cloned()
             .collect();
         users.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(users)
+        Ok(users.into_iter().skip(offset).take(limit).collect())
+    }
+
+    async fn count_scim_users(&self, realm_id: &RealmId) -> QidResult<usize> {
+        let store = self.store.read().await;
+        Ok(store
+            .scim_users
+            .values()
+            .filter(|u| u.realm_id == realm_id.0)
+            .count())
     }
 
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()> {
@@ -50,6 +68,15 @@ impl ScimRepository for FileRepository {
     }
 
     async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {
+        self.list_scim_groups_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_scim_groups_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<ScimGroup>> {
         let store = self.store.read().await;
         let mut groups: Vec<_> = store
             .scim_groups
@@ -58,7 +85,16 @@ impl ScimRepository for FileRepository {
             .cloned()
             .collect();
         groups.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(groups)
+        Ok(groups.into_iter().skip(offset).take(limit).collect())
+    }
+
+    async fn count_scim_groups(&self, realm_id: &RealmId) -> QidResult<usize> {
+        let store = self.store.read().await;
+        Ok(store
+            .scim_groups
+            .values()
+            .filter(|g| g.realm_id == realm_id.0)
+            .count())
     }
 
     async fn get_scim_group(&self, id: &str) -> QidResult<Option<ScimGroup>> {

@@ -8,6 +8,7 @@ use qid_core::config::{
 use qid_ops::KeyPurpose;
 use qid_policy::{Decision, DecisionDetails};
 use std::collections::HashMap;
+use std::path::Path;
 
 fn minimal_config() -> QidConfig {
     QidConfig {
@@ -25,6 +26,7 @@ fn minimal_config() -> QidConfig {
         storage: StorageConfig::default(),
         crypto: CryptoConfig {
             default_alg: "ES256".to_string(),
+            key_passphrase_file: None,
             keyrings: vec![KeyringConfig {
                 name: "corp-main".to_string(),
                 realm_id: Some("corp".to_string()),
@@ -98,6 +100,76 @@ fn key_rotation_plan_parser_rejects_ambiguous_fields() {
             .reasons
             .contains(&"invalid_overlap_exceeds_max_age".to_string())
     );
+}
+
+#[test]
+fn keys_encrypt_default_output_path_appends_enc() {
+    assert_eq!(
+        encrypted_key_path(Path::new("/tmp/signing-key.pem")),
+        Path::new("/tmp/signing-key.pem.enc")
+    );
+}
+
+#[test]
+fn keys_passphrase_file_trims_trailing_newlines_only() {
+    let dir = std::env::temp_dir().join(format!("qidc-passphrase-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("passphrase");
+    std::fs::write(&path, "secret passphrase\n\n").expect("write passphrase");
+
+    let passphrase = read_key_passphrase(Some(&path)).expect("read passphrase");
+
+    assert_eq!(passphrase, b"secret passphrase");
+    std::fs::remove_dir_all(&dir).expect("remove temp dir");
+}
+
+#[test]
+fn keys_rotate_paths_are_sanitized() {
+    let (encrypted, public, jwk) =
+        rotation_key_paths(Path::new("/tmp/keys"), "corp/main", "EdDSA", "kid:1");
+
+    assert_eq!(
+        encrypted,
+        Path::new("/tmp/keys/signing-key-corp_main-EdDSA-kid_1.pem.enc")
+    );
+    assert_eq!(
+        public,
+        Path::new("/tmp/keys/signing-key-corp_main-EdDSA-kid_1.pub.pem")
+    );
+    assert_eq!(
+        jwk,
+        Path::new("/tmp/keys/signing-key-corp_main-EdDSA-kid_1.jwk.json")
+    );
+}
+
+#[test]
+fn keys_rotate_rejects_unsupported_local_algorithm() {
+    let err = match generate_local_signing_key("kid-1", "RS256") {
+        Ok(_) => panic!("unsupported local key alg"),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.to_string()
+            .contains("local key rotation algorithm RS256 is not supported")
+    );
+}
+
+#[test]
+fn siem_delivery_status_parser_accepts_dlq_states() {
+    assert_eq!(
+        parse_siem_delivery_status("pending").unwrap(),
+        SiemDeliveryStatus::Pending
+    );
+    assert_eq!(
+        parse_siem_delivery_status("delivered").unwrap(),
+        SiemDeliveryStatus::Delivered
+    );
+    assert_eq!(
+        parse_siem_delivery_status("dead").unwrap(),
+        SiemDeliveryStatus::Dead
+    );
+    assert!(parse_siem_delivery_status("unknown").is_err());
 }
 
 #[test]

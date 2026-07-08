@@ -43,7 +43,9 @@ impl TotpVerifier {
     pub fn current_code(&self, secret: &str) -> QidResult<String> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("time before epoch")
+            .map_err(|e| QidError::Internal {
+                message: format!("system time before unix epoch: {e}"),
+            })?
             .as_secs();
         self.generate_code(secret, now)
     }
@@ -51,7 +53,9 @@ impl TotpVerifier {
     pub fn verify(&self, secret: &str, code: &str) -> QidResult<bool> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("time before epoch")
+            .map_err(|e| QidError::Internal {
+                message: format!("system time before unix epoch: {e}"),
+            })?
             .as_secs();
         // Check current and adjacent windows (±1 period)
         let timestamps = [
@@ -75,7 +79,9 @@ fn compute_totp(secret: &str, counter: u64, digits: u32) -> QidResult<u64> {
         .map_err(|e| QidError::Crypto {
             message: format!("invalid base32 TOTP secret: {e}"),
         })?;
-    let mut mac = HmacSha1::new_from_slice(&key).expect("HMAC key");
+    let mut mac = HmacSha1::new_from_slice(&key).map_err(|e| QidError::Crypto {
+        message: format!("failed to initialize TOTP HMAC: {e}"),
+    })?;
     mac.update(&counter.to_be_bytes());
     let result = mac.finalize().into_bytes();
     let offset = (result[19] & 0x0f) as usize;

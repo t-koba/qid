@@ -96,7 +96,7 @@ fn json_to_cbor(v: &serde_json::Value) -> Value {
 ///
 /// `protected_bstr` is the raw CBOR bytes of the protected header map
 /// (i.e., the *content* of the first `bstr` field in COSE_Sign1).
-fn build_sig_structure(protected_bstr: &[u8], payload: &[u8]) -> Vec<u8> {
+fn build_sig_structure(protected_bstr: &[u8], payload: &[u8]) -> QidResult<Vec<u8>> {
     // sign_protected and external_aad are empty bstr values.
     let sig_structure = Value::Array(vec![
         Value::Text("Signature1".to_string()),
@@ -106,30 +106,34 @@ fn build_sig_structure(protected_bstr: &[u8], payload: &[u8]) -> Vec<u8> {
         Value::Bytes(payload.to_vec()),
     ]);
     let mut buf = Vec::new();
-    ciborium::into_writer(&sig_structure, &mut buf).expect("CBOR encode of Sig_structure failed");
-    buf
+    ciborium::into_writer(&sig_structure, &mut buf).map_err(|e| QidError::Crypto {
+        message: format!("CBOR encode of Sig_structure failed: {e}"),
+    })?;
+    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
 // Enc_structure helper  (RFC 8152 Section 5.3)
 // ---------------------------------------------------------------------------
 
-fn build_enc_structure(protected_bstr: &[u8]) -> Vec<u8> {
+fn build_enc_structure(protected_bstr: &[u8]) -> QidResult<Vec<u8>> {
     let enc_structure = Value::Array(vec![
         Value::Text("Encrypt0".to_string()),
         Value::Bytes(protected_bstr.to_vec()),
         Value::Bytes(Vec::new()),
     ]);
     let mut buf = Vec::new();
-    ciborium::into_writer(&enc_structure, &mut buf).expect("CBOR encode of Enc_structure failed");
-    buf
+    ciborium::into_writer(&enc_structure, &mut buf).map_err(|e| QidError::Crypto {
+        message: format!("CBOR encode of Enc_structure failed: {e}"),
+    })?;
+    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
 // MAC_structure helper  (RFC 8152 Section 6.3)
 // ---------------------------------------------------------------------------
 
-fn build_mac_structure(protected_bstr: &[u8], payload: &[u8]) -> Vec<u8> {
+fn build_mac_structure(protected_bstr: &[u8], payload: &[u8]) -> QidResult<Vec<u8>> {
     let mac_structure = Value::Array(vec![
         Value::Text("MAC0".to_string()),
         Value::Bytes(protected_bstr.to_vec()),
@@ -137,8 +141,10 @@ fn build_mac_structure(protected_bstr: &[u8], payload: &[u8]) -> Vec<u8> {
         Value::Bytes(payload.to_vec()),
     ]);
     let mut buf = Vec::new();
-    ciborium::into_writer(&mac_structure, &mut buf).expect("CBOR encode of MAC_structure failed");
-    buf
+    ciborium::into_writer(&mac_structure, &mut buf).map_err(|e| QidError::Crypto {
+        message: format!("CBOR encode of MAC_structure failed: {e}"),
+    })?;
+    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +178,7 @@ pub fn cose_sign1_sign(payload: &[u8], key: &[u8], alg: &str) -> QidResult<Strin
         message: format!("CBOR encode of protected headers failed: {e}"),
     })?;
 
-    let sig_structure = build_sig_structure(&protected_buf, payload);
+    let sig_structure = build_sig_structure(&protected_buf, payload)?;
     let signature: p256::ecdsa::Signature = signing_key.sign(&sig_structure);
     let sig_bytes = signature.to_bytes().to_vec();
 
@@ -240,7 +246,7 @@ pub fn cose_sign1_verify(cose_data: &[u8], public_key: &[u8]) -> QidResult<Vec<u
             message: format!("invalid public key: {e}"),
         })?;
 
-    let sig_structure = build_sig_structure(&protected_bstr, &payload);
+    let sig_structure = build_sig_structure(&protected_bstr, &payload)?;
 
     let signature =
         p256::ecdsa::Signature::from_slice(&sig_bytes).map_err(|e| QidError::Crypto {
@@ -323,7 +329,7 @@ pub fn cose_encrypt0_encrypt(plaintext: &[u8], key: &[u8], alg: &str) -> QidResu
     let mut iv = [0u8; 12];
     rand::rngs::OsRng.fill_bytes(&mut iv);
 
-    let aad = build_enc_structure(&protected_buf);
+    let aad = build_enc_structure(&protected_buf)?;
 
     let ciphertext = match alg {
         "A128GCM" => {
@@ -471,7 +477,7 @@ pub fn cose_encrypt0_decrypt(cose_data: &[u8], key: &[u8]) -> QidResult<Vec<u8>>
     let n: i128 = alg_id.into();
     let alg_id = n as i64;
 
-    let aad = build_enc_structure(&protected_bstr);
+    let aad = build_enc_structure(&protected_bstr)?;
 
     match alg_id {
         1 => {
@@ -562,7 +568,7 @@ pub fn cose_mac0_compute(payload: &[u8], key: &[u8], alg: &str) -> QidResult<Str
         message: format!("CBOR encode of protected headers failed: {e}"),
     })?;
 
-    let mac_structure = build_mac_structure(&protected_buf, payload);
+    let mac_structure = build_mac_structure(&protected_buf, payload)?;
 
     let tag = match alg {
         "HMAC-SHA256" => {
@@ -672,7 +678,7 @@ pub fn cose_mac0_verify(cose_data: &[u8], key: &[u8]) -> QidResult<Vec<u8>> {
     let n: i128 = alg_id.into();
     let alg_id = n as i64;
 
-    let mac_structure = build_mac_structure(&protected_bstr, &payload);
+    let mac_structure = build_mac_structure(&protected_bstr, &payload)?;
 
     match alg_id {
         5 => {

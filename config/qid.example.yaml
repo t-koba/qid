@@ -25,6 +25,8 @@ storage:
   primary:
     type: file
     url: "config/usecases/data/runtime/qid-example.json"
+  file:
+    flush_mode: immediate
 
 crypto:
   default_alg: ES256
@@ -94,6 +96,9 @@ realms:
           access_token_ttl_seconds: 3600
           refresh_token_ttl_seconds: 2592000
           id_token_ttl_seconds: 3600
+          auth_code_ttl_seconds: 300
+          par_request_ttl_seconds: 300
+          device_code_ttl_seconds: 1800
         default_scope: api
         resource_servers:
           - audience: "api://corp/payments"

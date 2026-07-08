@@ -43,3 +43,6 @@ test-utils = []
 insta = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true }
+
+[lints]
+workspace = true

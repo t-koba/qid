@@ -1083,21 +1083,32 @@ fn xsw_rejects_reference_uri_mismatch() {
 }
 
 #[test]
-fn xsw_comment_does_not_confuse_tag_scanning() {
-    // Comments <!-- ... --> must be transparent to the tag scanner.
+fn xsw_comment_is_rejected_before_tag_scanning() {
     let xml = xsw_valid_signed_element().replace(
         "<ds:Signature",
         "<!-- hidden attacker payload --><ds:Signature",
     );
     let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
     assert!(
-        result.is_ok(),
-        "comment before Signature must not break scanning: {:?}",
+        matches!(result, Err(QidError::BadRequest { .. })),
+        "comment before Signature must be rejected: {:?}",
         result
     );
-    // Check that the Reference URI is still correctly extracted.
-    let profile = result.unwrap();
-    assert_eq!(profile.reference_uri.as_deref(), Some("#req-123"));
+}
+
+#[test]
+fn xsw_doctype_is_rejected_before_tag_scanning() {
+    let xml = xsw_valid_signed_element().replacen(
+        "<samlp:AuthnRequest",
+        "<!DOCTYPE samlp:AuthnRequest [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>\n<samlp:AuthnRequest",
+        1,
+    );
+    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
+    assert!(
+        matches!(result, Err(QidError::BadRequest { .. })),
+        "DOCTYPE must be rejected: {:?}",
+        result
+    );
 }
 
 #[test]

@@ -32,6 +32,15 @@ impl ClientRepository for FileRepository {
     }
 
     async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>> {
+        self.list_clients_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_clients_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<Client>> {
         let store = self.store.read().await;
         let mut clients: Vec<_> = store
             .clients
@@ -40,7 +49,7 @@ impl ClientRepository for FileRepository {
             .cloned()
             .collect();
         clients.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(clients)
+        Ok(clients.into_iter().skip(offset).take(limit).collect())
     }
 
     async fn delete_client(&self, id: &str) -> QidResult<()> {

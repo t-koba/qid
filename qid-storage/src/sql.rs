@@ -11,8 +11,9 @@ use crate::{
     AdminRepository, AuditRepository, CiamRepository, ClientRepository, CredentialRepository,
     DeviceRepository, FedCmRepository, IgaRepository, PolicyRepository, RealmRepository,
     RebacRepository, SaasRepository, ScimDeviceRecord, ScimEventSubscriptionRecord, ScimRepository,
-    ServiceAccountRepository, SessionRepository, SsfRepository, SsfStreamRecord, TokenRepository,
-    UserRepository, VcRepository, WorkloadRepository,
+    ServiceAccountRepository, SessionRepository, SiemDeliveryRecord, SiemDeliveryRepository,
+    SiemDeliveryStatus, SsfRepository, SsfStreamRecord, TokenRepository, UserRepository,
+    VcRepository, WorkloadRepository,
 };
 
 mod admin;
@@ -31,6 +32,7 @@ mod saas;
 mod scim;
 mod service_account;
 mod session;
+mod siem;
 mod ssf;
 mod token;
 mod user;
@@ -40,6 +42,10 @@ mod workload;
 use row::*;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+fn page_bound(value: usize) -> i64 {
+    value.min(i64::MAX as usize) as i64
+}
 
 /// SQL-backed repository implementation.
 #[derive(Debug, Clone)]

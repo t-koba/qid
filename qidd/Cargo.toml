@@ -21,7 +21,7 @@ metrics = { workspace = true }
 axum-server = { workspace = true }
 clap = { workspace = true }
 qid-admin = { workspace = true }
-qid-core = { workspace = true }
+qid-core = { workspace = true, features = ["redis-cache"] }
 qid-crypto = { workspace = true }
 qid-diagnostics = { workspace = true }
 qid-directory = { workspace = true }

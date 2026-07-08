@@ -32,6 +32,7 @@ pub enum SamlXmlSignatureAlgorithm {
 }
 
 impl SamlXmlSignatureAlgorithm {
+    /// Parse the XMLDSig `SignatureMethod` URI accepted by qid.
     pub fn from_uri(uri: &str) -> Option<Self> {
         match uri {
             "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" => Some(Self::RsaSha256),
@@ -45,8 +46,13 @@ impl SamlXmlSignatureAlgorithm {
 /// optional certificate, and the profile that constrains the algorithm
 /// set.
 pub struct SamlSignatureInputs<'a> {
+    /// Complete SAML XML document containing an enveloped `<ds:Signature>`.
     pub document: &'a str,
+
+    /// Trusted SP or IdP public key in PEM form.
     pub public_key_pem: &'a [u8],
+
+    /// Algorithm profile expected by the caller for this trust relationship.
     pub profile: SamlXmlSignatureAlgorithm,
 }
 
@@ -71,6 +77,12 @@ struct KeyInfo {
 
 /// Verify a SAML XML Signature embedded in the document. Returns `Ok(())`
 /// if the signature is valid and the document has not been tampered with.
+///
+/// The verifier expects a non-empty same-document `Reference URI` such as
+/// `#id`, rejects SHA-1/MD5 algorithms, validates each reference digest, and
+/// verifies the `SignatureValue` with the caller-supplied public key. It is not
+/// a general-purpose XMLDSig engine; unsupported transforms and canonicalization
+/// modes fail closed.
 pub fn verify_saml_xml_signature(inputs: SamlSignatureInputs<'_>) -> QidResult<()> {
     let document = inputs.document;
     reject_insecure(document)?;
@@ -505,6 +517,11 @@ fn verify_signature_value(
     }
 }
 
+/// Decode a PEM public key body into DER bytes.
+///
+/// The input must be UTF-8 PEM with standard armor lines. This helper does not
+/// identify the key algorithm; callers must parse the returned DER with the
+/// algorithm-specific key type they already selected.
 pub fn public_key_der_for(pem: &[u8]) -> QidResult<Vec<u8>> {
     let text = std::str::from_utf8(pem).map_err(|e| QidError::BadRequest {
         message: format!("PEM is not valid UTF-8: {e}"),
@@ -571,7 +588,10 @@ fn ensure_key_in_document(
 /// Canonicalization method for XMLDSig transforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Canonicalization {
+    /// Inclusive Canonical XML 1.0 subset used by the local SAML profile.
     Standard,
+
+    /// Exclusive XML Canonicalization subset for documents that declare it.
     Exclusive,
 }
 
@@ -580,6 +600,10 @@ pub enum Canonicalization {
 /// subset of XML C14N 1.0 required by SAML: whitespace normalization,
 /// attribute sorting, and removal of comments and insignificant
 /// declarations.
+///
+/// This function is intentionally narrower than the Canonical XML
+/// specification. It should only be used on SAML protocol/assertion elements
+/// that have already passed the parser-level checks in this crate.
 pub fn canonicalize_saml_element(element: &str) -> QidResult<String> {
     let mut out = String::with_capacity(element.len());
     let trimmed = element.trim();
@@ -591,6 +615,11 @@ pub fn canonicalize_saml_element(element: &str) -> QidResult<String> {
 /// Canonicalize using Exclusive XML Canonicalization (exc-c14n).
 /// Preserves element name prefixes and emits `xmlns:prefix` declarations
 /// only for those prefixes that actually appear in element names.
+///
+/// `ns_prefixes` must contain the namespace bindings visible to the signed
+/// element. Missing bindings produce syntactically stable output but may fail
+/// reference digest or signature validation, which is the desired fail-closed
+/// behavior.
 pub fn canonicalize_exclusive(
     element: &str,
     ns_prefixes: &[(String, String)],
@@ -726,11 +755,23 @@ fn canonicalize_into(
             }
             if next_open < next_close {
                 depth += 1;
-                let (_, open_end) = find_open_tag_for_local(rest_inner, local).unwrap();
+                let (_, open_end) =
+                    find_open_tag_for_local(rest_inner, local).ok_or_else(|| {
+                        QidError::BadRequest {
+                            message: format!(
+                                "SAML canonicalization: nested open tag for {local} not found"
+                            ),
+                        }
+                    })?;
                 cursor += open_end;
             } else {
                 depth -= 1;
-                let (close_pos, close_end) = find_close_tag_for_local(rest_inner, local).unwrap();
+                let (close_pos, close_end) = find_close_tag_for_local(rest_inner, local)
+                    .ok_or_else(|| QidError::BadRequest {
+                        message: format!(
+                            "SAML canonicalization: closing tag for {local} not found"
+                        ),
+                    })?;
                 let inner_end = cursor + close_pos;
                 let inner = &input[idx..inner_end];
                 canonicalize_into(inner, out, declared_prefixes)?;
@@ -1269,6 +1310,39 @@ mod tests {
         assert!(canonical.contains("<AuthnRequest"));
         assert!(canonical.contains("<Issuer>x</Issuer>"));
         assert!(canonical.ends_with("</AuthnRequest>"));
+    }
+
+    #[test]
+    fn canonicalize_known_vector_drops_comments_and_sorts_attributes() {
+        let input = r#"<?xml version="1.0"?><saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" b="2" a="1">Issuer <![CDATA[& Entity]]><!-- ignored --></saml:Issuer>"#;
+        let canonical =
+            canonicalize_saml_element(input).expect("known c14n vector should canonicalize");
+
+        assert_eq!(
+            canonical,
+            r#"<Issuer a="1" b="2" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">Issuer & Entity</Issuer>"#
+        );
+    }
+
+    #[test]
+    fn exclusive_c14n_known_vector_emits_used_namespace_only() {
+        let input = r#"<saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:unused="urn:unused" b="2" a="1">https://idp.example.com</saml:Issuer>"#;
+        let canonical = canonicalize_exclusive(
+            input,
+            &[
+                (
+                    "saml".to_string(),
+                    "urn:oasis:names:tc:SAML:2.0:assertion".to_string(),
+                ),
+                ("unused".to_string(), "urn:unused".to_string()),
+            ],
+        )
+        .expect("known exclusive c14n vector should canonicalize");
+
+        assert_eq!(
+            canonical,
+            r#"<saml:Issuer a="1" b="2" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://idp.example.com</saml:Issuer>"#
+        );
     }
 
     #[test]

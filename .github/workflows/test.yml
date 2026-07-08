@@ -12,6 +12,19 @@ env:
   RUST_TOOLCHAIN: "1.96"
 
 jobs:
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Check workspace on MSRV
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo +${{ env.RUST_TOOLCHAIN }} check --workspace --all-targets --locked
+
   build-test:
     name: Build/Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -79,6 +92,27 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
         run: bash ./examples/qpx-e2e/run.sh
+
+  fuzz-smoke:
+    name: Fuzz Smoke
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run JWT fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run jwt -- -max_total_time=30
+      - name: Run SAML XML fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run saml_xml -- -max_total_time=30
+      - name: Run SCIM filter fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run scim_filter -- -max_total_time=30
 
   coverage:
     name: Coverage

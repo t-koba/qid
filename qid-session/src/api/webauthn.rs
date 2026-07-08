@@ -3,7 +3,7 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use qid_core::{error::QidError, state::SharedState, tenant::RealmId};
@@ -384,7 +384,15 @@ pub async fn webauthn_auth_finish<R: Repository>(
     );
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, cookie_value.parse().unwrap());
+    let cookie_value = match HeaderValue::from_str(&cookie_value) {
+        Ok(value) => value,
+        Err(err) => {
+            return qid_http::error_response(QidError::Internal {
+                message: format!("failed to build session cookie header: {err}"),
+            });
+        }
+    };
+    headers.insert(header::SET_COOKIE, cookie_value);
 
     let body = Json(serde_json::json!({
         "session": session.id,
@@ -568,7 +576,15 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
     );
 
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(header::SET_COOKIE, cookie_value.parse().unwrap());
+    let cookie_value = match HeaderValue::from_str(&cookie_value) {
+        Ok(value) => value,
+        Err(err) => {
+            return qid_http::error_response(QidError::Internal {
+                message: format!("failed to build session cookie header: {err}"),
+            });
+        }
+    };
+    resp_headers.insert(header::SET_COOKIE, cookie_value);
 
     let body = Json(WebAuthnDiscoverableFinishResponse {
         session: session.id,

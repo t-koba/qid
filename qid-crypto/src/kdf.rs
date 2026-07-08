@@ -6,9 +6,11 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 
 /// Derive a key using HKDF-SHA256 (RFC 5869).
+#[allow(clippy::expect_used)]
 pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], okm_len: usize) -> Vec<u8> {
     let (_, hk) = Hkdf::<Sha256>::extract(Some(salt), ikm);
     let mut okm = vec![0u8; okm_len];
+    // HKDF-SHA256 only rejects output lengths above RFC 5869 bounds; qid callers request small keys.
     hk.expand(info, &mut okm)
         .expect("HKDF-SHA256 expand cannot fail for reasonable okm_len");
     okm

@@ -2,6 +2,8 @@
 
 This guide focuses on running `qidd` and companion tools safely. Operationally, qid is the identity and control plane: it owns identity data, sessions, tokens, lifecycle, policy decisions, audit, and profile gates. Proxies, gateways, service meshes, and PEPs remain separate data planes.
 
+OAuth authorization codes and pushed authorization requests default to 300 seconds. Device authorization codes default to 1800 seconds. Operators upgrading from older configurations that relied on longer implicit lifetimes should set the realm `protocols.oauth.tokens.*_ttl_seconds` values explicitly.
+
 ## Startup Checklist
 
 Before starting `qidd`:
@@ -58,6 +60,17 @@ For Postgres, set `QID_DATABASE_URL` or pass `--database-url`.
 
 Storage diagnostics are a startup safety gate. A storage audit error means qid may not have verified realm, tenant, connector, SAML, OIDC, or SaaS object references; daemon preflight treats that as an error.
 
+## Shared Cache
+
+Set `ops.cache.kind` to `redis` or `valkey` for every multi-instance deployment. The shared cache backs DPoP and JWT assertion replay guards, PEP decision cache entries, and browser session cache entries. `kind: disabled` is only appropriate for single-process deployments.
+
+Operational behavior:
+
+- Replay guards fail closed if the shared cache cannot atomically record a JTI or assertion replay key.
+- PEP decision and browser session caches degrade to cache misses when the shared cache is unavailable.
+- Browser sessions keep a short process-local L1 cache and write through to the shared cache; revocation deletes both layers on qid-managed revoke paths.
+- File storage with Redis or Valkey cache is not multi-process safe; `qidd` warns at startup and SQL storage should be used for multi-instance deployments.
+
 ## Key Material
 
 `qidd` stores generated local key material in `qid-state/` next to the primary config file.
@@ -69,6 +82,10 @@ Protect this directory as secret material:
 - public keys are used for JWKS and PEP assertion verification.
 
 Configured local keyrings produce deterministic filenames based on keyring name and algorithm. The default ES256 key uses `signing-key.pem` and `signing-key.pub.pem`.
+
+Set `QID_KEY_PASSPHRASE` or `crypto.key_passphrase_file` to enable encrypted local signing key storage. With a passphrase configured, new local keys are written as `.pem.enc` files, and existing plaintext PEM files are migrated to `.pem.enc` with the original moved to `.bak`.
+
+Before deleting a `.bak` plaintext key, verify daemon startup and JWKS publication with the encrypted key and make sure the encrypted file is included in backup/restore procedures. A lost passphrase makes the encrypted signing key unrecoverable.
 
 Current daemon startup supports local signer transport. Remote signer config is validated, but `qidd` fails startup for `kms`, `hsm`, or `pkcs11` signer types until a transport is wired in.
 
@@ -107,6 +124,18 @@ HTTP request metrics include:
 - `qid_http_requests_total`
 - `qid_http_request_duration_seconds`
 
+Hot-path control-plane metrics include:
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `qid_token_issued_total` | `grant_type`, `realm` | Successful OAuth token responses. |
+| `qid_token_issue_duration_seconds` | `grant_type`, `realm` | Token endpoint issuance latency. |
+| `qid_login_failures_total` | `realm`, `reason` | Failed password login attempts by stable error code. |
+| `qid_policy_decision_duration_seconds` | `realm` | Policy decision latency for PEP-facing checks. |
+| `qid_audit_append_failures_total` | none | Admin audit append failures. |
+| `qid_proxy_pep_decision_cache_hits_total` | none | PEP decision cache hits. |
+| `qid_proxy_pep_decision_cache_misses_total` | none | PEP decision cache misses. |
+
 Metrics bind addresses must not be unspecified addresses such as `0.0.0.0:9464`. Metrics labels should remain low-cardinality and should not contain user IDs, email addresses, tokens, selected header values, or raw unbounded paths.
 
 ## Audit
@@ -130,6 +159,15 @@ Worker jobs:
 cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-retention-evaluate --realm corp
 cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-retention-execute --realm corp --archive-dir /var/lib/qid/audit-archive
 cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-worm-archive --realm corp --archive-dir /var/lib/qid/worm
+cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-siem-deliver --realm corp --endpoint-url https://siem.example.com/audit
+```
+
+SIEM delivery failures are persisted in `siem_delivery_queue`. Retryable failures stay `pending` with `next_retry_at`; exhausted failures become `dead` and can be inspected or redriven:
+
+```sh
+cargo run --bin qidc -- --config /etc/qid/qid.yaml ops siem-dlq-list --status dead
+cargo run --bin qidc -- --config /etc/qid/qid.yaml ops siem-dlq-redrive --id <delivery-id>
+cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-siem-redrive --id <delivery-id>
 ```
 
 ## Backup and Restore Helpers

@@ -1,17 +1,18 @@
 use anyhow::{Context, ensure};
 use clap::{Parser, Subcommand};
 use qid_core::{config::QidConfig, util::now_seconds};
-use qid_ops::{KeyPurpose, KeyRotationRequirement, KeyringInventoryRecord};
+use qid_ops::{KeyPurpose, KeyRotationPlan, KeyRotationRequirement, KeyringInventoryRecord};
 use qid_storage::AnyRepository;
 use qid_worker::{
     AuditRetentionExecutionConfig, AuditRetentionJobConfig, AuditSiemDeliveryConfig,
-    AuditSiemHttpRequest, AuditSiemHttpResponse, AuditSiemRetryPolicy, AuditWormArchiveConfig,
-    AuditWormObject, AuditWormPutResult, DirectorySyncJobConfig, KeyRotationPlanningJobConfig,
-    NotificationChannel, NotificationDeliveryConfig, NotificationRequest, NotificationResponse,
-    NotificationRetryPolicy, NotificationTransport, SiemWebhookTransport, WormArchiveTransport,
+    AuditSiemHttpRequest, AuditSiemHttpResponse, AuditSiemRedriveConfig, AuditSiemRetryPolicy,
+    AuditWormArchiveConfig, AuditWormObject, AuditWormPutResult, DirectorySyncJobConfig,
+    KeyRotationExecutionJobConfig, KeyRotationPlanningJobConfig, NotificationChannel,
+    NotificationDeliveryConfig, NotificationRequest, NotificationResponse, NotificationRetryPolicy,
+    NotificationTransport, SiemWebhookTransport, WormArchiveTransport,
     run_audit_retention_execution_job, run_audit_retention_job, run_audit_siem_delivery_job,
-    run_audit_worm_archive_job, run_directory_sync_job, run_key_rotation_planning_job,
-    run_notification_delivery_job,
+    run_audit_siem_redrive_job, run_audit_worm_archive_job, run_directory_sync_job,
+    run_key_rotation_execution_job, run_key_rotation_planning_job, run_notification_delivery_job,
 };
 use std::{
     cell::RefCell,
@@ -124,6 +125,30 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 60000)]
         max_delay_ms: u64,
     },
+    /// Redrive a persistent SIEM delivery queue entry.
+    #[command(name = "audit-siem-redrive")]
+    SiemRedrive {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        request_output: Option<PathBuf>,
+        #[arg(long, default_value_t = 202)]
+        dry_run_status: u16,
+        #[arg(long)]
+        now: Option<u64>,
+        #[arg(long, default_value = "qid-worker")]
+        actor: String,
+        #[arg(long, default_value = "scheduled siem redrive")]
+        reason: String,
+        #[arg(long, default_value_t = true)]
+        record_audit_event: bool,
+        #[arg(long, default_value_t = 5)]
+        max_attempts: u32,
+        #[arg(long, default_value_t = 1000)]
+        base_delay_ms: u64,
+        #[arg(long, default_value_t = 60000)]
+        max_delay_ms: u64,
+    },
     /// Deliver an email or push notification through a deterministic local transport.
     #[command(name = "notification-deliver")]
     NotificationDeliver {
@@ -199,6 +224,28 @@ pub(crate) enum Command {
         now: Option<u64>,
         #[arg(long, default_value_t = true)]
         record_audit_event: bool,
+    },
+    /// Execute supported key rotation actions from a plan JSON file.
+    #[command(name = "key-rotation-execute")]
+    KeyRotationExecute {
+        #[arg(long)]
+        plan_json: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "ES256")]
+        algorithm: String,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long, default_value = "qid-worker")]
+        actor: String,
+        #[arg(long, default_value = "scheduled key rotation execution")]
+        reason: String,
+        #[arg(long)]
+        now: Option<u64>,
+        #[arg(long, default_value_t = true)]
+        record_audit_event: bool,
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 }
 
@@ -399,6 +446,46 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
                 "report": report,
             }))
         }
+        Command::SiemRedrive {
+            id,
+            request_output,
+            dry_run_status,
+            now,
+            actor,
+            reason,
+            record_audit_event,
+            max_attempts,
+            base_delay_ms,
+            max_delay_ms,
+        } => {
+            ensure!(
+                (100..=599).contains(&dry_run_status),
+                "dry_run_status must be an HTTP status code"
+            );
+            let transport = DryRunSiemTransport::new(dry_run_status, request_output);
+            let report = run_audit_siem_redrive_job(
+                repo.as_ref(),
+                &transport,
+                AuditSiemRedriveConfig {
+                    delivery_id: id,
+                    now_epoch: now.unwrap_or_else(now_seconds),
+                    actor,
+                    reason,
+                    record_audit_event,
+                    retry_policy: AuditSiemRetryPolicy {
+                        max_attempts,
+                        base_delay_ms,
+                        max_delay_ms,
+                    },
+                },
+            )
+            .await?;
+            Ok(serde_json::json!({
+                "command": "audit_siem_redrive",
+                "request_output": transport.output_path(),
+                "report": report,
+            }))
+        }
         Command::DirectorySync {
             realm,
             provider_id,
@@ -458,6 +545,39 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             .await?;
             Ok(serde_json::json!({
                 "command": "key_rotation_plan",
+                "report": report,
+            }))
+        }
+        Command::KeyRotationExecute {
+            plan_json,
+            output_dir,
+            algorithm,
+            passphrase_file,
+            actor,
+            reason,
+            now,
+            record_audit_event,
+            force,
+        } => {
+            let plan = read_key_rotation_plan(&plan_json)?;
+            let key_passphrase = read_key_passphrase(passphrase_file.as_deref())?;
+            let report = run_key_rotation_execution_job(
+                repo.as_ref(),
+                KeyRotationExecutionJobConfig {
+                    plan,
+                    output_dir,
+                    algorithm,
+                    key_passphrase,
+                    now_epoch: now.unwrap_or_else(now_seconds),
+                    actor,
+                    reason,
+                    record_audit_event,
+                    force,
+                },
+            )
+            .await?;
+            Ok(serde_json::json!({
+                "command": "key_rotation_execute",
                 "report": report,
             }))
         }
@@ -608,6 +728,27 @@ fn parse_key_rotation_requirement(raw: &str) -> anyhow::Result<KeyRotationRequir
             "require_dedicated",
         )?,
     })
+}
+
+fn read_key_rotation_plan(path: &Path) -> anyhow::Result<KeyRotationPlan> {
+    let body = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read key rotation plan {}", path.display()))?;
+    serde_json::from_str(&body)
+        .with_context(|| format!("failed to parse key rotation plan {}", path.display()))
+}
+
+fn read_key_passphrase(path: Option<&Path>) -> anyhow::Result<Vec<u8>> {
+    if let Some(path) = path {
+        let passphrase = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read passphrase file {}", path.display()))?;
+        return Ok(passphrase
+            .trim_end_matches(['\r', '\n'])
+            .as_bytes()
+            .to_vec());
+    }
+    let passphrase = std::env::var("QID_KEY_PASSPHRASE")
+        .context("QID_KEY_PASSPHRASE or --passphrase-file is required")?;
+    Ok(passphrase.into_bytes())
 }
 
 fn split_csv_fields(raw: &str) -> Vec<String> {
@@ -791,6 +932,7 @@ realms:
         })
         .await
         .expect("retention config");
+        drop(repo);
 
         let result = run(Args {
             config,
@@ -831,6 +973,7 @@ realms:
             .await
             .expect("repository");
         append_audit_event(&repo, "event-1", 100).await;
+        drop(repo);
         let archive_dir = dir.join("archive");
         std::fs::create_dir_all(&archive_dir).expect("create archive dir");
         #[cfg(unix)]
@@ -878,6 +1021,7 @@ realms:
             .await
             .expect("repository");
         append_audit_event(&repo, "event-1", 100).await;
+        drop(repo);
         let request_output = dir.join("siem-request.json");
 
         let result = run(Args {
@@ -1024,6 +1168,78 @@ realms:
             .expect("audit events");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].action, "key_rotation.plan");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn key_rotation_execute_command_writes_successor_key_and_records_audit() {
+        let dir = temp_dir("key-rotation-execute");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let (config, store) = write_config(&dir);
+        let plan_json = dir.join("plan.json");
+        std::fs::write(
+            &plan_json,
+            serde_json::to_string(&KeyRotationPlan {
+                status: qid_ops::KeyRotationPlanStatus::ActionRequired,
+                realm_id: "corp".to_string(),
+                purpose: qid_ops::KeyPurpose::OidcToken,
+                active_kid: Some("old".to_string()),
+                successor_kid: None,
+                actions: vec![qid_ops::KeyRotationAction {
+                    action: qid_ops::KeyRotationActionKind::GenerateSuccessor,
+                    keyring_name: "corp-main".to_string(),
+                    kid: Some("next".to_string()),
+                    reason: "rotation_overlap_window_open".to_string(),
+                }],
+                reasons: Vec::new(),
+            })
+            .expect("serialize plan"),
+        )
+        .expect("write plan");
+        let passphrase_file = dir.join("passphrase");
+        std::fs::write(&passphrase_file, "test-passphrase\n").expect("write passphrase");
+        let output_dir = dir.join("keys");
+
+        let result = run(Args {
+            config,
+            command: Command::KeyRotationExecute {
+                plan_json,
+                output_dir: output_dir.clone(),
+                algorithm: "ES256".to_string(),
+                passphrase_file: Some(passphrase_file),
+                actor: "qid-worker".to_string(),
+                reason: "scheduled key rotation execution".to_string(),
+                now: Some(123),
+                record_audit_event: true,
+                force: false,
+            },
+        })
+        .await
+        .expect("key rotation execute");
+
+        assert_eq!(result["command"], "key_rotation_execute");
+        assert_eq!(result["report"]["status"], "executed");
+        let encrypted_path = output_dir.join("signing-key-corp-main-ES256-next.pem.enc");
+        let public_key_path = output_dir.join("signing-key-corp-main-ES256-next.pub.pem");
+        let public_jwk_path = output_dir.join("signing-key-corp-main-ES256-next.jwk.json");
+        assert!(encrypted_path.exists());
+        assert!(public_key_path.exists());
+        assert!(public_jwk_path.exists());
+        assert!(
+            !std::fs::read_to_string(&encrypted_path)
+                .expect("encrypted key")
+                .contains("PRIVATE KEY")
+        );
+        let refreshed = AnyRepository::connect(store.to_str().expect("store path"))
+            .await
+            .expect("repository");
+        let events = refreshed
+            .list_audit_events(Some(&RealmId::from("corp".to_string())), 10)
+            .await
+            .expect("audit events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "key_rotation.execute");
+        assert_eq!(events[0].metadata_json["executed"][0]["kid"], "next");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

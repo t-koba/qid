@@ -24,7 +24,13 @@ pub struct TokenPair {
     pub expires_in: u64,
 }
 
-/// Local signer backed by a PEM-encoded key.
+/// Local JWT signer backed by private key material held in process memory.
+///
+/// Constructors validate the supplied PEM or secret enough to build both the
+/// signing and verification keys. They do not persist key material and do not
+/// zeroize the `jsonwebtoken` key objects, so long-lived production deployments
+/// should load private keys through the encrypted keystore path before building
+/// this signer.
 #[derive(Clone)]
 pub struct LocalSigner {
     kid: String,
@@ -43,7 +49,10 @@ impl std::fmt::Debug for LocalSigner {
 }
 
 impl LocalSigner {
-    /// Create a signer from PEM-encoded EC private key for ES256.
+    /// Create an ES256 signer from a PKCS#8 P-256 private key PEM.
+    ///
+    /// Fails if the input is not UTF-8 PEM, is not a valid PKCS#8 EC private
+    /// key, or cannot be converted into `jsonwebtoken` encoding/decoding keys.
     pub fn from_ec_pem(kid: impl Into<String>, pem: &[u8]) -> anyhow::Result<Self> {
         use p256::pkcs8::DecodePrivateKey;
         let signing_key = p256::ecdsa::SigningKey::from_pkcs8_pem(
@@ -62,7 +71,10 @@ impl LocalSigner {
         })
     }
 
-    /// Create a signer from PEM-encoded RSA private key for RS256.
+    /// Create an RS256 signer from an RSA private key PEM.
+    ///
+    /// The same PEM is used to construct the local verification key. Fails if
+    /// the PEM cannot be parsed by `jsonwebtoken`.
     pub fn from_rsa_pem(kid: impl Into<String>, pem: &[u8]) -> anyhow::Result<Self> {
         let encoding_key = EncodingKey::from_rsa_pem(pem)?;
         let decoding_key = DecodingKey::from_rsa_pem(pem)?;
@@ -74,7 +86,10 @@ impl LocalSigner {
         })
     }
 
-    /// Create a signer from PEM-encoded Ed25519 private key for EdDSA.
+    /// Create an EdDSA signer from a PKCS#8 Ed25519 private key PEM.
+    ///
+    /// Fails if the input is not UTF-8 PEM or the key is not a valid Ed25519
+    /// PKCS#8 private key.
     pub fn from_eddsa_pem(kid: impl Into<String>, pem: &[u8]) -> anyhow::Result<Self> {
         use ed25519_dalek::{
             SigningKey,
@@ -94,7 +109,10 @@ impl LocalSigner {
         })
     }
 
-    /// Create a signer from a secret for HS256.
+    /// Create an HS256 signer from a shared secret.
+    ///
+    /// Callers must provide sufficient entropy and keep the secret scoped to a
+    /// single trust domain; this constructor cannot distinguish weak secrets.
     pub fn from_secret(kid: impl Into<String>, secret: &[u8]) -> Self {
         let encoding_key = EncodingKey::from_secret(secret);
         let decoding_key = DecodingKey::from_secret(secret);
@@ -106,6 +124,7 @@ impl LocalSigner {
         }
     }
 
+    /// Return the key identifier placed into JOSE headers by this signer.
     pub fn kid(&self) -> &str {
         &self.kid
     }
@@ -273,6 +292,10 @@ impl<T: RemoteSignerTransport + Send + Sync> Signer for RemoteJwtSigner<T> {
     }
 }
 
+/// Build a JWT decoding key from an RSA, P-256, or Ed25519 public JWK.
+///
+/// The JWK must contain the key parameters required for the selected algorithm:
+/// `n`/`e` for RS256, `x`/`y` for ES256, and `x` for EdDSA.
 pub fn decoding_key_from_jwk(public_jwk: &Jwk, algorithm: Algorithm) -> QidResult<DecodingKey> {
     match algorithm {
         Algorithm::RS256 => {
@@ -416,6 +439,12 @@ pub fn verify_jwt_signature_with_claims(
     Ok(TokenData { header, claims })
 }
 
+/// Sign JSON payload as ES256 and embed the supplied public JWK in the header.
+///
+/// This is intended for proof-style JWTs where the verifier needs the public
+/// key in-band. The private key must be a PKCS#8 P-256 PEM and must correspond
+/// to `public_jwk`; this function signs the payload but does not prove that the
+/// supplied public JWK matches the private key.
 pub fn sign_es256_jwt_with_jwk_header(
     private_pem: &[u8],
     public_jwk: &Jwk,
@@ -476,10 +505,12 @@ fn algorithm_from_name(name: &str) -> QidResult<Algorithm> {
     }
 }
 
-/// Sign a JWT with `b64: false` header per RFC 7797 (Unencoded Payload).
+/// Sign a JWT with a `b64: false` header per RFC 7797.
 ///
 /// The payload is NOT base64-encoded; the signing input is
-/// `base64url(header) + "." + payload`.
+/// `base64url(header) + "." + payload`. The key must be a PKCS#8 P-256
+/// private key PEM and the payload must not contain transport-specific
+/// delimiters that would be ambiguous to downstream verifiers.
 pub fn sign_unencoded_jwt(payload: &str, key_pem: &[u8]) -> QidResult<String> {
     use p256::ecdsa::SigningKey;
     use p256::ecdsa::signature::Signer;
@@ -495,7 +526,12 @@ pub fn sign_unencoded_jwt(payload: &str, key_pem: &[u8]) -> QidResult<String> {
     let signing_key = SigningKey::from_pkcs8_pem(pem).map_err(|e| QidError::Crypto {
         message: format!("key parse failed: {e}"),
     })?;
-    let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap());
+    let header_b64 =
+        URL_SAFE_NO_PAD.encode(
+            serde_json::to_string(&header).map_err(|e| QidError::Crypto {
+                message: format!("failed to encode detached JWT header: {e}"),
+            })?,
+        );
     let signing_input = format!("{header_b64}.{payload}");
     let signature: p256::ecdsa::Signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());

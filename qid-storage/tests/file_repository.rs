@@ -1,10 +1,17 @@
-use qid_core::models::{AuditEvent, AuthorizationCode, Session, TokenFamily};
+use qid_core::models::{AuditEvent, AuthorizationCode, Session, TokenFamily, User};
 use qid_core::tenant::{RealmId, TenantId};
-use qid_storage::{FileRepository, prelude::*};
+use qid_storage::{
+    FileFlushMode, FileRepository, SiemDeliveryRecord, SiemDeliveryStatus, prelude::*,
+};
 use std::sync::Arc;
+use std::time::Duration;
 
 async fn setup() -> Arc<FileRepository> {
     let path = std::env::temp_dir().join(format!("qid_file_test_{}.json", ulid::Ulid::new()));
+    setup_at(path).await
+}
+
+async fn setup_at(path: std::path::PathBuf) -> Arc<FileRepository> {
     let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
     repo.migrate().await.unwrap();
     qid_storage::RealmRepository::create_realm(
@@ -161,4 +168,159 @@ async fn file_audit_chain_hash_integrity() {
         Some("evt-2".to_string()),
         "last event id must be the most recent"
     );
+}
+
+#[tokio::test]
+async fn file_concurrent_user_writes_survive_reload() {
+    let path = std::env::temp_dir().join(format!("qid_file_concurrent_{}.json", ulid::Ulid::new()));
+    {
+        let repo = setup_at(path.clone()).await;
+        let mut tasks = Vec::new();
+        for i in 0..100 {
+            let repo = Arc::clone(&repo);
+            tasks.push(tokio::spawn(async move {
+                let user = User {
+                    id: format!("user-{i:03}"),
+                    realm_id: "test".to_string(),
+                    email: Some(format!("user-{i:03}@example.com")),
+                    email_verified: true,
+                    display_name: Some(format!("User {i:03}")),
+                    failed_login_attempts: 0,
+                    locked_until: None,
+                    org: None,
+                };
+                repo.create_user(&user).await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+    }
+
+    let reloaded = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let users = reloaded.list_users(&RealmId::from("test")).await.unwrap();
+    assert_eq!(users.len(), 100, "all concurrent writes must be durable");
+}
+
+#[tokio::test]
+async fn file_user_pages_are_stable() {
+    let repo = setup().await;
+    for id in ["user-c", "user-a", "user-b"] {
+        repo.create_user(&User {
+            id: id.to_string(),
+            realm_id: "test".to_string(),
+            email: Some(format!("{id}@example.com")),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let page = repo
+        .list_users_page(&RealmId::from("test"), 1, 1)
+        .await
+        .unwrap();
+
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].id, "user-b");
+}
+
+#[tokio::test]
+async fn file_interval_flush_defers_disk_write_until_flush() {
+    let path = std::env::temp_dir().join(format!("qid_file_flush_{}.json", ulid::Ulid::new()));
+    let repo = FileRepository::new_with_flush_mode(
+        path.to_str().unwrap(),
+        FileFlushMode::Interval(Duration::from_secs(60)),
+    )
+    .await
+    .unwrap();
+    repo.migrate().await.unwrap();
+    qid_storage::RealmRepository::create_realm(
+        &repo,
+        &TenantId::from("tenant-1"),
+        &RealmId::from("test"),
+        "https://id.example.com",
+        Some("Test Realm"),
+    )
+    .await
+    .unwrap();
+    let before_flush = tokio::fs::read_to_string(&path).await.unwrap();
+
+    repo.create_user(&User {
+        id: "user-interval".to_string(),
+        realm_id: "test".to_string(),
+        email: Some("interval@example.com".to_string()),
+        email_verified: true,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+
+    let dirty_content = tokio::fs::read_to_string(&path).await.unwrap();
+    assert_eq!(dirty_content, before_flush);
+
+    repo.flush().await.unwrap();
+    let flushed_content = tokio::fs::read_to_string(&path).await.unwrap();
+    assert!(
+        flushed_content.contains("user-interval"),
+        "manual flush must persist dirty store"
+    );
+}
+
+#[tokio::test]
+async fn file_repository_rejects_second_process_lock_holder() {
+    let path = std::env::temp_dir().join(format!("qid_file_lock_{}.json", ulid::Ulid::new()));
+    let first = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let second = FileRepository::new(path.to_str().unwrap()).await;
+
+    let error = second.expect_err("second repository must not acquire the same file lock");
+    assert!(
+        format!("{error:?}").contains("file storage is already locked"),
+        "error must clearly explain the process lock failure: {error:?}"
+    );
+
+    drop(first);
+    let reopened = FileRepository::new(path.to_str().unwrap()).await;
+    assert!(
+        reopened.is_ok(),
+        "lock must be released when the first repository is dropped"
+    );
+}
+
+#[tokio::test]
+async fn file_siem_delivery_queue_survives_reload() {
+    let path = std::env::temp_dir().join(format!("qid_file_siem_{}.json", ulid::Ulid::new()));
+    {
+        let repo = setup_at(path.clone()).await;
+        repo.upsert_siem_delivery(&SiemDeliveryRecord {
+            id: "delivery-1".to_string(),
+            realm_id: Some("test".to_string()),
+            endpoint_url: "https://siem.example.com/audit".to_string(),
+            payload_json: serde_json::json!({"event_count": 1}),
+            attempts: 2,
+            next_retry_at: Some(300),
+            status: SiemDeliveryStatus::Pending,
+            last_error: Some("temporary failure".to_string()),
+            created_at: 100,
+            updated_at: 200,
+        })
+        .await
+        .unwrap();
+    }
+
+    let reloaded = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let deliveries = reloaded
+        .list_siem_deliveries(Some("test"), Some(SiemDeliveryStatus::Pending), 10)
+        .await
+        .unwrap();
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(deliveries[0].id, "delivery-1");
+    assert_eq!(deliveries[0].attempts, 2);
 }

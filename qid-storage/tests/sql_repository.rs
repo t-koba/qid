@@ -6,7 +6,7 @@ use qid_core::models::{
     IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
     IgaApprovalRecord, IgaCertificationRecord, IgaEntitlementRecord, IgaFindingRecord,
     IgaJitPrivilegeGrantRecord, MarketplaceConnector, MarketplaceConnectorType, PasswordCredential,
-    PasswordResetToken, PolicyBundle, ScimUser, Session, UsageBillingEvent, User,
+    PasswordResetToken, PolicyBundle, ScimGroup, ScimUser, Session, UsageBillingEvent, User,
     VcCredentialStatusRecord, WorkloadCertificate, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
@@ -1429,6 +1429,56 @@ async fn test_scim_user_enterprise_extension_crud() {
         .expect("update scim user failed");
     let fetched = repo.get_scim_user("scim-user-1").await.unwrap().unwrap();
     assert_eq!(fetched.enterprise_json["department"], "Platform");
+}
+
+#[tokio::test]
+async fn sql_scim_pages_and_counts_are_stable() {
+    let repo = SqlRepository::connect(&db_url())
+        .await
+        .expect("connect failed");
+    repo.migrate().await.expect("migration failed");
+    let realm_id = RealmId::from("realm-scim-page");
+    repo.create_realm(
+        &TenantId::from("tenant-1"),
+        &realm_id,
+        "https://id.example.com/realms/scim-page",
+        None,
+    )
+    .await
+    .unwrap();
+
+    for id in ["scim-user-c", "scim-user-a", "scim-user-b"] {
+        repo.create_scim_user(&ScimUser {
+            id: id.to_string(),
+            realm_id: realm_id.0.clone(),
+            external_id: None,
+            user_name: format!("{id}@example.com"),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({}),
+            active: true,
+        })
+        .await
+        .unwrap();
+    }
+    for id in ["scim-group-c", "scim-group-a", "scim-group-b"] {
+        repo.create_scim_group(&ScimGroup {
+            id: id.to_string(),
+            realm_id: realm_id.0.clone(),
+            display_name: id.to_string(),
+            members_json: serde_json::json!([]),
+        })
+        .await
+        .unwrap();
+    }
+
+    let users = repo.list_scim_users_page(&realm_id, 1, 1).await.unwrap();
+    let groups = repo.list_scim_groups_page(&realm_id, 1, 1).await.unwrap();
+
+    assert_eq!(repo.count_scim_users(&realm_id).await.unwrap(), 3);
+    assert_eq!(repo.count_scim_groups(&realm_id).await.unwrap(), 3);
+    assert_eq!(users[0].id, "scim-user-b");
+    assert_eq!(groups[0].id, "scim-group-b");
 }
 
 fn sample_custom_domain() -> CustomDomain {

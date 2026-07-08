@@ -78,17 +78,23 @@ impl Keyring {
         let generated = generate_es256(&kid).map_err(|e| QidError::Crypto {
             message: format!("failed to generate ES256 key: {e}"),
         })?;
-        let signer =
-            LocalSigner::from_ec_pem(&kid, generated.private_pem.as_bytes()).map_err(|e| {
-                QidError::Crypto {
-                    message: format!("failed to load generated key: {e}"),
-                }
-            })?;
-        let now = now_epoch();
-        self.key_created_at.insert(kid.clone(), now);
-        self.signers.insert(kid.clone(), signer);
-        self.jwks.keys.push(generated.public_jwk);
+        self.insert_es256_key(&kid, &generated.private_pem)?;
         self.active_kid = kid.clone();
+        Ok(kid)
+    }
+
+    /// Generate and add a new ES256 successor key without changing the active key.
+    ///
+    /// The successor is published in JWKS immediately through [`Keyring::jwks`],
+    /// but [`Keyring::active_signer`] continues to use the current active key
+    /// until [`Keyring::rotate`] promotes the successor.
+    pub fn generate_next_es256(&mut self, kid: impl Into<String>) -> QidResult<String> {
+        let kid = kid.into();
+        let generated = generate_es256(&kid).map_err(|e| QidError::Crypto {
+            message: format!("failed to generate ES256 successor key: {e}"),
+        })?;
+        self.insert_es256_key(&kid, &generated.private_pem)?;
+        self.next_kid = Some(kid.clone());
         Ok(kid)
     }
 
@@ -98,54 +104,85 @@ impl Keyring {
         let generated = generate_eddsa(&kid).map_err(|e| QidError::Crypto {
             message: format!("failed to generate EdDSA key: {e}"),
         })?;
-        let signer =
-            LocalSigner::from_eddsa_pem(&kid, generated.private_pem.as_bytes()).map_err(|e| {
-                QidError::Crypto {
-                    message: format!("failed to load generated key: {e}"),
-                }
-            })?;
-        let now = now_epoch();
-        self.key_created_at.insert(kid.clone(), now);
-        self.signers.insert(kid.clone(), signer);
-        self.jwks.keys.push(generated.public_jwk);
+        self.insert_eddsa_key(&kid, &generated.private_pem)?;
         self.active_kid = kid.clone();
+        Ok(kid)
+    }
+
+    /// Generate and add a new EdDSA successor key without changing the active key.
+    ///
+    /// The successor is published in JWKS immediately through [`Keyring::jwks`],
+    /// but signing remains on the current active key until promotion.
+    pub fn generate_next_eddsa(&mut self, kid: impl Into<String>) -> QidResult<String> {
+        let kid = kid.into();
+        let generated = generate_eddsa(&kid).map_err(|e| QidError::Crypto {
+            message: format!("failed to generate EdDSA successor key: {e}"),
+        })?;
+        self.insert_eddsa_key(&kid, &generated.private_pem)?;
+        self.next_kid = Some(kid.clone());
         Ok(kid)
     }
 
     /// Load an ES256 key from PEM as the active key.
     pub fn load_es256(&mut self, kid: impl Into<String>, pem: &str) -> QidResult<String> {
         let kid = kid.into();
+        self.insert_es256_key(&kid, pem)?;
+        self.active_kid = kid.clone();
+        Ok(kid)
+    }
+
+    /// Load an ES256 key from PEM as the successor key.
+    pub fn load_next_es256(&mut self, kid: impl Into<String>, pem: &str) -> QidResult<String> {
+        let kid = kid.into();
+        self.insert_es256_key(&kid, pem)?;
+        self.next_kid = Some(kid.clone());
+        Ok(kid)
+    }
+
+    fn insert_es256_key(&mut self, kid: &str, pem: &str) -> QidResult<()> {
         let signer =
-            LocalSigner::from_ec_pem(&kid, pem.as_bytes()).map_err(|e| QidError::Crypto {
+            LocalSigner::from_ec_pem(kid, pem.as_bytes()).map_err(|e| QidError::Crypto {
                 message: format!("failed to load ES256 key: {e}"),
             })?;
-        let jwk = es256_jwk_from_pem(&kid, pem).map_err(|e| QidError::Crypto {
+        let jwk = es256_jwk_from_pem(kid, pem).map_err(|e| QidError::Crypto {
             message: format!("failed to derive JWK: {e}"),
         })?;
         let now = now_epoch();
-        self.key_created_at.insert(kid.clone(), now);
-        self.signers.insert(kid.clone(), signer);
+        self.key_created_at.insert(kid.to_string(), now);
+        self.signers.insert(kid.to_string(), signer);
         self.jwks.keys.push(jwk);
-        self.active_kid = kid.clone();
-        Ok(kid)
+        Ok(())
     }
 
     /// Load an EdDSA key from PEM as the active key.
     pub fn load_eddsa(&mut self, kid: impl Into<String>, pem: &str) -> QidResult<String> {
         let kid = kid.into();
+        self.insert_eddsa_key(&kid, pem)?;
+        self.active_kid = kid.clone();
+        Ok(kid)
+    }
+
+    /// Load an EdDSA key from PEM as the successor key.
+    pub fn load_next_eddsa(&mut self, kid: impl Into<String>, pem: &str) -> QidResult<String> {
+        let kid = kid.into();
+        self.insert_eddsa_key(&kid, pem)?;
+        self.next_kid = Some(kid.clone());
+        Ok(kid)
+    }
+
+    fn insert_eddsa_key(&mut self, kid: &str, pem: &str) -> QidResult<()> {
         let signer =
-            LocalSigner::from_eddsa_pem(&kid, pem.as_bytes()).map_err(|e| QidError::Crypto {
+            LocalSigner::from_eddsa_pem(kid, pem.as_bytes()).map_err(|e| QidError::Crypto {
                 message: format!("failed to load EdDSA key: {e}"),
             })?;
-        let jwk = eddsa_jwk_from_pem(&kid, pem).map_err(|e| QidError::Crypto {
+        let jwk = eddsa_jwk_from_pem(kid, pem).map_err(|e| QidError::Crypto {
             message: format!("failed to derive JWK: {e}"),
         })?;
         let now = now_epoch();
-        self.key_created_at.insert(kid.clone(), now);
-        self.signers.insert(kid.clone(), signer);
+        self.key_created_at.insert(kid.to_string(), now);
+        self.signers.insert(kid.to_string(), signer);
         self.jwks.keys.push(jwk);
-        self.active_kid = kid.clone();
-        Ok(kid)
+        Ok(())
     }
 
     pub fn active_signer(&self) -> Option<&LocalSigner> {
@@ -407,30 +444,27 @@ pub struct HttpRemoteSignerTransport {
 }
 
 impl HttpRemoteSignerTransport {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("reqwest blocking client build"),
-        }
+    pub fn new() -> QidResult<Self> {
+        Self::with_timeout(30)
     }
-}
 
-impl HttpRemoteSignerTransport {
-    pub fn with_timeout(timeout_seconds: u64) -> Self {
-        Self {
+    pub fn with_timeout(timeout_seconds: u64) -> QidResult<Self> {
+        Ok(Self {
             client: reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(timeout_seconds))
                 .build()
-                .expect("reqwest blocking client build"),
-        }
+                .map_err(|e| QidError::Internal {
+                    message: format!("failed to build remote signer HTTP client: {e}"),
+                })?,
+        })
     }
 }
 
 impl Default for HttpRemoteSignerTransport {
     fn default() -> Self {
-        Self::new()
+        Self {
+            client: reqwest::blocking::Client::new(),
+        }
     }
 }
 
@@ -642,5 +676,64 @@ mod tests {
             .load_eddsa("eddsa-2", &generated.private_pem)
             .expect("EdDSA load failed");
         assert_eq!(loaded.jwks().keys[0].kid, "eddsa-2");
+    }
+
+    #[test]
+    fn keyring_publishes_successor_before_promoting_it() {
+        let mut keyring = Keyring::new("realm-signing");
+        keyring
+            .generate_es256("old")
+            .expect("ES256 generation failed");
+        keyring
+            .generate_next_es256("new")
+            .expect("ES256 successor generation failed");
+
+        assert_eq!(keyring.active_kid(), "old");
+        assert_eq!(keyring.next_kid(), Some("new"));
+        assert_eq!(
+            keyring
+                .jwks()
+                .keys
+                .iter()
+                .map(|jwk| jwk.kid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old", "new"]
+        );
+
+        let claims = JwtClaims {
+            iss: Some("issuer".to_string()),
+            sub: Some("subject".to_string()),
+            aud: Some("audience".to_string()),
+            exp: Some(2_000_000_000),
+            nbf: None,
+            iat: None,
+            jti: None,
+            extra: HashMap::new(),
+        };
+        let old_token = keyring
+            .active_signer()
+            .expect("active signer")
+            .sign(&claims)
+            .expect("old JWT signing failed");
+
+        keyring.rotate();
+
+        assert_eq!(keyring.active_kid(), "new");
+        assert_eq!(keyring.previous_kids(), &["old".to_string()]);
+        assert_eq!(
+            keyring
+                .jwks()
+                .keys
+                .iter()
+                .map(|jwk| jwk.kid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old", "new"]
+        );
+        let decoded = keyring
+            .decoding_signer("old")
+            .expect("previous signer must remain available")
+            .decode_signature_only(&old_token)
+            .expect("old JWT must verify during overlap");
+        assert_eq!(decoded.claims.sub.as_deref(), Some("subject"));
     }
 }

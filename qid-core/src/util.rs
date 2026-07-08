@@ -43,7 +43,9 @@ pub fn sha256_base64url(input: impl AsRef<[u8]>) -> String {
 }
 
 /// HMAC-SHA-256 digest of `input`, encoded as unpadded base64url.
+#[allow(clippy::expect_used)]
 pub fn hmac_sha256_base64url(key: &[u8], input: impl AsRef<[u8]>) -> String {
+    // HMAC accepts keys of any length; construction failure would indicate a library invariant change.
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(input.as_ref());
     let result = mac.finalize().into_bytes();
@@ -56,7 +58,9 @@ pub fn client_secret_hash(secret: &str) -> String {
 }
 
 /// Compute a pairwise subject identifier per OIDC Core §8.1.
+#[allow(clippy::expect_used)]
 pub fn compute_pairwise_sub(public_sub: &str, sector_identifier: &str, issuer: &str) -> String {
+    // HMAC accepts keys of any length; construction failure would indicate a library invariant change.
     let mut mac =
         Hmac::<Sha256>::new_from_slice(issuer.as_bytes()).expect("HMAC accepts any key length");
     mac.update(public_sub.as_bytes());

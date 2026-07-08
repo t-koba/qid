@@ -40,7 +40,7 @@ fn now_seconds() -> u64 {
 ///
 /// Format: base64(TypeCode || EndpointIndex || RandomHandle)
 /// where the handle is 20 random bytes (SHA-1 sized).
-pub(crate) fn store_artifact(response_xml: &str, ttl_seconds: u64) -> SamlArtifact {
+pub(crate) fn store_artifact(response_xml: &str, ttl_seconds: u64) -> QidResult<SamlArtifact> {
     use sha2::Digest;
     let random_handle = {
         let mut bytes = [0u8; 20];
@@ -58,7 +58,9 @@ pub(crate) fn store_artifact(response_xml: &str, ttl_seconds: u64) -> SamlArtifa
     let handle_hex = hex::encode(random_handle);
 
     let expires_at = now_seconds().saturating_add(ttl_seconds);
-    let mut store = ARTIFACTS.lock().expect("artifact store lock");
+    let mut store = ARTIFACTS.lock().map_err(|_| QidError::Internal {
+        message: "SAML artifact store lock is poisoned".to_string(),
+    })?;
     store.insert(
         handle_hex.clone(),
         StoredArtifact {
@@ -67,10 +69,10 @@ pub(crate) fn store_artifact(response_xml: &str, ttl_seconds: u64) -> SamlArtifa
         },
     );
 
-    SamlArtifact {
+    Ok(SamlArtifact {
         artifact,
         handle: handle_hex,
-    }
+    })
 }
 
 /// Resolve a SAML 2.0 artifact and return the stored response.
@@ -91,7 +93,9 @@ pub(crate) fn resolve_artifact(artifact: &str) -> QidResult<String> {
         });
     }
     let handle_hex = hex::encode(&raw[4..]);
-    let mut store = ARTIFACTS.lock().expect("artifact store lock");
+    let mut store = ARTIFACTS.lock().map_err(|_| QidError::Internal {
+        message: "SAML artifact store lock is poisoned".to_string(),
+    })?;
     let entry = store
         .remove(&handle_hex)
         .ok_or_else(|| QidError::NotFound {
@@ -223,14 +227,14 @@ mod tests {
 
     #[test]
     fn artifact_roundtrip() {
-        let stored = store_artifact("<saml:Response/>", 3600);
+        let stored = store_artifact("<saml:Response/>", 3600).unwrap();
         let resolved = resolve_artifact(&stored.artifact).unwrap();
         assert_eq!(resolved, "<saml:Response/>");
     }
 
     #[test]
     fn artifact_expired() {
-        let stored = store_artifact("<saml:Response/>", 0);
+        let stored = store_artifact("<saml:Response/>", 0).unwrap();
         {
             let mut store = ARTIFACTS.lock().unwrap_or_else(|e| e.into_inner());
             let handle_hex = {

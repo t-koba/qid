@@ -52,3 +52,6 @@ proptest = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -5,7 +5,12 @@ use qid_core::{
     models::{Client, ClientType, PasswordCredential, Session, TotpCredential, User},
     tenant::{RealmId, TenantId},
 };
-use qid_crypto::{password, totp::TotpVerifier};
+use qid_crypto::{
+    KeyProtector, PassphraseProtector,
+    jwk::{GeneratedKeyPair, generate_eddsa, generate_es256},
+    parse_encrypted_key, password, serialize_encrypted_key,
+    totp::TotpVerifier,
+};
 use qid_diagnostics::{build_check_report, check_storage_saas};
 use qid_ops::{
     CacheKey, RestoreExecutionConfig, build_backup_manifest, plan_key_rotation,
@@ -16,7 +21,9 @@ use qid_risk::{
     DestinationReputation, DeviceTrustState, PepSignal, RiskInput, TokenSignal, evaluate_risk,
 };
 use qid_storage::{AnyRepository, prelude::*};
+use qid_storage::{SiemDeliveryStatus, traits::SiemDeliveryRecord};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 mod explain;
 mod ops;
@@ -36,6 +43,93 @@ fn primary_config_path(config_paths: &[PathBuf]) -> anyhow::Result<&Path> {
 
 fn load_config(config_paths: &[PathBuf]) -> anyhow::Result<QidConfig> {
     QidConfig::from_files(config_paths).context("failed to load config")
+}
+
+fn encrypted_key_path(input: &Path) -> PathBuf {
+    let mut path = input.as_os_str().to_os_string();
+    path.push(".enc");
+    PathBuf::from(path)
+}
+
+fn safe_key_file_component(value: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if safe.is_empty() {
+        "default".to_string()
+    } else {
+        safe
+    }
+}
+
+fn rotation_key_paths(
+    output_dir: &Path,
+    keyring: &str,
+    alg: &str,
+    kid: &str,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let keyring = safe_key_file_component(keyring);
+    let alg = safe_key_file_component(alg);
+    let kid = safe_key_file_component(kid);
+    let base = format!("signing-key-{keyring}-{alg}-{kid}");
+    (
+        output_dir.join(format!("{base}.pem.enc")),
+        output_dir.join(format!("{base}.pub.pem")),
+        output_dir.join(format!("{base}.jwk.json")),
+    )
+}
+
+fn generate_local_signing_key(kid: &str, alg: &str) -> anyhow::Result<GeneratedKeyPair> {
+    match alg {
+        "ES256" => generate_es256(kid).context("failed to generate ES256 key"),
+        "EdDSA" => generate_eddsa(kid).context("failed to generate EdDSA key"),
+        other => anyhow::bail!("local key rotation algorithm {other} is not supported"),
+    }
+}
+
+fn parse_siem_delivery_status(value: &str) -> anyhow::Result<SiemDeliveryStatus> {
+    match value {
+        "pending" => Ok(SiemDeliveryStatus::Pending),
+        "delivered" => Ok(SiemDeliveryStatus::Delivered),
+        "dead" => Ok(SiemDeliveryStatus::Dead),
+        other => anyhow::bail!("unsupported SIEM delivery status: {other}"),
+    }
+}
+
+fn summarize_siem_delivery(record: &SiemDeliveryRecord) -> serde_json::Value {
+    serde_json::json!({
+        "id": record.id,
+        "realm_id": record.realm_id,
+        "endpoint_url": record.endpoint_url,
+        "attempts": record.attempts,
+        "next_retry_at": record.next_retry_at,
+        "status": record.status,
+        "last_error": record.last_error,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+        "payload_event_count": record.payload_json.get("event_count").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
+fn read_key_passphrase(path: Option<&Path>) -> anyhow::Result<Vec<u8>> {
+    if let Some(path) = path {
+        let passphrase = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read passphrase file {}", path.display()))?;
+        return Ok(passphrase
+            .trim_end_matches(['\r', '\n'])
+            .as_bytes()
+            .to_vec());
+    }
+    let passphrase = std::env::var("QID_KEY_PASSPHRASE")
+        .context("QID_KEY_PASSPHRASE or --passphrase-file is required")?;
+    Ok(passphrase.into_bytes())
 }
 
 #[tokio::main]
@@ -59,6 +153,121 @@ async fn main() -> anyhow::Result<()> {
                 .context("failed to build runtime plan")?;
             println!("{plan:#?}");
         }
+        Command::Keys { command } => match command {
+            KeysCommand::Encrypt(key_args) => {
+                let output = key_args
+                    .output
+                    .unwrap_or_else(|| encrypted_key_path(&key_args.input));
+                if output.exists() && !key_args.force {
+                    anyhow::bail!(
+                        "output encrypted key already exists: {} (use --force to overwrite)",
+                        output.display()
+                    );
+                }
+                let passphrase = read_key_passphrase(key_args.passphrase_file.as_deref())?;
+                let protector = PassphraseProtector::new(passphrase)?;
+                let mut plaintext = std::fs::read_to_string(&key_args.input)
+                    .with_context(|| format!("failed to read key {}", key_args.input.display()))?;
+                let encrypted = protector
+                    .seal(&plaintext, &key_args.kid, &key_args.alg)
+                    .context("failed to encrypt key")?;
+                plaintext.zeroize();
+                std::fs::write(&output, serialize_encrypted_key(&encrypted)?).with_context(
+                    || format!("failed to write encrypted key {}", output.display()),
+                )?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "encrypted",
+                        "input": key_args.input,
+                        "output": output,
+                        "kid": encrypted.kid,
+                        "alg": encrypted.alg,
+                        "version": encrypted.version,
+                    }))?
+                );
+            }
+            KeysCommand::Status(key_args) => {
+                let content = std::fs::read_to_string(&key_args.key)
+                    .with_context(|| format!("failed to read key {}", key_args.key.display()))?;
+                let status = match parse_encrypted_key(&content) {
+                    Ok(encrypted) => serde_json::json!({
+                        "encrypted": true,
+                        "path": key_args.key,
+                        "version": encrypted.version,
+                        "kid": encrypted.kid,
+                        "alg": encrypted.alg,
+                        "created_at": encrypted.created_at,
+                    }),
+                    Err(_) => serde_json::json!({
+                        "encrypted": false,
+                        "path": key_args.key,
+                        "contains_private_key_pem": content.contains("PRIVATE KEY"),
+                    }),
+                };
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            }
+            KeysCommand::Rotate(key_args) => {
+                let kid = key_args
+                    .kid
+                    .unwrap_or_else(|| format!("{}-{}", key_args.keyring, ulid::Ulid::new()));
+                std::fs::create_dir_all(&key_args.output_dir).with_context(|| {
+                    format!(
+                        "failed to create key output directory {}",
+                        key_args.output_dir.display()
+                    )
+                })?;
+                let (encrypted_path, public_path, jwk_path) = rotation_key_paths(
+                    &key_args.output_dir,
+                    &key_args.keyring,
+                    &key_args.alg,
+                    &kid,
+                );
+                if !key_args.force {
+                    for path in [&encrypted_path, &public_path, &jwk_path] {
+                        if path.exists() {
+                            anyhow::bail!(
+                                "rotation key output already exists: {} (use --force to overwrite)",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+
+                let passphrase = read_key_passphrase(key_args.passphrase_file.as_deref())?;
+                let protector = PassphraseProtector::new(passphrase)?;
+                let mut generated = generate_local_signing_key(&kid, &key_args.alg)?;
+                let encrypted = protector
+                    .seal(&generated.private_pem, &generated.kid, &key_args.alg)
+                    .context("failed to encrypt successor key")?;
+                generated.private_pem.zeroize();
+
+                std::fs::write(&encrypted_path, serialize_encrypted_key(&encrypted)?)
+                    .with_context(|| {
+                        format!("failed to write encrypted key {}", encrypted_path.display())
+                    })?;
+                std::fs::write(&public_path, generated.public_pem.as_bytes()).with_context(
+                    || format!("failed to write public key {}", public_path.display()),
+                )?;
+                std::fs::write(
+                    &jwk_path,
+                    serde_json::to_string_pretty(&generated.public_jwk)?,
+                )
+                .with_context(|| format!("failed to write public JWK {}", jwk_path.display()))?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "successor_generated",
+                        "keyring": key_args.keyring,
+                        "kid": encrypted.kid,
+                        "alg": encrypted.alg,
+                        "encrypted_key": encrypted_path,
+                        "public_key": public_path,
+                        "public_jwk": jwk_path,
+                    }))?
+                );
+            }
+        },
         Command::Ops { command } => match command {
             OpsCommand::Check => {
                 let config = load_config(&config_paths).context("failed to load config")?;
@@ -259,6 +468,60 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!("WARNING: key rotation overdue");
                     std::process::exit(1);
                 }
+            }
+            OpsCommand::SiemDlqList(dlq_args) => {
+                if dlq_args.limit == 0 {
+                    anyhow::bail!("limit must be greater than zero");
+                }
+                let repo = open_repo(&config_paths).await?;
+                let status = dlq_args
+                    .status
+                    .as_deref()
+                    .map(parse_siem_delivery_status)
+                    .transpose()?;
+                let records = repo
+                    .list_siem_deliveries(dlq_args.realm.as_deref(), status, dlq_args.limit)
+                    .await?;
+                let records = records
+                    .iter()
+                    .map(summarize_siem_delivery)
+                    .collect::<Vec<_>>();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": "siem_dlq_list",
+                        "count": records.len(),
+                        "deliveries": records,
+                    }))?
+                );
+            }
+            OpsCommand::SiemDlqRedrive(redrive_args) => {
+                let repo = open_repo(&config_paths).await?;
+                let now = redrive_args.now.unwrap_or_else(qid_core::util::now_seconds);
+                let record = repo
+                    .get_siem_delivery(&redrive_args.id)
+                    .await?
+                    .with_context(|| format!("SIEM delivery {} not found", redrive_args.id))?;
+                repo.mark_siem_delivery_status(
+                    &record.id,
+                    SiemDeliveryStatus::Pending,
+                    0,
+                    Some(now),
+                    None,
+                    now,
+                )
+                .await?;
+                let updated = repo
+                    .get_siem_delivery(&record.id)
+                    .await?
+                    .context("redriven SIEM delivery not found")?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": "siem_dlq_redrive",
+                        "delivery": summarize_siem_delivery(&updated),
+                    }))?
+                );
             }
         },
         Command::Realm { command } => {

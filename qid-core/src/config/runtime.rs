@@ -5,6 +5,8 @@ use super::*;
 pub struct AdminConfig {
     #[serde(default)]
     pub security: AdminSecurityConfig,
+    #[serde(default = "default_false")]
+    pub audit_fail_closed: bool,
 }
 
 impl AdminConfig {

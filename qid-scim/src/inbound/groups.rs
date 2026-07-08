@@ -29,27 +29,7 @@ pub(crate) async fn list_groups<R: Repository>(
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "list_groups").increment(1);
     let realm = scoped_realm(context.as_ref().map(|ext| &ext.0), query.realm.clone());
-    let mut groups = match state.repo.list_scim_groups(&RealmId(realm.clone())).await {
-        Ok(groups) => groups,
-        Err(e) => return qid_http::error_response(e),
-    };
     let applied_filter = query.filter.clone();
-    if let Some(filter) = query.filter.as_deref() {
-        let parsed = match filter::parse_eq_filter(filter, &["displayName"]) {
-            Ok(parsed) => parsed,
-            Err(e) => return qid_http::error_response(e),
-        };
-        match parsed.attribute {
-            "displayName" => {
-                groups.retain(|g| filter::string_filter_matches(&parsed.value, &g.display_name));
-            }
-            _ => {
-                return qid_http::error_response(QidError::Internal {
-                    message: "unexpected filter attribute".to_string(),
-                });
-            }
-        }
-    }
     let cursor_secret = match scim_cursor_secret(&state, &realm) {
         Ok(secret) => secret,
         Err(e) => return qid_http::error_response(e),
@@ -70,8 +50,44 @@ pub(crate) async fn list_groups<R: Repository>(
             query.count.unwrap_or(100).min(MAX_LIST_RESULTS),
         )
     };
-    let total = groups.len();
-    let page: Vec<ScimGroup> = groups.into_iter().skip(start).take(count).collect();
+    let realm_id = RealmId(realm);
+    let (total, page) = if let Some(filter) = query.filter.as_deref() {
+        let mut groups = match state.repo.list_scim_groups(&realm_id).await {
+            Ok(groups) => groups,
+            Err(e) => return qid_http::error_response(e),
+        };
+        let parsed = match filter::parse_eq_filter(filter, &["displayName"]) {
+            Ok(parsed) => parsed,
+            Err(e) => return qid_http::error_response(e),
+        };
+        match parsed.attribute {
+            "displayName" => {
+                groups.retain(|g| filter::string_filter_matches(&parsed.value, &g.display_name));
+            }
+            _ => {
+                return qid_http::error_response(QidError::Internal {
+                    message: "unexpected filter attribute".to_string(),
+                });
+            }
+        }
+        let total = groups.len();
+        let page: Vec<ScimGroup> = groups.into_iter().skip(start).take(count).collect();
+        (total, page)
+    } else {
+        let total = match state.repo.count_scim_groups(&realm_id).await {
+            Ok(total) => total,
+            Err(e) => return qid_http::error_response(e),
+        };
+        let page = match state
+            .repo
+            .list_scim_groups_page(&realm_id, start, count)
+            .await
+        {
+            Ok(groups) => groups,
+            Err(e) => return qid_http::error_response(e),
+        };
+        (total, page)
+    };
     let next_cursor = if start + count < total {
         Some(encode_cursor(
             cursor_secret.as_bytes(),

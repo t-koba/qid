@@ -113,6 +113,7 @@ impl QidConfig {
             }
         }
         self.server.validate()?;
+        self.storage.validate()?;
         validate_multi_realm_issuer_routes(self)?;
         self.admin.validate()?;
         self.crypto.validate()?;

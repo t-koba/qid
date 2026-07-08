@@ -4,7 +4,7 @@ use crate::provider::{authorize_get, authorize_post};
 use axum::{
     Form, Json, Router,
     extract::{OriginalUri, Path, Query, State},
-    http::{Method, header},
+    http::{HeaderValue, Method, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -831,7 +831,9 @@ async fn logout<R: Repository>(
 
     let user_id = if let Some(sid) = session_id {
         if let Ok(Some(session)) = state.repo.get_session(sid).await {
-            let _ = state.repo.revoke_session(sid).await;
+            if state.repo.revoke_session(sid).await.is_ok() {
+                state.session_cache_delete(sid);
+            }
             Some(session.user_id)
         } else {
             None
@@ -880,8 +882,15 @@ async fn logout<R: Repository>(
             "{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
             cookie_name
         );
-        resp.headers_mut()
-            .insert(header::SET_COOKIE, clear_cookie.parse().unwrap());
+        let clear_cookie = match HeaderValue::from_str(&clear_cookie) {
+            Ok(value) => value,
+            Err(err) => {
+                return qid_http::error_response(QidError::Internal {
+                    message: format!("failed to build logout cookie header: {err}"),
+                });
+            }
+        };
+        resp.headers_mut().insert(header::SET_COOKIE, clear_cookie);
         return resp;
     }
 
@@ -939,8 +948,15 @@ async fn logout<R: Repository>(
     );
 
     let mut resp = ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response();
-    resp.headers_mut()
-        .insert(header::SET_COOKIE, clear_cookie.parse().unwrap());
+    let clear_cookie = match HeaderValue::from_str(&clear_cookie) {
+        Ok(value) => value,
+        Err(err) => {
+            return qid_http::error_response(QidError::Internal {
+                message: format!("failed to build logout cookie header: {err}"),
+            });
+        }
+    };
+    resp.headers_mut().insert(header::SET_COOKIE, clear_cookie);
     resp
 }
 
@@ -1048,10 +1064,13 @@ async fn backchannel_logout<R: Repository>(
     }
 
     // Revoke matching sessions across all realms
-    if let Some(sid_val) = sid
-        && let Err(e) = state.repo.revoke_session(sid_val).await
-    {
-        tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {sid_val}");
+    if let Some(sid_val) = sid {
+        match state.repo.revoke_session(sid_val).await {
+            Ok(()) => state.session_cache_delete(sid_val),
+            Err(e) => {
+                tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {sid_val}");
+            }
+        }
     }
     if let Some(sub_val) = sub {
         let sessions = state
@@ -1060,10 +1079,12 @@ async fn backchannel_logout<R: Repository>(
             .await
             .unwrap_or_default();
         for session in &sessions {
-            if !session.revoked
-                && let Err(e) = state.repo.revoke_session(&session.id).await
-            {
-                tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {}", session.id);
+            if !session.revoked {
+                if let Err(e) = state.repo.revoke_session(&session.id).await {
+                    tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {}", session.id);
+                } else {
+                    state.session_cache_delete(&session.id);
+                }
             }
         }
     }

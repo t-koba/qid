@@ -312,8 +312,7 @@ fn json_pointer_set(root: &mut Value, pointer: &str, value: Value) -> QidResult<
 /// Apply a JSON Merge Patch (RFC 7386) to a JSON value.
 pub fn json_merge_patch_apply(root: &mut Value, patch: &Value) {
     match (root, patch) {
-        (root @ &mut Value::Object(_), Value::Object(patch_map)) => {
-            let root_map = root.as_object_mut().expect("checked above");
+        (Value::Object(root_map), Value::Object(patch_map)) => {
             let patch_keys: Vec<String> = patch_map.keys().cloned().collect();
             for key in patch_keys {
                 let patch_val = &patch_map[&key];

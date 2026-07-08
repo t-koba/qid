@@ -55,6 +55,7 @@ pub(crate) async fn breakglass_revoke_session<R: Repository>(
     if let Err(e) = state.repo.revoke_session(&session_id).await {
         return qid_http::error_response(e);
     }
+    state.session_cache_delete(&session_id);
     if let Err(e) = append_admin_audit(
         &state,
         &headers,

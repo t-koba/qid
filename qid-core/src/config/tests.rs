@@ -194,6 +194,10 @@ fn rust_defaults_match_serde_defaults_for_nested_config() {
         PrimaryStorageConfig::default()
     );
     assert_eq!(
+        serde_json::from_value::<FileStorageConfig>(serde_json::json!({})).unwrap(),
+        FileStorageConfig::default()
+    );
+    assert_eq!(
         serde_json::from_value::<ScimProtocolConfig>(serde_json::json!({})).unwrap(),
         ScimProtocolConfig::default()
     );
@@ -255,6 +259,18 @@ fn rust_defaults_match_serde_defaults_for_nested_config() {
             .is_empty()
     );
     assert_eq!(MetricsConfig::default().listen, "127.0.0.1:9464");
+}
+
+#[test]
+fn file_storage_flush_mode_is_validated() {
+    let mut config = minimal_config();
+    config.storage.file.flush_mode = "interval_ms(250)".to_string();
+    config.validate().unwrap();
+    assert_eq!(config.storage.file.flush_interval_ms().unwrap(), Some(250));
+
+    config.storage.file.flush_mode = "interval_ms(0)".to_string();
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("greater than zero"));
 }
 
 #[test]
@@ -627,7 +643,9 @@ fn token_ttl_default_values() {
     assert_eq!(ttl.access_token_ttl_seconds, 3600);
     assert_eq!(ttl.refresh_token_ttl_seconds, 86400);
     assert_eq!(ttl.id_token_ttl_seconds, 3600);
-    assert_eq!(ttl.auth_code_ttl_seconds, 600);
+    assert_eq!(ttl.auth_code_ttl_seconds, 300);
+    assert_eq!(ttl.par_request_ttl_seconds, 300);
+    assert_eq!(ttl.device_code_ttl_seconds, 1800);
     assert_eq!(ttl.access_token_format, TokenFormat::Jwt);
 }
 

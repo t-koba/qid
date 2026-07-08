@@ -960,6 +960,7 @@ async fn do_check<R: Repository>(
         metrics::counter!("qid_proxy_pep_decision_cache_hits_total").increment(1);
         return Ok(cached);
     }
+    metrics::counter!("qid_proxy_pep_decision_cache_misses_total").increment(1);
 
     let adapter_realm_id = req.adapter_realm_id.clone().unwrap_or_else(|| {
         state
@@ -1028,7 +1029,7 @@ async fn do_check<R: Repository>(
         r#type: "pep_decision.check".to_string(),
         time: qid_core::util::now_seconds().to_string(),
         tenant: req.adapter_tenant_id.clone(),
-        realm: Some(adapter_realm_id),
+        realm: Some(adapter_realm_id.clone()),
         subject: ctx.subject_id.clone(),
         decision: Some(pep_decision_policy_decision_label(&decision_kind).to_string()),
         decision_id: Some(details.policy_id.clone()),
@@ -1041,6 +1042,8 @@ async fn do_check<R: Repository>(
     metrics::counter!("qid_policy_decisions_total", "decision" => decision.to_string())
         .increment(1);
     metrics::histogram!("qid_proxy_pep_decision_duration_seconds", "decision" => decision)
+        .record(_start.elapsed().as_secs_f64());
+    metrics::histogram!("qid_policy_decision_duration_seconds", "realm" => adapter_realm_id.clone())
         .record(_start.elapsed().as_secs_f64());
 
     let policy_id = details.policy_id.clone();

@@ -14,7 +14,7 @@ mod file;
 mod sql;
 pub mod traits;
 
-pub use file::FileRepository;
+pub use file::{FileFlushMode, FileRepository};
 pub use sql::SqlRepository;
 pub use traits::*;
 
@@ -22,9 +22,10 @@ pub use traits::*;
 pub mod prelude {
     pub use crate::{
         AdminRepository, AuditRepository, CiamRepository, ClientRepository, CredentialRepository,
-        DeviceRepository, FedCmRepository, IgaRepository, PolicyRepository, RealmRepository,
-        RebacRepository, Repository, SaasRepository, ScimRepository, ServiceAccountRepository,
-        SessionRepository, SsfRepository, TokenRepository, UserRepository, VcRepository,
+        DeviceRepository, FedCmRepository, FileFlushMode, IgaRepository, PolicyRepository,
+        RealmRepository, RebacRepository, Repository, SaasRepository, ScimRepository,
+        ServiceAccountRepository, SessionRepository, SiemDeliveryRecord, SiemDeliveryRepository,
+        SiemDeliveryStatus, SsfRepository, TokenRepository, UserRepository, VcRepository,
         WorkloadRepository,
     };
 }
@@ -41,6 +42,13 @@ pub enum AnyRepository {
 
 impl AnyRepository {
     pub async fn connect(url_or_path: &str) -> QidResult<Self> {
+        Self::connect_with_file_flush_mode(url_or_path, FileFlushMode::Immediate).await
+    }
+
+    pub async fn connect_with_file_flush_mode(
+        url_or_path: &str,
+        file_flush_mode: FileFlushMode,
+    ) -> QidResult<Self> {
         if url_or_path.starts_with("sqlite:") || url_or_path.starts_with("postgres:") {
             let repo =
                 SqlRepository::connect(url_or_path)
@@ -55,7 +63,7 @@ impl AnyRepository {
                 })?;
             Ok(AnyRepository::Sql(repo))
         } else {
-            let repo = FileRepository::new(url_or_path).await?;
+            let repo = FileRepository::new_with_flush_mode(url_or_path, file_flush_mode).await?;
             FileRepository::migrate(&repo).await?;
             Ok(AnyRepository::File(repo))
         }
@@ -67,6 +75,13 @@ impl AnyRepository {
                 message: format!("migration failed: {e}"),
             }),
             AnyRepository::File(r) => r.migrate().await,
+        }
+    }
+
+    pub async fn flush(&self) -> QidResult<()> {
+        match self {
+            AnyRepository::Sql(_) => Ok(()),
+            AnyRepository::File(r) => r.flush().await,
         }
     }
 }
@@ -118,6 +133,7 @@ delegate!(UserRepository {
     get_user_by_id(&self, id: &str) -> QidResult<Option<qid_core::models::User>>;
     get_user_by_email(&self, realm_id: &qid_core::tenant::RealmId, email: &str) -> QidResult<Option<qid_core::models::User>>;
     list_users(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::User>>;
+    list_users_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::User>>;
     delete_user(&self, id: &str) -> QidResult<()>;
     update_user(&self, user: &qid_core::models::User) -> QidResult<()>;
     store_password_credential(&self, cred: &qid_core::models::PasswordCredential) -> QidResult<()>;
@@ -129,6 +145,7 @@ delegate!(ClientRepository {
     update_client(&self, client: &qid_core::models::Client) -> QidResult<()>;
     get_client_by_client_id(&self, realm_id: &qid_core::tenant::RealmId, client_id: &str) -> QidResult<Option<qid_core::models::Client>>;
     list_clients(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::Client>>;
+    list_clients_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::Client>>;
     delete_client(&self, id: &str) -> QidResult<()>;
 });
 
@@ -221,10 +238,14 @@ delegate!(ScimRepository {
     create_scim_user(&self, user: &qid_core::models::ScimUser) -> QidResult<()>;
     get_scim_user(&self, id: &str) -> QidResult<Option<qid_core::models::ScimUser>>;
     list_scim_users(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::ScimUser>>;
+    list_scim_users_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::ScimUser>>;
+    count_scim_users(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<usize>;
     update_scim_user(&self, user: &qid_core::models::ScimUser) -> QidResult<()>;
     delete_scim_user(&self, id: &str) -> QidResult<()>;
     create_scim_group(&self, group: &qid_core::models::ScimGroup) -> QidResult<()>;
     list_scim_groups(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::ScimGroup>>;
+    list_scim_groups_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::ScimGroup>>;
+    count_scim_groups(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<usize>;
     get_scim_group(&self, id: &str) -> QidResult<Option<qid_core::models::ScimGroup>>;
     update_scim_group(&self, group: &qid_core::models::ScimGroup) -> QidResult<()>;
     delete_scim_group(&self, id: &str) -> QidResult<()>;
@@ -347,6 +368,13 @@ delegate!(SsfRepository {
     get_ssf_stream(&self, realm_id: &str, stream_id: &str) -> QidResult<Option<crate::traits::SsfStreamRecord>>;
     delete_ssf_stream(&self, realm_id: &str, stream_id: &str) -> QidResult<bool>;
     record_ssf_set_jti(&self, realm_id: &str, issuer: &str, stream_id: &str, jti: &str, expires_at: u64, now: u64) -> QidResult<bool>;
+});
+
+delegate!(SiemDeliveryRepository {
+    upsert_siem_delivery(&self, delivery: &crate::traits::SiemDeliveryRecord) -> QidResult<()>;
+    get_siem_delivery(&self, id: &str) -> QidResult<Option<crate::traits::SiemDeliveryRecord>>;
+    list_siem_deliveries(&self, realm_id: Option<&str>, status: Option<crate::traits::SiemDeliveryStatus>, limit: usize) -> QidResult<Vec<crate::traits::SiemDeliveryRecord>>;
+    mark_siem_delivery_status(&self, id: &str, status: crate::traits::SiemDeliveryStatus, attempts: u32, next_retry_at: Option<u64>, last_error: Option<&str>, updated_at: u64) -> QidResult<()>;
 });
 
 delegate!(RebacRepository {

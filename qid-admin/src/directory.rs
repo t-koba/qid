@@ -175,10 +175,24 @@ pub(crate) async fn delete_realm<R: Repository>(
 
 // ── User handlers ─────────────────────────────────────────────────────────────
 
+#[derive(Deserialize)]
+pub(crate) struct DirectoryListQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+fn directory_page(query: &DirectoryListQuery) -> (usize, usize) {
+    (
+        query.offset.unwrap_or(0),
+        query.limit.unwrap_or(100).min(500),
+    )
+}
+
 pub(crate) async fn list_users<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
+    Query(query): Query<DirectoryListQuery>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = match authorize_admin(
         &state,
@@ -192,7 +206,12 @@ pub(crate) async fn list_users<R: Repository>(
         Ok(a) => a,
         Err(e) => return qid_http::error_response(e),
     };
-    match state.repo.list_users(&RealmId(realm)).await {
+    let (offset, limit) = directory_page(&query);
+    match state
+        .repo
+        .list_users_page(&RealmId(realm), offset, limit)
+        .await
+    {
         Ok(users) => {
             let items: Vec<serde_json::Value> = users
                 .into_iter()
@@ -482,6 +501,7 @@ pub(crate) async fn list_clients<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
+    Query(query): Query<DirectoryListQuery>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = match authorize_admin(
         &state,
@@ -495,7 +515,12 @@ pub(crate) async fn list_clients<R: Repository>(
         Ok(a) => a,
         Err(e) => return qid_http::error_response(e),
     };
-    match state.repo.list_clients(&RealmId(realm)).await {
+    let (offset, limit) = directory_page(&query);
+    match state
+        .repo
+        .list_clients_page(&RealmId(realm), offset, limit)
+        .await
+    {
         Ok(clients) => {
             let items: Vec<serde_json::Value> = clients
                 .into_iter()

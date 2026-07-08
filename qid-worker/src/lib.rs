@@ -36,8 +36,14 @@ fn hex_nibble(value: u8) -> char {
 mod tests {
     use super::*;
     use qid_core::models::{AuditEvent, AuditRetentionConfig};
-    use qid_ops::{KeyRotationRequirement, KeyringInventoryRecord};
-    use qid_storage::{AuditRepository, SqlRepository};
+    use qid_crypto::{KeyProtector, PassphraseProtector, parse_encrypted_key};
+    use qid_ops::{
+        KeyPurpose, KeyRotationAction, KeyRotationActionKind, KeyRotationPlan,
+        KeyRotationPlanStatus, KeyRotationRequirement, KeyringInventoryRecord,
+    };
+    use qid_storage::{
+        AuditRepository, FileRepository, SiemDeliveryRepository, SiemDeliveryStatus, SqlRepository,
+    };
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
@@ -224,6 +230,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn key_rotation_execution_job_writes_encrypted_successor_key_and_audit_event() {
+        let dir = std::env::temp_dir().join(format!("qid_worker_rotation_{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).expect("create rotation test directory");
+        let store_path = dir.join("store.json");
+        let repo = FileRepository::new(store_path.to_str().expect("store path is not UTF-8"))
+            .await
+            .expect("file repository");
+        repo.migrate().await.expect("file migration");
+        let output_dir = dir.join("keys");
+
+        let report = run_key_rotation_execution_job(
+            &repo,
+            KeyRotationExecutionJobConfig {
+                plan: KeyRotationPlan {
+                    status: KeyRotationPlanStatus::ActionRequired,
+                    realm_id: "corp".to_string(),
+                    purpose: KeyPurpose::OidcToken,
+                    active_kid: Some("old".to_string()),
+                    successor_kid: None,
+                    actions: vec![KeyRotationAction {
+                        action: KeyRotationActionKind::GenerateSuccessor,
+                        keyring_name: "corp-main".to_string(),
+                        kid: Some("next".to_string()),
+                        reason: "rotation_overlap_window_open".to_string(),
+                    }],
+                    reasons: Vec::new(),
+                },
+                output_dir: output_dir.clone(),
+                algorithm: "ES256".to_string(),
+                key_passphrase: b"test-passphrase".to_vec(),
+                now_epoch: 123,
+                actor: "qid-worker".to_string(),
+                reason: "scheduled key rotation execution".to_string(),
+                record_audit_event: true,
+                force: false,
+            },
+        )
+        .await
+        .expect("key rotation execution");
+
+        assert_eq!(report.status, KeyRotationExecutionJobStatus::Executed);
+        assert_eq!(report.executed.len(), 1);
+        assert!(report.unsupported.is_empty());
+        let executed = &report.executed[0];
+        assert_eq!(executed.kid, "next");
+        assert!(executed.encrypted_key_path.exists());
+        assert!(executed.public_key_path.exists());
+        assert!(executed.public_jwk_path.exists());
+
+        let encrypted_json =
+            std::fs::read_to_string(&executed.encrypted_key_path).expect("encrypted key file");
+        assert!(!encrypted_json.contains("PRIVATE KEY"));
+        let encrypted = parse_encrypted_key(&encrypted_json).expect("parse encrypted key");
+        assert_eq!(encrypted.kid, "next");
+        assert_eq!(encrypted.alg, "ES256");
+        let protector =
+            PassphraseProtector::new(b"test-passphrase".to_vec()).expect("key protector");
+        let private_pem = protector.unseal(&encrypted).expect("decrypt encrypted key");
+        assert!(private_pem.contains("PRIVATE KEY"));
+
+        let public_jwk =
+            std::fs::read_to_string(&executed.public_jwk_path).expect("public jwk file");
+        assert!(public_jwk.contains("\"kid\": \"next\""));
+        let events = repo
+            .list_audit_events(Some(&"corp".into()), 10)
+            .await
+            .expect("audit events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "key_rotation.execute");
+        assert_eq!(events[0].metadata_json["status"], "executed");
+        assert_eq!(events[0].metadata_json["executed"][0]["kid"], "next");
+
+        drop(private_pem);
+        drop(repo);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn retention_job_records_evaluation_event() {
         let repo = repo().await;
         seed_audit_event(&repo, "old", 10).await;
@@ -386,6 +470,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.status, AuditSiemDeliveryStatus::FailedRetryable);
+        let delivery_id = report.delivery_id.as_ref().expect("delivery id");
+        let queued = repo
+            .get_siem_delivery(delivery_id)
+            .await
+            .expect("SIEM delivery lookup")
+            .expect("SIEM delivery queued");
+        assert_eq!(queued.status, SiemDeliveryStatus::Pending);
+        assert_eq!(queued.attempts, 2);
+        assert_eq!(queued.next_retry_at, Some(202));
         assert_eq!(
             report.retry,
             AuditSiemRetryDecision {
@@ -395,6 +488,110 @@ mod tests {
                 first_error: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn siem_delivery_marks_dead_after_retry_budget_is_exhausted() {
+        let repo = repo().await;
+        seed_audit_event(&repo, "event-1", 100).await;
+        let transport = CapturingTransport::new(503);
+
+        let report = run_audit_siem_delivery_job(
+            &repo,
+            &transport,
+            AuditSiemDeliveryConfig {
+                realm_id: Some("corp".to_string()),
+                endpoint_url: "https://siem.example.com/audit".to_string(),
+                limit: 10,
+                now_epoch: 200,
+                traceparent: None,
+                audit_correlation_id: None,
+                include_metadata: false,
+                actor: "worker".to_string(),
+                reason: "scheduled siem delivery".to_string(),
+                record_audit_event: false,
+                completed_attempts: 2,
+                retry_policy: AuditSiemRetryPolicy {
+                    max_attempts: 3,
+                    base_delay_ms: 1_000,
+                    max_delay_ms: 10_000,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.status, AuditSiemDeliveryStatus::FailedPermanent);
+        let queued = repo
+            .get_siem_delivery(report.delivery_id.as_ref().expect("delivery id"))
+            .await
+            .expect("SIEM delivery lookup")
+            .expect("SIEM delivery queued");
+        assert_eq!(queued.status, SiemDeliveryStatus::Dead);
+        assert_eq!(queued.attempts, 3);
+        assert_eq!(queued.next_retry_at, None);
+    }
+
+    #[tokio::test]
+    async fn siem_redrive_sends_persistent_payload_and_marks_delivered() {
+        let repo = repo().await;
+        seed_audit_event(&repo, "event-1", 100).await;
+        let failing_transport = CapturingTransport::new(503);
+        let failed = run_audit_siem_delivery_job(
+            &repo,
+            &failing_transport,
+            AuditSiemDeliveryConfig {
+                realm_id: Some("corp".to_string()),
+                endpoint_url: "https://siem.example.com/audit".to_string(),
+                limit: 10,
+                now_epoch: 200,
+                traceparent: None,
+                audit_correlation_id: None,
+                include_metadata: false,
+                actor: "worker".to_string(),
+                reason: "scheduled siem delivery".to_string(),
+                record_audit_event: false,
+                completed_attempts: 2,
+                retry_policy: AuditSiemRetryPolicy {
+                    max_attempts: 3,
+                    base_delay_ms: 1_000,
+                    max_delay_ms: 10_000,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let delivery_id = failed.delivery_id.expect("delivery id");
+
+        let successful_transport = CapturingTransport::new(202);
+        let redriven = run_audit_siem_redrive_job(
+            &repo,
+            &successful_transport,
+            AuditSiemRedriveConfig {
+                delivery_id: delivery_id.clone(),
+                now_epoch: 300,
+                actor: "worker".to_string(),
+                reason: "scheduled siem redrive".to_string(),
+                record_audit_event: false,
+                retry_policy: AuditSiemRetryPolicy::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(redriven.status, AuditSiemDeliveryStatus::Delivered);
+        let queued = repo
+            .get_siem_delivery(&delivery_id)
+            .await
+            .expect("SIEM delivery lookup")
+            .expect("SIEM delivery queued");
+        assert_eq!(queued.status, SiemDeliveryStatus::Delivered);
+        assert_eq!(queued.attempts, 4);
+        assert_eq!(queued.next_retry_at, None);
+        let requests = successful_transport.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["events"][0]["id"], "event-1");
     }
 
     #[tokio::test]

@@ -22,6 +22,7 @@ server:
   public_base_url: "https://id.example.com"
 
 admin:
+  audit_fail_closed: true
   security:
     require_reason: true
     require_step_up: true

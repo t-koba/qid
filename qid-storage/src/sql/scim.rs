@@ -82,12 +82,34 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn list_scim_users(&self, realm_id: &RealmId) -> QidResult<Vec<ScimUser>> {
-        let rows: Vec<ScimUserRow> = sqlx::query_as("SELECT * FROM scim_users WHERE realm_id = ?")
+        self.list_scim_users_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_scim_users_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<ScimUser>> {
+        let rows: Vec<ScimUserRow> = sqlx::query_as(
+            "SELECT * FROM scim_users WHERE realm_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
+        )
+        .bind(realm_id.as_str())
+        .bind(page_bound(limit))
+        .bind(page_bound(offset))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn count_scim_users(&self, realm_id: &RealmId) -> QidResult<usize> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM scim_users WHERE realm_id = ?")
             .bind(realm_id.as_str())
-            .fetch_all(&self.pool)
+            .fetch_one(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        Ok(count.max(0) as usize)
     }
 
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()> {
@@ -129,13 +151,35 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {
-        let rows: Vec<ScimGroupRow> =
-            sqlx::query_as("SELECT * FROM scim_groups WHERE realm_id = ?")
+        self.list_scim_groups_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_scim_groups_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<ScimGroup>> {
+        let rows: Vec<ScimGroupRow> = sqlx::query_as(
+            "SELECT * FROM scim_groups WHERE realm_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
+        )
+        .bind(realm_id.as_str())
+        .bind(page_bound(limit))
+        .bind(page_bound(offset))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn count_scim_groups(&self, realm_id: &RealmId) -> QidResult<usize> {
+        let (count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM scim_groups WHERE realm_id = ?")
                 .bind(realm_id.as_str())
-                .fetch_all(&self.pool)
+                .fetch_one(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        Ok(count.max(0) as usize)
     }
 
     async fn get_scim_group(&self, id: &str) -> QidResult<Option<ScimGroup>> {

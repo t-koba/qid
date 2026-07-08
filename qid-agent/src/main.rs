@@ -341,6 +341,7 @@ realms:
         })
         .await
         .expect("create user");
+        drop(repo);
 
         let result = run(Args {
             config: config.clone(),
@@ -376,6 +377,7 @@ realms:
             vec!["disk_encrypted", "firewall_enabled", "os_updated"]
         );
         assert_eq!(device.last_seen_at, 100);
+        drop(lookup_repo);
 
         let heartbeat = run(Args {
             config,

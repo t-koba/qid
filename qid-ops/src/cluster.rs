@@ -200,8 +200,18 @@ pub fn plan_tenant_shard(
 
     let primary = candidate_shards
         .into_iter()
-        .max_by_key(|shard| tenant_shard_score(tenant_id, shard))
-        .expect("candidate_shards is not empty");
+        .max_by_key(|shard| tenant_shard_score(tenant_id, shard));
+    let Some(primary) = primary else {
+        return TenantShardPlan {
+            status: TenantShardPlanStatus::Rejected,
+            tenant_id: tenant_id.to_string(),
+            primary_shard_id: None,
+            primary_region: None,
+            replica_shard_ids: Vec::new(),
+            routing_key: None,
+            reasons: vec!["no_writable_shard".to_string()],
+        };
+    };
     let replica_shard_ids = replica_shards(tenant_id, shards, &primary.id, replica_count);
     TenantShardPlan {
         status: TenantShardPlanStatus::Ready,

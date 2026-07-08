@@ -38,3 +38,6 @@ http-body-util = { workspace = true }
 qid-core = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true }
 tower = { workspace = true }
+
+[lints]
+workspace = true

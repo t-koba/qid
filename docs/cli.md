@@ -41,6 +41,7 @@ Top-level commands:
 | `totp` | Enroll TOTP credentials. |
 | `explain` | Explain a policy/risk decision from CLI inputs. |
 | `ops` | Operational readiness, backup/restore, cache key, key rotation helpers. |
+| `keys` | Local signing key encryption, status, and successor generation helpers. |
 
 Examples:
 
@@ -133,11 +134,43 @@ Common flags:
 | `cache-key` | Render a non-PII cache key for a namespace/material pair. |
 | `key-rotation-plan` | Plan key rotation from inventory and requirements. |
 | `key-rotation-check` | Inspect local state directory and keyring rotation requirements. |
+| `siem-dlq-list` | List persistent SIEM delivery queue entries. |
+| `siem-dlq-redrive` | Move a SIEM delivery back to pending for redrive. |
 
 Example:
 
 ```sh
 cargo run --bin qidc -- --config config/qid.example.yaml ops check
+cargo run --bin qidc -- --config config/qid.example.yaml ops siem-dlq-list --status dead
+cargo run --bin qidc -- --config config/qid.example.yaml ops siem-dlq-redrive --id <delivery-id>
+```
+
+### qidc keys
+
+Use `QID_KEY_PASSPHRASE` or `--passphrase-file` for commands that write encrypted private keys.
+
+| Subcommand | Purpose |
+| --- | --- |
+| `encrypt` | Encrypt a plaintext PEM private key to `.pem.enc`. |
+| `status` | Inspect whether a key file is encrypted and print metadata. |
+| `rotate` | Generate an encrypted successor key plus public PEM and public JWK files. |
+
+Examples:
+
+```sh
+cargo run --bin qidc -- keys encrypt \
+  --input qid-state/signing-key.pem \
+  --kid default \
+  --alg ES256 \
+  --passphrase-file /etc/qid/key.passphrase
+
+cargo run --bin qidc -- keys status --key qid-state/signing-key.pem.enc
+
+cargo run --bin qidc -- keys rotate \
+  --output-dir qid-state/rotation \
+  --keyring default \
+  --alg ES256 \
+  --passphrase-file /etc/qid/key.passphrase
 ```
 
 ## qid-dev
@@ -168,9 +201,11 @@ cargo run --bin qid-dev -- qpx-smoke
 | `audit-retention-execute` | Archive when required and report purge-ready IDs. |
 | `audit-worm-archive` | Export recent audit events to a local append-only archive directory. |
 | `audit-siem-deliver` | Build and deliver a SIEM webhook payload through deterministic local transport. |
+| `audit-siem-redrive` | Redrive a persistent SIEM delivery queue entry. |
 | `notification-deliver` | Deliver email or push notification through deterministic local transport. |
 | `directory-sync` | Synchronize a configured directory provider. |
 | `key-rotation-plan` | Plan key rotation and optionally record an audit event. |
+| `key-rotation-execute` | Execute supported key rotation actions from a plan JSON file. |
 
 Example:
 
@@ -179,6 +214,11 @@ cargo run --bin qid-worker -- --config target/qid-dev/qid.yaml audit-retention-e
   --realm dev \
   --actor qid-worker \
   --reason "scheduled retention evaluation"
+
+cargo run --bin qid-worker -- --config target/qid-dev/qid.yaml key-rotation-execute \
+  --plan-json target/qid-dev/key-rotation-plan.json \
+  --output-dir target/qid-dev/rotation \
+  --passphrase-file /etc/qid/key.passphrase
 ```
 
 ## qid-sync

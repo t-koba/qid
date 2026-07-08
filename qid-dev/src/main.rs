@@ -206,6 +206,19 @@ crypto:
   default_alg: ES256
   keyrings:
     - name: dev-main
+      realm_id: {realm}
+      purposes:
+        - oidc_token
+        - saml_assertion
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+    - name: dev-pep-assertion
+      realm_id: {realm}
+      purposes:
+        - pep_assertion
       signer:
         type: local
       rotation:
@@ -634,6 +647,18 @@ mod tests {
         assert_eq!(config.realms[0].id, "dev");
         assert_eq!(config.realms[0].clients.len(), 2);
         assert_eq!(config.realms[0].policy.default_decision, "deny");
+        assert_eq!(config.crypto.keyrings.len(), 2);
+        assert_eq!(config.crypto.keyrings[0].name, "dev-main");
+        assert_eq!(
+            config.crypto.keyrings[0].purposes,
+            vec!["oidc_token".to_string(), "saml_assertion".to_string()]
+        );
+        assert_eq!(config.crypto.keyrings[1].name, "dev-pep-assertion");
+        assert_eq!(config.crypto.keyrings[1].realm_id.as_deref(), Some("dev"));
+        assert_eq!(
+            config.crypto.keyrings[1].purposes,
+            vec!["pep_assertion".to_string()]
+        );
 
         let users: Vec<SeedUser> = read_json(&dir.join("users.seed.json")).expect("seed users");
         assert_eq!(users.len(), 2);

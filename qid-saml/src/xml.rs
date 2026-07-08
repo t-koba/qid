@@ -3,6 +3,17 @@ use qid_core::error::{QidError, QidResult};
 use std::collections::BTreeSet;
 
 pub(crate) fn reject_insecure_saml_xml(xml: &str) -> QidResult<()> {
+    let lowered = xml.to_ascii_lowercase();
+    if lowered.contains("<!doctype") {
+        return Err(QidError::BadRequest {
+            message: "SAML XML DOCTYPE is not allowed".to_string(),
+        });
+    }
+    if xml.contains("<!--") {
+        return Err(QidError::BadRequest {
+            message: "SAML XML comments are not allowed".to_string(),
+        });
+    }
     for tag in &["SignatureMethod", "DigestMethod"] {
         for start in tag_positions(xml, tag) {
             if let Some(tag_body) = start_tag_body(&xml[start..])

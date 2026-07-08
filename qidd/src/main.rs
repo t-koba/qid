@@ -12,8 +12,11 @@ use qid_core::jwt::Signer;
 use qid_core::models::{Client, PolicyBundle};
 use qid_core::state::SharedState;
 use qid_core::tenant::{RealmId, TenantId};
-use qid_crypto::Keyring;
+use qid_core::{MemoryCache, QidResult, SharedCache};
 use qid_crypto::jwk::{generate_eddsa, generate_es256};
+use qid_crypto::{
+    KeyProtector, Keyring, PassphraseProtector, parse_encrypted_key, serialize_encrypted_key,
+};
 use qid_diagnostics::{CheckItem, CheckStatus, build_check_report, check_storage_saas_with_repo};
 use qid_http::middleware::request_id_layer;
 use qid_oauth::{
@@ -24,8 +27,8 @@ use qid_oidc::routes as oidc_routes;
 use qid_policy::NativePolicyEngine;
 use qid_proxy::{captive_portal_routes, issue_assertion, pep_decision_routes};
 use qid_session::auth_routes_with_push;
-use qid_storage::AnyRepository;
 use qid_storage::prelude::*;
+use qid_storage::{AnyRepository, FileFlushMode};
 use serde_json::json;
 use std::collections::{BTreeMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -34,9 +37,53 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 type AppState = Arc<SharedState<AnyRepository>>;
+
+struct PrefixedSharedCache {
+    prefix: String,
+    inner: Arc<dyn SharedCache>,
+}
+
+impl PrefixedSharedCache {
+    fn new(prefix: &str, inner: Arc<dyn SharedCache>) -> Self {
+        Self {
+            prefix: prefix.trim_matches(':').to_string(),
+            inner,
+        }
+    }
+
+    fn key(&self, key: &str) -> String {
+        if self.prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}:{key}", self.prefix)
+        }
+    }
+}
+
+impl SharedCache for PrefixedSharedCache {
+    fn get(&self, key: &str) -> Option<Vec<u8>> {
+        self.inner.get(&self.key(key))
+    }
+
+    fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) {
+        self.inner.set(&self.key(key), value, ttl_seconds);
+    }
+
+    fn set_if_absent(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) -> QidResult<bool> {
+        self.inner.set_if_absent(&self.key(key), value, ttl_seconds)
+    }
+
+    fn delete(&self, key: &str) {
+        self.inner.delete(&self.key(key));
+    }
+
+    fn exists(&self, key: &str) -> bool {
+        self.inner.exists(&self.key(key))
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "qidd")]
@@ -123,8 +170,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize storage.
     let storage_url = config.storage.primary.resolve_url_or("sqlite:qid.db");
+    warn_when_file_storage_uses_distributed_cache(&config, &storage_url);
     let repo = Arc::new(
-        AnyRepository::connect(&storage_url)
+        AnyRepository::connect_with_file_flush_mode(&storage_url, file_flush_mode(&config)?)
             .await
             .context("failed to connect to storage")?,
     );
@@ -154,6 +202,9 @@ async fn main() -> anyhow::Result<()> {
         signing_material.pep_assertion_signers,
         signing_material.jwks,
     )?;
+    shared_state = shared_state.with_shared_cache(
+        build_shared_cache(&config).context("failed to initialize shared cache")?,
+    );
     if matches!(config.profile, DeploymentProfile::Workload) {
         let workload_ca =
             load_or_generate_workload_ca(&state_dir).context("failed to initialize workload CA")?;
@@ -294,7 +345,66 @@ async fn main() -> anyhow::Result<()> {
             })?;
     }
 
+    repo.flush()
+        .await
+        .context("failed to flush storage during shutdown")?;
+
     Ok(())
+}
+
+fn build_shared_cache(config: &QidConfig) -> anyhow::Result<Arc<dyn SharedCache>> {
+    let cache_config = &config.ops.cache;
+    let inner: Arc<dyn SharedCache> = match cache_config.kind.as_str() {
+        "disabled" => Arc::new(MemoryCache::new()),
+        "redis" | "valkey" => {
+            let endpoint = cache_config
+                .endpoints
+                .first()
+                .context("ops.cache endpoints must not be empty")?;
+            Arc::new(
+                qid_core::redis_cache::RedisCache::new(endpoint).with_context(|| {
+                    format!("failed to connect shared cache endpoint {endpoint}")
+                })?,
+            )
+        }
+        other => bail!("unsupported ops.cache.kind: {other}"),
+    };
+    Ok(Arc::new(PrefixedSharedCache::new(
+        &cache_config.key_prefix,
+        inner,
+    )))
+}
+
+fn file_flush_mode(config: &QidConfig) -> anyhow::Result<FileFlushMode> {
+    match config.storage.file.flush_interval_ms()? {
+        Some(interval_ms) => Ok(FileFlushMode::Interval(std::time::Duration::from_millis(
+            interval_ms,
+        ))),
+        None => Ok(FileFlushMode::Immediate),
+    }
+}
+
+fn warn_when_file_storage_uses_distributed_cache(config: &QidConfig, storage_url: &str) {
+    if !file_storage_uses_distributed_cache(config, storage_url) {
+        return;
+    }
+    let cache_kind = config.ops.cache.kind.as_str();
+    let storage_type = config.storage.primary.r#type.as_str();
+    tracing::warn!(
+        storage_type,
+        cache_kind,
+        "file storage with distributed cache is not multi-process safe; use SQL storage for multi-instance deployments"
+    );
+}
+
+fn file_storage_uses_distributed_cache(config: &QidConfig, storage_url: &str) -> bool {
+    let cache_kind = config.ops.cache.kind.as_str();
+    if !matches!(cache_kind, "redis" | "valkey") {
+        return false;
+    }
+    let storage_type = config.storage.primary.r#type.as_str();
+    storage_type == "file"
+        || (!storage_url.starts_with("sqlite:") && !storage_url.starts_with("postgres:"))
 }
 
 async fn shutdown_signal() {
@@ -1042,10 +1152,16 @@ fn initialize_signing_material(
     config: &QidConfig,
     state_dir: &Path,
 ) -> anyhow::Result<SigningMaterial> {
+    let key_protector = key_protector_from_config(config, state_dir)
+        .context("failed to initialize signing key protector")?;
     if config.crypto.keyrings.is_empty() {
-        let keyring =
-            load_or_generate_local_keyring(state_dir, "default", &config.crypto.default_alg)
-                .context("failed to initialize local signing key")?;
+        let keyring = load_or_generate_local_keyring(
+            state_dir,
+            "default",
+            &config.crypto.default_alg,
+            key_protector.as_ref(),
+        )
+        .context("failed to initialize local signing key")?;
         let signer: Arc<dyn Signer> =
             Arc::new(keyring.active_signer().context("no active signer")?.clone());
         let jwks = serde_json::to_value(keyring.jwks()).unwrap_or_else(|_| json!({ "keys": [] }));
@@ -1080,9 +1196,13 @@ fn initialize_signing_material(
             );
         }
 
-        let keyring =
-            load_or_generate_local_keyring(state_dir, &configured.name, &config.crypto.default_alg)
-                .context("failed to initialize local signing key")?;
+        let keyring = load_or_generate_local_keyring(
+            state_dir,
+            &configured.name,
+            &config.crypto.default_alg,
+            key_protector.as_ref(),
+        )
+        .context("failed to initialize local signing key")?;
         let signer: Arc<dyn Signer> =
             Arc::new(keyring.active_signer().context("no active signer")?.clone());
         if idx == primary_index {
@@ -1126,27 +1246,167 @@ fn load_or_generate_local_keyring(
     state_dir: &Path,
     name: &str,
     algorithm: &str,
+    key_protector: Option<&PassphraseProtector>,
 ) -> anyhow::Result<Keyring> {
     std::fs::create_dir_all(state_dir)?;
     let (private_path, public_path) = signing_key_paths(state_dir, name, algorithm);
+    let encrypted_path = encrypted_key_path(&private_path);
 
     let mut keyring = Keyring::new(name);
-    if private_path.exists() {
-        let mut private_pem = std::fs::read_to_string(&private_path)?;
+    if encrypted_path.exists() {
+        let protector = key_protector.with_context(|| {
+            format!(
+                "encrypted signing key {} requires QID_KEY_PASSPHRASE or crypto.key_passphrase_file",
+                encrypted_path.display()
+            )
+        })?;
+        let encrypted = parse_encrypted_key(&std::fs::read_to_string(&encrypted_path)?)
+            .context("failed to parse encrypted signing key")?;
+        if encrypted.alg != algorithm {
+            anyhow::bail!(
+                "encrypted signing key {} algorithm {} does not match configured algorithm {}",
+                encrypted_path.display(),
+                encrypted.alg,
+                algorithm
+            );
+        }
+        let private_pem = protector
+            .unseal(&encrypted)
+            .context("failed to decrypt signing key")?;
         load_local_key(&mut keyring, name, algorithm, &private_pem)?;
-        private_pem.zeroize();
+    } else if private_path.exists() {
+        let private_pem = Zeroizing::new(std::fs::read_to_string(&private_path)?);
+        if let Some(protector) = key_protector {
+            let encrypted = protector
+                .seal(&private_pem, name, algorithm)
+                .context("failed to encrypt existing signing key")?;
+            std::fs::write(&encrypted_path, serialize_encrypted_key(&encrypted)?)
+                .context("failed to write encrypted signing key")?;
+            let backup_path = backup_key_path(&private_path);
+            std::fs::rename(&private_path, &backup_path)
+                .context("failed to move plaintext signing key to backup")?;
+            tracing::warn!(
+                plaintext_key = %private_path.display(),
+                encrypted_key = %encrypted_path.display(),
+                backup_key = %backup_path.display(),
+                "migrated plaintext signing key to encrypted storage"
+            );
+        }
+        load_local_key(&mut keyring, name, algorithm, &private_pem)?;
     } else {
         let mut generated = match algorithm {
             "ES256" => generate_es256(name)?,
             "EdDSA" => generate_eddsa(name)?,
             other => anyhow::bail!("local signer algorithm {other} is not supported"),
         };
-        std::fs::write(&private_path, &generated.private_pem)?;
+        if let Some(protector) = key_protector {
+            let encrypted = protector
+                .seal(&generated.private_pem, name, algorithm)
+                .context("failed to encrypt generated signing key")?;
+            std::fs::write(&encrypted_path, serialize_encrypted_key(&encrypted)?)
+                .context("failed to write encrypted signing key")?;
+        } else {
+            std::fs::write(&private_path, &generated.private_pem)?;
+        }
         std::fs::write(&public_path, &generated.public_pem)?;
         load_local_key(&mut keyring, name, algorithm, &generated.private_pem)?;
         generated.private_pem.zeroize();
     }
+    load_successor_keyring_key(state_dir, name, algorithm, key_protector, &mut keyring)?;
     Ok(keyring)
+}
+
+fn load_successor_keyring_key(
+    state_dir: &Path,
+    name: &str,
+    algorithm: &str,
+    key_protector: Option<&PassphraseProtector>,
+    keyring: &mut Keyring,
+) -> anyhow::Result<()> {
+    let safe_name = safe_keyring_file_component(name);
+    let safe_algorithm = safe_keyring_file_component(algorithm);
+    let prefix = format!("signing-key-{safe_name}-{safe_algorithm}-");
+    let suffix = ".pem.enc";
+    let successor_paths = std::fs::read_dir(state_dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(suffix))
+        })
+        .collect::<Vec<_>>();
+    if successor_paths.is_empty() {
+        return Ok(());
+    }
+    if successor_paths.len() > 1 {
+        anyhow::bail!(
+            "multiple successor signing keys found for keyring {name}; keep exactly one successor file"
+        );
+    }
+    let successor_path = &successor_paths[0];
+    let protector = key_protector.with_context(|| {
+        format!(
+            "successor signing key {} requires QID_KEY_PASSPHRASE or crypto.key_passphrase_file",
+            successor_path.display()
+        )
+    })?;
+    let encrypted = parse_encrypted_key(&std::fs::read_to_string(successor_path)?)
+        .context("failed to parse encrypted successor signing key")?;
+    if encrypted.alg != algorithm {
+        anyhow::bail!(
+            "successor signing key {} algorithm {} does not match configured algorithm {}",
+            successor_path.display(),
+            encrypted.alg,
+            algorithm
+        );
+    }
+    if encrypted.kid == keyring.active_kid() {
+        return Ok(());
+    }
+    let private_pem = protector
+        .unseal(&encrypted)
+        .context("failed to decrypt successor signing key")?;
+    load_local_successor_key(keyring, &encrypted.kid, algorithm, &private_pem)?;
+    tracing::info!(
+        keyring = name,
+        kid = %encrypted.kid,
+        "loaded successor signing key"
+    );
+    Ok(())
+}
+
+fn key_protector_from_config(
+    config: &QidConfig,
+    state_dir: &Path,
+) -> anyhow::Result<Option<PassphraseProtector>> {
+    if let Ok(passphrase) = std::env::var("QID_KEY_PASSPHRASE")
+        && !passphrase.is_empty()
+    {
+        return Ok(Some(PassphraseProtector::new(passphrase.into_bytes())?));
+    }
+    let Some(path) = config.crypto.key_passphrase_file.as_deref() else {
+        return Ok(None);
+    };
+    let path = resolve_config_relative_path(state_dir, path);
+    let passphrase = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read key passphrase file {}", path.display()))?;
+    let passphrase = passphrase
+        .trim_end_matches(['\r', '\n'])
+        .as_bytes()
+        .to_vec();
+    Ok(Some(PassphraseProtector::new(passphrase)?))
+}
+
+fn resolve_config_relative_path(state_dir: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        return path;
+    }
+    state_dir
+        .parent()
+        .map(|parent| parent.join(&path))
+        .unwrap_or(path)
 }
 
 fn load_local_key(
@@ -1168,6 +1428,25 @@ fn load_local_key(
     }
 }
 
+fn load_local_successor_key(
+    keyring: &mut Keyring,
+    kid: &str,
+    algorithm: &str,
+    private_pem: &str,
+) -> anyhow::Result<()> {
+    match algorithm {
+        "ES256" => {
+            keyring.load_next_es256(kid, private_pem)?;
+            Ok(())
+        }
+        "EdDSA" => {
+            keyring.load_next_eddsa(kid, private_pem)?;
+            Ok(())
+        }
+        other => anyhow::bail!("local signer algorithm {other} is not supported"),
+    }
+}
+
 fn signing_key_paths(state_dir: &Path, name: &str, algorithm: &str) -> (PathBuf, PathBuf) {
     if name == "default" && algorithm == "ES256" {
         return (
@@ -1181,6 +1460,18 @@ fn signing_key_paths(state_dir: &Path, name: &str, algorithm: &str) -> (PathBuf,
         state_dir.join(format!("signing-key-{safe_name}-{safe_algorithm}.pem")),
         state_dir.join(format!("signing-key-{safe_name}-{safe_algorithm}.pub.pem")),
     )
+}
+
+fn encrypted_key_path(private_path: &Path) -> PathBuf {
+    let mut path = private_path.as_os_str().to_os_string();
+    path.push(".enc");
+    PathBuf::from(path)
+}
+
+fn backup_key_path(private_path: &Path) -> PathBuf {
+    let mut path = private_path.as_os_str().to_os_string();
+    path.push(".bak");
+    PathBuf::from(path)
 }
 
 fn safe_keyring_file_component(value: &str) -> String {
@@ -1251,6 +1542,31 @@ mod tests {
             .expect("clock before epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("qid-qidd-{name}-{suffix}"))
+    }
+
+    #[test]
+    fn file_storage_distributed_cache_warning_detection() {
+        let mut config = minimal_config();
+        config.ops.cache.kind = "redis".to_string();
+        config.ops.cache.endpoints = vec!["redis://127.0.0.1:6379".to_string()];
+        config.storage.primary.r#type = "file".to_string();
+
+        assert!(file_storage_uses_distributed_cache(
+            &config,
+            "/var/lib/qid/store.json"
+        ));
+
+        config.storage.primary.r#type = "sqlite".to_string();
+        assert!(!file_storage_uses_distributed_cache(
+            &config,
+            "sqlite:/var/lib/qid/qid.db"
+        ));
+
+        config.ops.cache.kind = "disabled".to_string();
+        assert!(!file_storage_uses_distributed_cache(
+            &config,
+            "/var/lib/qid/store.json"
+        ));
     }
 
     fn network_aaa_config(auth_bind: String) -> QidConfig {
@@ -1364,6 +1680,94 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(kids.contains(&"corp-main"));
         assert!(kids.contains(&"corp-pep-assertion"));
+        std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[test]
+    fn passphrase_config_writes_encrypted_local_signing_key() {
+        let mut config = minimal_config();
+        let state_dir = test_state_dir("encrypted-generate");
+        std::fs::create_dir_all(&state_dir).expect("state dir");
+        let passphrase_path = state_dir.join("passphrase.txt");
+        std::fs::write(&passphrase_path, "test-passphrase\n").expect("passphrase");
+        config.crypto.key_passphrase_file = Some(passphrase_path.display().to_string());
+
+        let material =
+            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+
+        assert_eq!(material.signer.algorithm(), "ES256");
+        assert!(state_dir.join("signing-key.pem.enc").exists());
+        assert!(!state_dir.join("signing-key.pem").exists());
+        assert!(state_dir.join("signing-key.pub.pem").exists());
+        let encrypted =
+            std::fs::read_to_string(state_dir.join("signing-key.pem.enc")).expect("encrypted key");
+        assert!(!encrypted.contains("PRIVATE KEY"));
+        std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[test]
+    fn encrypted_successor_key_is_published_for_jwks_overlap() {
+        let mut config = minimal_config();
+        config.crypto.keyrings = vec![KeyringConfig {
+            name: "corp-main".to_string(),
+            realm_id: Some("corp".to_string()),
+            purposes: vec!["oidc_token".to_string()],
+            signer: SignerConfig::default(),
+            rotation: RotationConfig::default(),
+        }];
+        let state_dir = test_state_dir("encrypted-successor");
+        std::fs::create_dir_all(&state_dir).expect("state dir");
+        let passphrase_path = state_dir.join("passphrase.txt");
+        std::fs::write(&passphrase_path, "test-passphrase\n").expect("passphrase");
+        config.crypto.key_passphrase_file = Some(passphrase_path.display().to_string());
+
+        let protector = PassphraseProtector::new(b"test-passphrase".to_vec()).expect("protector");
+        let successor = generate_es256("corp-main-next").expect("successor key");
+        let encrypted = protector
+            .seal(&successor.private_pem, &successor.kid, "ES256")
+            .expect("encrypted successor");
+        std::fs::write(
+            state_dir.join("signing-key-corp-main-ES256-corp-main-next.pem.enc"),
+            serialize_encrypted_key(&encrypted).expect("successor serialization"),
+        )
+        .expect("successor key file");
+
+        let material =
+            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+        let kids = material.jwks["keys"]
+            .as_array()
+            .expect("jwks keys")
+            .iter()
+            .filter_map(|key| key.get("kid").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(material.signer.algorithm(), "ES256");
+        assert!(kids.contains(&"corp-main"));
+        assert!(kids.contains(&"corp-main-next"));
+        std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[test]
+    fn passphrase_config_migrates_plaintext_local_signing_key() {
+        let mut config = minimal_config();
+        let state_dir = test_state_dir("encrypted-migrate");
+        std::fs::create_dir_all(&state_dir).expect("state dir");
+        let passphrase_path = state_dir.join("passphrase.txt");
+        std::fs::write(&passphrase_path, "test-passphrase\n").expect("passphrase");
+        let generated = generate_es256("default").expect("generated key");
+        std::fs::write(state_dir.join("signing-key.pem"), &generated.private_pem)
+            .expect("plaintext key");
+        std::fs::write(state_dir.join("signing-key.pub.pem"), &generated.public_pem)
+            .expect("public key");
+        config.crypto.key_passphrase_file = Some(passphrase_path.display().to_string());
+
+        let material =
+            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+
+        assert_eq!(material.signer.algorithm(), "ES256");
+        assert!(state_dir.join("signing-key.pem.enc").exists());
+        assert!(state_dir.join("signing-key.pem.bak").exists());
+        assert!(!state_dir.join("signing-key.pem").exists());
         std::fs::remove_dir_all(&state_dir).ok();
     }
 

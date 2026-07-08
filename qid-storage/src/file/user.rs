@@ -26,6 +26,15 @@ impl UserRepository for FileRepository {
     }
 
     async fn list_users(&self, realm_id: &RealmId) -> QidResult<Vec<User>> {
+        self.list_users_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_users_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<User>> {
         let store = self.store.read().await;
         let mut users: Vec<_> = store
             .users
@@ -34,7 +43,7 @@ impl UserRepository for FileRepository {
             .cloned()
             .collect();
         users.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(users)
+        Ok(users.into_iter().skip(offset).take(limit).collect())
     }
 
     async fn delete_user(&self, id: &str) -> QidResult<()> {

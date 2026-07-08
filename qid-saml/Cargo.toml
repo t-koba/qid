@@ -30,3 +30,9 @@ tracing = { workspace = true }
 ulid = { workspace = true }
 urlencoding = { workspace = true }
 x509-parser = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

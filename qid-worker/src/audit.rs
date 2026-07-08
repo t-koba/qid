@@ -57,6 +57,16 @@ pub struct AuditSiemDeliveryConfig {
     pub retry_policy: AuditSiemRetryPolicy,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditSiemRedriveConfig {
+    pub delivery_id: String,
+    pub now_epoch: u64,
+    pub actor: String,
+    pub reason: String,
+    pub record_audit_event: bool,
+    pub retry_policy: AuditSiemRetryPolicy,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditSiemRetryPolicy {
     pub max_attempts: u32,
@@ -101,6 +111,7 @@ pub struct AuditSiemHttpResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditSiemDeliveryReport {
     pub status: AuditSiemDeliveryStatus,
+    pub delivery_id: Option<String>,
     pub realm_id: Option<String>,
     pub event_count: usize,
     pub endpoint_url: String,
@@ -454,6 +465,7 @@ where
     if events.is_empty() {
         return Ok(AuditSiemDeliveryReport {
             status: AuditSiemDeliveryStatus::SkippedNoEvents,
+            delivery_id: None,
             realm_id: config.realm_id,
             event_count: 0,
             endpoint_url: config.endpoint_url,
@@ -474,6 +486,32 @@ where
         audit_correlation_id: config.audit_correlation_id.clone(),
     };
     let payload = siem_webhook_payload(&events, &export_options, config.now_epoch);
+    let delivery_id = format!(
+        "siem-{}",
+        qid_core::util::sha256_base64url(
+            format!(
+                "{}|{}|{}|{}",
+                config.realm_id.as_deref().unwrap_or("global"),
+                config.endpoint_url,
+                config.now_epoch,
+                payload["event_count"].as_u64().unwrap_or_default()
+            )
+            .as_bytes()
+        )
+    );
+    repo.upsert_siem_delivery(&SiemDeliveryRecord {
+        id: delivery_id.clone(),
+        realm_id: config.realm_id.clone(),
+        endpoint_url: config.endpoint_url.clone(),
+        payload_json: payload.clone(),
+        attempts: config.completed_attempts,
+        next_retry_at: Some(config.now_epoch),
+        status: SiemDeliveryStatus::Pending,
+        last_error: None,
+        created_at: config.now_epoch,
+        updated_at: config.now_epoch,
+    })
+    .await?;
     let body = serde_json::to_vec(&payload).map_err(|e| qid_core::error::QidError::Internal {
         message: e.to_string(),
     })?;
@@ -520,6 +558,24 @@ where
             (status, None, retry)
         }
     };
+    let queue_status = match status {
+        AuditSiemDeliveryStatus::Delivered => SiemDeliveryStatus::Delivered,
+        AuditSiemDeliveryStatus::FailedRetryable => SiemDeliveryStatus::Pending,
+        AuditSiemDeliveryStatus::FailedPermanent => SiemDeliveryStatus::Dead,
+        AuditSiemDeliveryStatus::SkippedNoEvents => SiemDeliveryStatus::Pending,
+    };
+    let next_retry_at = retry
+        .delay_ms
+        .map(|delay_ms| config.now_epoch.saturating_add(delay_ms.div_ceil(1_000)));
+    repo.mark_siem_delivery_status(
+        &delivery_id,
+        queue_status,
+        retry.attempt,
+        next_retry_at,
+        retry.first_error.as_deref(),
+        config.now_epoch,
+    )
+    .await?;
 
     let event_count = events.len();
     let audit_event_id = if config.record_audit_event {
@@ -534,6 +590,7 @@ where
             reason: config.reason,
             metadata_json: serde_json::json!({
                 "status": status,
+                "delivery_id": delivery_id,
                 "event_count": event_count,
                 "http_status": http_status,
                 "retry": retry,
@@ -550,9 +607,142 @@ where
 
     Ok(AuditSiemDeliveryReport {
         status,
+        delivery_id: Some(delivery_id),
         realm_id: config.realm_id,
         event_count,
         endpoint_url: config.endpoint_url,
+        http_status,
+        retry,
+        audit_event_id,
+    })
+}
+
+pub async fn run_audit_siem_redrive_job<R, T>(
+    repo: &R,
+    transport: &T,
+    config: AuditSiemRedriveConfig,
+) -> QidResult<AuditSiemDeliveryReport>
+where
+    R: Repository,
+    T: SiemWebhookTransport,
+{
+    let delivery = repo
+        .get_siem_delivery(&config.delivery_id)
+        .await?
+        .ok_or_else(|| QidError::NotFound {
+            resource: format!("siem delivery {}", config.delivery_id),
+        })?;
+    if delivery.endpoint_url.is_empty() || !delivery.endpoint_url.starts_with("https://") {
+        return Err(QidError::Config {
+            message: format!(
+                "SIEM webhook endpoint_url must use https:// scheme, got: {}",
+                delivery.endpoint_url
+            ),
+        });
+    }
+    let body = serde_json::to_vec(&delivery.payload_json).map_err(|e| QidError::Internal {
+        message: e.to_string(),
+    })?;
+    let mut headers = BTreeMap::new();
+    headers.insert("content-type".to_string(), "application/json".to_string());
+    headers.insert("content-length".to_string(), body.len().to_string());
+    headers.insert(
+        "x-qid-event-type".to_string(),
+        "qid.audit.webhook.v1".to_string(),
+    );
+    let response = transport.send(AuditSiemHttpRequest {
+        method: "POST".to_string(),
+        url: delivery.endpoint_url.clone(),
+        headers,
+        body,
+    });
+    let (status, http_status, retry) = match response {
+        Ok(response) if (200..300).contains(&response.status) => (
+            AuditSiemDeliveryStatus::Delivered,
+            Some(response.status),
+            AuditSiemRetryDecision {
+                retry: false,
+                attempt: delivery.attempts + 1,
+                delay_ms: None,
+                first_error: None,
+            },
+        ),
+        Ok(response) => {
+            let retry = plan_siem_retry(config.retry_policy, delivery.attempts, response.status);
+            let status = if retry.retry {
+                AuditSiemDeliveryStatus::FailedRetryable
+            } else {
+                AuditSiemDeliveryStatus::FailedPermanent
+            };
+            (status, Some(response.status), retry)
+        }
+        Err(e) => {
+            let mut retry = plan_siem_retry(config.retry_policy, delivery.attempts, 503);
+            retry.first_error = Some(e);
+            let status = if retry.retry {
+                AuditSiemDeliveryStatus::FailedRetryable
+            } else {
+                AuditSiemDeliveryStatus::FailedPermanent
+            };
+            (status, None, retry)
+        }
+    };
+    let queue_status = match status {
+        AuditSiemDeliveryStatus::Delivered => SiemDeliveryStatus::Delivered,
+        AuditSiemDeliveryStatus::FailedRetryable => SiemDeliveryStatus::Pending,
+        AuditSiemDeliveryStatus::FailedPermanent => SiemDeliveryStatus::Dead,
+        AuditSiemDeliveryStatus::SkippedNoEvents => SiemDeliveryStatus::Pending,
+    };
+    let next_retry_at = retry
+        .delay_ms
+        .map(|delay_ms| config.now_epoch.saturating_add(delay_ms.div_ceil(1_000)));
+    repo.mark_siem_delivery_status(
+        &delivery.id,
+        queue_status,
+        retry.attempt,
+        next_retry_at,
+        retry.first_error.as_deref(),
+        config.now_epoch,
+    )
+    .await?;
+    let event_count = delivery
+        .payload_json
+        .get("event_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default() as usize;
+    let audit_event_id = if config.record_audit_event {
+        let event_id = Ulid::new().to_string();
+        repo.append_audit_event(&AuditEvent {
+            id: event_id.clone(),
+            realm_id: delivery.realm_id.clone(),
+            actor: config.actor,
+            action: "audit_siem.redrive".to_string(),
+            target_type: "audit_siem".to_string(),
+            target_id: delivery.id.clone(),
+            reason: config.reason,
+            metadata_json: serde_json::json!({
+                "status": status,
+                "delivery_id": delivery.id.clone(),
+                "event_count": event_count,
+                "http_status": http_status,
+                "retry": retry,
+            }),
+            created_at: config.now_epoch,
+            previous_hash: None,
+            event_hash: None,
+        })
+        .await?;
+        Some(event_id)
+    } else {
+        None
+    };
+
+    Ok(AuditSiemDeliveryReport {
+        status,
+        delivery_id: Some(config.delivery_id),
+        realm_id: delivery.realm_id,
+        event_count,
+        endpoint_url: delivery.endpoint_url,
         http_status,
         retry,
         audit_event_id,

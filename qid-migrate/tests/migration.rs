@@ -71,3 +71,38 @@ async fn migration_rollback_not_supported() {
     let plan = repo.migration_plan().await.unwrap();
     assert!(plan.pending.is_empty() || plan.ready);
 }
+
+#[tokio::test]
+async fn migrations_create_lookup_indexes() {
+    let (repo, file) = fresh_repo().await;
+    repo.migrate().await.unwrap();
+
+    let url = format!("sqlite:{}", file.path().display());
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    for index_name in [
+        "idx_users_realm_created",
+        "idx_clients_realm_created",
+        "idx_sessions_realm_user_created",
+        "idx_token_families_realm_user_client_issued",
+        "idx_access_tokens_realm_client_expires",
+        "idx_auth_codes_realm_expires",
+        "idx_siem_delivery_queue_status_retry",
+        "idx_siem_delivery_queue_realm_status_retry",
+    ] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+        )
+        .bind(index_name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "missing lookup index {index_name}");
+    }
+    let table_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?")
+            .bind("siem_delivery_queue")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(table_count, 1, "missing siem_delivery_queue table");
+}

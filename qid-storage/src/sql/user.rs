@@ -80,11 +80,24 @@ impl UserRepository for SqlRepository {
     }
 
     async fn list_users(&self, realm_id: &RealmId) -> QidResult<Vec<User>> {
-        let rows: Vec<UserRow> = sqlx::query_as("SELECT * FROM users WHERE realm_id = ?")
-            .bind(realm_id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
+        self.list_users_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_users_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<User>> {
+        let rows: Vec<UserRow> = sqlx::query_as(
+            "SELECT * FROM users WHERE realm_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
+        )
+        .bind(realm_id.as_str())
+        .bind(page_bound(limit))
+        .bind(page_bound(offset))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 

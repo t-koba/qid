@@ -241,7 +241,8 @@ pub(crate) async fn revoke_session_handler<R: Repository>(
     }
     match state.repo.revoke_session(&session_id).await {
         Ok(_) => {
-            let _ = append_admin_audit(
+            state.session_cache_delete(&session_id);
+            if let Err(e) = record_admin_audit_or_warn(
                 &state,
                 &headers,
                 &_admin,
@@ -252,7 +253,10 @@ pub(crate) async fn revoke_session_handler<R: Repository>(
                 &session_id,
                 serde_json::json!({"forced": true}),
             )
-            .await;
+            .await
+            {
+                return qid_http::error_response(e);
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => qid_http::error_response(e),
@@ -292,7 +296,7 @@ pub(crate) async fn revoke_token_family_handler<R: Repository>(
     }
     match state.repo.revoke_token_family(&family_id).await {
         Ok(_) => {
-            let _ = append_admin_audit(
+            if let Err(e) = record_admin_audit_or_warn(
                 &state,
                 &headers,
                 &_admin,
@@ -303,7 +307,10 @@ pub(crate) async fn revoke_token_family_handler<R: Repository>(
                 &family_id,
                 serde_json::json!({"forced": true}),
             )
-            .await;
+            .await
+            {
+                return qid_http::error_response(e);
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => qid_http::error_response(e),
@@ -380,7 +387,7 @@ pub(crate) async fn create_service_account_handler<R: Repository>(
     };
     match state.repo.create_service_account(&sa).await {
         Ok(_) => {
-            let _ = append_admin_audit(
+            if let Err(e) = record_admin_audit_or_warn(
                 &state,
                 &headers,
                 &_admin,
@@ -391,7 +398,10 @@ pub(crate) async fn create_service_account_handler<R: Repository>(
                 &sa.id,
                 serde_json::json!({"client_id": &sa.client_id}),
             )
-            .await;
+            .await
+            {
+                return qid_http::error_response(e);
+            }
             (StatusCode::CREATED, Json(sa)).into_response()
         }
         Err(e) => qid_http::error_response(e),
@@ -426,7 +436,7 @@ pub(crate) async fn delete_service_account_handler<R: Repository>(
     }
     match state.repo.delete_service_account(&sa_id).await {
         Ok(_) => {
-            let _ = append_admin_audit(
+            if let Err(e) = record_admin_audit_or_warn(
                 &state,
                 &headers,
                 &_admin,
@@ -437,7 +447,10 @@ pub(crate) async fn delete_service_account_handler<R: Repository>(
                 &sa_id,
                 serde_json::json!({}),
             )
-            .await;
+            .await
+            {
+                return qid_http::error_response(e);
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => qid_http::error_response(e),

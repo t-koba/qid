@@ -37,6 +37,9 @@ pub mod test_helpers;
 
 pub use util::{compute_pairwise_sub, sector_identifier_for_client};
 
+#[cfg(feature = "redis-cache")]
+pub use cache::redis_cache;
+pub use cache::{MemoryCache, SharedCache};
 pub use config::QidConfig;
 pub use error::{QidError, QidResult};
 pub use models::*;

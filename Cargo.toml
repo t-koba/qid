@@ -59,7 +59,6 @@ insta = { version = "1", features = ["json"] }
 jsonwebtoken = "9"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
-openssl = { version = "0.10", features = ["vendored"] }
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 p256 = { version = "0.13", features = ["pem", "ecdsa", "pkcs8"] }
 rand = "0.8"
@@ -134,3 +133,7 @@ qid-worker = { version = "0.1.0", path = "qid-worker" }
 qid-ops = { version = "0.1.0", path = "qid-ops" }
 qid-session = { version = "0.1.0", path = "qid-session" }
 qid-storage = { version = "0.1.0", path = "qid-storage" }
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

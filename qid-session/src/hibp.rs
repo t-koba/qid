@@ -9,13 +9,12 @@ pub struct HibpClient {
 
 impl HibpClient {
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .user_agent("qid/0.1")
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("reqwest Client::builder() should not fail with default settings"),
-        }
+        let client = reqwest::Client::builder()
+            .user_agent("qid/0.1")
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client }
     }
 
     pub async fn check_password(&self, password: &str) -> anyhow::Result<bool> {

@@ -1,18 +1,6 @@
 //! OIDC Provider core logic.
 
 use base64::Engine;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-
-pub fn compute_pairwise_sub(public_sub: &str, sector_identifier: &str, issuer: &str) -> String {
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(issuer.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(public_sub.as_bytes());
-    mac.update(b"|");
-    mac.update(sector_identifier.as_bytes());
-    let result = mac.finalize().into_bytes();
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&result[..16])
-}
 
 use axum::{
     Form,
@@ -644,17 +632,20 @@ async fn find_request_object_client<R: Repository>(
         return Ok(matching_audience.remove(0));
     }
     if candidates.len() == 1 && matching_audience.is_empty() {
+        tracing::warn!(client_id = %client_id, "request object audience mismatch");
         return Err(QidError::Unauthorized {
-            message: "request object audience mismatch".to_string(),
+            message: "invalid request object".to_string(),
         });
     }
     if candidates.is_empty() {
+        tracing::warn!(client_id = %client_id, "request object client is not registered");
         return Err(QidError::Unauthorized {
-            message: "request object client is not registered".to_string(),
+            message: "invalid request object".to_string(),
         });
     }
+    tracing::warn!(client_id = %client_id, "request object client realm is ambiguous");
     Err(QidError::Unauthorized {
-        message: "request object client realm is ambiguous".to_string(),
+        message: "invalid request object".to_string(),
     })
 }
 
@@ -686,8 +677,9 @@ fn verify_request_object_signature(
         })
         .collect();
     if candidates.is_empty() {
+        tracing::warn!(client_id = %client.client_id, kid = ?kid, "request object kid is not registered for client");
         return Err(QidError::Unauthorized {
-            message: "request object kid is not registered for client".to_string(),
+            message: "invalid request object".to_string(),
         });
     }
     let mut last_error = None;
@@ -792,8 +784,9 @@ fn validate_request_object_audience<R: Repository>(
     if request_object_audience_matches_realm(state, realm_id, claims) {
         return Ok(());
     }
+    tracing::warn!(realm = %realm_id, "request object audience mismatch");
     Err(QidError::Unauthorized {
-        message: "request object audience mismatch".to_string(),
+        message: "invalid request object".to_string(),
     })
 }
 
@@ -932,8 +925,11 @@ async fn validate_authorize_request<R: Repository>(
         .iter()
         .find(|r| r.id == client.realm_id)
         .map(|realm| &realm.protocols.oidc)
-        .ok_or_else(|| QidError::Config {
-            message: format!("realm {} not found", client.realm_id),
+        .ok_or_else(|| {
+            tracing::warn!(realm = %client.realm_id, "client references missing realm");
+            QidError::Config {
+                message: "authorization request is not available".to_string(),
+            }
         })?;
     if !oidc.enabled || !oidc.authorization_code.enabled {
         return Err(QidError::BadRequest {
@@ -960,8 +956,11 @@ async fn validate_authorize_request<R: Repository>(
         .iter()
         .find(|r| r.id == client.realm_id)
         .map(|realm| &realm.protocols.oauth)
-        .ok_or_else(|| QidError::Config {
-            message: format!("realm {} not found", client.realm_id),
+        .ok_or_else(|| {
+            tracing::warn!(realm = %client.realm_id, "client references missing realm");
+            QidError::Config {
+                message: "authorization request is not available".to_string(),
+            }
         })?;
     if oauth.jarm.enabled && req.response_mode.as_deref() != Some("jwt") {
         return Err(QidError::BadRequest {
@@ -970,8 +969,13 @@ async fn validate_authorize_request<R: Repository>(
     }
 
     if !client.redirect_uris.contains(&req.redirect_uri) {
+        tracing::warn!(
+            client_id = %client.client_id,
+            realm = %client.realm_id,
+            "authorization request redirect_uri is not registered"
+        );
         return Err(QidError::Unauthorized {
-            message: "invalid redirect_uri".to_string(),
+            message: "authorization request is not allowed".to_string(),
         });
     }
 
@@ -1016,15 +1020,19 @@ async fn find_client_across_realms<R: Repository>(
             .await?
         {
             if found.is_some() {
+                tracing::warn!(client_id = %client_id, "authorization request client realm is ambiguous");
                 return Err(QidError::Unauthorized {
-                    message: "client realm is ambiguous".to_string(),
+                    message: "authorization request is not allowed".to_string(),
                 });
             }
             found = Some(client);
         }
     }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
+    found.ok_or_else(|| {
+        tracing::warn!(client_id = %client_id, "authorization request client is unknown");
+        QidError::Unauthorized {
+            message: "authorization request is not allowed".to_string(),
+        }
     })
 }
 

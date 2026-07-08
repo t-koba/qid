@@ -25,6 +25,7 @@ fn minimal_config() -> QidConfig {
         storage: StorageConfig::default(),
         crypto: CryptoConfig {
             default_alg: "ES256".to_string(),
+            key_passphrase_file: None,
             keyrings: vec![KeyringConfig {
                 name: "corp-main".to_string(),
                 realm_id: Some("corp".to_string()),

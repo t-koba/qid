@@ -90,6 +90,10 @@ pub async fn device_authorization<R: Repository>(
         .unwrap_or_else(|| vec![realm.oauth_default_scope.clone()]);
     let device_code = format!("dc_{code}");
     let now = qid_core::util::now_seconds();
+    let ttl_seconds = state
+        .realm(&client.realm_id)
+        .map(|realm| realm.token_ttl.device_code_ttl_seconds)
+        .unwrap_or_else(|| qid_core::config::TokenTtlConfig::default().device_code_ttl_seconds);
     let grant = DeviceAuthorizationGrant {
         device_code_hash: qid_core::util::sha256_base64url(&device_code),
         user_code: user_code.clone(),
@@ -97,7 +101,7 @@ pub async fn device_authorization<R: Repository>(
         realm_id: realm.id.clone(),
         scopes: scope,
         user_id: None,
-        expires_at: now + 600,
+        expires_at: now + ttl_seconds,
         approved_at: None,
         consumed: false,
         last_poll_at: None,
@@ -112,7 +116,7 @@ pub async fn device_authorization<R: Repository>(
         user_code,
         verification_uri,
         verification_uri_complete,
-        expires_in: 600,
+        expires_in: ttl_seconds,
         interval: 5,
     })
     .into_response()

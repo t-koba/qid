@@ -12,6 +12,7 @@ pub mod jwk;
 pub mod jwt;
 pub mod kdf;
 pub mod keyring;
+pub mod keystore;
 pub mod password;
 pub mod pkcs11;
 pub mod pki;
@@ -28,6 +29,10 @@ pub use jwk::{Jwk, JwkSet};
 pub use jwt::{LocalSigner, RemoteJwtSigner, TokenPair, remote_sign_jwt};
 pub use kdf::hkdf_sha256;
 pub use keyring::{HttpRemoteSignerTransport, Keyring};
+pub use keystore::{
+    EncryptedKeyFile, KeyProtector, PassphraseProtector, parse_encrypted_key,
+    serialize_encrypted_key,
+};
 pub use password::{
     ARGON2ID_ALGORITHM, BCRYPT_ALGORITHM, BreachedPasswordSet, DenyPepperResolver,
     ImportedPasswordRecord, LDAP_BIND_ALGORITHM, PBKDF2_SHA256_ALGORITHM,

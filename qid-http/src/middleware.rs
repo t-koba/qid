@@ -13,17 +13,49 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use qid_core::config::CorsConfig;
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
-use tracing::{info, warn};
+use tracing::{Instrument, info, warn};
 
 use crate::security_headers::apply_security_headers;
 
 pub async fn request_id_layer(req: Request, next: Next) -> Response {
+    let request_id = request_id_from_headers(req.headers()).unwrap_or_else(new_request_id);
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
-    let response = next.run(req).await;
+    let span = tracing::info_span!(
+        "http_request",
+        request_id = %request_id,
+        method = %method,
+        path = %path
+    );
+    let mut response = next.run(req).instrument(span).await;
     let status = response.status().as_u16();
-    info!(method, path, status, "request handled");
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("x-request-id"), value);
+    }
+    info!(request_id, method, path, status, "request handled");
     response
+}
+
+fn request_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-request-id")
+        .and_then(header_to_str)
+        .filter(|value| valid_request_id(value))
+        .map(ToOwned::to_owned)
+}
+
+fn new_request_id() -> String {
+    ulid::Ulid::new().to_string()
+}
+
+fn valid_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
 pub fn cors_layer(config: &CorsConfig) -> CorsLayer {
@@ -139,9 +171,9 @@ pub async fn csp_headers_layer(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
     response.headers_mut().insert(
         CONTENT_SECURITY_POLICY,
-        "default-src 'self'; script-src 'none'; object-src 'none'; base-uri 'none'"
-            .parse()
-            .unwrap(),
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'none'; object-src 'none'; base-uri 'none'",
+        ),
     );
     response
 }
@@ -164,7 +196,7 @@ pub async fn hsts_layer(req: Request, next: Next) -> Response {
 pub async fn zero_rtt_rejection_layer(req: Request, next: Next) -> Response {
     if req.headers().contains_key("early-data") || req.headers().contains_key("Early-Data") {
         let mut response = Response::new(axum::body::Body::empty());
-        *response.status_mut() = StatusCode::from_u16(425).unwrap();
+        *response.status_mut() = StatusCode::TOO_EARLY;
         response.headers_mut().insert(
             HeaderName::from_static("early-data"),
             HeaderValue::from_static("1"),
@@ -599,6 +631,23 @@ mod tests {
             cors_origins(&config),
             vec![HeaderValue::from_static("https://app.example.com")]
         );
+    }
+
+    #[test]
+    fn request_id_accepts_safe_client_value() {
+        let headers = headers(&[("x-request-id", "req-01HZZZZZZZZZZZZZZZZZZZZZZZ")]);
+
+        assert_eq!(
+            request_id_from_headers(&headers).as_deref(),
+            Some("req-01HZZZZZZZZZZZZZZZZZZZZZZZ")
+        );
+    }
+
+    #[test]
+    fn request_id_rejects_unsafe_client_value() {
+        let headers = headers(&[("x-request-id", "bad value with spaces")]);
+
+        assert!(request_id_from_headers(&headers).is_none());
     }
 
     #[test]

@@ -35,12 +35,30 @@ pub(crate) async fn list_users<R: Repository>(
         Ok(secret) => secret,
         Err(e) => return qid_http::error_response(e),
     };
-    let mut users = match state.repo.list_scim_users(&RealmId(realm)).await {
-        Ok(users) => users,
-        Err(e) => return qid_http::error_response(e),
-    };
     let applied_filter = query.filter.clone();
-    if let Some(filter) = query.filter.as_deref() {
+    let filter_fingerprint = filter_fingerprint(applied_filter.as_deref());
+    // RFC 9865 §4.2: cursors take precedence over `startIndex`/`count`.
+    let (start, count) = if let Some(cursor) = query.cursor.as_deref() {
+        match decode_cursor(cursor_secret.as_bytes(), cursor, &filter_fingerprint) {
+            Some(state) => (state.start, state.count.min(MAX_LIST_RESULTS)),
+            None => {
+                return qid_http::error_response(QidError::BadRequest {
+                    message: "invalid or expired SCIM pagination cursor".to_string(),
+                });
+            }
+        }
+    } else {
+        (
+            query.start_index.unwrap_or(1).saturating_sub(1),
+            query.count.unwrap_or(100).min(MAX_LIST_RESULTS),
+        )
+    };
+    let realm_id = RealmId(realm);
+    let (total, page) = if let Some(filter) = query.filter.as_deref() {
+        let mut users = match state.repo.list_scim_users(&realm_id).await {
+            Ok(users) => users,
+            Err(e) => return qid_http::error_response(e),
+        };
         let parsed = match filter::parse_eq_filter(
             filter,
             &[
@@ -87,26 +105,24 @@ pub(crate) async fn list_users<R: Repository>(
                 });
             }
         }
-    }
-    let filter_fingerprint = filter_fingerprint(applied_filter.as_deref());
-    // RFC 9865 §4.2: cursors take precedence over `startIndex`/`count`.
-    let (start, count) = if let Some(cursor) = query.cursor.as_deref() {
-        match decode_cursor(cursor_secret.as_bytes(), cursor, &filter_fingerprint) {
-            Some(state) => (state.start, state.count.min(MAX_LIST_RESULTS)),
-            None => {
-                return qid_http::error_response(QidError::BadRequest {
-                    message: "invalid or expired SCIM pagination cursor".to_string(),
-                });
-            }
-        }
+        let total = users.len();
+        let page: Vec<ScimUser> = users.into_iter().skip(start).take(count).collect();
+        (total, page)
     } else {
-        (
-            query.start_index.unwrap_or(1).saturating_sub(1),
-            query.count.unwrap_or(100).min(MAX_LIST_RESULTS),
-        )
+        let total = match state.repo.count_scim_users(&realm_id).await {
+            Ok(total) => total,
+            Err(e) => return qid_http::error_response(e),
+        };
+        let page = match state
+            .repo
+            .list_scim_users_page(&realm_id, start, count)
+            .await
+        {
+            Ok(users) => users,
+            Err(e) => return qid_http::error_response(e),
+        };
+        (total, page)
     };
-    let total = users.len();
-    let page: Vec<ScimUser> = users.into_iter().skip(start).take(count).collect();
     let next_cursor = if start + count < total {
         Some(encode_cursor(
             cursor_secret.as_bytes(),

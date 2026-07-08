@@ -71,6 +71,16 @@ Static client validation enforces:
 
 FAPI and high-assurance profiles require sender-constrained resource servers and stronger client authentication surfaces.
 
+## Shared Cache Security
+
+Multi-instance deployments must configure `ops.cache.kind: redis` or `valkey` with a shared endpoint. Process-local memory is not sufficient for replay detection or cross-instance revocation visibility.
+
+Failure behavior is intentionally split by security impact:
+
+- DPoP JTI and JWT assertion replay recording fails closed when the shared cache cannot perform atomic insert-if-absent.
+- PEP decision cache and browser session cache failures are treated as cache misses so authorization and session checks fall back to storage or policy evaluation.
+- Session revocation deletes the shared cache entry on qid-managed revoke paths and the process-local L1 cache is intentionally short-lived.
+
 ## HTTP Layers
 
 `qidd` installs:
@@ -89,6 +99,10 @@ HTTP Message Signatures can wrap signed OAuth and PEP-facing back-channel routes
 ## Key Material
 
 Local signing keys are stored in `qid-state/` next to the primary config. Protect this directory with filesystem permissions and backup policy appropriate for signing keys.
+
+Set `QID_KEY_PASSPHRASE` or `crypto.key_passphrase_file` before first startup to store generated local signing keys as encrypted `.pem.enc` files. The file format uses Argon2id-derived AES-256-GCM and keeps `kid`, `alg`, and creation time as explicit metadata.
+
+When a passphrase is configured and a plaintext local PEM already exists, `qidd` migrates it on startup by writing the encrypted `.pem.enc` file and moving the plaintext file to `.bak`. Treat the backup as exposed secret material and remove it only after the encrypted key has been tested and backed up.
 
 Remote signer keyrings are validated by config, but current daemon startup does not include remote signer transport. Do not set high-assurance remote signer profiles expecting runtime signing to work until the transport is implemented.
 
@@ -164,6 +178,8 @@ Enterprise profile requires:
 When encrypted assertions are required, SP encryption certificates must be configured.
 
 Inbound SAML federation must validate signatures, issuer, audience, destination/recipient, conditions, subject confirmation expiry, and replay state. Missing or unverifiable trust material is a fail-closed condition.
+
+SAML XML processing rejects DOCTYPE declarations, XML comments, duplicate IDs, weak signature/digest algorithms, duplicate Signature elements, and Signature Reference URI mismatches. XML canonicalization is intentionally limited to the SAML/XMLDSig profiles implemented in `qid-saml`; unsupported transforms or reference schemes are rejected instead of silently normalized.
 
 ## Metrics and Audit Exposure
 

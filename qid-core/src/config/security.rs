@@ -6,6 +6,8 @@ pub struct StorageConfig {
     #[serde(default)]
     pub primary: PrimaryStorageConfig,
     #[serde(default)]
+    pub file: FileStorageConfig,
+    #[serde(default)]
     pub cache: StorageCacheConfig,
 }
 
@@ -51,6 +53,61 @@ fn default_storage_type() -> String {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct FileStorageConfig {
+    #[serde(default = "default_file_flush_mode")]
+    pub flush_mode: String,
+}
+
+impl Default for FileStorageConfig {
+    fn default() -> Self {
+        Self {
+            flush_mode: default_file_flush_mode(),
+        }
+    }
+}
+
+impl FileStorageConfig {
+    pub fn flush_interval_ms(&self) -> QidResult<Option<u64>> {
+        parse_file_flush_mode(&self.flush_mode)
+    }
+
+    fn validate(&self) -> QidResult<()> {
+        self.flush_interval_ms()?;
+        Ok(())
+    }
+}
+
+fn default_file_flush_mode() -> String {
+    "immediate".to_string()
+}
+
+fn parse_file_flush_mode(value: &str) -> QidResult<Option<u64>> {
+    let value = value.trim();
+    if value == "immediate" {
+        return Ok(None);
+    }
+    let Some(inner) = value
+        .strip_prefix("interval_ms(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return Err(QidError::Config {
+            message: "storage.file.flush_mode must be immediate or interval_ms(N)".to_string(),
+        });
+    };
+    let interval = inner.parse::<u64>().map_err(|_| QidError::Config {
+        message: "storage.file.flush_mode interval_ms(N) must contain a positive integer"
+            .to_string(),
+    })?;
+    if interval == 0 {
+        return Err(QidError::Config {
+            message: "storage.file.flush_mode interval must be greater than zero".to_string(),
+        });
+    }
+    Ok(Some(interval))
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct StorageCacheConfig {
     #[serde(default = "default_ops_cache_kind")]
     pub kind: String,
@@ -76,11 +133,19 @@ impl Default for StorageCacheConfig {
     }
 }
 
+impl StorageConfig {
+    pub(crate) fn validate(&self) -> QidResult<()> {
+        self.file.validate()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CryptoConfig {
     #[serde(default = "default_crypto_alg")]
     pub default_alg: String,
+    #[serde(default)]
+    pub key_passphrase_file: Option<String>,
     #[serde(default)]
     pub keyrings: Vec<KeyringConfig>,
 }
@@ -89,6 +154,7 @@ impl Default for CryptoConfig {
     fn default() -> Self {
         Self {
             default_alg: default_crypto_alg(),
+            key_passphrase_file: None,
             keyrings: Vec::new(),
         }
     }
@@ -99,6 +165,15 @@ impl CryptoConfig {
         if !matches!(self.default_alg.as_str(), "ES256" | "RS256" | "EdDSA") {
             return Err(QidError::Config {
                 message: "crypto.default_alg must be ES256, RS256, or EdDSA".to_string(),
+            });
+        }
+        if self
+            .key_passphrase_file
+            .as_deref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err(QidError::Config {
+                message: "crypto.key_passphrase_file must not be empty".to_string(),
             });
         }
 

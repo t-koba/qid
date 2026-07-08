@@ -88,10 +88,21 @@ impl ClientRepository for SqlRepository {
     }
 
     async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>> {
+        self.list_clients_page(realm_id, 0, usize::MAX).await
+    }
+
+    async fn list_clients_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<Client>> {
         let rows: Vec<ClientRow> = sqlx::query_as(
-            "SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint FROM clients WHERE realm_id = ?",
+            "SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint FROM clients WHERE realm_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
         )
             .bind(realm_id.as_str())
+            .bind(page_bound(limit))
+            .bind(page_bound(offset))
             .fetch_all(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;

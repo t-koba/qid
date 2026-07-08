@@ -216,11 +216,16 @@ mod tests {
     }
 
     #[test]
-    fn dom_comment_is_transparent() {
+    fn dom_rejects_comment_before_signature() {
         let xml = valid_saml_xml().replace("<ds:Signature", "<!-- payload --><ds:Signature");
-        let doc = SamlDocument::parse(&xml).unwrap();
-        let profile = doc.inspect_signature_profile("AuthnRequest").unwrap();
-        assert_eq!(profile.reference_uri.as_deref(), Some("#req-123"));
+
+        assert!(
+            matches!(
+                crate::xml::inspect_xml_signature_profile(&xml, "AuthnRequest"),
+                Err(QidError::BadRequest { .. })
+            ),
+            "SAML comments must be rejected before DOM inspection"
+        );
     }
 
     #[test]

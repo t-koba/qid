@@ -65,6 +65,7 @@ pub async fn session_refresh<R: Repository>(
     {
         return qid_http::error_response(e);
     }
+    state.session_cache_delete(&session_id);
 
     StatusCode::OK.into_response()
 }
@@ -116,6 +117,7 @@ pub async fn session_revoke<R: Repository>(
     if let Err(e) = manager.revoke(&session_id).await {
         return qid_http::error_response(e);
     }
+    state.session_cache_delete(&session_id);
 
     let clear_cookie = format!(
         "{}={}; HttpOnly; Secure; Path=/; SameSite={}; Max-Age=0",

@@ -33,7 +33,54 @@ pub(crate) async fn append_admin_audit<R: Repository>(
         previous_hash: None,
         event_hash: None,
     };
-    state.repo.append_audit_event(&event).await
+    match state.repo.append_audit_event(&event).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            metrics::counter!("qid_audit_append_failures_total").increment(1);
+            tracing::warn!(
+                error = %e,
+                action,
+                target_type,
+                target_id,
+                "failed to append admin audit event"
+            );
+            Err(e)
+        }
+    }
+}
+
+/// Append an admin audit event, degrading to a warning unless fail-closed is configured.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_admin_audit_or_warn<R: Repository>(
+    state: &SharedState<R>,
+    headers: &HeaderMap,
+    admin: &Admin,
+    elevation: &AdminElevation,
+    realm_id: Option<String>,
+    action: &str,
+    target_type: &str,
+    target_id: &str,
+    metadata_json: serde_json::Value,
+) -> QidResult<()> {
+    match append_admin_audit(
+        state,
+        headers,
+        admin,
+        elevation,
+        realm_id,
+        action,
+        target_type,
+        target_id,
+        metadata_json,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(e) if state.config.admin.audit_fail_closed => Err(QidError::Internal {
+            message: format!("admin mutation rejected because audit append failed: {e}"),
+        }),
+        Err(_) => Ok(()),
+    }
 }
 
 pub(crate) fn audit_limit(requested: Option<usize>) -> usize {

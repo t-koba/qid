@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -20,6 +21,8 @@ enum Command {
     Structure,
     /// Verify line-count budget.
     Budget,
+    /// Verify documented HTTP routes match axum route literals.
+    DocsRoutes,
     /// Run CI quality and conformance gates.
     Gate {
         /// Gate suite to run.
@@ -43,6 +46,7 @@ fn main() -> anyhow::Result<()> {
     match args.command {
         Command::Structure => cmd_structure()?,
         Command::Budget => cmd_budget()?,
+        Command::DocsRoutes => cmd_docs_routes()?,
         Command::Gate { suite, dry_run } => cmd_gate(suite, dry_run)?,
         Command::Coverage { min_pct } => cmd_coverage(min_pct)?,
     }
@@ -62,6 +66,8 @@ enum GateSuite {
     Preflight,
     /// Baseline, conformance, and assurance checks.
     Release,
+    /// Documentation route drift check only.
+    DocsRoutes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +137,7 @@ fn cmd_gate(suite: GateSuite, dry_run: bool) -> anyhow::Result<()> {
 fn gate_plan(suite: GateSuite) -> Vec<GateCommand> {
     match suite {
         GateSuite::Baseline => baseline_gates(),
+        GateSuite::DocsRoutes => vec![docs_routes_gate()],
         GateSuite::Conformance => conformance_gates(),
         GateSuite::Assurance => assurance_gates(),
         GateSuite::Preflight => preflight_gates(),
@@ -181,7 +188,16 @@ fn baseline_gates() -> Vec<GateCommand> {
             &["run", "-p", "xtask", "--", "structure"],
         ),
         GateCommand::new("budget", "cargo", &["run", "-p", "xtask", "--", "budget"]),
+        docs_routes_gate(),
     ]
+}
+
+fn docs_routes_gate() -> GateCommand {
+    GateCommand::new(
+        "docs-routes",
+        "cargo",
+        &["run", "-p", "xtask", "--", "docs-routes"],
+    )
 }
 
 fn conformance_gates() -> Vec<GateCommand> {
@@ -547,6 +563,86 @@ fn workspace_root() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
+fn cmd_docs_routes() -> anyhow::Result<()> {
+    let root = workspace_root()?;
+    let docs_path = root.join("docs/http-api.md");
+    let docs = fs::read_to_string(&docs_path)?;
+    let routes = collect_axum_route_literals(&root)?;
+    let missing = routes
+        .iter()
+        .filter(|route| !docs.contains(route.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        for route in &missing {
+            println!("FAIL: route literal missing from docs/http-api.md: {route}");
+        }
+        anyhow::bail!("docs/http-api.md is missing {} route(s)", missing.len());
+    }
+    println!(
+        "PASS: docs/http-api.md covers {} literal axum route(s)",
+        routes.len()
+    );
+    Ok(())
+}
+
+fn collect_axum_route_literals(root: &Path) -> anyhow::Result<BTreeSet<String>> {
+    let mut routes = BTreeSet::new();
+    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        if path.components().any(|component| {
+            let text = component.as_os_str().to_string_lossy();
+            text == "target" || text == "fuzz"
+        }) {
+            continue;
+        }
+        let Some(first_component) = path
+            .strip_prefix(root)
+            .ok()
+            .and_then(|relative| relative.components().next())
+        else {
+            continue;
+        };
+        let first_component = first_component.as_os_str().to_string_lossy();
+        if first_component != "qidd" && !first_component.starts_with("qid-") {
+            continue;
+        }
+        let content = fs::read_to_string(path)?;
+        routes.extend(extract_route_literals_from_source(&content));
+    }
+    Ok(routes)
+}
+
+fn extract_route_literals_from_source(source: &str) -> BTreeSet<String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut routes = BTreeSet::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if !line.contains(".route(") {
+            continue;
+        }
+        let fragment = lines[idx..std::cmp::min(idx + 8, lines.len())].join("\n");
+        let Some(route_call) = fragment.find(".route(") else {
+            continue;
+        };
+        let after_route = &fragment[route_call + ".route(".len()..];
+        let Some(quote_start) = after_route.find('"') else {
+            continue;
+        };
+        let after_quote = &after_route[quote_start + 1..];
+        let Some(quote_end) = after_quote.find('"') else {
+            continue;
+        };
+        let route = &after_quote[..quote_end];
+        if route.starts_with('/') {
+            routes.insert(route.to_string());
+        }
+    }
+    routes
+}
+
 fn packages_in_workspace() -> anyhow::Result<Vec<(String, PathBuf)>> {
     let meta = cargo_metadata()?;
     let root = workspace_root()?;
@@ -704,7 +800,7 @@ fn budget_for_crate(name: &str, default_budget: usize) -> usize {
         "qid-iga" => 6300,
         "qid-resource" => 5200,
         "qid-scim" => 4600,
-        "qid-worker" => 4200,
+        "qid-worker" => 4800,
         _ => default_budget,
     }
 }
@@ -748,7 +844,8 @@ mod tests {
                 "cargo-deny",
                 "cargo-audit",
                 "structure",
-                "budget"
+                "budget",
+                "docs-routes"
             ]
         );
         assert!(

@@ -84,6 +84,62 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: OpsCommand,
     },
+    /// Local signing key utilities.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum KeysCommand {
+    /// Encrypt a plaintext PEM private key.
+    #[command(name = "encrypt")]
+    Encrypt(KeysEncryptArgs),
+    /// Inspect a plaintext or encrypted key file.
+    #[command(name = "status")]
+    Status(KeysStatusArgs),
+    /// Generate an encrypted successor signing key.
+    #[command(name = "rotate")]
+    Rotate(KeysRotateArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct KeysEncryptArgs {
+    #[arg(long)]
+    pub(crate) input: PathBuf,
+    #[arg(long)]
+    pub(crate) output: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) kid: String,
+    #[arg(long)]
+    pub(crate) alg: String,
+    #[arg(long)]
+    pub(crate) passphrase_file: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) force: bool,
+}
+
+#[derive(Args)]
+pub(crate) struct KeysStatusArgs {
+    #[arg(long)]
+    pub(crate) key: PathBuf,
+}
+
+#[derive(Args)]
+pub(crate) struct KeysRotateArgs {
+    #[arg(long)]
+    pub(crate) output_dir: PathBuf,
+    #[arg(long)]
+    pub(crate) keyring: String,
+    #[arg(long)]
+    pub(crate) alg: String,
+    #[arg(long)]
+    pub(crate) kid: Option<String>,
+    #[arg(long)]
+    pub(crate) passphrase_file: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) force: bool,
 }
 
 #[derive(Subcommand)]
@@ -109,6 +165,12 @@ pub(crate) enum OpsCommand {
     /// Check key rotation status from local state directory (cron-friendly).
     #[command(name = "key-rotation-check")]
     KeyRotationCheck,
+    /// List persistent SIEM delivery queue entries.
+    #[command(name = "siem-dlq-list")]
+    SiemDlqList(SiemDlqListArgs),
+    /// Move a SIEM delivery back to pending for redrive.
+    #[command(name = "siem-dlq-redrive")]
+    SiemDlqRedrive(SiemDlqRedriveArgs),
 }
 
 #[derive(Args)]
@@ -169,6 +231,24 @@ pub(crate) struct KeyRotationPlanArgs {
     /// Requirement: realm,purpose,max_age_days,overlap_days,require_remote,require_dedicated.
     #[arg(long = "requirement", required = true)]
     pub(crate) requirement: Vec<String>,
+    #[arg(long)]
+    pub(crate) now: Option<u64>,
+}
+
+#[derive(Args)]
+pub(crate) struct SiemDlqListArgs {
+    #[arg(long)]
+    pub(crate) realm: Option<String>,
+    #[arg(long)]
+    pub(crate) status: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    pub(crate) limit: usize,
+}
+
+#[derive(Args)]
+pub(crate) struct SiemDlqRedriveArgs {
+    #[arg(long)]
+    pub(crate) id: String,
     #[arg(long)]
     pub(crate) now: Option<u64>,
 }

@@ -103,6 +103,11 @@ Selected default paths:
 - `url`: direct URL or file path.
 - `url_env`: environment variable containing the URL.
 
+`storage.file.flush_mode` controls the file-backed JSON backend:
+
+- `immediate`: default; every mutation is flushed durably before returning.
+- `interval_ms(N)`: mutations mark the store dirty and a background task flushes at the interval; `qidd` also flushes during graceful shutdown.
+
 The effective URL is `url`, then `url_env`, then the daemon default.
 
 Backend selection:
@@ -115,6 +120,8 @@ Redis/Valkey-style cache settings require endpoints, a non-empty key prefix, and
 ## Crypto
 
 `crypto.default_alg` must be `ES256`, `RS256`, or `EdDSA`. Local signer generation in `qidd` currently supports `ES256` and `EdDSA`.
+
+Set `QID_KEY_PASSPHRASE` or `crypto.key_passphrase_file` to store local signing keys as `.pem.enc` files. When a passphrase is configured and a plaintext local PEM already exists, `qidd` encrypts it on startup and moves the plaintext file to `.bak`.
 
 `crypto.keyrings[]` fields:
 

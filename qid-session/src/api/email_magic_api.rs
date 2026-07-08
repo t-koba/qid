@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
 };
@@ -200,7 +200,15 @@ async fn email_magic_link_verify<R: Repository>(
     );
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, cookie_value.parse().unwrap());
+    let cookie_value = match HeaderValue::from_str(&cookie_value) {
+        Ok(value) => value,
+        Err(err) => {
+            return qid_http::error_response(QidError::Internal {
+                message: format!("failed to build session cookie header: {err}"),
+            });
+        }
+    };
+    headers.insert(header::SET_COOKIE, cookie_value);
 
     let body = Json(serde_json::json!({
         "status": "verified",

@@ -414,7 +414,19 @@ async fn sso<R: Repository>(
         };
         let uses_artifact = req.protocol_binding.as_deref() == Some(ARTIFACT_BINDING);
         if uses_artifact {
-            let artifact = crate::artifact::store_artifact(&issued.xml, 300);
+            let artifact = match crate::artifact::store_artifact(&issued.xml, 300) {
+                Ok(artifact) => artifact,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "saml_artifact_store_failed",
+                            "message": err.message(),
+                        })),
+                    )
+                        .into_response();
+                }
+            };
             let redirect = format!(
                 "{}?SAMLart={}&RelayState={}",
                 sp.acs_url,

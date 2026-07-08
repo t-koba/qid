@@ -79,6 +79,8 @@ impl RateLimiter {
     ) -> bool {
         let now = now_seconds();
         let Ok(mut map) = self.inner.lock() else {
+            tracing::error!("rate limiter lock poisoned; denying request");
+            metrics::counter!("qid_rate_limit_lock_failures_total").increment(1);
             return false;
         };
 

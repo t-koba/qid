@@ -1013,6 +1013,10 @@ pub struct TokenTtlConfig {
     pub id_token_ttl_seconds: u64,
     #[serde(default = "default_auth_code_ttl")]
     pub auth_code_ttl_seconds: u64,
+    #[serde(default = "default_par_request_ttl")]
+    pub par_request_ttl_seconds: u64,
+    #[serde(default = "default_device_code_ttl")]
+    pub device_code_ttl_seconds: u64,
     #[serde(default = "default_access_token_format")]
     pub access_token_format: TokenFormat,
 }
@@ -1024,6 +1028,8 @@ impl Default for TokenTtlConfig {
             refresh_token_ttl_seconds: default_refresh_token_ttl(),
             id_token_ttl_seconds: default_id_token_ttl(),
             auth_code_ttl_seconds: default_auth_code_ttl(),
+            par_request_ttl_seconds: default_par_request_ttl(),
+            device_code_ttl_seconds: default_device_code_ttl(),
             access_token_format: default_access_token_format(),
         }
     }
@@ -1039,7 +1045,13 @@ fn default_id_token_ttl() -> u64 {
     3600
 }
 fn default_auth_code_ttl() -> u64 {
-    600
+    300
+}
+fn default_par_request_ttl() -> u64 {
+    300
+}
+fn default_device_code_ttl() -> u64 {
+    1800
 }
 fn default_access_token_format() -> TokenFormat {
     TokenFormat::Jwt

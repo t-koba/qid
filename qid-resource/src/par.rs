@@ -85,12 +85,16 @@ pub async fn push_authorization_request<R: Repository>(
     let params_json = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
     let request_uri = format!("urn:ietf:params:oauth:request_uri:{}", ulid::Ulid::new());
     let now = qid_core::util::now_seconds();
+    let ttl_seconds = state
+        .realm(&client.realm_id)
+        .map(|realm| realm.token_ttl.par_request_ttl_seconds)
+        .unwrap_or_else(|| qid_core::config::TokenTtlConfig::default().par_request_ttl_seconds);
     let par_req = ParRequest {
         request_uri: request_uri.clone(),
         client_id: req.client_id,
         realm_id: client.realm_id,
         params_json,
-        expires_at: now + 60,
+        expires_at: now + ttl_seconds,
         used: false,
         created_at: now,
     };
@@ -99,7 +103,7 @@ pub async fn push_authorization_request<R: Repository>(
             StatusCode::CREATED,
             Json(serde_json::json!({
                 "request_uri": request_uri,
-                "expires_in": 60,
+                "expires_in": ttl_seconds,
             })),
         )
             .into_response(),

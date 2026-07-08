@@ -5,15 +5,20 @@ use qid_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::{
     AdminRepository, AuditRepository, CiamRepository, ClientRepository, CredentialRepository,
     DeviceRepository, FedCmRepository, IgaRepository, PolicyRepository, RealmRepository,
     RebacRepository, SaasRepository, ScimDeviceRecord, ScimEventSubscriptionRecord, ScimRepository,
-    ServiceAccountRepository, SessionRepository, SsfRepository, SsfStreamRecord, TokenRepository,
-    UserRepository, VcRepository, WorkloadRepository,
+    ServiceAccountRepository, SessionRepository, SiemDeliveryRecord, SiemDeliveryRepository,
+    SiemDeliveryStatus, SsfRepository, SsfStreamRecord, TokenRepository, UserRepository,
+    VcRepository, WorkloadRepository,
 };
 
 mod admin;
@@ -31,6 +36,7 @@ mod saas;
 mod scim;
 mod service_account;
 mod session;
+mod siem;
 mod ssf;
 mod token;
 mod user;
@@ -116,6 +122,8 @@ struct Store {
     #[serde(default)]
     ssf_set_replay: HashMap<String, u64>,
     #[serde(default)]
+    siem_deliveries: HashMap<String, SiemDeliveryRecord>,
+    #[serde(default)]
     relationship_tuples: Vec<RelationshipTuple>,
     audit_events: Vec<AuditEvent>,
     audit_retention_configs: HashMap<String, AuditRetentionConfig>,
@@ -127,13 +135,35 @@ struct Store {
 /// and small-scale deployments where SQL is not desired.
 #[derive(Debug, Clone)]
 pub struct FileRepository {
-    store: std::sync::Arc<tokio::sync::RwLock<Store>>,
+    store: Arc<tokio::sync::RwLock<Store>>,
     path: PathBuf,
+    save_lock: Arc<tokio::sync::Mutex<()>>,
+    _process_lock: Arc<File>,
+    dirty: Arc<AtomicBool>,
+    flush_mode: FileFlushMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFlushMode {
+    Immediate,
+    Interval(Duration),
 }
 
 impl FileRepository {
     pub async fn new(path: &str) -> QidResult<Self> {
+        Self::new_with_flush_mode(path, FileFlushMode::Immediate).await
+    }
+
+    pub async fn new_with_flush_mode(path: &str, flush_mode: FileFlushMode) -> QidResult<Self> {
         let p = PathBuf::from(path);
+        if let Some(parent) = p.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| QidError::Internal {
+                    message: format!("failed to create store directory: {e}"),
+                })?;
+        }
+        let process_lock = acquire_process_lock(&p)?;
         let store = match tokio::fs::read_to_string(&p).await {
             Ok(content) => serde_json::from_str(&content).map_err(|e| QidError::Internal {
                 message: format!("failed to parse store file: {e}"),
@@ -145,16 +175,50 @@ impl FileRepository {
                 });
             }
         };
-        Ok(Self {
-            store: std::sync::Arc::new(tokio::sync::RwLock::new(store)),
+        let repo = Self {
+            store: Arc::new(tokio::sync::RwLock::new(store)),
             path: p,
-        })
+            save_lock: Arc::new(tokio::sync::Mutex::new(())),
+            _process_lock: Arc::new(process_lock),
+            dirty: Arc::new(AtomicBool::new(false)),
+            flush_mode,
+        };
+        if let FileFlushMode::Interval(interval) = flush_mode {
+            let repo = repo.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    if let Err(error) = repo.flush().await {
+                        tracing::warn!(error = %error, "file repository background flush failed");
+                    }
+                }
+            });
+        }
+        Ok(repo)
     }
 
     async fn save(&self) -> QidResult<()> {
+        match self.flush_mode {
+            FileFlushMode::Immediate => self.flush_store().await,
+            FileFlushMode::Interval(_) => {
+                self.dirty.store(true, Ordering::Release);
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn flush(&self) -> QidResult<()> {
+        if !self.dirty.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        self.flush_store().await
+    }
+
+    async fn flush_store(&self) -> QidResult<()> {
+        let _save_guard = self.save_lock.lock().await;
         let content = {
             let store = self.store.read().await;
-            serde_json::to_string_pretty(&*store).map_err(|e| QidError::Internal {
+            serde_json::to_string(&*store).map_err(|e| QidError::Internal {
                 message: format!("failed to serialize store: {e}"),
             })?
         };
@@ -201,10 +265,31 @@ impl FileRepository {
                 })?;
         }
         if !self.path.exists() {
-            self.save().await?;
+            self.flush_store().await?;
         }
         Ok(())
     }
+}
+
+fn acquire_process_lock(path: &std::path::Path) -> QidResult<File> {
+    let lock_path = path.with_extension("lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| QidError::Internal {
+            message: format!("failed to open store lock file: {e}"),
+        })?;
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(
+        |e| QidError::Internal {
+            message: format!(
+                "file storage is already locked by another process; use SQL storage for multi-process deployments: {e}"
+            ),
+        },
+    )?;
+    Ok(file)
 }
 
 fn audit_retention_key(realm_id: Option<&str>) -> String {

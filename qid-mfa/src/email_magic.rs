@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailMagicLinkChallenge {
@@ -55,10 +54,7 @@ pub fn create_email_magic_link_challenge(
     config: &EmailMagicLinkConfig,
     redirect_to: Option<String>,
 ) -> EmailMagicLinkSent {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = qid_core::util::now_seconds();
     let id = format!("eml_{:016x}", rand::thread_rng().next_u64());
     let mut raw = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw);
@@ -103,10 +99,7 @@ pub fn verify_email_magic_link(
             resource: format!("magic link challenge {}", challenge_id),
         })?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = qid_core::util::now_seconds();
 
     if challenge.consumed {
         return Err(QidError::BadRequest {
@@ -131,10 +124,7 @@ pub fn verify_email_magic_link(
 }
 
 pub fn cleanup_expired_email_magic_links() -> usize {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = qid_core::util::now_seconds();
     let mut store = EMAIL_MAGIC_LINK_STORE
         .lock()
         .unwrap_or_else(|e| e.into_inner());

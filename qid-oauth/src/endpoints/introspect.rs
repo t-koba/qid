@@ -14,13 +14,25 @@ use qid_core::{
     state::SharedState,
     tenant::RealmId,
 };
+use qid_http::ratelimit::{RateLimitConfig, RateLimiter};
 use qid_storage::prelude::*;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use super::{
     IntrospectRequest, IntrospectResponse, decode_opaque_access_token, extract_basic_client_auth,
     verify_client_secret,
 };
+
+static INTROSPECTION_RATE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(|| {
+    RateLimiter::new(RateLimitConfig {
+        max_per_user: 60,
+        max_per_ip: 600,
+        max_per_asn: 1_000,
+        max_per_device: 60,
+        max_per_tenant: 600,
+        window_seconds: 60,
+    })
+});
 
 #[derive(Debug, Clone)]
 pub struct DecodedAccessToken {
@@ -135,6 +147,13 @@ pub async fn introspect<R: Repository>(
     headers: HeaderMap,
     Form(req): Form<IntrospectRequest>,
 ) -> Response {
+    let rate_limit_client_id = introspection_rate_limit_client_id(&headers, &req);
+    if !INTROSPECTION_RATE_LIMITER.check(rate_limit_client_id.as_deref(), None, None, None, None) {
+        return qid_http::error_response(QidError::TooManyRequests {
+            message: "introspection rate limit exceeded".to_string(),
+        });
+    }
+
     if !state
         .config
         .realms
@@ -179,7 +198,11 @@ pub async fn introspect<R: Repository>(
                 None
             };
             if !realm.protocols.oauth.resource_servers.is_empty() {
-                let caller = caller.as_ref().expect("caller is authenticated");
+                let Some(caller) = caller.as_ref() else {
+                    return qid_http::error_response(QidError::Unauthorized {
+                        message: "introspection client authentication is required".to_string(),
+                    });
+                };
                 let Some(server) = select_introspection_resource_server(realm, &req, &decoded)
                 else {
                     return inactive_response();
@@ -215,6 +238,15 @@ pub async fn introspect<R: Repository>(
         }
         Err(_) => inactive_response(),
     }
+}
+
+fn introspection_rate_limit_client_id(
+    headers: &HeaderMap,
+    req: &IntrospectRequest,
+) -> Option<String> {
+    extract_basic_client_auth(headers)
+        .map(|auth| auth.client_id)
+        .or_else(|| req.client_id.clone())
 }
 
 #[derive(Debug, Clone)]

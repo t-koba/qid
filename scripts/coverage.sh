@@ -26,9 +26,9 @@ fi
 # Generate JSON coverage report.
 read -r -a CARGO_LLVM_COV_CMD <<<"${CARGO_LLVM_COV}"
 "${CARGO_LLVM_COV_CMD[@]}" --workspace --json --summary-only --output-path "${COVERAGE_JSON_FILE}" >"${COVERAGE_LOG_FILE}" 2>&1 || {
-    echo "WARNING: cargo-llvm-cov failed (non-blocking)"
+    echo "FAIL: cargo-llvm-cov failed"
     cat "${COVERAGE_LOG_FILE}"
-    exit 0
+    exit 1
 }
 
 # Extract line coverage percentage from JSON output.

@@ -49,6 +49,28 @@ pub struct ScimEventSubscriptionRecord {
     pub created_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SiemDeliveryStatus {
+    Pending,
+    Delivered,
+    Dead,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SiemDeliveryRecord {
+    pub id: String,
+    pub realm_id: Option<String>,
+    pub endpoint_url: String,
+    pub payload_json: serde_json::Value,
+    pub attempts: u32,
+    pub next_retry_at: Option<u64>,
+    pub status: SiemDeliveryStatus,
+    pub last_error: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
 #[async_trait]
 pub trait RealmRepository: Send + Sync + 'static {
     async fn create_realm(
@@ -69,7 +91,15 @@ pub trait UserRepository: Send + Sync + 'static {
     async fn create_user(&self, user: &User) -> QidResult<()>;
     async fn get_user_by_id(&self, id: &str) -> QidResult<Option<User>>;
     async fn get_user_by_email(&self, realm_id: &RealmId, email: &str) -> QidResult<Option<User>>;
-    async fn list_users(&self, realm_id: &RealmId) -> QidResult<Vec<User>>;
+    async fn list_users(&self, realm_id: &RealmId) -> QidResult<Vec<User>> {
+        self.list_users_page(realm_id, 0, usize::MAX).await
+    }
+    async fn list_users_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<User>>;
     async fn delete_user(&self, id: &str) -> QidResult<()>;
     async fn update_user(&self, user: &User) -> QidResult<()>;
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()>;
@@ -86,7 +116,15 @@ pub trait ClientRepository: Send + Sync + 'static {
         realm_id: &RealmId,
         client_id: &str,
     ) -> QidResult<Option<Client>>;
-    async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>>;
+    async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>> {
+        self.list_clients_page(realm_id, 0, usize::MAX).await
+    }
+    async fn list_clients_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<Client>>;
     async fn delete_client(&self, id: &str) -> QidResult<()>;
 }
 
@@ -276,11 +314,33 @@ pub trait DeviceRepository: Send + Sync + 'static {
 pub trait ScimRepository: Send + Sync + 'static {
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()>;
     async fn get_scim_user(&self, id: &str) -> QidResult<Option<ScimUser>>;
-    async fn list_scim_users(&self, realm_id: &RealmId) -> QidResult<Vec<ScimUser>>;
+    async fn list_scim_users(&self, realm_id: &RealmId) -> QidResult<Vec<ScimUser>> {
+        self.list_scim_users_page(realm_id, 0, usize::MAX).await
+    }
+    async fn list_scim_users_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<ScimUser>>;
+    async fn count_scim_users(&self, realm_id: &RealmId) -> QidResult<usize> {
+        Ok(self.list_scim_users(realm_id).await?.len())
+    }
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()>;
     async fn delete_scim_user(&self, id: &str) -> QidResult<()>;
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()>;
-    async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>>;
+    async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {
+        self.list_scim_groups_page(realm_id, 0, usize::MAX).await
+    }
+    async fn list_scim_groups_page(
+        &self,
+        realm_id: &RealmId,
+        offset: usize,
+        limit: usize,
+    ) -> QidResult<Vec<ScimGroup>>;
+    async fn count_scim_groups(&self, realm_id: &RealmId) -> QidResult<usize> {
+        Ok(self.list_scim_groups(realm_id).await?.len())
+    }
     async fn get_scim_group(&self, id: &str) -> QidResult<Option<ScimGroup>>;
     async fn update_scim_group(&self, group: &ScimGroup) -> QidResult<()>;
     async fn delete_scim_group(&self, id: &str) -> QidResult<()>;
@@ -587,6 +647,27 @@ pub trait SsfRepository: Send + Sync + 'static {
     ) -> QidResult<bool>;
 }
 
+#[async_trait]
+pub trait SiemDeliveryRepository: Send + Sync + 'static {
+    async fn upsert_siem_delivery(&self, delivery: &SiemDeliveryRecord) -> QidResult<()>;
+    async fn get_siem_delivery(&self, id: &str) -> QidResult<Option<SiemDeliveryRecord>>;
+    async fn list_siem_deliveries(
+        &self,
+        realm_id: Option<&str>,
+        status: Option<SiemDeliveryStatus>,
+        limit: usize,
+    ) -> QidResult<Vec<SiemDeliveryRecord>>;
+    async fn mark_siem_delivery_status(
+        &self,
+        id: &str,
+        status: SiemDeliveryStatus,
+        attempts: u32,
+        next_retry_at: Option<u64>,
+        last_error: Option<&str>,
+        updated_at: u64,
+    ) -> QidResult<()>;
+}
+
 /// Aggregate trait implemented automatically by any type that implements all
 /// domain-specific repository traits.
 pub trait Repository:
@@ -610,6 +691,7 @@ pub trait Repository:
     + RebacRepository
     + AdminRepository
     + SsfRepository
+    + SiemDeliveryRepository
     + Send
     + Sync
     + 'static
@@ -637,6 +719,7 @@ impl<T> Repository for T where
         + RebacRepository
         + AdminRepository
         + SsfRepository
+        + SiemDeliveryRepository
         + Send
         + Sync
         + 'static

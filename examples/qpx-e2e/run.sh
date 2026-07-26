@@ -16,21 +16,25 @@ else
     E2E_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qid-qpx-e2e.XXXXXX")"
     E2E_TMP_CREATED=1
 fi
-QPX_STATE_DIR="${QPX_STATE_DIR:-${E2E_TMP_DIR}/qpx-state}"
+QPX_STATE_DIR="${E2E_TMP_DIR}/qpx-state"
 QID_STATE_DIR="${E2E_TMP_DIR}/qid-state"
 DB_FILE="${E2E_TMP_DIR}/qid-e2e.db"
 QID_CONFIG="${E2E_TMP_DIR}/qid.yaml"
 QIDD_LOG="${E2E_TMP_DIR}/qidd.log"
 QPXD_LOG="${E2E_TMP_DIR}/qpxd.log"
+QPXD_INTROSPECTION_LOG="${E2E_TMP_DIR}/qpxd-introspection.log"
 UPSTREAM_LOG="${E2E_TMP_DIR}/upstream.log"
+QPXD_BIN="${QPXD_BIN:-${REPO_ROOT}/../qpx/target/debug/qpxd}"
 QIDD_PID=""
 UPSTREAM_PID=""
 QPXD_PID=""
+QPXD_INTROSPECTION_PID=""
 
 cleanup() {
     stop_pid "${QIDD_PID:-}"
     stop_pid "${UPSTREAM_PID:-}"
     stop_pid "${QPXD_PID:-}"
+    stop_pid "${QPXD_INTROSPECTION_PID:-}"
     if [[ "${E2E_TMP_CREATED}" == "1" && "${QID_QPX_E2E_KEEP_TMP:-0}" != "1" ]]; then
         rm -rf "${E2E_TMP_DIR}"
     fi
@@ -48,10 +52,11 @@ stop_pid() {
 }
 trap cleanup EXIT
 
-rm -rf "${QID_STATE_DIR}" "${QPX_STATE_DIR}" "${DB_FILE}" "${DB_FILE}-shm" "${DB_FILE}-wal"
+rm -rf "${QID_STATE_DIR}" "${QPX_STATE_DIR}" "${QPX_STATE_DIR}-introspection" "${DB_FILE}" "${DB_FILE}-shm" "${DB_FILE}-wal"
 cp "${SCRIPT_DIR}/policy.json" "${E2E_TMP_DIR}/policy.json"
 sed "s#sqlite:qid-e2e.db#sqlite:${DB_FILE}#" "${SCRIPT_DIR}/qid.yaml" >"${QID_CONFIG}"
 export QPX_STATE_DIR
+export QPX_DECISION_CLIENT_SECRET="qpx-smoke-secret"
 
 info() {
     echo "[e2e] $*"
@@ -60,7 +65,7 @@ info() {
 wait_for_http() {
     local url="$1"
     local max_attempts="${2:-120}"
-    for i in $(seq 1 "${max_attempts}"); do
+    for _ in $(seq 1 "${max_attempts}"); do
         if curl -fsS "${url}" >/dev/null 2>&1; then
             return 0
         fi
@@ -68,6 +73,29 @@ wait_for_http() {
     done
     return 1
 }
+
+wait_for_tcp() {
+    local host="$1"
+    local port="$2"
+    local max_attempts="${3:-60}"
+    for _ in $(seq 1 "${max_attempts}"); do
+        if nc -z "${host}" "${port}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+if [[ ! -x "${QPXD_BIN}" ]]; then
+    info "qpxd binary not found or not executable at ${QPXD_BIN}"
+    info "build qpxd or set QPXD_BIN to a compatible binary"
+    exit 1
+fi
+
+info "validating qpx configurations"
+"${QPXD_BIN}" check -c "${SCRIPT_DIR}/qpx.yaml" >/dev/null
+"${QPXD_BIN}" check -c "${SCRIPT_DIR}/qpx-introspection.yaml" >/dev/null
 
 info "building qidd and qidc"
 "${CARGO_BUILD[@]}" --quiet --bin qidd --bin qidc
@@ -105,8 +133,9 @@ curl -fsS http://127.0.0.1:8443/jwks | grep -q '"kty":"EC"'
 
 info "requesting a client credentials token"
 ACCESS_TOKEN=$(curl -fsS -X POST http://127.0.0.1:8443/oauth2/token \
+    -u 'e2e-egress:qpx-smoke-secret' \
     -H 'content-type: application/x-www-form-urlencoded' \
-    --data 'grant_type=client_credentials&client_id=qpx-smoke&client_secret=qpx-smoke-secret&scope=api&resource=urn:qid:pep:qpx:edge/e2e-egress' \
+    --data 'grant_type=client_credentials&scope=api&resource=urn:qid:pep:qpx:edge/e2e-egress' \
     | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
 if [[ -z "${ACCESS_TOKEN}" ]]; then
     info "token endpoint did not return an access token"
@@ -115,47 +144,75 @@ fi
 info "access token length: ${#ACCESS_TOKEN}"
 
 info "fetching a qpx signed assertion"
-ASSERTION=$(curl -fsS "http://127.0.0.1:8443/pep/e2e/assertion?edge=e2e-egress&session=${SESSION_ID}" | sed -n 's/.*"assertion":"\([^"]*\)".*/\1/p')
+ASSERTION=$(curl -fsS "http://127.0.0.1:8443/pep/e2e/assertion?edge=service:e2e-egress&session=${SESSION_ID}" | sed -n 's/.*"assertion":"\([^"]*\)".*/\1/p')
 if [[ -z "${ASSERTION}" ]]; then
     info "assertion endpoint did not return a token"
     exit 1
 fi
 info "assertion token length: ${#ASSERTION}"
 
-info "skipping pep_decision smoke until qpx sends the canonical PEP request and adapter token"
+info "evaluating the standard AuthZEN endpoint"
+AUTHZEN_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8443/access/v1/evaluation \
+    -H "authorization: Bearer ${ACCESS_TOKEN}" \
+    -H 'content-type: application/json' \
+    --data '{"subject":{"type":"identity","id":"e2e-egress","properties":{}},"resource":{"type":"forward","id":"http://127.0.0.1:18090/","properties":{"host":"127.0.0.1"}},"action":{"name":"GET","properties":{}},"context":{}}')
+if ! grep -q '"decision":true' <<<"${AUTHZEN_RESPONSE}"; then
+    info "AuthZEN evaluation failed: ${AUTHZEN_RESPONSE}"
+    exit 1
+fi
 
 PUBLIC_KEY_FILE="${QID_STATE_DIR}/signing-key-e2e-pep-assertion-ES256.pub.pem"
 if [[ ! -f "${PUBLIC_KEY_FILE}" ]]; then
     info "PEP assertion public key was not generated"
     exit 1
 fi
-PUBLIC_KEY=$(cat "${PUBLIC_KEY_FILE}")
-export QPX_ASSERTION_PUBLIC_KEY="${PUBLIC_KEY}"
-
 info "starting local upstream server"
 python3 -m http.server 18090 >"${UPSTREAM_LOG}" 2>&1 &
 UPSTREAM_PID=$!
 
-QPXD_BIN="${QPXD_BIN:-../../qpx/target/debug/qpxd}"
-if [[ -x "${QPXD_BIN}" ]]; then
-    info "starting qpxd (${QPXD_BIN})"
-    "${QPXD_BIN}" -c "${SCRIPT_DIR}/qpx.yaml" >"${QPXD_LOG}" 2>&1 &
-    QPXD_PID=$!
+info "starting qpxd (${QPXD_BIN})"
+"${QPXD_BIN}" run -c "${SCRIPT_DIR}/qpx.yaml" >"${QPXD_LOG}" 2>&1 &
+QPXD_PID=$!
 
-    if ! wait_for_http "http://127.0.0.1:18088/" 30; then
-        info "qpxd failed to start"
-        cat "${QPXD_LOG}"
-        exit 1
-    fi
-    info "qpxd ready"
-
-    info "sending authenticated request through qpx"
-    curl -fsS -x http://127.0.0.1:18088 \
-        -H "x-qid-assertion: ${ASSERTION}" \
-        http://127.0.0.1:18090/ >/dev/null
-    info "qpx forwarded authenticated request successfully"
-else
-    info "qpxd binary not found at ${QPXD_BIN}; skipping qpx integration test"
+if ! wait_for_tcp 127.0.0.1 18088 30; then
+    info "qpxd failed to start"
+    cat "${QPXD_LOG}"
+    exit 1
 fi
+info "qpxd ready"
+
+info "verifying an invalid JWT is denied by qpx"
+if curl -fsS -x http://127.0.0.1:18088 \
+    -H 'Authorization: Bearer invalid-jwt' \
+    http://127.0.0.1:18090/ >/dev/null 2>&1; then
+    info "qpx accepted an invalid JWT"
+    exit 1
+fi
+
+info "sending authenticated request through qpx"
+curl -fsS -x http://127.0.0.1:18088 \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    http://127.0.0.1:18090/ >/dev/null
+info "qpx forwarded authenticated request successfully"
+
+info "starting qpxd with RFC 7662 introspection resource server configuration"
+"${QPXD_BIN}" run -c "${SCRIPT_DIR}/qpx-introspection.yaml" >"${QPXD_INTROSPECTION_LOG}" 2>&1 &
+QPXD_INTROSPECTION_PID=$!
+if ! wait_for_tcp 127.0.0.1 18089 30; then
+    info "qpxd introspection instance failed to start"
+    cat "${QPXD_INTROSPECTION_LOG}"
+    exit 1
+fi
+info "verifying an invalid token is denied by qpx introspection"
+if curl -fsS -x http://127.0.0.1:18089 \
+    -H 'Authorization: Bearer invalid-introspection-token' \
+    http://127.0.0.1:18090/ >/dev/null 2>&1; then
+    info "qpx introspection accepted an invalid token"
+    exit 1
+fi
+curl -fsS -x http://127.0.0.1:18089 \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    http://127.0.0.1:18090/ >/dev/null
+info "qpx RFC 7662 introspection request succeeded"
 
 info "all smoke tests passed"

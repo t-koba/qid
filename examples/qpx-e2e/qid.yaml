@@ -34,10 +34,10 @@ realms:
     issuer: "https://id.example.com/realms/e2e"
     display_name: "E2E Realm"
     clients:
-      - client_id: "qpx-smoke"
-        id: "client-qpx-smoke"
+      - client_id: "e2e-egress"
+        id: "client-e2e-egress"
         client_type: confidential
-        token_endpoint_auth_method: client_secret_post
+        token_endpoint_auth_method: client_secret_basic
         client_secret: "qpx-smoke-secret"
         grant_types:
           - client_credentials
@@ -65,7 +65,7 @@ realms:
             scopes:
               - api
             introspection_client_ids:
-              - qpx-edge-egress-main
+              - e2e-egress
             require_sender_constraint: false
     authentication:
       passkeys:
@@ -82,8 +82,14 @@ realms:
     pep_registrations:
       enabled: true
       registrations:
-        - name: e2e-egress
+        - name: service:e2e-egress
           audience: "qpx"
+          capabilities:
+            - effect: authzen
+            - effect: policy_tags
+          auth:
+            active_method: bearer_jwt
+            replay_protection: false
           assertion:
             header: "x-qid-assertion"
             ttl_seconds: 60

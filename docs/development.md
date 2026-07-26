@@ -215,14 +215,13 @@ curl -fsS http://127.0.0.1:8443/realms/dev/.well-known/openid-configuration
 bash examples/qpx-e2e/run.sh
 ```
 
-The script starts `qidd`, creates a user/session through `qidc`, requests a client credentials token, fetches a PEP assertion, and optionally starts `qpxd`. It exercises one concrete PEP registration flow.
+The script requires a compatible `qpxd`, starts `qidd`, creates a user/session through `qidc`, requests a client credentials token, fetches a PEP assertion, and exercises fail-closed JWT validation, AuthZEN authorization, and RFC 7662 introspection through qpx. By default it uses `../qpx/target/debug/qpxd`; set `QPXD_BIN` when the binary is elsewhere.
 
 Environment variables:
 
 - `QID_QPX_E2E_TMP_DIR`
 - `QID_QPX_E2E_KEEP_TMP`
 - `QPXD_BIN`
-- `QPX_STATE_DIR`
 
 ## Adding a Crate or Route
 

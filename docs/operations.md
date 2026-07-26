@@ -262,7 +262,7 @@ Required configuration includes bind addresses, TLS certificate/key/client CA pa
 
 `examples/qpx-e2e/run.sh` is a development smoke for one concrete qpx sister-product PEP registration flow.
 
-The script starts `qidd`, creates a test subject/session, gets a client credentials token, fetches a PEP assertion, and optionally starts `qpxd` if the binary is present.
+The script requires a compatible `qpxd`, starts `qidd`, creates a test subject/session, gets a client credentials token, fetches a PEP assertion, and exercises fail-closed JWT validation, AuthZEN authorization, and RFC 7662 introspection through qpx. It fails before starting services if either qpx configuration is invalid or the qpx binary is unavailable.
 
 ```sh
 bash examples/qpx-e2e/run.sh
@@ -272,5 +272,4 @@ Useful environment variables:
 
 - `QID_QPX_E2E_TMP_DIR`: use a fixed temp directory.
 - `QID_QPX_E2E_KEEP_TMP=1`: keep temp files.
-- `QPXD_BIN`: path to qpxd binary.
-- `QPX_STATE_DIR`: override qpx state directory.
+- `QPXD_BIN`: path to qpxd binary; defaults to `../qpx/target/debug/qpxd` relative to the qid repository.

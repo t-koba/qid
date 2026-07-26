@@ -1,25 +1,24 @@
-state_dir: "${QPX_STATE_DIR:-./qpx-state}"
+state_dir: "${QPX_STATE_DIR:-./qpx-state}-introspection"
 identity:
-  proxy_name: qpx-e2e
+  proxy_name: qpx-e2e-introspection
 security:
   identity_sources:
   - name: bearer-resource-server
     type: bearer
     bearer:
       source:
-        mode: jwt
-        issuer: "https://id.example.com/realms/e2e"
-        audience: qpx
-        algorithms:
-        - ES256
-        jwks_url: http://127.0.0.1:8443/jwks
+        mode: introspection
+        endpoint: http://127.0.0.1:8443/oauth2/introspect
+        client_id: e2e-egress
+        client_secret_env: QPX_DECISION_CLIENT_SECRET
+        positive_cache_seconds: 60
+        negative_cache_seconds: 5
       claims:
         user_from_sub: true
         groups: groups
         tenant: tenant
         auth_strength: acr
         idp: iss
-        groups_separator: ","
   decisions:
     services:
     - name: external-authzen
@@ -53,8 +52,8 @@ security:
         optional: true
 edges:
 - kind: forward
-  name: e2e-egress
-  listen: 127.0.0.1:18088
+  name: e2e-egress-introspection
+  listen: 127.0.0.1:18089
   default_action:
     type: block
   rules:

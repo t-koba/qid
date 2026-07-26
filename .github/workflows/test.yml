@@ -16,7 +16,7 @@ jobs:
     name: MSRV
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -41,7 +41,7 @@ jobs:
           - name: macos-aarch64
             os: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -58,7 +58,7 @@ jobs:
     name: All Features
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -71,7 +71,7 @@ jobs:
     name: Config Samples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -84,12 +84,25 @@ jobs:
     name: Sister PEP Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - name: Checkout pinned qpx
+        uses: actions/checkout@v7
+        with:
+          repository: t-koba/qpx
+          ref: 7c68ccbb49558b9ed955818677b6e44dc2465c4e
+          path: qpx
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Build qpxd with native TLS
+        working-directory: qpx
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo build --locked -p qpxd --no-default-features --features tls-native
       - name: Run qid/qpx smoke
         env:
+          QPXD_BIN: ${{ github.workspace }}/qpx/target/debug/qpxd
           RUSTFLAGS: "-D warnings"
         run: bash ./examples/qpx-e2e/run.sh
 
@@ -98,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
@@ -118,7 +131,7 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}

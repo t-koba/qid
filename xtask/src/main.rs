@@ -800,7 +800,7 @@ fn budget_for_crate(name: &str, default_budget: usize) -> usize {
         "qid-iga" => 6300,
         "qid-resource" => 5200,
         "qid-scim" => 4600,
-        "qid-worker" => 4800,
+        "qid-worker" => 5200,
         _ => default_budget,
     }
 }

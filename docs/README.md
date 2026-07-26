@@ -25,6 +25,7 @@ qid also integrates with external enforcement points. A proxy, gateway, service 
 5. [operations.md](operations.md): startup, migrations, keys, audit, workers, backups, and network AAA.
 6. [cli.md](cli.md): daemon and companion CLI commands.
 7. [development.md](development.md): build, test, gates, fuzzing, and extension rules.
+8. [standards.md](standards.md): exact RFC and draft implementation boundaries.
 
 ## References
 

@@ -198,8 +198,8 @@ cargo run --bin qid-dev -- qpx-smoke
 | Command | Purpose |
 | --- | --- |
 | `audit-retention-evaluate` | Evaluate retention and optionally record an audit event. |
-| `audit-retention-execute` | Archive when required and report purge-ready IDs. |
-| `audit-worm-archive` | Export recent audit events to a local append-only archive directory. |
+| `audit-retention-execute` | Archive when required and report purge-ready IDs; optionally attach a verified RFC 3161 timestamp. |
+| `audit-worm-archive` | Export recent audit events to a local append-only archive directory; optionally attach a verified RFC 3161 timestamp. |
 | `audit-siem-deliver` | Build and deliver a SIEM webhook payload through deterministic local transport. |
 | `audit-siem-redrive` | Redrive a persistent SIEM delivery queue entry. |
 | `notification-deliver` | Deliver email or push notification through deterministic local transport. |

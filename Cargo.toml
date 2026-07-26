@@ -34,6 +34,7 @@ members = [
     "xtask",
 ]
 resolver = "3"
+exclude = ["vendor/rustls"]
 
 [workspace.package]
 version = "0.1.0"
@@ -65,6 +66,8 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sigstore-tsa = { version = "0.11", default-features = false }
+spki = "0.7"
 sha1 = "0.10"
 aes = "0.8"
 aes-gcm = "0.10"
@@ -102,6 +105,8 @@ proptest = "1.6"
 quinn = "0.11"
 rustls = "0.23"
 rustls-pemfile = "2"
+rustls-pki-types = "1.14"
+tokio-rustls = "0.26"
 rcgen = { version = "0.13", features = ["x509-parser"] }
 time = "0.3"
 
@@ -137,3 +142,6 @@ qid-storage = { version = "0.1.0", path = "qid-storage" }
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+
+[patch.crates-io]
+rustls = { path = "vendor/rustls" }

@@ -162,6 +162,18 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-worm-archive --re
 cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-siem-deliver --realm corp --endpoint-url https://siem.example.com/audit
 ```
 
+For audit evidence that requires an independently trusted time, configure an RFC 3161 TSA and one or more PEM trust-anchor bundles:
+
+```sh
+cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-worm-archive \
+  --realm corp \
+  --archive-dir /var/lib/qid/worm \
+  --tsa-url https://tsa.example.com/timestamp \
+  --tsa-ca /etc/qid/tsa/root-ca.pem
+```
+
+The worker hashes the JSONL audit body with SHA-256, sends a nonce-bearing RFC 3161 request, verifies the response imprint, nonce, CMS signature, time-stamping EKU, and certificate path, then archives the `.timestamp.tsr` response beside the body and version 2 manifest. TSA acquisition or verification failure aborts the archive job before any object is written. The current verifier accepts ECDSA TSA signing keys on P-256/P-384; configure a compatible TSA. The same TSA options are available on `audit-retention-execute`.
+
 SIEM delivery failures are persisted in `siem_delivery_queue`. Retryable failures stay `pending` with `next_retry_at`; exhausted failures become `dead` and can be inspected or redriven:
 
 ```sh
@@ -239,6 +251,10 @@ cargo run --bin qid-sync -- --config /etc/qid/qid.yaml ldap-sync --realm corp --
 - RADIUS accounting
 - RADIUS CoA
 - RADIUS/TLS
+
+RADIUS/DTLS is not implemented. This includes RFC 7360 and DTLS 1.3 from RFC 9147; `qid-network` does not expose a UDP DTLS transport or configuration placeholder.
+
+RFC 9966 TLS-POK is available through the `qid-network` `tls-pok` feature. `TlsPokTeapServerSession` accepts strict TEAP version 1 fragments, acknowledges incomplete inbound flights, fragments outbound TLS records, and completes a TLS 1.3 handshake using the RFC 9258 imported PSK. The TLS engine negotiates RFC 8773 `tls_cert_with_extern_psk`, requires `psk_dhe_ke`, requests an RFC 7250 client Raw Public Key, and binds that key to the BSK selected by the imported identity inside the same handshake. Registration must supply exactly one supported compressed-point EC SubjectPublicKeyInfo for each NAI; any identity, binder, or public-key mismatch terminates the handshake.
 
 Required configuration includes bind addresses, TLS certificate/key/client CA paths, shared secret, and enabled directory authority. The RADIUS authorizer currently accepts subjects present in the repository user list; when EAP-TLS is required, the request must include EAP evidence.
 

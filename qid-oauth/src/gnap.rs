@@ -137,11 +137,9 @@ pub struct GnapInteractResponse {
 }
 
 pub fn parse_gnap_grant_request(body: &str) -> QidResult<GnapGrantRequest> {
-    Ok(
-        serde_json::from_str(body).map_err(|e| qid_core::error::QidError::BadRequest {
-            message: format!("GNAP grant request parse error: {e}"),
-        })?,
-    )
+    serde_json::from_str(body).map_err(|e| qid_core::error::QidError::BadRequest {
+        message: format!("GNAP grant request parse error: {e}"),
+    })
 }
 
 pub fn serialize_gnap_grant_response(response: &GnapGrantResponse) -> QidResult<String> {

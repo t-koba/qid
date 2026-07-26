@@ -37,8 +37,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
 url = { workspace = true }
-urlencoding = { workspace = true }
-x509-parser = { workspace = true }
 
 [dev-dependencies]
 base64 = { workspace = true }
@@ -52,6 +50,7 @@ proptest = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 serde_json = { workspace = true }
+urlencoding = { workspace = true }
 
 [lints]
 workspace = true

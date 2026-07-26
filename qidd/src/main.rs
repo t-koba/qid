@@ -3,7 +3,7 @@ use axum::{
     Json, Router,
     extract::{MatchedPath, State},
     middleware,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use clap::Parser;
@@ -38,6 +38,8 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 use zeroize::{Zeroize, Zeroizing};
+
+mod tls;
 
 type AppState = Arc<SharedState<AnyRepository>>;
 
@@ -111,6 +113,25 @@ async fn http_metrics_layer(
     metrics::histogram!("qid_http_request_duration_seconds", "method" => method, "route" => route)
         .record(start.elapsed().as_secs_f64());
     response
+}
+
+async fn native_mtls_boundary_layer(
+    State(state): State<AppState>,
+    mut request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Response {
+    let thumbprint = request
+        .extensions()
+        .get::<tls::NativeTlsPeer>()
+        .map(|peer| peer.leaf_x5t_s256.clone());
+    if let Err(error) = qid_oauth::mtls::bind_native_mtls_headers(
+        request.headers_mut(),
+        &state,
+        thumbprint.as_deref(),
+    ) {
+        return qid_http::error_response(error);
+    }
+    next.run(request).await
 }
 
 fn log_and_reject_diagnostic_checks(checks: &[CheckItem], phase: &str) -> anyhow::Result<()> {
@@ -289,6 +310,10 @@ async fn main() -> anyhow::Result<()> {
             qid_http::security_headers_middleware,
         ))
         .layer(qid_http::cors_layer(&config.server.cors))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            native_mtls_boundary_layer,
+        ))
         .with_state(state.clone());
 
     let addr: std::net::SocketAddr =
@@ -313,9 +338,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     if let Some(tls) = &config.server.tls {
-        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key)
-            .await
-            .context("failed to load TLS configuration")?;
+        let tls_config =
+            tls::load_rustls_config(tls).context("failed to load TLS configuration")?;
+        let acceptor =
+            tls::NativeMtlsAcceptor::new(axum_server::tls_rustls::RustlsAcceptor::new(tls_config));
         let std_listener = listener.into_std().context("failed to convert listener")?;
         let handle = axum_server::Handle::new();
         let shutdown_handle = handle.clone();
@@ -325,7 +351,8 @@ async fn main() -> anyhow::Result<()> {
             shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
         });
         info!(tls = true, "listening with TLS");
-        axum_server::from_tcp_rustls(std_listener, tls_config)
+        axum_server::from_tcp(std_listener)
+            .acceptor(acceptor)
             .handle(handle)
             .serve(app.into_make_service())
             .await

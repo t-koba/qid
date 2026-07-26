@@ -1,4 +1,4 @@
-//! RADIUS over TLS (RFC 6614) and RADIUS over DTLS (RFC 7360).
+//! RADIUS over TLS (RFC 6614).
 
 #[cfg(feature = "radius-tls")]
 use qid_core::error::{QidError, QidResult};
@@ -65,12 +65,18 @@ pub async fn send_radius_over_tls(config: &RadiusTlsConfig, packet: &[u8]) -> Qi
         .map_err(|error| QidError::BadRequest {
             message: format!("RADIUS/TLS client private key is invalid: {error}"),
         })?;
-    let tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_client_auth_cert(vec![client_cert], client_key)
-        .map_err(|error| QidError::BadRequest {
-            message: format!("RADIUS/TLS client certificate is invalid: {error}"),
-        })?;
+    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| QidError::Config {
+        message: format!("RADIUS/TLS protocol version configuration is invalid: {error}"),
+    })?
+    .with_root_certificates(roots)
+    .with_client_auth_cert(vec![client_cert], client_key)
+    .map_err(|error| QidError::BadRequest {
+        message: format!("RADIUS/TLS client certificate is invalid: {error}"),
+    })?;
     let address = format!("{}:{}", config.server_address, config.server_port);
     let tcp = TcpStream::connect(address)
         .await
@@ -233,7 +239,13 @@ fn build_radius_tls_server_config(
     }
     let cert_chain = parse_certificate_chain(&config.certificate_der)?;
     let private_key = parse_private_key(&config.private_key_der)?;
-    let builder = rustls::ServerConfig::builder();
+    let builder = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| QidError::Config {
+        message: format!("RADIUS/TLS protocol version configuration is invalid: {error}"),
+    })?;
     let server_config = if let Some(client_ca) = config.client_ca_certificate_der.as_ref() {
         let mut roots = rustls::RootCertStore::empty();
         for certificate in parse_certificate_chain(client_ca)? {
@@ -243,11 +255,14 @@ fn build_radius_tls_server_config(
                     message: format!("RADIUS/TLS client CA certificate is invalid: {error}"),
                 })?;
         }
-        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(|error| QidError::BadRequest {
-                message: format!("RADIUS/TLS client verifier is invalid: {error}"),
-            })?;
+        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+        )
+        .build()
+        .map_err(|error| QidError::BadRequest {
+            message: format!("RADIUS/TLS client verifier is invalid: {error}"),
+        })?;
         builder
             .with_client_cert_verifier(verifier)
             .with_single_cert(cert_chain, private_key)
@@ -307,13 +322,6 @@ fn parse_private_key(
     }
 }
 
-pub struct RadiusDtlsConfig {
-    pub server_address: String,
-    pub server_port: u16,
-    pub certificate_der: Vec<u8>,
-    pub private_key_der: Vec<u8>,
-}
-
 #[cfg(feature = "radius-tls")]
 fn validate_radius_packet_length(packet: &[u8]) -> QidResult<()> {
     if packet.len() < 20 {
@@ -342,17 +350,6 @@ mod tests {
             certificate_der: vec![0x00],
             private_key_der: vec![0x00],
             ca_certificate_der: None,
-        };
-        assert_eq!(config.server_port, 2083);
-    }
-
-    #[test]
-    fn radius_dtls_config_construct() {
-        let config = RadiusDtlsConfig {
-            server_address: "127.0.0.1".to_string(),
-            server_port: 2083,
-            certificate_der: vec![0x00],
-            private_key_der: vec![0x00],
         };
         assert_eq!(config.server_port, 2083);
     }

@@ -1,4 +1,5 @@
-//! EAP full handshake: EAP-TLS 1.3 (RFC 9190), TEAP (RFC 7170), EAP-TTLS (RFC 5281), EAP-AKA (RFC 4187/5448/9048).
+//! EAP method framing helpers for EAP-TLS 1.3 (RFC 9190), TEAP (RFC 9930),
+//! EAP-TTLS (RFC 5281), and EAP-AKA (RFC 4187/5448/9048).
 
 use qid_core::error::{QidError, QidResult};
 
@@ -112,24 +113,118 @@ pub fn parse_eap_aka_challenge(data: &[u8]) -> QidResult<EapAkaChallenge> {
     Ok(challenge)
 }
 
+pub const TEAP_VERSION: u8 = 1;
+pub const TEAP_FLAG_LENGTH_INCLUDED: u8 = 0x80;
+pub const TEAP_FLAG_MORE_FRAGMENTS: u8 = 0x40;
+pub const TEAP_FLAG_START: u8 = 0x20;
+pub const TEAP_FLAG_OUTER_TLV_LENGTH_INCLUDED: u8 = 0x10;
+const TEAP_FLAG_RESERVED: u8 = 0x08;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EapTeapStart {
-    pub flags: u8,
-    pub teap_data: Vec<u8>,
+pub struct EapTeapFrame {
+    pub version: u8,
+    pub message_length: Option<u32>,
+    pub tls_data: Vec<u8>,
+    pub outer_tlvs: Vec<u8>,
+    pub more_fragments: bool,
+    pub start: bool,
 }
 
-impl EapTeapStart {
+impl EapTeapFrame {
     pub fn parse(data: &[u8]) -> QidResult<Self> {
-        if data.is_empty() {
+        let Some(flags_and_version) = data.first().copied() else {
             return Err(QidError::BadRequest {
-                message: "EAP-TEAP data empty".to_string(),
+                message: "EAP-TEAP data is empty".to_string(),
+            });
+        };
+        if flags_and_version & TEAP_FLAG_RESERVED != 0 {
+            return Err(QidError::BadRequest {
+                message: "EAP-TEAP reserved flag must be zero".to_string(),
             });
         }
+
+        let mut cursor = 1usize;
+        let message_length = if flags_and_version & TEAP_FLAG_LENGTH_INCLUDED != 0 {
+            Some(read_teap_u32(data, &mut cursor, "message length")?)
+        } else {
+            None
+        };
+        let outer_tlv_length = if flags_and_version & TEAP_FLAG_OUTER_TLV_LENGTH_INCLUDED != 0 {
+            read_teap_u32(data, &mut cursor, "outer TLV length")? as usize
+        } else {
+            0
+        };
+        let tls_end = data
+            .len()
+            .checked_sub(outer_tlv_length)
+            .filter(|end| *end >= cursor)
+            .ok_or_else(|| QidError::BadRequest {
+                message: "EAP-TEAP outer TLV length exceeds frame size".to_string(),
+            })?;
+
         Ok(Self {
-            flags: data[0],
-            teap_data: data[1..].to_vec(),
+            version: flags_and_version & 0x07,
+            message_length,
+            tls_data: data[cursor..tls_end].to_vec(),
+            outer_tlvs: data[tls_end..].to_vec(),
+            more_fragments: flags_and_version & TEAP_FLAG_MORE_FRAGMENTS != 0,
+            start: flags_and_version & TEAP_FLAG_START != 0,
         })
     }
+
+    pub fn encode(&self) -> QidResult<Vec<u8>> {
+        if self.version > 0x07 {
+            return Err(QidError::BadRequest {
+                message: "EAP-TEAP version exceeds three bits".to_string(),
+            });
+        }
+        let mut flags_and_version = self.version;
+        if self.message_length.is_some() {
+            flags_and_version |= TEAP_FLAG_LENGTH_INCLUDED;
+        }
+        if self.more_fragments {
+            flags_and_version |= TEAP_FLAG_MORE_FRAGMENTS;
+        }
+        if self.start {
+            flags_and_version |= TEAP_FLAG_START;
+        }
+        if !self.outer_tlvs.is_empty() {
+            flags_and_version |= TEAP_FLAG_OUTER_TLV_LENGTH_INCLUDED;
+        }
+
+        let mut encoded = Vec::with_capacity(
+            1 + usize::from(self.message_length.is_some()) * 4
+                + usize::from(!self.outer_tlvs.is_empty()) * 4
+                + self.tls_data.len()
+                + self.outer_tlvs.len(),
+        );
+        encoded.push(flags_and_version);
+        if let Some(message_length) = self.message_length {
+            encoded.extend_from_slice(&message_length.to_be_bytes());
+        }
+        if !self.outer_tlvs.is_empty() {
+            let outer_tlv_length =
+                u32::try_from(self.outer_tlvs.len()).map_err(|_| QidError::BadRequest {
+                    message: "EAP-TEAP outer TLVs exceed the protocol limit".to_string(),
+                })?;
+            encoded.extend_from_slice(&outer_tlv_length.to_be_bytes());
+        }
+        encoded.extend_from_slice(&self.tls_data);
+        encoded.extend_from_slice(&self.outer_tlvs);
+        Ok(encoded)
+    }
+}
+
+fn read_teap_u32(data: &[u8], cursor: &mut usize, field: &str) -> QidResult<u32> {
+    let end = cursor
+        .checked_add(4)
+        .filter(|end| *end <= data.len())
+        .ok_or_else(|| QidError::BadRequest {
+            message: format!("EAP-TEAP {field} is truncated"),
+        })?;
+    let value = u32::from_be_bytes(data[*cursor..end].try_into().unwrap());
+    *cursor = end;
+    Ok(value)
 }
 
 pub enum EapFullHandshake {
@@ -137,7 +232,7 @@ pub enum EapFullHandshake {
     Ttls(EapTtlsStart),
     Aka(EapAkaChallenge),
     AkaPrime(EapAkaChallenge),
-    Teap(EapTeapStart),
+    Teap(EapTeapFrame),
 }
 
 pub fn parse_eap_handshake(method: EapMethod, data: &[u8]) -> QidResult<EapFullHandshake> {
@@ -146,7 +241,7 @@ pub fn parse_eap_handshake(method: EapMethod, data: &[u8]) -> QidResult<EapFullH
         EapMethod::Ttls => Ok(EapFullHandshake::Ttls(EapTtlsStart::parse(data)?)),
         EapMethod::Aka => Ok(EapFullHandshake::Aka(parse_eap_aka_challenge(data)?)),
         EapMethod::AkaPrime => Ok(EapFullHandshake::AkaPrime(parse_eap_aka_challenge(data)?)),
-        EapMethod::Teap => Ok(EapFullHandshake::Teap(EapTeapStart::parse(data)?)),
+        EapMethod::Teap => Ok(EapFullHandshake::Teap(EapTeapFrame::parse(data)?)),
         _ => Err(QidError::BadRequest {
             message: format!("unsupported EAP method for handshake: {method:?}"),
         }),
@@ -215,10 +310,27 @@ mod tests {
 
     #[test]
     fn eap_teap_start_parse() {
-        let data = &[0x20, 0x01, 0x02];
-        let start = EapTeapStart::parse(data).unwrap();
-        assert_eq!(start.flags, 0x20);
-        assert_eq!(start.teap_data, vec![0x01, 0x02]);
+        let data = &[TEAP_FLAG_START | TEAP_VERSION, 0x01, 0x02];
+        let start = EapTeapFrame::parse(data).unwrap();
+        assert!(start.start);
+        assert_eq!(start.version, TEAP_VERSION);
+        assert_eq!(start.tls_data, vec![0x01, 0x02]);
+    }
+
+    #[test]
+    fn eap_teap_fragment_and_outer_tlv_round_trip() {
+        let frame = EapTeapFrame {
+            version: TEAP_VERSION,
+            message_length: Some(6),
+            tls_data: vec![1, 2, 3],
+            outer_tlvs: vec![4, 5],
+            more_fragments: true,
+            start: false,
+        };
+        assert_eq!(
+            EapTeapFrame::parse(&frame.encode().unwrap()).unwrap(),
+            frame
+        );
     }
 
     #[test]

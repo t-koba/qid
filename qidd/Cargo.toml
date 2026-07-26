@@ -42,11 +42,18 @@ qid-session = { workspace = true }
 qid-storage = { workspace = true }
 qid-vc = { workspace = true }
 rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true }

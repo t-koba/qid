@@ -36,6 +36,7 @@ pub struct SharedState<Repository> {
     pub session_cache: RwLock<SessionCache>,
     /// Shared L2 cache for replay guards and cross-instance coordination.
     pub shared_cache: Arc<dyn SharedCache>,
+    native_mtls_metadata_key: Vec<u8>,
     /// Process-local pepper for short-lived CIAM verification challenges.
     pub ciam_verification_pepper: Vec<u8>,
     /// PEM-encoded workload CA certificate used to issue X.509-SVIDs.
@@ -76,12 +77,27 @@ impl<Repository> SharedState<Repository> {
             decision_cache: RwLock::new(HashMap::new()),
             session_cache: RwLock::new(SessionCache::new(10_000)),
             shared_cache,
+            native_mtls_metadata_key: random_pepper(),
             ciam_verification_pepper: random_pepper(),
             workload_ca_certificate_pem: None,
             workload_ca_private_key_pem: None,
             jwks,
             paths,
         })
+    }
+
+    /// Create an in-process authentication proof for TLS peer metadata.
+    pub fn native_mtls_metadata_proof(&self, thumbprint: &str) -> String {
+        crate::util::hmac_sha256_base64url(
+            &self.native_mtls_metadata_key,
+            [b"qid-native-mtls-v1\0".as_slice(), thumbprint.as_bytes()].concat(),
+        )
+    }
+
+    /// Verify that TLS peer metadata was produced by this server process.
+    pub fn verify_native_mtls_metadata(&self, thumbprint: &str, proof: &str) -> bool {
+        let expected = self.native_mtls_metadata_proof(thumbprint);
+        crate::util::constant_time_eq(expected.as_bytes(), proof.as_bytes())
     }
 
     pub fn with_workload_ca(mut self, certificate_pem: String, private_key_pem: String) -> Self {

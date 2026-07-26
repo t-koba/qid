@@ -742,6 +742,7 @@ mod tests {
                 actor: "worker".to_string(),
                 reason: "scheduled archive".to_string(),
                 record_audit_event: true,
+                timestamp: None,
             },
         )
         .await
@@ -751,7 +752,8 @@ mod tests {
         assert_eq!(report.event_count, 2);
         assert!(report.audit_event_id.is_some());
         let manifest = report.manifest.as_ref().unwrap();
-        assert_eq!(manifest.schema_version, "qid.audit.evidence.v1");
+        assert_eq!(manifest.schema_version, "qid.audit.evidence.v2");
+        assert!(manifest.timestamp.is_none());
         assert_eq!(manifest.event_count, 2);
         assert_eq!(manifest.first_event_id.as_deref(), Some("event-1"));
         assert_eq!(manifest.last_event_id.as_deref(), Some("event-2"));
@@ -769,6 +771,7 @@ mod tests {
         assert_eq!(manifest_body["body_sha256"], manifest.body_sha256);
         let verification = verify_audit_evidence_archive(manifest, &body_object.body);
         assert!(verification.valid);
+        assert!(verify_audit_timestamp_evidence(manifest, &body_object.body, b"", &[]).is_err());
         assert_eq!(verification.event_count, 2);
         assert_eq!(verification.first_event_id.as_deref(), Some("event-1"));
         assert_eq!(verification.last_event_id.as_deref(), Some("event-2"));
@@ -833,6 +836,7 @@ mod tests {
                 actor: "worker".to_string(),
                 reason: "scheduled archive".to_string(),
                 record_audit_event: false,
+                timestamp: None,
             },
         )
         .await
@@ -867,6 +871,7 @@ mod tests {
             event_count: 0,
             manifest: None,
             body_object: None,
+            timestamp_object: None,
             manifest_object: None,
             audit_event_id: None,
         };
@@ -936,6 +941,7 @@ mod tests {
                 archive_required: true,
                 include_metadata_in_archive: true,
                 record_audit_event: true,
+                timestamp: None,
             },
         )
         .await
@@ -981,6 +987,7 @@ mod tests {
                 archive_required: true,
                 include_metadata_in_archive: true,
                 record_audit_event: true,
+                timestamp: None,
             },
         )
         .await

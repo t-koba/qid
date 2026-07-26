@@ -1,4 +1,4 @@
-//! Encrypted Client Hello (ECH, RFC 8446 §8).
+//! Encrypted Client Hello (ECH, RFC 9849).
 //! Provides ECH configuration types and helper functions.
 //! Actual ECH integration requires rustls with ECH support.
 

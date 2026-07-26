@@ -64,6 +64,7 @@ curl -fsS http://127.0.0.1:8443/realms/dev/.well-known/openid-configuration
 | [docs/operations.md](docs/operations.md) | Startup, migrations, key material, audit, metrics, backup/restore, and workers. |
 | [docs/security.md](docs/security.md) | Security boundaries, fail-closed behavior, credentials, keys, admin controls, SCIM, PEP trust, and metrics. |
 | [docs/development.md](docs/development.md) | Build, test, gates, fuzzing, and sample validation workflow. |
+| [docs/standards.md](docs/standards.md) | Exact RFC and draft implementation boundaries. |
 | [config/README.md](config/README.md) | Use-case-oriented configuration samples. |
 | [fuzz/README.md](fuzz/README.md) | Fuzz target instructions. |
 

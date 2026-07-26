@@ -6,10 +6,10 @@ use qid_storage::AnyRepository;
 use qid_worker::{
     AuditRetentionExecutionConfig, AuditRetentionJobConfig, AuditSiemDeliveryConfig,
     AuditSiemHttpRequest, AuditSiemHttpResponse, AuditSiemRedriveConfig, AuditSiemRetryPolicy,
-    AuditWormArchiveConfig, AuditWormObject, AuditWormPutResult, DirectorySyncJobConfig,
-    KeyRotationExecutionJobConfig, KeyRotationPlanningJobConfig, NotificationChannel,
-    NotificationDeliveryConfig, NotificationRequest, NotificationResponse, NotificationRetryPolicy,
-    NotificationTransport, SiemWebhookTransport, WormArchiveTransport,
+    AuditTimestampConfig, AuditWormArchiveConfig, AuditWormObject, AuditWormPutResult,
+    DirectorySyncJobConfig, KeyRotationExecutionJobConfig, KeyRotationPlanningJobConfig,
+    NotificationChannel, NotificationDeliveryConfig, NotificationRequest, NotificationResponse,
+    NotificationRetryPolicy, NotificationTransport, SiemWebhookTransport, WormArchiveTransport,
     run_audit_retention_execution_job, run_audit_retention_job, run_audit_siem_delivery_job,
     run_audit_siem_redrive_job, run_audit_worm_archive_job, run_directory_sync_job,
     run_key_rotation_execution_job, run_key_rotation_planning_job, run_notification_delivery_job,
@@ -68,6 +68,12 @@ pub(crate) enum Command {
         include_metadata_in_archive: bool,
         #[arg(long, default_value_t = true)]
         record_audit_event: bool,
+        #[arg(long)]
+        tsa_url: Option<String>,
+        #[arg(long = "tsa-ca")]
+        tsa_ca: Vec<PathBuf>,
+        #[arg(long, default_value_t = 10)]
+        tsa_timeout_seconds: u64,
     },
     /// Export recent audit events to an append-only local WORM archive directory.
     #[command(name = "audit-worm-archive")]
@@ -88,6 +94,12 @@ pub(crate) enum Command {
         include_metadata: bool,
         #[arg(long, default_value_t = true)]
         record_audit_event: bool,
+        #[arg(long)]
+        tsa_url: Option<String>,
+        #[arg(long = "tsa-ca")]
+        tsa_ca: Vec<PathBuf>,
+        #[arg(long, default_value_t = 10)]
+        tsa_timeout_seconds: u64,
     },
     /// Build and deliver a SIEM webhook payload through a deterministic local transport.
     #[command(name = "audit-siem-deliver")]
@@ -284,8 +296,12 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             archive_required,
             include_metadata_in_archive,
             record_audit_event,
+            tsa_url,
+            tsa_ca,
+            tsa_timeout_seconds,
         } => {
             let archive = LocalWormArchive::new(archive_dir)?;
+            let timestamp = load_timestamp_config(tsa_url, tsa_ca, tsa_timeout_seconds)?;
             let report = run_audit_retention_execution_job(
                 repo.as_ref(),
                 &archive,
@@ -297,6 +313,7 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
                     archive_required,
                     include_metadata_in_archive,
                     record_audit_event,
+                    timestamp,
                 },
             )
             .await?;
@@ -314,9 +331,13 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             now,
             include_metadata,
             record_audit_event,
+            tsa_url,
+            tsa_ca,
+            tsa_timeout_seconds,
         } => {
             ensure!(limit > 0, "limit must be greater than zero");
             let archive = LocalWormArchive::new(archive_dir)?;
+            let timestamp = load_timestamp_config(tsa_url, tsa_ca, tsa_timeout_seconds)?;
             let report = run_audit_worm_archive_job(
                 repo.as_ref(),
                 &archive,
@@ -328,6 +349,7 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
                     actor,
                     reason,
                     record_audit_event,
+                    timestamp,
                 },
             )
             .await?;
@@ -587,6 +609,57 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
 fn open_config(config_path: &Path) -> anyhow::Result<QidConfig> {
     QidConfig::from_file(config_path.to_str().context("invalid config path")?)
         .context("failed to load config")
+}
+
+fn load_timestamp_config(
+    url: Option<String>,
+    ca_paths: Vec<PathBuf>,
+    timeout_seconds: u64,
+) -> anyhow::Result<Option<AuditTimestampConfig>> {
+    match (url.as_ref(), ca_paths.is_empty()) {
+        (None, true) => return Ok(None),
+        (None, false) => anyhow::bail!("--tsa-ca requires --tsa-url"),
+        (Some(_), true) => anyhow::bail!("--tsa-url requires at least one --tsa-ca"),
+        (Some(_), false) => {}
+    }
+    ensure!(
+        timeout_seconds > 0,
+        "--tsa-timeout-seconds must be greater than zero"
+    );
+    let url = url.context("--tsa-url is required")?;
+    let parsed = reqwest::Url::parse(&url).context("--tsa-url is invalid")?;
+    ensure!(
+        parsed.scheme() == "https" && parsed.host_str().is_some(),
+        "--tsa-url must be an absolute https:// URL"
+    );
+    ensure!(
+        parsed.username().is_empty() && parsed.password().is_none(),
+        "--tsa-url must not contain user information"
+    );
+
+    let mut trusted_roots_der = Vec::new();
+    for path in ca_paths {
+        let bytes = fs::read(&path)
+            .with_context(|| format!("failed to read TSA CA bundle {}", path.display()))?;
+        let certificates = rustls_pemfile::certs(&mut bytes.as_slice())
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| format!("failed to parse TSA CA bundle {}", path.display()))?;
+        ensure!(
+            !certificates.is_empty(),
+            "TSA CA bundle contains no certificates: {}",
+            path.display()
+        );
+        trusted_roots_der.extend(
+            certificates
+                .into_iter()
+                .map(|certificate| certificate.as_ref().to_vec()),
+        );
+    }
+    Ok(Some(AuditTimestampConfig {
+        url,
+        trusted_roots_der,
+        timeout_seconds,
+    }))
 }
 
 async fn open_repo(config_path: &Path) -> anyhow::Result<Arc<AnyRepository>> {
@@ -994,6 +1067,9 @@ realms:
                 now: Some(300),
                 include_metadata: true,
                 record_audit_event: true,
+                tsa_url: None,
+                tsa_ca: Vec::new(),
+                tsa_timeout_seconds: 10,
             },
         })
         .await

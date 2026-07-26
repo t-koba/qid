@@ -28,12 +28,16 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+sigstore-tsa = { workspace = true }
 tokio = { workspace = true }
 ulid = { workspace = true }
 zeroize = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
 lettre = { workspace = true, optional = true, features = ["tokio1-rustls-tls"] }
 
 [dev-dependencies]
+base64 = { workspace = true }
 tokio = { workspace = true }
 
 [features]

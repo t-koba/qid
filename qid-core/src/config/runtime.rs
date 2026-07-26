@@ -336,6 +336,9 @@ impl ServerConfig {
         self.cors.validate()?;
         self.http_message_signatures.validate()?;
         self.paths.validate()?;
+        if let Some(tls) = &self.tls {
+            tls.validate()?;
+        }
         Ok(())
     }
 }
@@ -834,4 +837,59 @@ fn default_auth_email_magic_link_verify_path() -> String {
 pub struct TlsConfig {
     pub cert: String,
     pub key: String,
+    /// PEM bundle containing trust anchors for optional native client authentication.
+    #[serde(default)]
+    pub client_ca: Option<String>,
+    /// PEM or DER certificate revocation lists enforced during client path validation.
+    #[serde(default)]
+    pub client_crls: Vec<String>,
+    /// DER-encoded OCSP responses in certificate-chain order for RFC 6961.
+    /// A null entry represents a certificate without a stored response.
+    #[serde(default)]
+    pub ocsp_responses: Vec<Option<String>>,
+}
+
+impl TlsConfig {
+    fn validate(&self) -> QidResult<()> {
+        if self.cert.trim().is_empty() || self.key.trim().is_empty() {
+            return Err(QidError::Config {
+                message: "server.tls.cert and server.tls.key must not be empty".to_string(),
+            });
+        }
+        if self
+            .client_ca
+            .as_deref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err(QidError::Config {
+                message: "server.tls.client_ca must not be empty".to_string(),
+            });
+        }
+        if self.client_crls.iter().any(|path| path.trim().is_empty()) {
+            return Err(QidError::Config {
+                message: "server.tls.client_crls entries must not be empty".to_string(),
+            });
+        }
+        if !self.client_crls.is_empty() && self.client_ca.is_none() {
+            return Err(QidError::Config {
+                message: "server.tls.client_crls requires server.tls.client_ca".to_string(),
+            });
+        }
+        if self
+            .ocsp_responses
+            .iter()
+            .flatten()
+            .any(|path| path.trim().is_empty())
+        {
+            return Err(QidError::Config {
+                message: "server.tls.ocsp_responses paths must not be empty".to_string(),
+            });
+        }
+        if !self.ocsp_responses.is_empty() && self.ocsp_responses.iter().all(Option::is_none) {
+            return Err(QidError::Config {
+                message: "server.tls.ocsp_responses must contain at least one response".to_string(),
+            });
+        }
+        Ok(())
+    }
 }

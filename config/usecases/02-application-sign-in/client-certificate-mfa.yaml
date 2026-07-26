@@ -23,6 +23,12 @@ server:
   tls:
     cert: "/etc/qid/tls/id.example.com.crt"
     key: "/etc/qid/tls/id.example.com.key"
+    client_ca: "/etc/qid/tls/client-ca.pem"
+    client_crls:
+      - "/etc/qid/tls/client-ca.crl.pem"
+    ocsp_responses:
+      - "/etc/qid/tls/id.example.com.ocsp.der"
+      - "/etc/qid/tls/intermediate-ca.ocsp.der"
 
 realms:
   - id: privileged

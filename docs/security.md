@@ -71,6 +71,8 @@ Static client validation enforces:
 
 FAPI and high-assurance profiles require sender-constrained resource servers and stronger client authentication surfaces.
 
+When `server.tls.client_ca` is configured, rustls/webpki performs native client certificate path validation before OAuth sees the leaf thumbprint. Optional configured CRLs are checked by the same verifier. qid never trusts a caller-supplied client certificate header; the TLS peer thumbprint is passed through a process-local authenticated metadata boundary. Deployments that terminate mTLS at a PEP must use a registered PEP assertion bound to the reported thumbprint.
+
 ## Shared Cache Security
 
 Multi-instance deployments must configure `ops.cache.kind: redis` or `valkey` with a shared endpoint. Process-local memory is not sufficient for replay detection or cross-instance revocation visibility.
@@ -194,6 +196,20 @@ observability:
 Metrics labels must stay low-cardinality and non-sensitive. User IDs, email addresses, raw token values, selected header values, and unbounded raw paths do not belong in labels.
 
 Audit export and verification endpoints are admin surfaces. Treat audit archives and WORM output as sensitive because they can contain operational and identity metadata.
+
+## TLS-POK Bootstrap Keys
+
+RFC 9966 bootstrap public keys are authentication key material even though they are not private keys. Store their DER SubjectPublicKeyInfo bytes as sensitive configuration, restrict replacement to an authenticated provisioning path, and audit every registration or rotation. The registered DER bytes must contain exactly one supported EC SubjectPublicKeyInfo with a compressed point; trailing data, uncompressed points, unsupported curves, and ambiguous encodings are rejected.
+
+TLS-POK key selection and the RFC 7250 client Raw Public Key comparison must occur inside the same TLS 1.3 handshake. Do not treat the RFC 9258 imported PSK as a bearer credential, log it, or export it from the TLS process. A TLS backend that cannot negotiate certificate authentication with an external PSK, require `psk_dhe_ke`, generate the `imp binder`, and expose the authenticated Raw Public Key is not sufficient for RFC 9966 deployment.
+
+## TLS Backend Policy
+
+qid follows the same primary backend policy as qpx: rustls is the default and security-critical TLS behavior remains in Rust. qid does not dynamically link OpenSSL and does not depend on wolfSSL or GnuTLS. NoxTLS is also excluded because its available licensing is GPL or commercial rather than the workspace's permissive dependency policy.
+
+RFC 9966 and RFC 6961 require rustls capabilities that are not present in upstream 0.23.41. The workspace therefore pins a reviewed source fork through `[patch.crates-io]`; its provenance, patch boundary, and update procedure are recorded in `vendor/rustls/QID-PATCHES.md`. All ordinary rustls callers continue to use upstream behavior unless they explicitly select the imported-PSK or multi-stapling APIs. The fork must pass both upstream rustls tests and qid's protocol handshake tests before an update is accepted.
+
+Do not introduce a native TLS backend as an implicit fallback. Any future platform-native adapter must be an explicit feature with an independently reviewed use case and must not weaken the RFC 9966, RFC 6961, certificate-path, revocation, or fail-closed guarantees.
 
 ## Dependency and Quality Gates
 

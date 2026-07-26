@@ -37,6 +37,7 @@ pub struct LocalSigner {
     algorithm: Algorithm,
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
+    ec_signing_key: Option<p256::ecdsa::SigningKey>,
 }
 
 impl std::fmt::Debug for LocalSigner {
@@ -68,6 +69,7 @@ impl LocalSigner {
             algorithm: Algorithm::ES256,
             encoding_key,
             decoding_key,
+            ec_signing_key: Some(signing_key),
         })
     }
 
@@ -83,6 +85,7 @@ impl LocalSigner {
             algorithm: Algorithm::RS256,
             encoding_key,
             decoding_key,
+            ec_signing_key: None,
         })
     }
 
@@ -106,6 +109,7 @@ impl LocalSigner {
             algorithm: Algorithm::EdDSA,
             encoding_key,
             decoding_key,
+            ec_signing_key: None,
         })
     }
 
@@ -121,6 +125,7 @@ impl LocalSigner {
             algorithm: Algorithm::HS256,
             encoding_key,
             decoding_key,
+            ec_signing_key: None,
         }
     }
 
@@ -139,6 +144,9 @@ impl Signer for LocalSigner {
         let mut header = Header::new(self.algorithm);
         header.kid = Some(self.kid.clone());
         header.typ = Some(typ.to_string());
+        if let Some(signing_key) = &self.ec_signing_key {
+            return encode_es256_deterministic(&header, claims, signing_key);
+        }
         Ok(encode(&header, claims, &self.encoding_key)?)
     }
 
@@ -463,12 +471,35 @@ pub fn sign_es256_jwt_with_jwk_header(
             message: format!("failed to convert public JWK: {err}"),
         })?,
     );
-    let key = EncodingKey::from_ec_pem(private_pem).map_err(|err| QidError::Crypto {
-        message: format!("failed to build ES256 encoding key: {err}"),
+    use p256::pkcs8::DecodePrivateKey;
+    let private_pem = std::str::from_utf8(private_pem).map_err(|err| QidError::Crypto {
+        message: format!("failed to decode ES256 private key PEM: {err}"),
     })?;
-    encode(&header, payload, &key).map_err(|err| QidError::Crypto {
+    let key =
+        p256::ecdsa::SigningKey::from_pkcs8_pem(private_pem).map_err(|err| QidError::Crypto {
+            message: format!("failed to parse ES256 private key: {err}"),
+        })?;
+    encode_es256_deterministic(&header, payload, &key).map_err(|err| QidError::Crypto {
         message: format!("failed to sign ES256 JWT: {err}"),
     })
+}
+
+/// Encode an ES256 JWT using the deterministic nonce generation defined by RFC 6979.
+fn encode_es256_deterministic<T: Serialize>(
+    header: &Header,
+    payload: &T,
+    signing_key: &p256::ecdsa::SigningKey,
+) -> anyhow::Result<String> {
+    use p256::ecdsa::signature::Signer as _;
+
+    let header = URL_SAFE_NO_PAD.encode(serde_json::to_vec(header)?);
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload)?);
+    let signing_input = format!("{header}.{payload}");
+    let signature: p256::ecdsa::Signature = signing_key.sign(signing_input.as_bytes());
+    Ok(format!(
+        "{signing_input}.{}",
+        URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    ))
 }
 
 fn validate_remote_jwk_binding(config: &RemoteSignerConfig, public_jwk: &Jwk) -> QidResult<()> {
@@ -645,7 +676,9 @@ mod tests {
             extra: HashMap::new(),
         };
         let token = signer.sign(&claims).expect("signing failed");
+        let repeated = signer.sign(&claims).expect("repeated signing failed");
         assert!(!token.is_empty());
+        assert_eq!(token, repeated);
         let decoded = signer
             .decode_signature_only(&token)
             .expect("decoding failed");
@@ -668,6 +701,14 @@ mod tests {
             &payload,
         )
         .expect("JWK header JWT signing failed");
+        let repeated = sign_es256_jwt_with_jwk_header(
+            key.private_pem.as_bytes(),
+            &key.public_jwk,
+            "dpop+jwt",
+            &payload,
+        )
+        .expect("repeated JWK header JWT signing failed");
+        assert_eq!(token, repeated);
         verify_jwt_signature_with_jwk(&token, &key.public_jwk, "ES256")
             .expect("JWK header JWT verification failed");
 
@@ -942,6 +983,7 @@ y5ikf4X4Fzgi7litiqbK6BLJMdHl8WSvi5OVAasiPBrb9kccT/Iy6HHG2WXD/VQ6
                 .expect("RSA encoding key failed"),
             decoding_key: DecodingKey::from_rsa_pem(rsa_public_pem.as_bytes())
                 .expect("RSA decoding key failed"),
+            ec_signing_key: None,
         };
         let claims = JwtClaims {
             iss: Some("issuer".to_string()),

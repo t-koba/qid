@@ -10,6 +10,11 @@ use qid_observability::audit::{
 };
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use sigstore_tsa::{
+    AlgorithmIdentifier, Asn1MessageImprint, TimeStampReq, VerifyOpts,
+    verify::{parse_timestamp_token, verify_timestamp_response},
+};
 use std::collections::BTreeMap;
 use ulid::Ulid;
 
@@ -142,6 +147,14 @@ pub struct AuditWormArchiveConfig {
     pub actor: String,
     pub reason: String,
     pub record_audit_event: bool,
+    pub timestamp: Option<AuditTimestampConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditTimestampConfig {
+    pub url: String,
+    pub trusted_roots_der: Vec<Vec<u8>>,
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,6 +166,7 @@ pub struct AuditRetentionExecutionConfig {
     pub archive_required: bool,
     pub include_metadata_in_archive: bool,
     pub record_audit_event: bool,
+    pub timestamp: Option<AuditTimestampConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -182,6 +196,15 @@ pub struct AuditEvidenceManifest {
     pub last_event_hash: Option<String>,
     pub body_sha256: String,
     pub body_key: String,
+    pub timestamp: Option<AuditTimestampEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditTimestampEvidence {
+    pub tsa_url: String,
+    pub generated_at: u64,
+    pub token_sha256: String,
+    pub token_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -205,6 +228,7 @@ pub struct AuditWormArchiveReport {
     pub event_count: usize,
     pub manifest: Option<AuditEvidenceManifest>,
     pub body_object: Option<AuditWormPutResult>,
+    pub timestamp_object: Option<AuditWormPutResult>,
     pub manifest_object: Option<AuditWormPutResult>,
     pub audit_event_id: Option<String>,
 }
@@ -369,6 +393,54 @@ pub fn verify_audit_evidence_archive(
         broken_event_id: None,
         error: None,
     }
+}
+
+/// Verify the archived RFC 3161 token against the audit body and configured TSA roots.
+pub fn verify_audit_timestamp_evidence(
+    manifest: &AuditEvidenceManifest,
+    body: &[u8],
+    token: &[u8],
+    trusted_roots_der: &[Vec<u8>],
+) -> QidResult<()> {
+    let timestamp = manifest
+        .timestamp
+        .as_ref()
+        .ok_or_else(|| QidError::BadRequest {
+            message: "audit evidence manifest has no RFC 3161 timestamp".to_string(),
+        })?;
+    if hex_sha256(body) != manifest.body_sha256 {
+        return Err(QidError::Crypto {
+            message: "audit body SHA-256 does not match the timestamped manifest".to_string(),
+        });
+    }
+    if hex_sha256(token) != timestamp.token_sha256 {
+        return Err(QidError::Crypto {
+            message: "RFC 3161 token SHA-256 does not match the manifest".to_string(),
+        });
+    }
+    if trusted_roots_der.is_empty() || trusted_roots_der.iter().any(Vec::is_empty) {
+        return Err(QidError::Config {
+            message: "RFC 3161 TSA trusted roots must not be empty".to_string(),
+        });
+    }
+    let roots = trusted_roots_der
+        .iter()
+        .cloned()
+        .map(rustls_pki_types::CertificateDer::from)
+        .collect();
+    let verified = verify_timestamp_response(token, body, VerifyOpts::new().with_roots(roots))
+        .map_err(|error| QidError::Crypto {
+            message: format!("RFC 3161 TSA response verification failed: {error}"),
+        })?;
+    let generated_at = u64::try_from(verified.time.as_second()).map_err(|_| QidError::Crypto {
+        message: "RFC 3161 TSA generation time is before the Unix epoch".to_string(),
+    })?;
+    if generated_at != timestamp.generated_at {
+        return Err(QidError::Crypto {
+            message: "RFC 3161 generation time does not match the manifest".to_string(),
+        });
+    }
+    Ok(())
 }
 
 pub async fn run_audit_retention_job<R: Repository>(
@@ -767,6 +839,7 @@ where
             event_count: 0,
             manifest: None,
             body_object: None,
+            timestamp_object: None,
             manifest_object: None,
             audit_event_id: None,
         });
@@ -789,8 +862,21 @@ where
         "audit/{stream}/{}/{}.manifest.json",
         config.now_epoch, archive_id
     );
+    let timestamp_key = format!(
+        "audit/{stream}/{}/{}.timestamp.tsr",
+        config.now_epoch, archive_id
+    );
+    let timestamp = match &config.timestamp {
+        Some(timestamp_config) => {
+            let (token, evidence) =
+                request_and_verify_timestamp(&body, timestamp_config, timestamp_key.clone())
+                    .await?;
+            Some((token, evidence))
+        }
+        None => None,
+    };
     let manifest = AuditEvidenceManifest {
-        schema_version: "qid.audit.evidence.v1".to_string(),
+        schema_version: "qid.audit.evidence.v2".to_string(),
         realm_id: config.realm_id.clone(),
         generated_at: config.now_epoch,
         event_count: events.len(),
@@ -800,6 +886,7 @@ where
         last_event_hash: events.first().and_then(|event| event.event_hash.clone()),
         body_sha256: hex_sha256(&body),
         body_key: body_key.clone(),
+        timestamp: timestamp.as_ref().map(|(_, evidence)| evidence.clone()),
     };
 
     let body_object = transport
@@ -810,6 +897,20 @@ where
             metadata: archive_metadata(&config, "body"),
         })
         .map_err(|e| QidError::Storage { message: e })?;
+    let timestamp_object = if let Some((token, _)) = timestamp {
+        Some(
+            transport
+                .put_once(AuditWormObject {
+                    key: timestamp_key,
+                    content_type: "application/timestamp-reply".to_string(),
+                    body: token,
+                    metadata: archive_metadata(&config, "rfc3161_timestamp"),
+                })
+                .map_err(|e| QidError::Storage { message: e })?,
+        )
+    } else {
+        None
+    };
     let manifest_body = serde_json::to_vec(&manifest).map_err(|e| QidError::Internal {
         message: e.to_string(),
     })?;
@@ -836,6 +937,8 @@ where
                 "event_count": manifest.event_count,
                 "body_sha256": manifest.body_sha256,
                 "body_location": body_object.location,
+                "timestamp_location": timestamp_object.as_ref().map(|object| object.location.clone()),
+                "tsa_url": manifest.timestamp.as_ref().map(|timestamp| timestamp.tsa_url.clone()),
                 "manifest_location": manifest_object.location,
             }),
             created_at: config.now_epoch,
@@ -854,6 +957,7 @@ where
         event_count: manifest.event_count,
         manifest: Some(manifest),
         body_object: Some(body_object),
+        timestamp_object,
         manifest_object: Some(manifest_object),
         audit_event_id,
     })
@@ -934,6 +1038,7 @@ where
                 actor: config.actor.clone(),
                 reason: config.reason.clone(),
                 record_audit_event: true,
+                timestamp: config.timestamp.clone(),
             },
         )
         .await?;
@@ -1054,6 +1159,132 @@ fn siem_delivery_headers(
     headers
 }
 
+const MAX_TIMESTAMP_RESPONSE_BYTES: usize = 1024 * 1024;
+
+async fn request_and_verify_timestamp(
+    body: &[u8],
+    config: &AuditTimestampConfig,
+    token_key: String,
+) -> QidResult<(Vec<u8>, AuditTimestampEvidence)> {
+    let url = reqwest::Url::parse(&config.url).map_err(|error| QidError::Config {
+        message: format!("RFC 3161 TSA URL is invalid: {error}"),
+    })?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err(QidError::Config {
+            message: "RFC 3161 TSA URL must be an absolute https:// URL".to_string(),
+        });
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(QidError::Config {
+            message: "RFC 3161 TSA URL must not contain user information".to_string(),
+        });
+    }
+    if config.timeout_seconds == 0 {
+        return Err(QidError::Config {
+            message: "RFC 3161 TSA timeout_seconds must be greater than zero".to_string(),
+        });
+    }
+    if config.trusted_roots_der.is_empty() || config.trusted_roots_der.iter().any(Vec::is_empty) {
+        return Err(QidError::Config {
+            message: "RFC 3161 TSA trusted roots must not be empty".to_string(),
+        });
+    }
+
+    let digest = Sha256::digest(body);
+    let request = TimeStampReq::new(Asn1MessageImprint::new(
+        AlgorithmIdentifier::sha256(),
+        digest.to_vec(),
+    ));
+    let request_der = request.to_der().map_err(|error| QidError::Crypto {
+        message: format!("failed to encode RFC 3161 request: {error}"),
+    })?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(config.timeout_seconds))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| QidError::Internal {
+            message: format!("failed to build RFC 3161 TSA client: {error}"),
+        })?;
+    let mut response = client
+        .post(url)
+        .header("Content-Type", "application/timestamp-query")
+        .header("Accept", "application/timestamp-reply")
+        .body(request_der)
+        .send()
+        .await
+        .map_err(|error| QidError::Internal {
+            message: format!("RFC 3161 TSA request failed: {error}"),
+        })?;
+    if !response.status().is_success() {
+        return Err(QidError::Internal {
+            message: format!("RFC 3161 TSA returned HTTP status {}", response.status()),
+        });
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if !content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/timestamp-reply"))
+    {
+        return Err(QidError::Crypto {
+            message: format!(
+                "RFC 3161 TSA returned invalid content type: {}",
+                content_type.unwrap_or("missing")
+            ),
+        });
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_TIMESTAMP_RESPONSE_BYTES as u64)
+    {
+        return Err(QidError::Crypto {
+            message: "RFC 3161 TSA response exceeds the size limit".to_string(),
+        });
+    }
+    let mut token = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| QidError::Internal {
+        message: format!("failed to read RFC 3161 TSA response: {error}"),
+    })? {
+        if token.len().saturating_add(chunk.len()) > MAX_TIMESTAMP_RESPONSE_BYTES {
+            return Err(QidError::Crypto {
+                message: "RFC 3161 TSA response exceeds the size limit".to_string(),
+            });
+        }
+        token.extend_from_slice(&chunk);
+    }
+
+    let (tst_info, _) = parse_timestamp_token(&token).map_err(|error| QidError::Crypto {
+        message: format!("failed to parse RFC 3161 TSA response: {error}"),
+    })?;
+    if tst_info.nonce != request.nonce {
+        return Err(QidError::Crypto {
+            message: "RFC 3161 TSA response nonce does not match the request".to_string(),
+        });
+    }
+    let roots = config
+        .trusted_roots_der
+        .iter()
+        .cloned()
+        .map(rustls_pki_types::CertificateDer::from)
+        .collect();
+    let verified = verify_timestamp_response(&token, body, VerifyOpts::new().with_roots(roots))
+        .map_err(|error| QidError::Crypto {
+            message: format!("RFC 3161 TSA response verification failed: {error}"),
+        })?;
+    let generated_at = u64::try_from(verified.time.as_second()).map_err(|_| QidError::Crypto {
+        message: "RFC 3161 TSA generation time is before the Unix epoch".to_string(),
+    })?;
+    let evidence = AuditTimestampEvidence {
+        tsa_url: config.url.clone(),
+        generated_at,
+        token_sha256: hex_sha256(&token),
+        token_key,
+    };
+    Ok((token, evidence))
+}
+
 fn archive_metadata(config: &AuditWormArchiveConfig, kind: &str) -> BTreeMap<String, String> {
     let mut metadata = BTreeMap::new();
     metadata.insert("qid-object-kind".to_string(), kind.to_string());
@@ -1126,5 +1357,110 @@ fn invalid_evidence_report(
         last_event_hash: None,
         broken_event_id,
         error,
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    const VALID_BUNDLE: &str = include_str!("../tests/data/rfc3161/valid_bundle.json");
+    const VALID_TRUSTED_ROOT: &str = include_str!("../tests/data/rfc3161/valid_trusted_root.json");
+
+    #[test]
+    fn verifies_real_rfc3161_conformance_evidence() {
+        let bundle: serde_json::Value =
+            serde_json::from_str(VALID_BUNDLE).expect("parse RFC 3161 conformance bundle");
+        let token = STANDARD
+            .decode(
+                bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"][0]
+                    ["signedTimestamp"]
+                    .as_str()
+                    .expect("timestamp token"),
+            )
+            .expect("decode timestamp token");
+        let body = STANDARD
+            .decode(
+                bundle["messageSignature"]["signature"]
+                    .as_str()
+                    .expect("timestamped signature"),
+            )
+            .expect("decode timestamped signature");
+
+        let trusted_root: serde_json::Value = serde_json::from_str(VALID_TRUSTED_ROOT)
+            .expect("parse RFC 3161 conformance trusted root");
+        let certificates = trusted_root["timestampAuthorities"][0]["certChain"]["certificates"]
+            .as_array()
+            .expect("TSA certificate chain");
+        let root = STANDARD
+            .decode(
+                certificates
+                    .last()
+                    .and_then(|certificate| certificate["rawBytes"].as_str())
+                    .expect("TSA root certificate"),
+            )
+            .expect("decode TSA root certificate");
+        let verified = verify_timestamp_response(
+            &token,
+            &body,
+            VerifyOpts::new().with_root(rustls_pki_types::CertificateDer::from(root.clone())),
+        )
+        .expect("verify RFC 3161 conformance timestamp");
+        let generated_at =
+            u64::try_from(verified.time.as_second()).expect("positive generation time");
+        let manifest = AuditEvidenceManifest {
+            schema_version: "qid.audit.evidence.v2".to_string(),
+            realm_id: Some("conformance".to_string()),
+            generated_at,
+            event_count: 1,
+            first_event_id: None,
+            last_event_id: None,
+            first_event_hash: None,
+            last_event_hash: None,
+            body_sha256: hex_sha256(&body),
+            body_key: "audit/conformance.jsonl".to_string(),
+            timestamp: Some(AuditTimestampEvidence {
+                tsa_url: "https://timestamp.example.test".to_string(),
+                generated_at,
+                token_sha256: hex_sha256(&token),
+                token_key: "audit/conformance.timestamp.tsr".to_string(),
+            }),
+        };
+
+        verify_audit_timestamp_evidence(&manifest, &body, &token, &[root])
+            .expect("verify archived RFC 3161 evidence");
+    }
+
+    #[tokio::test]
+    async fn timestamp_configuration_rejects_insecure_url_before_network_access() {
+        let error = request_and_verify_timestamp(
+            b"audit evidence",
+            &AuditTimestampConfig {
+                url: "http://tsa.example.com/timestamp".to_string(),
+                trusted_roots_der: vec![vec![1]],
+                timeout_seconds: 10,
+            },
+            "audit.timestamp.tsr".to_string(),
+        )
+        .await
+        .expect_err("insecure TSA URL must fail closed");
+        assert!(error.message().contains("https://"));
+    }
+
+    #[tokio::test]
+    async fn timestamp_configuration_requires_trusted_roots_before_network_access() {
+        let error = request_and_verify_timestamp(
+            b"audit evidence",
+            &AuditTimestampConfig {
+                url: "https://tsa.example.com/timestamp".to_string(),
+                trusted_roots_der: Vec::new(),
+                timeout_seconds: 10,
+            },
+            "audit.timestamp.tsr".to_string(),
+        )
+        .await
+        .expect_err("missing TSA roots must fail closed");
+        assert!(error.message().contains("trusted roots"));
     }
 }

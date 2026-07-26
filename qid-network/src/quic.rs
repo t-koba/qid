@@ -154,9 +154,9 @@ fn build_tls_server_config(
     certificate_der: &[u8],
     private_key_der: &[u8],
 ) -> QidResult<rustls::ServerConfig> {
-    let mut cert_chain = Vec::new();
-    if certificate_der.starts_with(b"-----BEGIN ") {
-        let certs = rustls_pemfile::certs(&mut certificate_der.as_ref())
+    let cert_chain = if certificate_der.starts_with(b"-----BEGIN ") {
+        let mut certificate_reader = certificate_der;
+        let certs = rustls_pemfile::certs(&mut certificate_reader)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| QidError::Crypto {
                 message: format!("failed to parse QUIC TLS certificate PEM: {e}"),
@@ -166,18 +166,16 @@ fn build_tls_server_config(
                 message: "QUIC TLS certificate PEM contains no certificates".to_string(),
             });
         }
-        cert_chain = certs
-            .into_iter()
-            .map(rustls::pki_types::CertificateDer::from)
-            .collect();
+        certs
     } else {
-        cert_chain.push(rustls::pki_types::CertificateDer::from(
+        vec![rustls::pki_types::CertificateDer::from(
             certificate_der.to_vec(),
-        ));
-    }
+        )]
+    };
 
     let key = if private_key_der.starts_with(b"-----BEGIN ") {
-        rustls_pemfile::private_key(&mut private_key_der.as_ref())
+        let mut private_key_reader = private_key_der;
+        rustls_pemfile::private_key(&mut private_key_reader)
             .map_err(|e| QidError::Crypto {
                 message: format!("failed to parse QUIC TLS private key PEM: {e}"),
             })?

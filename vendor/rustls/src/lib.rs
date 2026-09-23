@@ -596,7 +596,7 @@ pub mod client {
     pub use builder::WantsClientCert;
     pub use client_conn::{
         ClientConfig, ClientConnectionData, ClientSessionStore, EarlyDataError, ResolvesClientCert,
-        Resumption, Tls12Resumption, UnbufferedClientConnection,
+        Resumption, TicketRequest, Tls12Resumption, UnbufferedClientConnection,
     };
     pub use crate::imported_psk::ClientImportedPsk;
     #[cfg(feature = "std")]

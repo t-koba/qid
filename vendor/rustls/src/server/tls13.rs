@@ -48,9 +48,11 @@ mod client_hello {
     use crate::msgs::handshake::{
         CertificatePayloadTls13, CertificateRequestExtensions, CertificateRequestPayloadTls13,
         ClientHelloPayload, HelloRetryRequest, HelloRetryRequestExtensions, KeyShareEntry, Random,
-        ServerExtensions, ServerExtensionsInput, ServerHelloPayload, SessionId,
+        ServerExtensions, ServerExtensionsInput, ServerHelloPayload, ServerTicketRequestHint,
+        SessionId,
     };
     use crate::server::common::ActiveCertifiedKey;
+    use crate::server::hs::PreviousClientHello;
     use crate::sign;
     use crate::tls13::key_schedule::{
         KeyScheduleEarly, KeyScheduleHandshake, KeySchedulePreHandshake,
@@ -69,7 +71,7 @@ mod client_hello {
         pub(in crate::server) transcript: HandshakeHash,
         pub(in crate::server) suite: &'static Tls13CipherSuite,
         pub(in crate::server) randoms: ConnectionRandoms,
-        pub(in crate::server) done_retry: bool,
+        pub(in crate::server) previous_hello: Option<PreviousClientHello>,
         pub(in crate::server) send_tickets: usize,
         pub(in crate::server) extra_exts: ServerExtensionsInput<'static>,
     }
@@ -99,9 +101,10 @@ mod client_hello {
             imported: bool,
         ) -> bool {
             let binder_plaintext = match &client_hello.payload {
-                MessagePayload::Handshake { parsed, encoded } => {
-                    &encoded.bytes()[..encoded.bytes().len() - parsed.total_binder_length()]
-                }
+                MessagePayload::Handshake { parsed, encoded } => &encoded.bytes()[..encoded
+                    .bytes()
+                    .len()
+                    .saturating_sub(parsed.total_binder_length())],
                 _ => unreachable!(),
             };
 
@@ -220,14 +223,29 @@ mod client_hello {
                 ));
             }
 
-            // EarlyData extension is illegal in second ClientHello
-            if self.done_retry && early_data_requested {
-                return Err({
-                    cx.common.send_fatal_alert(
-                        AlertDescription::IllegalParameter,
-                        PeerMisbehaved::EarlyDataAttemptedInSecondClientHello,
-                    )
-                });
+            if let Some(prior) = &self.previous_hello {
+                // EarlyData extension is illegal in second ClientHello
+                if early_data_requested {
+                    return Err({
+                        cx.common.send_fatal_alert(
+                            AlertDescription::IllegalParameter,
+                            PeerMisbehaved::EarlyDataAttemptedInSecondClientHello,
+                        )
+                    });
+                }
+
+                // RFC 9846 section 4.2.2 allows the second ClientHello to update a PreSharedKey
+                // offer (binders, incompatible PSKs), but not to withdraw it altogether
+                if prior.offered_psk
+                    && client_hello
+                        .preshared_key_offer
+                        .is_none()
+                {
+                    return Err(cx.common.send_fatal_alert(
+                        AlertDescription::MissingExtension,
+                        PeerMisbehaved::MissingPskExtensionInSecondClientHello,
+                    ));
+                }
             }
 
             // See if there is a KeyShare for the selected kx group.
@@ -240,7 +258,7 @@ mod client_hello {
                 // for the mutually_preferred_group.
                 self.transcript.add_message(chm);
 
-                if self.done_retry {
+                if self.previous_hello.is_some() {
                     return Err(cx.common.send_fatal_alert(
                         AlertDescription::IllegalParameter,
                         PeerMisbehaved::RefusedToFollowHelloRetryRequest,
@@ -265,7 +283,12 @@ mod client_hello {
                     session_id: SessionId::empty(),
                     #[cfg(feature = "tls12")]
                     using_ems: false,
-                    done_retry: true,
+                    previous_hello: Some(PreviousClientHello {
+                        offered_psk: client_hello
+                            .preshared_key_offer
+                            .is_some(),
+                        suite: self.suite.common.suite,
+                    }),
                     send_tickets: self.send_tickets,
                     extra_exts: self.extra_exts,
                 });
@@ -411,7 +434,22 @@ mod client_hello {
             } else if imported_psk_required {
                 self.send_tickets = 0;
             } else {
-                self.send_tickets = self.config.send_tls13_tickets;
+                // RFC 9149: if the client sent a ticket_request extension and the
+                // server has configured a max, honor the client's request.
+                self.send_tickets = if self.config.max_tls13_tickets > 0 {
+                    if let Some(req) = &client_hello.ticket_request {
+                        let requested = usize::from(if resumedata.is_some() {
+                            req.resumption_count
+                        } else {
+                            req.new_session_count
+                        });
+                        Ord::min(requested, self.config.max_tls13_tickets)
+                    } else {
+                        self.config.send_tls13_tickets
+                    }
+                } else {
+                    self.config.send_tls13_tickets
+                };
             }
 
             if let Some(resume) = &resumedata {
@@ -444,7 +482,7 @@ mod client_hello {
                 imported_psk.is_some(),
                 &self.config,
             )?;
-            if !self.done_retry {
+            if !self.previous_hello.is_some() {
                 emit_fake_ccs(cx.common);
             }
 
@@ -467,6 +505,7 @@ mod client_hello {
                 resumedata.as_ref(),
                 self.extra_exts,
                 &self.config,
+                self.send_tickets,
             )?;
 
             let doing_client_auth = if full_handshake {
@@ -768,6 +807,7 @@ mod client_hello {
         resumedata: Option<&persist::ServerSessionValue>,
         extra_exts: ServerExtensionsInput<'static>,
         config: &ServerConfig,
+        send_tickets: usize,
     ) -> Result<EarlyDataDecision, Error> {
         let mut ep = hs::ExtensionProcessing::new(extra_exts);
         let mut ocsp_multi_response = None;
@@ -779,6 +819,13 @@ mod client_hello {
             hello,
             resumedata,
         )?;
+
+        // RFC 9149: echo the expected ticket count if the client sent the extension.
+        if hello.ticket_request.is_some() && config.max_tls13_tickets > 0 {
+            ep.extensions.ticket_request = Some(ServerTicketRequestHint {
+                expected_count: Ord::min(send_tickets, usize::from(u8::MAX)) as u8,
+            });
+        }
 
         let early_data = decide_if_early_data_allowed(cx, hello, resumedata, suite, config);
         if early_data == EarlyDataDecision::Accepted {

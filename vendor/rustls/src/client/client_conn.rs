@@ -291,6 +291,22 @@ pub struct ClientConfig {
 
     /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
     pub(super) ech_mode: Option<EchMode>,
+
+    /// Request a specific number of TLS 1.3 session tickets via [RFC 9149].
+    ///
+    /// Set to `None` to disable sending the extension (the default).
+    ///
+    /// [RFC 9149]: https://datatracker.ietf.org/doc/html/rfc9149
+    pub send_ticket_request: Option<TicketRequest>,
+}
+
+/// Desired session ticket counts for the RFC 9149 `ticket_request` extension.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TicketRequest {
+    /// Tickets desired when the server negotiates a new connection.
+    pub new_session_count: u8,
+    /// Tickets desired when the server resumes using a presented ticket.
+    pub resumption_count: u8,
 }
 
 impl ClientConfig {
@@ -407,7 +423,7 @@ impl ClientConfig {
     /// DHE, and a client Raw Public Key. Session resumption and early data are
     /// disabled for these connections.
     pub fn with_imported_psk(mut self, imported_psk: ClientImportedPsk) -> Result<Self, Error> {
-        if !self.supports_version(ProtocolVersion::TLSv1_3) {
+        if !self.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp) {
             return Err(Error::General(
                 "imported PSK requires TLS 1.3 support".into(),
             ));
@@ -435,19 +451,20 @@ impl ClientConfig {
     }
 
     pub(super) fn needs_key_share(&self) -> bool {
-        self.supports_version(ProtocolVersion::TLSv1_3)
+        self.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp)
     }
 
     /// We support a given TLS version if it's quoted in the configured
     /// versions *and* at least one ciphersuite for this version is
     /// also configured.
-    pub(crate) fn supports_version(&self, v: ProtocolVersion) -> bool {
+    pub(crate) fn supports_version(&self, v: ProtocolVersion, protocol: Protocol) -> bool {
         self.versions.contains(v)
             && self
                 .provider
                 .cipher_suites
                 .iter()
                 .any(|cs| cs.version().version == v)
+            && protocol.supports_version(v)
     }
 
     #[cfg(feature = "std")]
@@ -458,12 +475,16 @@ impl ClientConfig {
             .any(|cs| cs.usable_for_protocol(proto))
     }
 
-    pub(super) fn find_cipher_suite(&self, suite: CipherSuite) -> Option<SupportedCipherSuite> {
+    pub(super) fn find_cipher_suite(
+        &self,
+        suite: CipherSuite,
+        protocol: Protocol,
+    ) -> Option<SupportedCipherSuite> {
         self.provider
             .cipher_suites
             .iter()
             .copied()
-            .find(|&scs| scs.suite() == suite)
+            .find(|&scs| scs.suite() == suite && scs.usable_for_protocol(protocol))
     }
 
     pub(super) fn find_kx_group(
@@ -891,7 +912,7 @@ impl ConnectionCore<ClientConnectionData> {
             && (common_state.is_quic()
                 || config.enable_early_data
                 || config.ech_mode.is_some()
-                || !config.supports_version(ProtocolVersion::TLSv1_3)
+                || !config.supports_version(ProtocolVersion::TLSv1_3, proto)
                 || !config.client_auth_cert_resolver.only_raw_public_keys())
         {
             return Err(Error::General(

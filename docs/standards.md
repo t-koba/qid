@@ -31,6 +31,12 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 | --- | --- | --- |
 | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html), [RFC 9700 BCP](https://www.rfc-editor.org/rfc/rfc9700.html) | Scoped subset; no OAuth 2.1 conformance claimed | Authorization-code only with exact registered-`redirect_uri` match at authorize and token time (no wildcard, fragment, or prefix match; HTTPS except localhost HTTP), S256-only PKCE required by default (`protocols.oidc.authorization_code.pkce_required` defaults true; stricter than BCP for confidential clients), and `implicit`/`password` grants rejected in realm config and DCR. OAuth 2.1 remains an active Internet-Draft with no RFC number, so no versioned OAuth 2.1 claim is made; any such claim waits for RFC publication plus a passing fixture run. Extension grants and endpoints are covered under their own rows, not this base citation. |
 
+## OIDC Core, Discovery and Logout
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html) (Errata 2 Final), Discovery, RP-Initiated / Front-Channel / Back-Channel Logout | Partial code-only; no OpenID Certified or Final interop claimed | Code flow only (`response_types_supported=["code"]` with S256 PKCE default, `id_token_signing_alg_values_supported=["ES256"]`), bearer UserInfo (`sub` plus `email`/`name` on scope), WebFinger `acct:` issuer lookup failing closed on multi-realm match, and Draft-only `check_session_iframe`. Logout is `POST` with hint-or-`client_id` realm resolution, exact `post_logout_redirect_uri` match, session revoke, backchannel POST and frontchannel iframes; no spec `GET end_session_endpoint`, no implicit/hybrid types, no algorithm agility. Any interop claim waits for a passing OIDF Basic OP plus logout-profile run with pinned versions; do not use OpenID Certified marks without certification. |
+
 ## DPoP (RFC 9449)
 
 | Standard | qid status | Boundary |

@@ -212,7 +212,7 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     response
 }
 
-/// FAPI 2.0 Message Signing Profile (RFC 9421) configuration. When wired
+/// Proprietary HMAC subset inspired by RFC 9421 for edge-pep ingress (not FAPI 2.0 Message Signing). When wired
 /// in, the middleware validates the `Signature` and `Signature-Input`
 /// headers on every incoming request and rejects unsigned or
 /// inappropriately-signed traffic with `401 Unauthorized`.
@@ -228,7 +228,7 @@ pub struct HttpMessageSignatureConfig {
     /// Maximum age, in seconds, between `created` and the local clock.
     /// Requests outside the window are rejected.
     pub max_age_seconds: u64,
-    /// When `true`, the middleware enforces FAPI 2.0's mandatory covered
+    /// When `true`, the middleware enforces the mandatory covered
     /// components: `@authority`, `@method`, `@path`, `content-digest`.
     pub require_content_digest: bool,
 }
@@ -251,10 +251,10 @@ pub struct HttpMessageSignatureKey {
     pub shared_secret: Vec<u8>,
 }
 
-/// Verify the RFC 9421 `Signature-Input` and `Signature` headers on every
+/// Verify the `Signature-Input` and `Signature` headers on every
 /// request. The middleware is intentionally conservative: it only
-/// recognises HMAC-SHA256 signatures over the canonical FAPI 2.0
-/// components. Other algorithms are rejected.
+/// recognises HMAC-SHA256 signatures over a proprietary subset of
+/// components for edge-pep ingress. Other algorithms are rejected.
 pub async fn http_message_signatures_layer(
     config: axum::extract::State<HttpMessageSignatureConfig>,
     req: Request,
@@ -297,8 +297,8 @@ fn unauthorized(message: &str) -> Response {
     response
 }
 
-/// Verify a single HTTP message signature per RFC 9421, restricted to
-/// the FAPI 2.0 Message Signing Profile. Returns `Ok(())` on success
+/// Verify a single HTTP message signature for the proprietary HMAC-only
+/// edge-pep ingress subset inspired by RFC 9421. Returns `Ok(())` on success
 /// and an `Err(message)` describing the failure otherwise.
 pub fn verify_http_message_signature(
     req: &Request,
@@ -322,7 +322,7 @@ pub fn verify_http_message_signature(
             .iter()
             .any(|c| matches!(c.name.as_str(), "content-digest"));
         if !requires {
-            return Err("FAPI 2.0 requires content-digest to be covered".to_string());
+            return Err("content-digest must be covered".to_string());
         }
     }
     if let Some(expires) = parsed.expires
@@ -655,6 +655,48 @@ mod tests {
         let signature = base64::engine::general_purpose::STANDARD.encode(b"signature-bytes");
         let parsed = parse_signature_header(&format!("sig1=:{signature}:"), "sig1").unwrap();
         assert_eq!(parsed, b"signature-bytes");
+    }
+
+    #[test]
+    fn http_signature_rejects_non_hmac_algorithm() {
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("https://example.com/path")
+            .header("host", "example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let config = HttpMessageSignatureConfig::default();
+        let err = verify_http_message_signature(
+            &req,
+            "sig1=(\"@method\" \"@path\");alg=\"rsa-pss-sha512\";created=1700000000",
+            "sig1=:aGk=:",
+            &config,
+        )
+        .expect_err("non-HMAC must fail closed");
+        assert!(err.contains("not allowed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn http_signature_rejects_unsupported_component() {
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("https://example.com/path")
+            .header("host", "example.com")
+            .header("content-digest", "sha-256=:aGk=:")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let config = HttpMessageSignatureConfig::default();
+        let err = verify_http_message_signature(
+            &req,
+            "sig1=(\"@method\" \"@query\" \"content-digest\");alg=\"hmac-sha256\"",
+            "sig1=:aGk=:",
+            &config,
+        )
+        .expect_err("unsupported component must fail closed");
+        assert!(
+            err.contains("unsupported covered component"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

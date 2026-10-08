@@ -23,6 +23,12 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 
 [`draft-ietf-oauth-sd-jwt-vc`](https://datatracker.ietf.org/doc/draft-ietf-oauth-sd-jwt-vc/) and [`draft-ietf-oauth-status-list`](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/) are active Internet-Drafts, not RFCs. qid has selective-disclosure credential primitives and a W3C Bitstring Status List implementation, but those names do not imply conformance to either OAuth draft. Draft conformance requires a versioned implementation and interoperability suite because draft wire formats can still change.
 
+## AuthZEN Authorization API 1.0 (OpenID Final, Jan 2026)
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [Authorization API 1.0 Final](https://openid.net/specs/authorization-api-1_0-final.md) | Evaluation-only | `POST` configurable `authzen_evaluation` (default `/access/v1/evaluation`) accepts subject/action/resource/context and returns boolean `decision` with `context{decision_id, policy_id, reason}`. Receivers ignore unknown request fields so future revisions may only augment. Boxcarring (`/access/v1/evaluations`), search (`/access/v1/search/{subject,resource,action}`), and PDP metadata (`/.well-known/authzen-configuration`) are not implemented and not claimed. COAZ, Obligations, and Access-Request-and-Approval drafts are deferred. qid-specific effects stay in the proprietary `/pep/decision/v1/evaluate` surface or the `urn:qid:authzen:extension:qid:pep` obligation namespace; they are not part of the Final claim. |
+
 ## Review Rule
 
 When adding a standards citation, identify the exact wire behavior and add a conformance or interoperability test. Do not cite a base protocol RFC for an extension defined elsewhere, and do not keep configuration-only structures for transports that are not implemented.

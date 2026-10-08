@@ -199,6 +199,34 @@ fn pep_decision_request_rejects_old_qpx_shape() {
 }
 
 #[test]
+fn authzen_request_ignores_unknown_fields_for_forward_compat() {
+    let json = serde_json::json!({
+        "subject": {
+            "type": "user",
+            "id": "alice@example.com",
+            "properties": {},
+            "future_subject_field": "ignore-me"
+        },
+        "action": {
+            "name": "document.read",
+            "properties": {},
+            "future_action_field": 1
+        },
+        "resource": {
+            "type": "document",
+            "id": "doc-1",
+            "properties": {},
+            "future_resource_field": true
+        },
+        "context": {},
+        "future_top_level_field": { "nested": true }
+    });
+    let req: AuthZenEvaluationRequest =
+        serde_json::from_value(json).expect("AuthZEN receivers must ignore unknown fields");
+    assert_eq!(req.action.name, "document.read");
+}
+
+#[test]
 fn authzen_request_maps_to_policy_context() {
     let ctx = authzen_policy_context(&authzen_request()).unwrap();
 

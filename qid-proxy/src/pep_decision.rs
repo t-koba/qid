@@ -33,8 +33,9 @@ pub fn pep_decision_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<Sha
         .route(&paths.pep_decision, post(check))
 }
 
+/// AuthZEN evaluation request. Unknown JSON fields are ignored per
+/// Authorization API 1.0 §10 so future revisions may only augment the contract.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AuthZenEvaluationRequest {
     pub subject: AuthZenEntity,
     pub action: AuthZenAction,
@@ -43,8 +44,8 @@ pub struct AuthZenEvaluationRequest {
     pub context: HashMap<String, serde_json::Value>,
 }
 
+/// AuthZEN subject/resource entity. Unknown fields are ignored per §10.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AuthZenEntity {
     #[serde(default)]
     pub r#type: Option<String>,
@@ -54,8 +55,8 @@ pub struct AuthZenEntity {
     pub properties: HashMap<String, serde_json::Value>,
 }
 
+/// AuthZEN action. Unknown fields are ignored per §10.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AuthZenAction {
     pub name: String,
     #[serde(default)]

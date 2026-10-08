@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qid-config-check.XXXXXX")"
-TARGET_DIR="${QID_CONFIG_CHECK_TARGET_DIR:-${TMP_DIR}/target}"
+TARGET_DIR="${QID_CONFIG_CHECK_TARGET_DIR:-${ROOT_DIR}/target}"
 QIDC_BUILD_BIN="${TARGET_DIR}/debug/qidc"
 QIDC="${TMP_DIR}/qidc"
 REPORT_FILE="${TMP_DIR}/report.json"

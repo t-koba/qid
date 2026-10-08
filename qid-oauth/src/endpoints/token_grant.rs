@@ -2,7 +2,7 @@
 
 use qid_core::{
     error::{QidError, QidResult},
-    models::{AccessToken, Client, ServiceAccount, User},
+    models::{AccessToken, Client, ClientType, ServiceAccount, User},
     pkce::verify_code_verifier,
     state::SharedState,
     tenant::RealmId,
@@ -430,6 +430,34 @@ pub async fn refresh_token_grant<R: Repository>(
         }
     }
 
+    // DPoP refresh token binding enforcement (RFC 9449 section 5):
+    // if the original token family is bound to a DPoP key and belongs to a
+    // public client, the refresh request must present a matching DPoP proof.
+    // Confidential families stay bound via client authentication instead.
+    if let Some(sender) = &family.sender_constraint
+        && sender.get("jkt").and_then(|v| v.as_str()).is_some()
+    {
+        let client = state
+            .repo
+            .get_client_by_client_id(&RealmId::from(family.realm_id.clone()), &family.client_id)
+            .await?
+            .ok_or_else(|| QidError::Unauthorized {
+                message: "unknown client".to_string(),
+            })?;
+        if client.client_type == ClientType::Public {
+            let expected = sender.get("jkt").and_then(|v| v.as_str()).unwrap_or("");
+            let presented = cnf
+                .and_then(|c| c.get("jkt"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if presented.is_empty() || !qid_core::util::constant_time_eq(expected, presented) {
+                return Err(QidError::Unauthorized {
+                    message: "DPoP binding required for refresh token".to_string(),
+                });
+            }
+        }
+    }
+
     let now = qid_core::util::now_seconds();
     let new_access_jti = generate_jti();
     let new_refresh_jti = generate_jti();
@@ -837,6 +865,205 @@ mod tests {
             updated.revoked,
             "token family must be revoked after reuse detection"
         );
+    }
+
+    #[tokio::test]
+    async fn dpop_bound_public_refresh_requires_same_key_proof() {
+        // RFC 9449 section 5 + RFC 9700 BCP 240: public DPoP-bound refresh
+        // must prove the same key; confidential refresh stays bound via
+        // client authentication.
+        let (state, repo) = setup_state().await;
+        let now = util::now_seconds();
+
+        let public_client = Client {
+            id: "dpop-public-id".to_string(),
+            realm_id: "test".to_string(),
+            client_id: "dpop-public".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: serde_json::json!({ "keys": [] }),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["refresh_token".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        };
+        repo.create_client(&public_client).await.unwrap();
+
+        let confidential_client = Client {
+            id: "dpop-conf-id".to_string(),
+            realm_id: "test".to_string(),
+            client_id: "dpop-conf".to_string(),
+            client_type: ClientType::Confidential,
+            token_endpoint_auth_method: "client_secret_basic".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: serde_json::json!({ "keys": [] }),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["refresh_token".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        };
+        repo.create_client(&confidential_client).await.unwrap();
+
+        let user = User {
+            id: "dpop-refresh-user".to_string(),
+            realm_id: "test".to_string(),
+            email: None,
+            email_verified: false,
+            display_name: Some("dpop-user".to_string()),
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        };
+        repo.create_user(&user).await.unwrap();
+
+        async fn signed_refresh(
+            state: &std::sync::Arc<SharedState<FileRepository>>,
+            user_id: &str,
+            client_id: &str,
+            family_id: &str,
+            jti: &str,
+        ) -> String {
+            let now = util::now_seconds();
+            let mut extra = HashMap::new();
+            extra.insert(
+                "family_id".to_string(),
+                serde_json::Value::String(family_id.to_string()),
+            );
+            let claims = qid_crypto::JwtClaims {
+                iss: Some("https://id.example.com".to_string()),
+                sub: Some(user_id.to_string()),
+                aud: Some(client_id.to_string()),
+                exp: Some((now + 3600) as usize),
+                nbf: Some(now as usize),
+                iat: Some(now as usize),
+                jti: Some(jti.to_string()),
+                extra,
+            };
+            state.signer.sign(&claims).unwrap()
+        }
+
+        fn refresh_req(token: String) -> TokenRequest {
+            TokenRequest {
+                grant_type: "refresh_token".to_string(),
+                refresh_token: Some(token),
+                code: None,
+                redirect_uri: None,
+                code_verifier: None,
+                client_id: None,
+                client_secret: None,
+                scope: None,
+                client_assertion: None,
+                client_assertion_type: None,
+                device_code: None,
+                auth_req_id: None,
+                assertion: None,
+                subject_token: None,
+                subject_token_type: None,
+                actor_token: None,
+                actor_token_type: None,
+                requested_token_type: None,
+                audience: None,
+                resource: None,
+                authorization_details: None,
+            }
+        }
+
+        // Public DPoP-bound family.
+        let bound_jkt = "test-jkt-public-key-a";
+        let family = TokenFamily {
+            id: "dpop-public-family".to_string(),
+            user_id: user.id.clone(),
+            client_id: "dpop-public".to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url("dpop-good-jti"),
+            audience: vec!["dpop-public".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: Some(serde_json::json!({ "jkt": bound_jkt })),
+            issued_at: now,
+            revoked: false,
+        };
+        repo.create_token_family(&family).await.unwrap();
+
+        // No DPoP proof must fail closed.
+        let token =
+            signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
+        let err = refresh_token_grant(&state, &refresh_req(token), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("DPoP binding required"),
+            "no-proof refresh must fail closed, got {err:?}"
+        );
+
+        // Wrong-key proof must fail closed.
+        let wrong = serde_json::json!({ "jkt": "different-key" });
+        let token =
+            signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
+        let err = refresh_token_grant(&state, &refresh_req(token), Some(&wrong))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("DPoP binding required"),
+            "wrong-key refresh must fail closed, got {err:?}"
+        );
+
+        // Same-key proof must succeed and rotate.
+        let same = serde_json::json!({ "jkt": bound_jkt });
+        let token =
+            signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
+        let ok = refresh_token_grant(&state, &refresh_req(token), Some(&same)).await;
+        assert!(ok.is_ok(), "same-key refresh must succeed: {ok:?}");
+
+        // Confidential DPoP-bound family without fresh proof still succeeds
+        // (bound via client authentication, per RFC 9449 section 5).
+        let conf_family = TokenFamily {
+            id: "dpop-conf-family".to_string(),
+            user_id: user.id.clone(),
+            client_id: "dpop-conf".to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url("dpop-conf-jti"),
+            audience: vec!["dpop-conf".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: Some(serde_json::json!({ "jkt": "conf-key" })),
+            issued_at: now,
+            revoked: false,
+        };
+        repo.create_token_family(&conf_family).await.unwrap();
+        let token = signed_refresh(
+            &state,
+            &user.id,
+            "dpop-conf",
+            &conf_family.id,
+            "dpop-conf-jti",
+        )
+        .await;
+        let ok = refresh_token_grant(&state, &refresh_req(token), None).await;
+        assert!(ok.is_ok(), "confidential refresh must succeed: {ok:?}");
     }
 
     #[tokio::test]

@@ -60,3 +60,4 @@ Thumbs.db
 
 # Local mizu harness (private)
 /.mizu/
+/refs/

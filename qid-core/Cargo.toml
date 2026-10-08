@@ -22,7 +22,6 @@ unicode-normalization = "0.1"
 jsonwebtoken = { workspace = true }
 p256 = { workspace = true }
 redis = { version = "0.27", optional = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

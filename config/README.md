@@ -63,7 +63,7 @@ smallest interoperable OIDC authorization-code deployment, then move to
 - `par-rar-authorization-details.yaml`: PAR and RAR for structured consent.
 - `token-exchange-delegation.yaml`: OAuth token exchange / on-behalf-of delegation.
 - `jwt-bearer-assertion-grant.yaml`: external JWT assertion bridge.
-- `revocation-webhook.yaml`: token revocation events and refresh-token reuse response.
+- `revocation.yaml`: token revocation (RFC 7009) and refresh-token reuse response; PEPs poll introspection, lifecycle push uses SCIM event subscriptions.
 - `dynamic-client-registration-controlled.yaml`: guarded DCR without open registration.
 - `fapi2-baseline.yaml`: complete FAPI-style profile baseline.
 - `fapi2-payments-high-risk.yaml`: high-risk payments API with sender constraint.

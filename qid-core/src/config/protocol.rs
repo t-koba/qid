@@ -511,15 +511,11 @@ impl<'de> Deserialize<'de> for DpopProtocolConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevocationConfig {
     pub enabled: bool,
-    pub webhook_url: Option<String>,
 }
 
 impl Default for RevocationConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            webhook_url: None,
-        }
+        Self { enabled: true }
     }
 }
 
@@ -529,28 +525,23 @@ impl<'de> Deserialize<'de> for RevocationConfig {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RevocationObject {
+            #[serde(default = "default_true")]
+            enabled: bool,
+        }
+
+        #[derive(Deserialize)]
         #[serde(untagged)]
         enum Wire {
             Bool(bool),
-            Object {
-                #[serde(default = "default_true")]
-                enabled: bool,
-                #[serde(default)]
-                webhook_url: Option<String>,
-            },
+            Object(RevocationObject),
         }
 
         match Wire::deserialize(deserializer)? {
-            Wire::Bool(enabled) => Ok(Self {
-                enabled,
-                webhook_url: None,
-            }),
-            Wire::Object {
-                enabled,
-                webhook_url,
-            } => Ok(Self {
-                enabled,
-                webhook_url,
+            Wire::Bool(enabled) => Ok(Self { enabled }),
+            Wire::Object(obj) => Ok(Self {
+                enabled: obj.enabled,
             }),
         }
     }

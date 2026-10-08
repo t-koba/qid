@@ -37,9 +37,7 @@ realms:
         introspection:
           enabled: true
           jwt_response: true
-        revocation:
-          enabled: true
-          webhook_url: "https://ops.example.com/qid/revocations"
+        revocation: true
         tokens:
           access_token_format: jwt
           access_token_ttl_seconds: 900

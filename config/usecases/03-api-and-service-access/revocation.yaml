@@ -3,7 +3,7 @@ profile: oidc
 storage:
   primary:
     type: file
-    url: "config/usecases/data/runtime/03-api-and-service-access/revocation-webhook.json"
+    url: "config/usecases/data/runtime/03-api-and-service-access/revocation.json"
 
 crypto:
   default_alg: ES256
@@ -43,7 +43,6 @@ realms:
       oauth:
         revocation:
           enabled: true
-          webhook_url: "https://events.example.com/qid/token-revoked"
         tokens:
           access_token_format: jwt
           access_token_ttl_seconds: 900

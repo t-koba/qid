@@ -1,8 +1,8 @@
-//! COSE (CBOR Object Signing and Encryption) — RFC 8152.
+//! COSE (CBOR Object Signing and Encryption) helpers; no interop claimed.
 //!
 //! Minimal implementation supporting:
 //! - COSE_Sign1 with ES256 (ECDSA P-256)
-//! - CWT (CBOR Web Token, RFC 8392)
+//! - JSON-text-keys CWT-shaped encoding (not integer claims); no wire claim
 
 use ciborium::Value;
 use data_encoding::HEXLOWER;
@@ -92,7 +92,7 @@ fn json_to_cbor(v: &serde_json::Value) -> Value {
 // Sig_structure helper
 // ---------------------------------------------------------------------------
 
-/// Build the Sig_structure for COSE_Sign1 (RFC 8152 Section 4.4).
+/// Build the Sig_structure for COSE_Sign1.
 ///
 /// `protected_bstr` is the raw CBOR bytes of the protected header map
 /// (i.e., the *content* of the first `bstr` field in COSE_Sign1).
@@ -113,7 +113,7 @@ fn build_sig_structure(protected_bstr: &[u8], payload: &[u8]) -> QidResult<Vec<u
 }
 
 // ---------------------------------------------------------------------------
-// Enc_structure helper  (RFC 8152 Section 5.3)
+// Enc_structure helper
 // ---------------------------------------------------------------------------
 
 fn build_enc_structure(protected_bstr: &[u8]) -> QidResult<Vec<u8>> {
@@ -130,7 +130,7 @@ fn build_enc_structure(protected_bstr: &[u8]) -> QidResult<Vec<u8>> {
 }
 
 // ---------------------------------------------------------------------------
-// MAC_structure helper  (RFC 8152 Section 6.3)
+// MAC_structure helper
 // ---------------------------------------------------------------------------
 
 fn build_mac_structure(protected_bstr: &[u8], payload: &[u8]) -> QidResult<Vec<u8>> {
@@ -262,7 +262,7 @@ pub fn cose_sign1_verify(cose_data: &[u8], public_key: &[u8]) -> QidResult<Vec<u
     Ok(payload)
 }
 
-/// Encode JSON claims as a CWT (COSE_Sign1 over CBOR-encoded claims, RFC 8392).
+/// Encode JSON claims in CWT shape (COSE_Sign1 over CBOR-encoded claims).
 ///
 /// Returns the hex-encoded CBOR.
 pub fn cwt_encode(claims: &serde_json::Value, signing_key: &[u8]) -> QidResult<String> {
@@ -284,7 +284,7 @@ pub fn cwt_decode(cwt_data: &[u8], public_key: &[u8]) -> QidResult<serde_json::V
 }
 
 // ---------------------------------------------------------------------------
-// COSE_Encrypt0  —  RFC 8152 Section 5.3
+// COSE_Encrypt0
 // ---------------------------------------------------------------------------
 
 /// A parsed COSE_Encrypt0 structure (single-recipient encrypted message).
@@ -533,7 +533,7 @@ pub fn cose_encrypt0_decrypt(cose_data: &[u8], key: &[u8]) -> QidResult<Vec<u8>>
 }
 
 // ---------------------------------------------------------------------------
-// COSE_Mac0  —  RFC 8152 Section 6.3
+// COSE_Mac0
 // ---------------------------------------------------------------------------
 
 /// A parsed COSE_Mac0 structure (single-sender MACed message).
@@ -700,7 +700,7 @@ pub fn cose_mac0_verify(cose_data: &[u8], key: &[u8]) -> QidResult<Vec<u8>> {
 }
 
 // ---------------------------------------------------------------------------
-// COSE_recipient  —  RFC 8152 Section 6.1
+// COSE_recipient
 // ---------------------------------------------------------------------------
 
 /// A COSE_recipient structure for key wrapping.
@@ -712,7 +712,7 @@ pub struct CoseRecipient {
 }
 
 // ---------------------------------------------------------------------------
-// COSE Countersignatures  —  RFC 9338
+// COSE countersignature helper; no interop claimed
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -744,7 +744,7 @@ pub fn cose_add_countersignature(cose_data: &[u8], key: &[u8]) -> QidResult<Vec<
 }
 
 // ---------------------------------------------------------------------------
-// CWT cnf  —  RFC 8747
+// CWT cnf-shaped helper (jwk/jku/kid); no interop claimed
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -31,6 +31,12 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 | --- | --- | --- |
 | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html), [RFC 9700 BCP](https://www.rfc-editor.org/rfc/rfc9700.html) | Scoped subset; no OAuth 2.1 conformance claimed | Authorization-code only with exact registered-`redirect_uri` match at authorize and token time (no wildcard, fragment, or prefix match; HTTPS except localhost HTTP), S256-only PKCE required by default (`protocols.oidc.authorization_code.pkce_required` defaults true; stricter than BCP for confidential clients), and `implicit`/`password` grants rejected in realm config and DCR. OAuth 2.1 remains an active Internet-Draft with no RFC number, so no versioned OAuth 2.1 claim is made; any such claim waits for RFC publication plus a passing fixture run. Extension grants and endpoints are covered under their own rows, not this base citation. |
 
+## DPoP (RFC 9449)
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html) | Partial; token proof plus AS nonce plus `cnf.jkt`, no code-binding or RS-nonce conformance claimed | `DPoP` header must carry only the raw compact proof JWT with `typ=dpop+jwt`, `alg` in `ES256`/`EdDSA`/`RS256`, embedded `jwk`, exact `htm`/`htu` match, `iat` within 120s age and 60s future skew, and single-use `jti` replay record; `ath` is checked where a presented token is bound, success binds `cnf.jkt` with `token_type=DPoP`, and AS metadata advertises `dpop_signing_alg_values_supported`. A fresh `DPoP-Nonce` challenge is issued only when `oauth.dpop.nonce=true` requires the `nonce` claim. No `dpop_jkt` authorize/PAR pre-binding check (RFC 9449 section 10), no RS-nonce `WWW-Authenticate` claim (section 9), no introspection `cnf` claim, and no `none`/symmetric algorithms. Any such claim waits for a passing generic-client fixture with pinned versions; no FAPI sender-constraint conformance is claimed. |
+
 ## OAuth Discovery (RFC 8414 / RFC 9728)
 
 | Standard | qid status | Boundary |

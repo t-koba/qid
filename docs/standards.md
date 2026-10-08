@@ -44,6 +44,12 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 | --- | --- | --- |
 | [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html) | Partial; token proof plus AS nonce plus `cnf.jkt`, no code-binding or RS-nonce conformance claimed | `DPoP` header must carry only the raw compact proof JWT with `typ=dpop+jwt`, `alg` in `ES256`/`EdDSA`/`RS256`, embedded `jwk`, exact `htm`/`htu` match, `iat` within 120s age and 60s future skew, and single-use `jti` replay record; `ath` is checked where a presented token is bound, success binds `cnf.jkt` with `token_type=DPoP`, and AS metadata advertises `dpop_signing_alg_values_supported`. A fresh `DPoP-Nonce` challenge is issued only when `oauth.dpop.nonce=true` requires the `nonce` claim. No `dpop_jkt` authorize/PAR pre-binding check (RFC 9449 section 10), no RS-nonce `WWW-Authenticate` claim (section 9), introspection emits `cnf.jkt` for DPoP-bound tokens (JSON and JWT responses) without requiring a DPoP proof on the introspection call, and no `none`/symmetric algorithms. Any such claim waits for a passing generic-client fixture with pinned versions; no FAPI sender-constraint conformance is claimed. |
 
+## mTLS (RFC 8705)
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705.html) | Partial; thumbprint-bound `tls_client_auth` plus `cnf.x5t#S256`, no alias-URL or PKI-chain conformance claimed | When `oauth.mtls.enabled`, the token endpoint accepts `tls_client_auth` and `self_signed_tls_client_auth` only against the client `mtls_certificate_thumbprints` allowlist, issues `cnf.x5t#S256` bound tokens, and introspection rejects a missing or mismatched presented thumbprint fail-closed. qid never reads the TLS handshake directly: the thumbprint arrives only through process-local bound native metadata or a PEP-adapter assertion cross-checked in constant time (qpx terminates TLS, qid verifies bound metadata). Discovery advertises both methods when enabled, but `mtls_endpoint_aliases_supported` is a boolean and no RFC 8705 section 5 alias URLs are issued; no PKI DN-to-client chaining distinction and no FAPI sender-constraint conformance. Any interop claim waits for a passing generic-client fixture (auth round-trip plus `cnf.x5t#S256` validate plus mismatch reject) recorded with pinned versions. |
+
 ## OAuth Discovery (RFC 8414 / RFC 9728)
 
 | Standard | qid status | Boundary |

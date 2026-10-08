@@ -1,8 +1,8 @@
 //! Bitstring Status List (W3C vc-bitstring-status-list).
 //!
 //! Implements the typed entry and list primitives defined in the W3C
-//! Verifiable Credentials Bitstring Status List v1.0 candidate
-//! recommendation. Status entries are 1 bit, 2 bits, 4 bits, 8 bits,
+//! Verifiable Credentials Bitstring Status List v1.0 helpers-only
+//! (no conformance claimed; not wired to issuance/verification). Status entries are 1 bit, 2 bits, 4 bits, 8 bits,
 //! 16 bits, 32 bits, 64 bits, or 128 bits wide; this module supports
 //! the canonical 1-bit "revocation" entry and provides helpers for
 //! constructing, compressing, and parsing the base64url-encoded

@@ -448,6 +448,14 @@ fn validate_dynamic_client_metadata(
     if auth_method == "private_key_jwt" {
         validate_client_jwks(&req.jwks)?;
     }
+    if let Some(ref subject_type) = req.subject_type
+        && subject_type != "public"
+        && subject_type != "pairwise"
+    {
+        return Err(QidError::BadRequest {
+            message: "unsupported subject_type".to_string(),
+        });
+    }
     Ok(DynamicClientMetadata {
         client_type,
         auth_method,
@@ -911,6 +919,38 @@ mod tests {
         });
         let err = validate_client_jwks(&jwks).unwrap_err();
         assert!(err.to_string().contains("1535"));
+    }
+
+    fn dcr_request_with_subject_type(
+        subject_type: Option<&str>,
+    ) -> DynamicClientRegistrationRequest {
+        serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://client.example.com/cb"],
+            "subject_type": subject_type,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dcr_rejects_ephemeral_subject_type() {
+        let req = dcr_request_with_subject_type(Some("ephemeral"));
+        let err = validate_dynamic_client_metadata(&req).unwrap_err();
+        assert!(err.to_string().contains("unsupported subject_type"));
+    }
+
+    #[test]
+    fn dcr_rejects_unknown_subject_type() {
+        let req = dcr_request_with_subject_type(Some("other"));
+        let err = validate_dynamic_client_metadata(&req).unwrap_err();
+        assert!(err.to_string().contains("unsupported subject_type"));
+    }
+
+    #[test]
+    fn dcr_accepts_public_pairwise_and_default_subject_type() {
+        for subject_type in [None, Some("public"), Some("pairwise")] {
+            let req = dcr_request_with_subject_type(subject_type);
+            validate_dynamic_client_metadata(&req).unwrap();
+        }
     }
 
     #[test]

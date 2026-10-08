@@ -37,6 +37,12 @@ pub fn validate_rp_metadata(meta: &RpMetadata) -> Result<(), String> {
     if meta.client_id.is_empty() {
         return Err("client_id is required".to_string());
     }
+    if let Some(ref subject_type) = meta.subject_type
+        && subject_type != "public"
+        && subject_type != "pairwise"
+    {
+        return Err("unsupported subject_type".to_string());
+    }
     if let Some(ref uri) = meta.logo_uri
         && !uri.starts_with("https://")
     {
@@ -67,6 +73,29 @@ mod tests {
         let json = serde_json::to_string(&meta).unwrap();
         let parsed: RpMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.client_id, "rp-1");
+    }
+
+    #[test]
+    fn validate_rejects_ephemeral_subject_type() {
+        let meta = RpMetadata {
+            client_id: "rp-1".to_string(),
+            subject_type: Some("ephemeral".to_string()),
+            ..Default::default()
+        };
+        let err = validate_rp_metadata(&meta).unwrap_err();
+        assert!(err.contains("unsupported subject_type"));
+    }
+
+    #[test]
+    fn validate_accepts_public_pairwise_and_default_subject_type() {
+        for subject_type in [None, Some("public"), Some("pairwise")] {
+            let meta = RpMetadata {
+                client_id: "rp-1".to_string(),
+                subject_type: subject_type.map(str::to_string),
+                ..Default::default()
+            };
+            validate_rp_metadata(&meta).unwrap();
+        }
     }
 
     #[test]

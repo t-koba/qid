@@ -25,6 +25,12 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 
 [OID4VCI 1.0](https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html), [OID4VP 1.0](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html), and the [High Assurance Interoperability Profile (HAIP) 1.0](https://openid.net/specs/openid4vc-high-assurance-interoperability-profile-1_0.html) are OpenID Final specifications; HAIP profiles issuance and presentation with SD-JWT VC and ISO mdoc credential formats. qid claims no HAIP conformance: `qid-vc` implements selective-disclosure primitives, mdoc document helpers, and W3C Bitstring Status List revocation (not the OAuth Token Status List), and pins no `draft-ietf-oauth-sd-jwt-vc` revision. Any HAIP interop claim waits for a passing OIDF OID4VCI+HAIP (issuer) and/or OID4VP+HAIP (verifier) suite run against the `vc`-profile fixtures, recorded with pinned versions; do not use OpenID Certified marks without certification.
 
+## OAuth Core (RFC 6749 / RFC 6750 + RFC 9700 BCP)
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html), [RFC 9700 BCP](https://www.rfc-editor.org/rfc/rfc9700.html) | Scoped subset; no OAuth 2.1 conformance claimed | Authorization-code only with exact registered-`redirect_uri` match at authorize and token time (no wildcard, fragment, or prefix match; HTTPS except localhost HTTP), S256-only PKCE required by default (`protocols.oidc.authorization_code.pkce_required` defaults true; stricter than BCP for confidential clients), and `implicit`/`password` grants rejected in realm config and DCR. OAuth 2.1 remains an active Internet-Draft with no RFC number, so no versioned OAuth 2.1 claim is made; any such claim waits for RFC publication plus a passing fixture run. Extension grants and endpoints are covered under their own rows, not this base citation. |
+
 ## OAuth Discovery (RFC 8414 / RFC 9728)
 
 | Standard | qid status | Boundary |

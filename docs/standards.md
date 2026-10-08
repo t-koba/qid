@@ -24,6 +24,8 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 
 [`draft-ietf-oauth-sd-jwt-vc`](https://datatracker.ietf.org/doc/draft-ietf-oauth-sd-jwt-vc/) is an active Internet-Draft, not an RFC. [`draft-ietf-oauth-status-list`](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/) (Token Status List) draft-20 is IESG-approved as Proposed Standard and in the RFC Editor queue (draft-21 current), still with no RFC number. qid has selective-disclosure credential primitives and a W3C Bitstring Status List implementation, but those names do not imply conformance to either OAuth document. Conformance requires a versioned implementation and interoperability suite because draft wire formats can still change.
 
+[RFC 9901 SD-JWT](https://www.rfc-editor.org/rfc/rfc9901.html) is an IETF Standards Track RFC. qid claims no RFC 9901 conformance: `qid-vc` `SdJwtDisclosure` stores `claim_value_hash=sha256([name, value])` with no salt and splits `visible_claims`/`disclosures` inside the JWT `vc` claim; it emits no RFC 9901 `_sd` digests, disclosure array, `sd_hash`, or KB-JWT. Any RFC 9901 interop claim waits for a passing external-verifier fixture recorded with the pinned RFC version.
+
 [OID4VCI 1.0](https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html), [OID4VP 1.0](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html), and the [High Assurance Interoperability Profile (HAIP) 1.0](https://openid.net/specs/openid4vc-high-assurance-interoperability-profile-1_0.html) are OpenID Final specifications; HAIP profiles issuance and presentation with SD-JWT VC and ISO mdoc credential formats. qid claims no HAIP conformance: `qid-vc` implements selective-disclosure primitives, mdoc document helpers, and W3C Bitstring Status List revocation (not the OAuth Token Status List), and pins no `draft-ietf-oauth-sd-jwt-vc` revision. Any HAIP interop claim waits for a passing OIDF OID4VCI+HAIP (issuer) and/or OID4VP+HAIP (verifier) suite run against the `vc`-profile fixtures, recorded with pinned versions; do not use OpenID Certified marks without certification.
 
 ## OAuth Core (RFC 6749 / RFC 6750 + RFC 9700 BCP)
@@ -79,6 +81,18 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 | Standard | qid status | Boundary |
 | --- | --- | --- |
 | [RFC 9421](https://www.rfc-editor.org/rfc/rfc9421.html), [FAPI 2.0 Message Signing Final](https://openid.net/specs/fapi-message-signing-2_0-final.html) | Proprietary HMAC-only ingress; neither RFC 9421 nor FAPI-MS conformance claimed | `server.http_message_signatures` verifies `Signature-Input`/`Signature` with `hmac-sha256` only over `@method`/`@authority`/`@path`/`@scheme` plus `content-digest` (sha-256 body-match, 16 MiB limit), `created`/`expires` window (`max_age_seconds` default 300, 5s future skew), pre-shared `key_id` selection; fail-closed 401 `invalid_signature`. No other algorithms, covered components, or parameters, no sha-512/`Repr-Digest`/`Want-*` agility, no `Accept-Signature`, and no JAR/JARM/introspection signing. Any RFC 9421 or FAPI-MS interop claim waits for a failing generic signer/verifier fixture with pinned versions. |
+
+## Authentication: TOTP / HOTP (RFC 4226 / RFC 6238, Informational)
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [RFC 4226 HOTP](https://www.rfc-editor.org/rfc/rfc4226.html) / [RFC 6238 TOTP](https://www.rfc-editor.org/rfc/rfc6238.html) (both Informational, not Internet Standards) | SHA-1-only subset; no Standard conformance claimed | HMAC-SHA1 only with 20-byte secret (`BASE32_NOPAD`, 32 chars), 6-8 digits (default 6), period 15s or more (default 30s), T0 0, current step plus or minus one accepted with constant-time compare and `last_used_step` replay reject, enrollment disabled until verified with SHA1-only `otpauth://` URL. No SHA-256/512, no HOTP counter resync beyond plus-or-minus one step, no lockout or throttling claim. Any generic-authenticator-app interop claim waits for a passing fixture (qid QR into generic app plus verify including skew and reuse reject) recorded with pinned versions. |
+
+## Browser-Based Applications (RFC 10017 BCP 212 section 6.3)
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [RFC 10017 BCP 212 section 6.3](https://www.rfc-editor.org/rfc/rfc10017.html) | Partial; public-browser client as AS only, no BFF or token-mediating backend claimed | qid acts only as authorization server for the section 6.3 public-client pattern (code plus S256 PKCE, exact registered-`redirect_uri` match, `implicit`/`password` grants rejected, rotation with reuse-detection revoking the family, DPoP and CORS allowlist where configured as in `oidc-spa-pkce.yaml`). No refresh lifetime-cap or session-linkage guarantee, no compromised-origin theft prevention (see RFC 10017 sections 5.1.3, 5.1.4 and 6.3.4), and no BFF (`section 6.1`) or token-mediating (`section 6.2`) backend; any such backend is operator or PEP side outside qid. Per section 6.3.4.3 the section 6.3 pattern is not for business, sensitive, or personal-data apps; prefer BFF outside qid. Any BFF or token-mediating claim waits for a passing fixture (confidential client plus HttpOnly cookie plus proxy) recorded with pinned versions. |
 
 ## Review Rule
 

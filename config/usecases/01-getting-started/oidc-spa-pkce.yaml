@@ -1,3 +1,5 @@
+# Note (RFC 10017 BCP 212 s6.3.4.3): this public-browser SPA pattern is not for
+# business/sensitive/personal-data apps; prefer a BFF (s6.1) outside qid for those.
 profile: oidc
 
 storage:

@@ -18,7 +18,6 @@ pub mod pkcs11;
 pub mod pki;
 pub mod pqc;
 pub mod totp;
-pub mod tpm;
 pub mod x25519;
 
 #[cfg(feature = "acme")]

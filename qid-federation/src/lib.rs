@@ -1,6 +1,5 @@
 //! OpenID Federation surface.
 #![forbid(unsafe_code)]
-#![allow(dead_code)]
 
 use qid_core::{QidError, jwt::JwtClaims};
 use serde::{Deserialize, Serialize};
@@ -386,19 +385,6 @@ pub fn apply_metadata_policy(
         redirect_uris,
         grant_types,
     })
-}
-
-pub fn trust_mark_index(chain: &[EntityStatement]) -> HashMap<String, Vec<String>> {
-    let mut index: HashMap<String, Vec<String>> = HashMap::new();
-    for statement in chain {
-        for mark in &statement.trust_marks {
-            index
-                .entry(mark.id.clone())
-                .or_default()
-                .push(statement.sub.clone());
-        }
-    }
-    index
 }
 
 fn error(code: &str, message: &str) -> QidError {

@@ -1055,8 +1055,11 @@ async fn read_policy_bundle_source(
     let raw = tokio::fs::read_to_string(&path)
         .await
         .with_context(|| format!("failed to read policy bundle {}", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse policy bundle {}", path.display()))
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse policy bundle {}", path.display()))?;
+    serde_json::from_value::<qid_policy::PolicyBundle>(value.clone())
+        .with_context(|| format!("invalid policy bundle {}", path.display()))?;
+    Ok(value)
 }
 
 fn stable_source_hash(value: &serde_json::Value) -> String {

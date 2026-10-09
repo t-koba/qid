@@ -30,8 +30,8 @@ use qid_session::auth_routes_with_push;
 use qid_storage::prelude::*;
 use qid_storage::{AnyRepository, FileFlushMode};
 use serde_json::json;
-use std::collections::{BTreeMap, HashSet, hash_map::DefaultHasher};
-use std::hash::{Hash, Hasher};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -997,9 +997,10 @@ async fn seed_configured_realms_and_clients(
                 .into_iter()
                 .find(|bundle| bundle.name == bundle_config.name);
             match existing {
-                Some(bundle)
-                    if bundle.source_hash == source_hash
-                        && bundle.compiled_json == compiled_json => {}
+                // Idempotence rests on the stored document itself; the hash is
+                // only a recorded fingerprint (algorithm-rotated to SHA-256),
+                // so legacy 16-hex fingerprints still match the same bundle.
+                Some(bundle) if bundle.compiled_json == compiled_json => {}
                 Some(bundle) => {
                     bail!(
                         "configured policy bundle {} in realm {} differs from storage record {}",
@@ -1063,9 +1064,8 @@ async fn read_policy_bundle_source(
 }
 
 fn stable_source_hash(value: &serde_json::Value) -> String {
-    let mut hasher = DefaultHasher::new();
-    value.to_string().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let digest = Sha256::digest(value.to_string().as_bytes());
+    format!("{digest:x}")
 }
 
 fn static_client_to_model(realm_id: &str, config: &StaticClientConfig) -> Client {

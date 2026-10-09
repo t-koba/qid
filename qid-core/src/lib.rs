@@ -8,7 +8,6 @@ pub mod email_auth;
 pub mod error;
 pub mod event;
 pub mod idempotency;
-pub mod idna;
 pub mod json;
 pub mod jwt;
 pub mod ldif;

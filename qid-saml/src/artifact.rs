@@ -24,8 +24,6 @@ struct StoredArtifact {
 
 pub(crate) struct SamlArtifact {
     pub artifact: String,
-    #[allow(dead_code)] // schema completeness: SAML artifact handle stored for future use
-    pub handle: String,
 }
 
 /// Current timestamp in seconds for expiry checks.
@@ -62,17 +60,14 @@ pub(crate) fn store_artifact(response_xml: &str, ttl_seconds: u64) -> QidResult<
         message: "SAML artifact store lock is poisoned".to_string(),
     })?;
     store.insert(
-        handle_hex.clone(),
+        handle_hex,
         StoredArtifact {
             response_xml: response_xml.to_string(),
             expires_at,
         },
     );
 
-    Ok(SamlArtifact {
-        artifact,
-        handle: handle_hex,
-    })
+    Ok(SamlArtifact { artifact })
 }
 
 /// Resolve a SAML 2.0 artifact and return the stored response.
@@ -143,8 +138,6 @@ pub(crate) fn build_artifact_response(
 /// Build a SOAP `<ArtifactResolve>` parsing helper result.
 pub(crate) struct ResolvedArtifactResolve {
     pub id: String,
-    #[allow(dead_code)]
-    pub issuer: String,
     pub artifact: String,
 }
 
@@ -162,13 +155,6 @@ pub(crate) fn parse_artifact_resolve(soap_body: &str) -> QidResult<ResolvedArtif
         .ok_or_else(|| QidError::BadRequest {
             message: "missing ArtifactResolve ID".to_string(),
         })?;
-    let issuer = artifact_tag
-        .split_once("<saml:Issuer>")
-        .and_then(|(_, rest)| rest.split_once("</saml:Issuer>"))
-        .map(|(iss, _)| iss.to_string())
-        .ok_or_else(|| QidError::BadRequest {
-            message: "missing ArtifactResolve Issuer".to_string(),
-        })?;
     let artifact = artifact_tag
         .split_once("<samlp:Artifact>")
         .and_then(|(_, rest)| rest.split_once("</samlp:Artifact>"))
@@ -176,11 +162,7 @@ pub(crate) fn parse_artifact_resolve(soap_body: &str) -> QidResult<ResolvedArtif
         .ok_or_else(|| QidError::BadRequest {
             message: "missing samlp:Artifact element".to_string(),
         })?;
-    Ok(ResolvedArtifactResolve {
-        id,
-        issuer,
-        artifact,
-    })
+    Ok(ResolvedArtifactResolve { id, artifact })
 }
 
 pub(crate) fn iso_now_utc() -> String {
@@ -282,7 +264,6 @@ mod tests {
 </soap:Envelope>"#;
         let parsed = parse_artifact_resolve(xml).unwrap();
         assert_eq!(parsed.id, "_abc123");
-        assert_eq!(parsed.issuer, "https://sp.example.com/saml");
         assert_eq!(parsed.artifact, "AAABAAARbR0jLVq5Qkq4pPqxR0jLVq5Qkq4=");
     }
 

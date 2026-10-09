@@ -1,8 +1,6 @@
 use qid_core::{
     QidError, QidResult,
-    models::{
-        AuthorizationCode, CiamConsentGrant, CiamIdentityLink, Client, Session, TokenFamily, User,
-    },
+    models::{AuthorizationCode, CiamConsentGrant, CiamIdentityLink, Session, TokenFamily},
 };
 
 /// Validate that a session can be revoked (not already revoked).
@@ -50,38 +48,6 @@ pub fn validate_token_family_revocation(family: &TokenFamily) -> QidResult<()> {
     if family.revoked {
         return Err(QidError::BadRequest {
             message: format!("token family {} is already revoked", family.id),
-        });
-    }
-    Ok(())
-}
-
-/// Validate that a user's email is unique within a realm.
-#[allow(dead_code)]
-pub fn validate_user_email_uniqueness(
-    existing: Option<&User>,
-    realm_id: &str,
-    email: &str,
-) -> QidResult<()> {
-    if let Some(_user) = existing {
-        return Err(QidError::BadRequest {
-            message: format!(
-                "user with email {} already exists in realm {}",
-                email, realm_id
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// Validate that a client_id is unique within a realm.
-#[allow(dead_code)]
-pub fn validate_client_id_uniqueness(existing: Option<&Client>) -> QidResult<()> {
-    if let Some(client) = existing {
-        return Err(QidError::BadRequest {
-            message: format!(
-                "client with client_id {} already exists in realm {}",
-                client.client_id, client.realm_id
-            ),
         });
     }
     Ok(())

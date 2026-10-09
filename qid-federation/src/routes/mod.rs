@@ -274,7 +274,4 @@ pub(crate) struct OidcCallbackQuery {
 pub(crate) struct SamlAcsForm {
     #[serde(default, rename = "SAMLResponse")]
     saml_response: Option<String>,
-    #[serde(default, rename = "RelayState")]
-    #[allow(dead_code)]
-    relay_state: Option<String>,
 }

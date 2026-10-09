@@ -157,8 +157,6 @@ struct DecisionPrincipal {
     device_id: Option<String>,
     posture: Vec<String>,
     assurance_level: Option<String>,
-    tenant: Option<String>,
-    idp: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,13 +171,7 @@ struct DecisionResource {
     #[serde(default)]
     port: Option<u16>,
     #[serde(default)]
-    uri: Option<String>,
-    #[serde(default)]
     sni: Option<String>,
-    #[serde(default)]
-    source_ip: Option<String>,
-    #[serde(default)]
-    selected_headers: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,20 +187,12 @@ struct DecisionOperation {
 struct DecisionPep {
     registration: String,
     #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    phase: Option<String>,
-    #[serde(default)]
     capabilities: Vec<DecisionPepCapability>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DecisionPepCapability {
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    phase: Option<String>,
     effect: String,
 }
 
@@ -268,9 +252,6 @@ impl TryFrom<WirePepDecisionRequest> for PepDecisionRequest {
                 application: risk.destination_application.clone(),
             })
         });
-        let source = Some(format!(
-            "qid-pep-decision;schema={PEP_DECISION_REQUEST_SCHEMA_ID}"
-        ));
 
         Ok(Self {
             schema_id,
@@ -278,30 +259,14 @@ impl TryFrom<WirePepDecisionRequest> for PepDecisionRequest {
             traceparent: value.traceparent,
             proxy: ProxyInfo {
                 proxy_name: registration.to_string(),
-                scope_name: value
-                    .pep
-                    .mode
-                    .clone()
-                    .or_else(|| value.pep.phase.clone())
-                    .or_else(|| value.request_id.clone())
-                    .unwrap_or_default(),
-                matched_rule: None,
-                matched_route: value
-                    .context
-                    .get("route")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToString::to_string),
                 action: Some(operation_name.to_ascii_lowercase()),
             },
             request: Some(RequestInfo {
-                remote_ip: value.resource.source_ip,
                 dst_port: value.resource.port,
                 host: value.resource.host.or(value.resource.id),
                 sni: value.resource.sni,
                 method: value.operation.method,
                 path: value.resource.path,
-                uri: value.resource.uri,
-                headers: value.resource.selected_headers,
             }),
             identity: Some(IdentityInfo {
                 user: principal.id,
@@ -310,10 +275,7 @@ impl TryFrom<WirePepDecisionRequest> for PepDecisionRequest {
                 entitlements: principal.entitlements,
                 device_id: principal.device_id,
                 posture: principal.posture,
-                tenant: principal.tenant,
                 auth_strength: principal.assurance_level,
-                idp: principal.idp,
-                source,
             }),
             destination,
             risk_score: value
@@ -334,32 +296,16 @@ impl TryFrom<WirePepDecisionRequest> for PepDecisionRequest {
 #[derive(Debug)]
 pub struct ProxyInfo {
     proxy_name: String,
-    #[allow(dead_code)]
-    scope_name: String,
-    #[allow(dead_code)]
-    matched_rule: Option<String>,
-    #[allow(dead_code)]
-    matched_route: Option<String>,
     action: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct RequestInfo {
-    #[allow(dead_code)]
-    remote_ip: Option<String>,
-    #[allow(dead_code)]
     dst_port: Option<u16>,
     host: Option<String>,
-    #[allow(dead_code)]
     sni: Option<String>,
-    #[allow(dead_code)]
     method: Option<String>,
-    #[allow(dead_code)]
     path: Option<String>,
-    #[allow(dead_code)]
-    uri: Option<String>,
-    #[allow(dead_code)]
-    headers: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -370,13 +316,7 @@ pub struct IdentityInfo {
     entitlements: Vec<String>,
     device_id: Option<String>,
     posture: Vec<String>,
-    #[allow(dead_code)]
-    tenant: Option<String>,
     auth_strength: Option<String>,
-    #[allow(dead_code)]
-    idp: Option<String>,
-    #[allow(dead_code)]
-    source: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1133,11 +1073,7 @@ fn normalize_string_capabilities(capabilities: &[String]) -> HashSet<String> {
 fn normalize_wire_capabilities(capabilities: &[DecisionPepCapability]) -> HashSet<String> {
     capabilities
         .iter()
-        .map(|capability| {
-            let _mode = capability.mode.as_deref();
-            let _phase = capability.phase.as_deref();
-            capability.effect.trim().to_ascii_lowercase()
-        })
+        .map(|capability| capability.effect.trim().to_ascii_lowercase())
         .filter(|capability| !capability.is_empty())
         .collect()
 }

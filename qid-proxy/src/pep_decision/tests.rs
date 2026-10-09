@@ -9,20 +9,14 @@ fn request() -> PepDecisionRequest {
         traceparent: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00".to_string()),
         proxy: ProxyInfo {
             proxy_name: "egress-main".to_string(),
-            scope_name: "forward_connect".to_string(),
-            matched_rule: None,
-            matched_route: Some("corp-egress".to_string()),
             action: Some("connect".to_string()),
         },
         request: Some(RequestInfo {
-            remote_ip: Some("192.0.2.10".to_string()),
             dst_port: Some(443),
             host: Some("finance.example.com".to_string()),
             sni: Some("finance.example.com".to_string()),
             method: Some("CONNECT".to_string()),
             path: Some("/".to_string()),
-            uri: Some("https://finance.example.com/".to_string()),
-            headers: HashMap::new(),
         }),
         identity: Some(IdentityInfo {
             user: Some("alice@example.com".to_string()),
@@ -31,10 +25,7 @@ fn request() -> PepDecisionRequest {
             entitlements: vec!["app:erp:read".to_string()],
             device_id: Some("device-1".to_string()),
             posture: vec!["managed".to_string()],
-            tenant: Some("corp".to_string()),
             auth_strength: Some("urn:qid:acr:phishing-resistant".to_string()),
-            idp: Some("qid".to_string()),
-            source: Some("test".to_string()),
         }),
         destination: Some(DestinationInfo {
             category: Some("banking".to_string()),
@@ -130,18 +121,14 @@ fn pep_decision_request_accepts_qid_owned_shape() {
             "entitlements": ["app:erp:read"],
             "device_id": "device-1",
             "posture": ["managed"],
-            "assurance_level": "urn:qid:acr:phishing-resistant",
-            "tenant": "corp",
-            "idp": "qid"
+            "assurance_level": "urn:qid:acr:phishing-resistant"
         },
         "resource": {
             "id": "finance.example.com",
             "host": "finance.example.com",
             "path": "/",
             "port": 443,
-            "uri": "https://finance.example.com/",
-            "sni": "finance.example.com",
-            "source_ip": "192.0.2.10"
+            "sni": "finance.example.com"
         },
         "operation": {
             "name": "connect",
@@ -149,10 +136,9 @@ fn pep_decision_request_accepts_qid_owned_shape() {
         },
         "pep": {
             "registration": "egress-main",
-            "mode": "forward_connect",
             "capabilities": [
                 { "effect": "local_response" },
-                { "mode": "forward_connect", "phase": "request", "effect": "inject_headers" }
+                { "effect": "inject_headers" }
             ]
         },
         "risk": {

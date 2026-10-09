@@ -4,7 +4,6 @@
 pub mod audit;
 pub mod key_rotation;
 pub mod notification;
-pub mod smtp_transport;
 pub mod sync;
 
 pub use audit::*;

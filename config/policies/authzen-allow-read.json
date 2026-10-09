@@ -1,0 +1,11 @@
+{
+  "version": "1",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "name": "allow-authzen-read",
+      "type": "allow",
+      "action": "read"
+    }
+  ]
+}

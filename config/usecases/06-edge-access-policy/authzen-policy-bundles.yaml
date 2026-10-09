@@ -16,6 +16,15 @@ crypto:
       rotation:
         overlap_days: 14
         max_age_days: 90
+    - name: corp-pep-assertion
+      realm_id: corp
+      purposes:
+        - pep_assertion
+      signer:
+        type: local
+      rotation:
+        overlap_days: 7
+        max_age_days: 45
 
 server:
   listen: "0.0.0.0:8443"
@@ -45,13 +54,28 @@ realms:
               - access.evaluate
             introspection_client_ids:
               - policy-client
-            require_sender_constraint: true
+            require_sender_constraint: false
+    pep_registrations:
+      enabled: true
+      registrations:
+        - name: service:policy-client
+          audience: "api://qid/authzen"
+          capabilities:
+            - effect: authzen
+            - effect: policy_tags
+          auth:
+            active_method: bearer_jwt
+            replay_protection: false
+          assertion:
+            header: "x-qid-assertion"
+            ttl_seconds: 60
+            alg: ES256
+          decision:
+            endpoint: "/pep/decision/v1/evaluate"
+            fail_policy: deny
     policy:
       default_decision: deny
       bundles:
-        - name: authenticated-read
-          source: "file://../../policies/authenticated-read.json"
-          mode: enforce
-        - name: admin
-          source: "file://../../policies/admin.json"
+        - name: authzen-allow-read
+          source: "file://../../policies/authzen-allow-read.json"
           mode: enforce

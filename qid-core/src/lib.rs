@@ -4,7 +4,6 @@ pub mod cache;
 pub mod config;
 pub mod contract;
 pub mod dpop;
-pub mod email_auth;
 pub mod error;
 pub mod event;
 pub mod idempotency;

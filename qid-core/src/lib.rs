@@ -19,7 +19,6 @@ pub mod pkce;
 pub mod plan;
 pub mod security_txt;
 pub mod state;
-pub mod structured_fields;
 pub mod tenant;
 pub mod util;
 pub mod web_push;

@@ -29,7 +29,6 @@ pub trait SharedCache: Send + Sync {
     fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64);
     fn set_if_absent(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) -> QidResult<bool>;
     fn delete(&self, key: &str);
-    fn exists(&self, key: &str) -> bool;
 }
 
 /// In-memory cache backed by a HashMap with TTL-based eviction.
@@ -98,11 +97,6 @@ impl SharedCache for MemoryCache {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
         store.remove(key);
     }
-
-    fn exists(&self, key: &str) -> bool {
-        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        store.contains_key(key)
-    }
 }
 
 #[cfg(feature = "redis-cache")]
@@ -166,11 +160,6 @@ pub mod redis_cache {
         fn delete(&self, key: &str) {
             let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
             let _: Result<(), _> = conn.del(key);
-        }
-
-        fn exists(&self, key: &str) -> bool {
-            let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-            conn.exists(key).unwrap_or(false)
         }
     }
 }

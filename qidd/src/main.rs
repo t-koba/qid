@@ -81,10 +81,6 @@ impl SharedCache for PrefixedSharedCache {
     fn delete(&self, key: &str) {
         self.inner.delete(&self.key(key));
     }
-
-    fn exists(&self, key: &str) -> bool {
-        self.inner.exists(&self.key(key))
-    }
 }
 
 #[derive(Parser)]

@@ -1,15 +1,30 @@
 {
-  "version": "2026-06-28",
+  "version": "1",
   "default_decision": "deny",
   "rules": [
     {
-      "id": "allow-managed-device-egress",
-      "effect": "allow",
-      "actions": ["connect", "http.forward"],
-      "conditions": {
-        "device_trust": "managed",
-        "destination_reputation": "known_good"
-      }
+      "name": "allow-managed-device-egress-connect",
+      "type": "allow",
+      "action": "connect",
+      "conditions": [
+        {
+          "field": "posture",
+          "op": "contains",
+          "value": "managed"
+        }
+      ]
+    },
+    {
+      "name": "allow-managed-device-egress-http.forward",
+      "type": "allow",
+      "action": "http.forward",
+      "conditions": [
+        {
+          "field": "posture",
+          "op": "contains",
+          "value": "managed"
+        }
+      ]
     }
   ]
 }

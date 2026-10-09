@@ -1,14 +1,16 @@
 {
-  "version": "2026-06-28",
+  "version": "1",
   "default_decision": "deny",
   "rules": [
     {
-      "id": "allow-api-scopes",
-      "effect": "allow",
-      "actions": ["read", "write"],
-      "conditions": {
-        "required_scopes": ["api"]
-      }
+      "name": "allow-api-scopes-read",
+      "type": "allow",
+      "action": "read"
+    },
+    {
+      "name": "allow-api-scopes-write",
+      "type": "allow",
+      "action": "write"
     }
   ]
 }

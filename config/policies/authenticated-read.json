@@ -1,14 +1,21 @@
 {
-  "version": "2026-06-28",
+  "version": "1",
   "default_decision": "deny",
   "rules": [
     {
-      "id": "allow-authenticated-read",
-      "effect": "allow",
-      "actions": ["read", "userinfo", "introspect"],
-      "conditions": {
-        "authenticated": true
-      }
+      "name": "allow-authenticated-read",
+      "type": "allow",
+      "action": "read"
+    },
+    {
+      "name": "allow-authenticated-userinfo",
+      "type": "allow",
+      "action": "userinfo"
+    },
+    {
+      "name": "allow-authenticated-introspect",
+      "type": "allow",
+      "action": "introspect"
     }
   ]
 }

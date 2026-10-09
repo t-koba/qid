@@ -1,14 +1,30 @@
 {
-  "version": "2026-06-28",
+  "version": "1",
   "default_decision": "deny",
   "rules": [
     {
-      "id": "allow-provisioning-client",
-      "effect": "allow",
-      "actions": ["scim.read", "scim.write"],
-      "conditions": {
-        "client_id": "scim-provisioner"
-      }
+      "name": "allow-provisioning-client-scim.read",
+      "type": "allow",
+      "action": "scim.read",
+      "conditions": [
+        {
+          "field": "subject_id",
+          "op": "equals",
+          "value": "scim-provisioner"
+        }
+      ]
+    },
+    {
+      "name": "allow-provisioning-client-scim.write",
+      "type": "allow",
+      "action": "scim.write",
+      "conditions": [
+        {
+          "field": "subject_id",
+          "op": "equals",
+          "value": "scim-provisioner"
+        }
+      ]
     }
   ]
 }

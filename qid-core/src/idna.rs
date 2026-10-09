@@ -29,15 +29,6 @@ pub fn validate_precis_username(username: &str) -> QidResult<String> {
     Ok(normalized)
 }
 
-pub fn validate_precis_password(password: &str) -> QidResult<String> {
-    if password.len() < 8 {
-        return Err(QidError::BadRequest {
-            message: "password must be at least 8 characters".to_string(),
-        });
-    }
-    Ok(password.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,11 +56,5 @@ mod tests {
     #[test]
     fn empty_username_fails() {
         assert!(validate_precis_username("").is_err());
-    }
-
-    #[test]
-    fn password_min_length() {
-        assert!(validate_precis_password("short").is_err());
-        assert!(validate_precis_password("longenough123!").is_ok());
     }
 }

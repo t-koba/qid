@@ -64,6 +64,12 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 | --- | --- | --- |
 | [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705.html) | Partial; thumbprint-bound `tls_client_auth` plus `cnf.x5t#S256`, no alias-URL or PKI-chain conformance claimed | When `oauth.mtls.enabled`, the token endpoint accepts `tls_client_auth` and `self_signed_tls_client_auth` only against the client `mtls_certificate_thumbprints` allowlist, issues `cnf.x5t#S256` bound tokens, and introspection rejects a missing or mismatched presented thumbprint fail-closed. qid never reads the TLS handshake directly: the thumbprint arrives only through process-local bound native metadata or a PEP-adapter assertion cross-checked in constant time (qpx terminates TLS, qid verifies bound metadata). Discovery advertises both methods when enabled, but `mtls_endpoint_aliases_supported` is a boolean and no RFC 8705 section 5 alias URLs are issued; no PKI DN-to-client chaining distinction and no FAPI sender-constraint conformance. Any interop claim waits for a passing generic-client fixture (auth round-trip plus `cnf.x5t#S256` validate plus mismatch reject) recorded with pinned versions. |
 
+## FAPI 2.0 Security Profile
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [FAPI 2.0 Security Profile Final](https://openid.net/specs/fapi-security-profile-2_0-final.html) | Config-pattern only; no Final interop claimed | `profile:fapi` yamls (`fapi2-baseline.yaml`, `fapi2-payments-high-risk.yaml`) are hardened-config examples (PAR-required, S256 PKCE, signed request, JARM, DPoP-nonce/mTLS, sender-constraint, ES256), not conformance. Known non-goals: client-assertion `aud` accepts the token-endpoint URL (not issuer-only), no `dpop_jkt` authorize/PAR pre-binding, bearer by default outside `fapi` realms. Any interop claim waits for a passing OIDF FAPI2SP-OP-Final run recorded with pinned versions; do not use OpenID Certified marks without certification. |
+
 ## OAuth Discovery (RFC 8414 / RFC 9728)
 
 | Standard | qid status | Boundary |

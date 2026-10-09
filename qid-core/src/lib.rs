@@ -5,7 +5,6 @@ pub mod config;
 pub mod dpop;
 pub mod error;
 pub mod event;
-pub mod idempotency;
 pub mod jwt;
 pub mod models;
 pub mod oauth;

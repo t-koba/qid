@@ -5,12 +5,26 @@
     {
       "name": "allow-api-scopes-read",
       "type": "allow",
-      "action": "read"
+      "action": "read",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
     },
     {
       "name": "allow-api-scopes-write",
       "type": "allow",
-      "action": "write"
+      "action": "write",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
     }
   ]
 }

@@ -5,17 +5,38 @@
     {
       "name": "allow-authenticated-read",
       "type": "allow",
-      "action": "read"
+      "action": "read",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
     },
     {
       "name": "allow-authenticated-userinfo",
       "type": "allow",
-      "action": "userinfo"
+      "action": "userinfo",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
     },
     {
       "name": "allow-authenticated-introspect",
       "type": "allow",
-      "action": "introspect"
+      "action": "introspect",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
     }
   ]
 }

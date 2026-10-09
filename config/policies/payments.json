@@ -5,12 +5,26 @@
     {
       "name": "allow-sender-constrained-payments-payments.read",
       "type": "allow",
-      "action": "payments.read"
+      "action": "payments.read",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
     },
     {
       "name": "allow-sender-constrained-payments-payments.write",
       "type": "allow",
-      "action": "payments.write"
+      "action": "payments.write",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
     }
   ]
 }

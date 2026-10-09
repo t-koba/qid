@@ -1,4 +1,4 @@
-//! Web security response headers: Referrer-Policy, Permissions-Policy, X-Frame-Options, Clear-Site-Data.
+//! Web security response headers: Referrer-Policy, Permissions-Policy, X-Frame-Options.
 
 use axum::http::header::{self, HeaderValue};
 use axum::response::Response;
@@ -34,10 +34,6 @@ pub fn apply_security_headers(response: &mut Response) {
     }
 }
 
-pub fn clear_site_data_header() -> HeaderValue {
-    HeaderValue::from_static("\"cache\", \"cookies\", \"storage\", \"executionContexts\"")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,11 +53,5 @@ mod tests {
         let mut resp = StatusCode::OK.into_response();
         apply_security_headers(&mut resp);
         assert!(resp.headers().contains_key("permissions-policy"));
-    }
-
-    #[test]
-    fn clear_site_data_is_valid() {
-        let val = clear_site_data_header();
-        assert!(!val.is_empty());
     }
 }

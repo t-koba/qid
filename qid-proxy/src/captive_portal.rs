@@ -231,7 +231,6 @@ async fn captive_portal_bind<R: Repository>(
     .into_response()
 }
 
-#[allow(clippy::extra_unused_type_parameters)]
 async fn captive_portal_unbind<R: Repository>(
     Path(realm): Path<String>,
     State(state): State<Arc<SharedState<R>>>,
@@ -263,7 +262,6 @@ async fn captive_portal_unbind<R: Repository>(
     Json(serde_json::json!({"status": "unbound", "src_ip": src_ip})).into_response()
 }
 
-#[allow(clippy::extra_unused_type_parameters)]
 async fn captive_portal_lookup<R: Repository>(
     Path(realm): Path<String>,
     State(state): State<Arc<SharedState<R>>>,

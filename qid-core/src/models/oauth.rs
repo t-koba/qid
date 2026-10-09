@@ -163,65 +163,6 @@ pub struct TotpCredential {
     pub created_at: u64,
 }
 
-/// A known device posture signal.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PostureSignal {
-    DiskEncrypted,
-    ScreenLock,
-    OsUpdated,
-    AntivirusEnabled,
-    FirewallEnabled,
-    MfaEnabled,
-    DebuggerDisabled,
-    DeveloperModeDisabled,
-    JailbreakDetected,
-    #[serde(other)]
-    Unknown,
-}
-
-#[allow(dead_code)]
-impl PostureSignal {
-    pub fn from_strings(values: &[String]) -> Vec<Self> {
-        values.iter().map(|v| Self::from_str(v)).collect()
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "disk_encrypted" => Self::DiskEncrypted,
-            "screen_lock" => Self::ScreenLock,
-            "os_updated" => Self::OsUpdated,
-            "antivirus_enabled" => Self::AntivirusEnabled,
-            "firewall_enabled" => Self::FirewallEnabled,
-            "mfa_enabled" => Self::MfaEnabled,
-            "debugger_disabled" => Self::DebuggerDisabled,
-            "developer_mode_disabled" => Self::DeveloperModeDisabled,
-            "jailbreak_detected" => Self::JailbreakDetected,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::DiskEncrypted => "disk_encrypted",
-            Self::ScreenLock => "screen_lock",
-            Self::OsUpdated => "os_updated",
-            Self::AntivirusEnabled => "antivirus_enabled",
-            Self::FirewallEnabled => "firewall_enabled",
-            Self::MfaEnabled => "mfa_enabled",
-            Self::DebuggerDisabled => "debugger_disabled",
-            Self::DeveloperModeDisabled => "developer_mode_disabled",
-            Self::JailbreakDetected => "jailbreak_detected",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    pub fn to_strings(values: &[Self]) -> Vec<String> {
-        values.iter().map(|s| s.as_str().to_string()).collect()
-    }
-}
-
 /// A registered device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {

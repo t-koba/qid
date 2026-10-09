@@ -612,16 +612,6 @@ fn ensure_key_in_document(
     Ok(())
 }
 
-/// Canonicalization method for XMLDSig transforms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Canonicalization {
-    /// Inclusive Canonical XML 1.0 subset used by the local SAML profile.
-    Standard,
-
-    /// Exclusive XML Canonicalization subset for documents that declare it.
-    Exclusive,
-}
-
 /// Canonicalize a SAML element into a stable string suitable for
 /// digest or signature computation. The canonicalization applies the
 /// subset of XML C14N 1.0 required by SAML: whitespace normalization,
@@ -1050,16 +1040,6 @@ fn escape_attr(value: &str) -> String {
         }
     }
     out
-}
-
-fn find_subslice(haystack: &str, needles: &[&str]) -> Option<usize> {
-    let mut best: Option<usize> = None;
-    for needle in needles {
-        if let Some(pos) = haystack.find(needle) {
-            best = Some(best.map_or(pos, |current| current.min(pos)));
-        }
-    }
-    best
 }
 
 fn find_close_tag_for_local(haystack: &str, local: &str) -> Option<(usize, usize)> {

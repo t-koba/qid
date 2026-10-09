@@ -247,9 +247,7 @@ pub fn validate_authn_request_signature_profile(
 ) -> QidResult<crate::SamlXmlSignatureProfile> {
     // Production path: perform a real W3C XMLDSig verification. The
     // algorithm is chosen by looking at the SP's first configured
-    // signing certificate. When the legacy profile is desired for
-    // backwards compatibility, use
-    // [`validate_authn_request_signature_profile_legacy`].
+    // signing certificate.
     if sp.signing_certificates.is_empty() {
         return Err(QidError::BadRequest {
             message: "SAML SP metadata must include a signing key; none are configured".to_string(),
@@ -290,42 +288,5 @@ pub fn validate_authn_request_signature_profile(
         public_key_pem: public_key_pem.as_bytes(),
         profile: algorithm,
     })?;
-    Ok(profile)
-}
-
-/// Legacy profile-only validator that does not perform cryptographic
-/// verification. Kept for callers that have not yet wired the real
-/// XMLDSig verification path. Production deployments must migrate to
-/// [`validate_authn_request_signature_profile`].
-pub fn validate_authn_request_signature_profile_legacy(
-    req: &crate::SamlAuthnRequest,
-    sp: &SamlServiceProviderMetadata,
-) -> QidResult<crate::SamlXmlSignatureProfile> {
-    let profile = inspect_xml_signature_profile(&req.raw_xml, "AuthnRequest")?;
-    if sp.signing_certificates.is_empty() {
-        return Err(QidError::BadRequest {
-            message: "SAML SP metadata must include a signing key; none are configured".to_string(),
-        });
-    }
-    if profile.reference_uri.as_deref() != Some(&format!("#{}", req.id)) {
-        return Err(QidError::BadRequest {
-            message: "SAML AuthnRequest signature must reference the AuthnRequest identifier"
-                .to_string(),
-        });
-    }
-    let Some(signing_certificate) = &profile.signing_certificate else {
-        return Err(QidError::BadRequest {
-            message: "SAML AuthnRequest signature must include an X.509 certificate".to_string(),
-        });
-    };
-    if !sp
-        .signing_certificates
-        .iter()
-        .any(|t| t == signing_certificate)
-    {
-        return Err(QidError::BadRequest {
-            message: "SAML signing cert does not match any trusted certificate".to_string(),
-        });
-    }
     Ok(profile)
 }

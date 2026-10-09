@@ -21,35 +21,6 @@ impl<'a> SamlDocument<'a> {
         Ok(Self { doc })
     }
 
-    /// Return the text content of the first element matching `tag`.
-    pub(crate) fn element_text(&self, tag: &str) -> Option<String> {
-        self.doc
-            .descendants()
-            .find(|n| n.has_tag_name(tag))
-            .and_then(|n| n.text())
-            .map(|s| s.trim().to_string())
-    }
-
-    /// Return an attribute value from the first element matching `tag`.
-    pub(crate) fn element_attr(&self, tag: &str, attr: &str) -> Option<String> {
-        self.doc
-            .descendants()
-            .find(|n| n.has_tag_name(tag))
-            .and_then(|n| n.attribute(attr))
-            .map(|s| s.to_string())
-    }
-
-    /// Return all attribute values for a given attribute name across
-    /// all matching elements.
-    pub(crate) fn element_attrs(&self, tag: &str, attr: &str) -> Vec<String> {
-        self.doc
-            .descendants()
-            .filter(|n| n.has_tag_name(tag))
-            .filter_map(|n| n.attribute(attr))
-            .map(|s| s.to_string())
-            .collect()
-    }
-
     /// Inspect the XML signature profile for a signed element.
     ///
     /// This is the DOM equivalent of `xml::inspect_xml_signature_profile`.
@@ -226,16 +197,5 @@ mod tests {
             ),
             "SAML comments must be rejected before DOM inspection"
         );
-    }
-
-    #[test]
-    fn dom_text_values_match_string_scanner() {
-        let xml = valid_saml_xml();
-        let doc = SamlDocument::parse(xml).unwrap();
-        let dom_val = doc.element_text("X509Certificate");
-        let scan_val = crate::xml::text_values(xml, "X509Certificate")
-            .into_iter()
-            .next();
-        assert_eq!(dom_val, scan_val);
     }
 }

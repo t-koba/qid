@@ -1,6 +1,5 @@
 //! SAML 2.0 IdP surface.
 #![forbid(unsafe_code)]
-#![allow(dead_code)]
 
 use base64::Engine;
 use qid_core::{

@@ -16,11 +16,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 
 const STATUS_PURPOSE_REVOCATION: &str = "revocation";
-const STATUS_PURPOSE_SUSPENSION: &str = "suspension";
-const STATUS_PURPOSE_REFRESH: &str = "refresh";
 
 const STATUS_SET: u8 = 0x01;
-const STATUS_UNSET: u8 = 0x00;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BitstringStatusListCredential {

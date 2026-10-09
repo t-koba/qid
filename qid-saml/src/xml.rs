@@ -207,23 +207,6 @@ pub(crate) fn inspect_xml_signature_profile(
     })
 }
 
-/// DOM-based claim extraction: text content of the first element matching
-/// `tag`. Returns `None` when the XML is not well-formed (falls back to
-/// string scanner transparently).
-pub(crate) fn dom_element_text(xml: &str, tag: &str) -> Option<String> {
-    crate::saml_document::SamlDocument::parse(xml)
-        .ok()
-        .and_then(|doc| doc.element_text(tag))
-}
-
-/// DOM-based attribute extraction: attribute value from the first element
-/// matching `tag`. Returns `None` when the XML is not well-formed.
-pub(crate) fn dom_element_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
-    crate::saml_document::SamlDocument::parse(xml)
-        .ok()
-        .and_then(|doc| doc.element_attr(tag, attr))
-}
-
 pub(crate) fn reject_unsupported_signature_algorithm(algorithm: &str) -> QidResult<()> {
     let lowered = algorithm.to_ascii_lowercase();
     // Only allow SHA-2 family (SHA-256, SHA-384, SHA-512) algorithms

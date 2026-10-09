@@ -188,29 +188,6 @@ pub fn dpop_nonce_error_response(
     response
 }
 
-/// Validate that a field value is non-empty, returning a BadRequest error otherwise.
-pub fn require_non_empty(field: &str, value: &str) -> Result<(), qid_core::QidError> {
-    if value.trim().is_empty() {
-        return Err(qid_core::QidError::BadRequest {
-            message: format!("{field} must not be empty"),
-        });
-    }
-    Ok(())
-}
-
-/// Validate that a string is a valid absolute URI, returning a BadRequest error otherwise.
-/// Uses basic scheme + authority validation without the `url` crate dependency.
-pub fn require_uri(field: &str, value: &str) -> Result<(), qid_core::QidError> {
-    require_non_empty(field, value)?;
-    let has_scheme = value.contains("://");
-    if !has_scheme {
-        return Err(qid_core::QidError::BadRequest {
-            message: format!("{field} must be a valid absolute URI"),
-        });
-    }
-    Ok(())
-}
-
 /// Build a redirect carrying OAuth/OIDC error parameters.
 pub fn redirect_error(
     redirect_uri: &str,

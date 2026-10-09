@@ -86,24 +86,6 @@ impl AnyRepository {
     }
 }
 
-#[allow(unused_macros)]
-macro_rules! file_create {
-    ($store:expr, $map:ident, $item:expr, $key:expr) => {{
-        let mut store = $store.write().await;
-        store.$map.insert($key, $item);
-        drop(store);
-        self.save().await
-    }};
-}
-
-#[allow(unused_macros)]
-macro_rules! file_get {
-    ($store:expr, $map:ident, $key:expr) => {{
-        let store = $store.read().await;
-        Ok(store.$map.get($key).cloned())
-    }};
-}
-
 macro_rules! delegate {
     ($trait:ident { $($method:ident(&self $(, $arg:ident: $ty:ty)*) -> $ret:ty);* $(;)? }) => {
         #[async_trait]

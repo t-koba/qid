@@ -1595,22 +1595,6 @@ fn validate_scim_event_callback_allowed_host(host: &str, realm_id: &str) -> QidR
     Ok(())
 }
 
-/// Config validation helper: when `enabled` is true, `value` must be `Some` and non-empty.
-/// Returns the field name in the error message for clear diagnostics.
-pub fn require_when_enabled(
-    enabled: bool,
-    value: Option<&str>,
-    field: &str,
-    feature: &str,
-) -> QidResult<()> {
-    if enabled && value.is_none_or(|v| v.trim().is_empty()) {
-        return Err(QidError::Config {
-            message: format!("{field} is required when {feature} is enabled"),
-        });
-    }
-    Ok(())
-}
-
 /// Validate metrics listen address: must be loopback or explicitly allowlisted.
 fn validate_metrics_listen(obs: &ObservabilityConfig) -> QidResult<()> {
     match obs.metrics.listen.parse::<std::net::SocketAddr>() {

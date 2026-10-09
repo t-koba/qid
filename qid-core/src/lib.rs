@@ -21,7 +21,6 @@ pub mod security_txt;
 pub mod state;
 pub mod tenant;
 pub mod util;
-pub mod web_push;
 pub mod zero_rtt;
 
 #[cfg(feature = "test-utils")]

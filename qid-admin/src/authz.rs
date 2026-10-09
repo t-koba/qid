@@ -415,7 +415,6 @@ pub(crate) async fn resolve_authenticated_admin<R: Repository>(
 }
 
 /// Returns (Admin, AdminElevation) so callers can use both for audit logging.
-#[allow(unused_variables)]
 pub(crate) async fn authorize_admin<R: Repository>(
     state: &Arc<SharedState<R>>,
     headers: &HeaderMap,

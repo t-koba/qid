@@ -3388,7 +3388,6 @@ dependencies = [
  "ulid",
  "unicode-normalization",
  "url",
- "urlencoding",
 ]
 
 [[package]]

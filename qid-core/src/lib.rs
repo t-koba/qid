@@ -11,7 +11,6 @@ pub mod json;
 pub mod jwt;
 pub mod ldif;
 pub mod models;
-pub mod notifications;
 pub mod oauth;
 pub mod pkce;
 pub mod plan;

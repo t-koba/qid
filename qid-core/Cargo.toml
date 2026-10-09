@@ -28,7 +28,6 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 rsa = { workspace = true, features = ["sha2"] }
 rand = { workspace = true }
-urlencoding = { workspace = true }
 thiserror = "1"
 tracing = { workspace = true }
 ulid = { workspace = true }

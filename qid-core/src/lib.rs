@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 
-pub mod assurance;
 pub mod cache;
 pub mod config;
 pub mod contract;

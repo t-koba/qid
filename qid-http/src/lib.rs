@@ -23,7 +23,7 @@ pub use middleware::{
 /// Use this on 401 responses to satisfy RFC 6750 §3, which requires that the
 /// resource server include a challenge that lets clients distinguish between
 /// missing/invalid/expired tokens and other failure modes.
-pub fn with_bearer_challenge(mut response: Response, error: &str, description: &str) -> Response {
+fn with_bearer_challenge(mut response: Response, error: &str, description: &str) -> Response {
     let value = format!(
         "Bearer realm=\"qid\", error=\"{}\", error_description=\"{}\"",
         error,
@@ -94,17 +94,12 @@ pub fn oauth_error_response_with_description(
         .into_response()
 }
 
-/// Build an OAuth-style JSON error response from a `QidError`.
-pub fn qid_oauth_error_response(err: qid_core::QidError) -> axum::response::Response {
-    error_response(err)
-}
-
 /// Attach a DPoP-Nonce challenge header to an OAuth error response.
 pub fn dpop_nonce_error_response(
     err: qid_core::QidError,
     nonce: Option<&str>,
 ) -> axum::response::Response {
-    let mut response = qid_oauth_error_response(err);
+    let mut response = error_response(err);
     if let Some(nonce) = nonce.and_then(|nonce| HeaderValue::from_str(nonce).ok()) {
         response.headers_mut().insert("DPoP-Nonce", nonce);
     }

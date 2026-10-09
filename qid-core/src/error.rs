@@ -113,18 +113,6 @@ impl QidError {
         }
     }
 
-    /// Deprecated string-based code; use [`Self::error_code()`] instead.
-    pub fn code(&self) -> &'static str {
-        self.error_code().as_str()
-    }
-
-    pub fn to_response_body(&self) -> serde_json::Value {
-        serde_json::json!({
-            "error": self.code(),
-            "error_description": self.message(),
-        })
-    }
-
     pub fn message(&self) -> String {
         self.to_string()
     }

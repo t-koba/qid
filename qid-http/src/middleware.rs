@@ -300,7 +300,7 @@ fn unauthorized(message: &str) -> Response {
 /// Verify a single HTTP message signature for the proprietary HMAC-only
 /// edge-pep ingress subset inspired by RFC 9421. Returns `Ok(())` on success
 /// and an `Err(message)` describing the failure otherwise.
-pub fn verify_http_message_signature(
+fn verify_http_message_signature(
     req: &Request,
     signature_input: &str,
     signature: &str,

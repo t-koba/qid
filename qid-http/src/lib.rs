@@ -81,11 +81,6 @@ pub fn error_response(err: qid_core::QidError) -> axum::response::Response {
     response
 }
 
-/// Build an OAuth-style JSON error response.
-pub fn oauth_error_response(status: StatusCode, error: &str) -> axum::response::Response {
-    (status, Json(json!({ "error": error }))).into_response()
-}
-
 /// Build an OAuth-style JSON error response with `error_description` set.
 pub fn oauth_error_response_with_description(
     status: StatusCode,

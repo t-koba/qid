@@ -1,5 +1,3 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
-
 use anyhow::Context;
 use qid_core::{
     cache::{MemoryCache, SharedCache},

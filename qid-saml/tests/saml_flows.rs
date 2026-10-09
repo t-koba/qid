@@ -1,5 +1,3 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
-
 use base64::{Engine, engine::general_purpose::STANDARD};
 use qid_saml::{
     EMAIL_NAME_ID_FORMAT, SamlAssertionRequest, SamlPostBindingForm, SamlRelayStatePolicy,

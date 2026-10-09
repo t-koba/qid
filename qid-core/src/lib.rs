@@ -19,7 +19,6 @@ pub mod plan;
 pub mod state;
 pub mod tenant;
 pub mod util;
-pub mod zero_rtt;
 
 #[cfg(feature = "test-utils")]
 pub mod test_helpers;

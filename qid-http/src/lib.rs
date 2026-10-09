@@ -11,7 +11,6 @@ use serde_json::json;
 pub mod middleware;
 pub mod ratelimit;
 pub mod security_headers;
-pub mod trusted_types;
 
 pub use middleware::{
     cors_layer, csp_headers_layer, csrf_protection_layer, hsts_layer, security_headers_middleware,

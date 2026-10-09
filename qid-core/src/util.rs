@@ -6,29 +6,17 @@ use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq as _;
 
-use crate::error::{QidError, QidResult};
-
 /// Current wall-clock time in seconds since the Unix epoch.
 ///
 /// Returns 0 and logs a warning if the system clock is before the Unix epoch.
 pub fn now_seconds() -> u64 {
-    match now_seconds_fallible() {
-        Ok(secs) => secs,
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
         Err(e) => {
             tracing::warn!("clock before unix epoch: {e}");
             0
         }
     }
-}
-
-/// Fallible variant of [`now_seconds`] that returns a typed error.
-pub fn now_seconds_fallible() -> QidResult<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|e| QidError::Internal {
-            message: format!("system time before unix epoch: {e}"),
-        })
 }
 
 /// Encode bytes as unpadded base64url.

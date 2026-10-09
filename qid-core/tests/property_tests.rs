@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -120,14 +118,12 @@ proptest! {
 #[derive(Debug, Clone)]
 struct TenantResource {
     tenant: String,
-    id: String,
 }
 
 /// A user belonging to a specific tenant.
 #[derive(Debug, Clone)]
 struct TenantUser {
     tenant: String,
-    name: String,
 }
 
 /// Check whether a user can access a resource based on tenant membership.
@@ -140,18 +136,14 @@ proptest! {
     fn tenant_isolation_enforced(
         tenant_a in "[a-zA-Z0-9_]{1,8}",
         tenant_b in "[a-zA-Z0-9_]{1,8}",
-        user_name in "[a-zA-Z0-9_]{1,8}",
-        resource_id in "[a-zA-Z0-9_]{1,8}",
     ) {
         prop_assume!(tenant_a != tenant_b, "tenants must differ");
 
         let user = TenantUser {
             tenant: tenant_a.clone(),
-            name: user_name,
         };
         let resource = TenantResource {
             tenant: tenant_b,
-            id: resource_id.clone(),
         };
 
         // A user in tenant A MUST NOT access resources in tenant B.
@@ -163,7 +155,6 @@ proptest! {
         // A user in the same tenant CAN access the resource.
         let same_tenant_resource = TenantResource {
             tenant: tenant_a,
-            id: resource_id,
         };
         prop_assert!(
             can_access(&user, &same_tenant_resource),

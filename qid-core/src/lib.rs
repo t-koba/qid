@@ -17,7 +17,6 @@ pub mod notifications;
 pub mod oauth;
 pub mod pkce;
 pub mod plan;
-pub mod problem_details;
 pub mod security_txt;
 pub mod state;
 pub mod structured_fields;

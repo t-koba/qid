@@ -1449,3 +1449,64 @@ async fn authorize_can_return_signed_jarm_response() {
     let token_response = app.oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn protected_resource_path_inserted_and_401_pointer() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://mcp".to_string(),
+        resources: vec!["https://id.example.com/mcp".to_string()],
+        scopes: vec!["mcp".to_string()],
+        introspection_client_ids: Vec::new(),
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
+    let (app, state) = setup_with_config(config).await;
+
+    let inserted = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "{}/mcp",
+            state.paths.well_known_oauth_protected_resource
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(inserted).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(metadata["resource"], "https://id.example.com/mcp");
+    assert_eq!(metadata["audience"], "api://mcp");
+
+    let unknown = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "{}/unknown-resource",
+            state.paths.well_known_oauth_protected_resource
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let unknown_response = app.clone().oneshot(unknown).await.unwrap();
+    assert_eq!(unknown_response.status(), StatusCode::BAD_REQUEST);
+
+    let userinfo_request = Request::builder()
+        .method(Method::GET)
+        .uri(&state.paths.userinfo)
+        .body(Body::empty())
+        .unwrap();
+    let userinfo_response = app.oneshot(userinfo_request).await.unwrap();
+    assert_eq!(userinfo_response.status(), StatusCode::UNAUTHORIZED);
+    let challenge = userinfo_response
+        .headers()
+        .get("www-authenticate")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        challenge.contains(
+            "resource_metadata=\"https://id.example.com/.well-known/oauth-protected-resource\""
+        ),
+        "unexpected challenge: {challenge}"
+    );
+}

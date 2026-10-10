@@ -91,6 +91,12 @@ async fn send_backchannel_logout(logout_uri: &str, logout_token: &str) -> QidRes
 
 /// Build OIDC discovery routes with shared state and configurable paths.
 pub fn routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
+    let protected_resource_path_inserted = format!(
+        "{}/*suffix",
+        paths
+            .well_known_oauth_protected_resource
+            .trim_end_matches('/')
+    );
     Router::new()
         .route(
             &paths.well_known_openid_configuration,
@@ -103,6 +109,10 @@ pub fn routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>>
         .route(
             &paths.well_known_oauth_protected_resource,
             get(oauth_protected_resource),
+        )
+        .route(
+            &protected_resource_path_inserted,
+            get(oauth_protected_resource_path_inserted),
         )
         .route(
             "/realms/:realm/.well-known/openid-configuration",
@@ -515,14 +525,96 @@ async fn oauth_protected_resource<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Query(query): Query<ProtectedResourceQuery>,
 ) -> Response {
-    let base = state.plan.public_base_url.trim_end_matches('/');
-    let jwks_uri = format!("{}{}", base, state.paths.jwks);
     let Some((realm, resource_server)) = select_realm_resource_server(&state, &query) else {
         return qid_http::error_response(QidError::BadRequest {
             message: "resource or audience must identify a configured protected resource"
                 .to_string(),
         });
     };
+    protected_resource_response(&state, realm, resource_server)
+}
+
+/// RFC 9728 §3.1 path-inserted metadata: the resource path suffix after the
+/// configured well-known base identifies the protected resource, e.g.
+/// `/.well-known/oauth-protected-resource/mcp` for resource `/mcp`.
+/// Unknown suffixes fail closed with 400, like unknown query identifiers.
+async fn oauth_protected_resource_path_inserted<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    Path(suffix): Path<String>,
+    Query(query): Query<ProtectedResourceQuery>,
+) -> Response {
+    let base = state.plan.public_base_url.trim_end_matches('/');
+    let suffix = suffix.trim_matches('/');
+    if !suffix.is_empty() {
+        let candidate = format!("{base}/{suffix}");
+        let path_query = ProtectedResourceQuery {
+            resource: Some(candidate.clone()),
+            audience: None,
+        };
+        if let Some((realm, resource_server)) = select_realm_resource_server(&state, &path_query) {
+            return protected_resource_response(&state, realm, resource_server);
+        }
+        // A suffix that matches a trailing path segment of a configured
+        // resource (e.g. `mcp` for `https://host/mcp`) also selects it.
+        if let Some((realm, resource_server)) = select_by_path_suffix(&state, suffix) {
+            return protected_resource_response(&state, realm, resource_server);
+        }
+        // An explicit query identifier on the path-inserted URL still selects.
+        if query.resource.is_some() || query.audience.is_some() {
+            let Some((realm, resource_server)) = select_realm_resource_server(&state, &query)
+            else {
+                return qid_http::error_response(QidError::BadRequest {
+                    message: "resource or audience must identify a configured protected resource"
+                        .to_string(),
+                });
+            };
+            return protected_resource_response(&state, realm, resource_server);
+        }
+        return qid_http::error_response(QidError::BadRequest {
+            message: "resource or audience must identify a configured protected resource"
+                .to_string(),
+        });
+    }
+    let Some((realm, resource_server)) = select_realm_resource_server(&state, &query) else {
+        return qid_http::error_response(QidError::BadRequest {
+            message: "resource or audience must identify a configured protected resource"
+                .to_string(),
+        });
+    };
+    protected_resource_response(&state, realm, resource_server)
+}
+
+fn select_by_path_suffix<'a, R: Repository>(
+    state: &'a SharedState<R>,
+    suffix: &str,
+) -> Option<(
+    &'a qid_core::config::RealmConfig,
+    &'a OAuthResourceServerConfig,
+)> {
+    let mut found = None;
+    for realm in &state.config.realms {
+        for server in &realm.protocols.oauth.resource_servers {
+            let matches = std::iter::once(&server.audience)
+                .chain(server.resources.iter())
+                .any(|id| id.trim_end_matches('/').rsplit('/').next() == Some(suffix));
+            if matches {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some((realm, server));
+            }
+        }
+    }
+    found
+}
+
+fn protected_resource_response<R: Repository>(
+    state: &SharedState<R>,
+    realm: &qid_core::config::RealmConfig,
+    resource_server: &OAuthResourceServerConfig,
+) -> Response {
+    let base = state.plan.public_base_url.trim_end_matches('/');
+    let jwks_uri = format!("{}{}", base, state.paths.jwks);
     Json(json!({
         "resource": resource_server
             .resources
@@ -541,6 +633,14 @@ async fn oauth_protected_resource<R: Repository>(
         "mtls_endpoint_aliases_supported": realm.protocols.oauth.mtls.enabled,
     }))
     .into_response()
+}
+
+fn resource_metadata_url<R: Repository>(state: &SharedState<R>) -> String {
+    format!(
+        "{}{}",
+        state.plan.public_base_url.trim_end_matches('/'),
+        state.paths.well_known_oauth_protected_resource
+    )
 }
 
 fn select_realm_resource_server<'a, R: Repository>(
@@ -615,23 +715,26 @@ async fn userinfo<R: Repository>(
             message: "OIDC UserInfo is disabled".to_string(),
         });
     }
+    let resource_metadata = resource_metadata_url(&state);
     let token = match qid_oauth::endpoints::extract_bearer_token(&headers) {
         Ok(token) => token,
         Err(_) => {
-            return qid_http::oauth_error_response_with_bearer(
+            return qid_http::oauth_error_response_with_bearer_and_metadata(
                 axum::http::StatusCode::UNAUTHORIZED,
                 "invalid_token",
                 "missing bearer access token",
+                Some(&resource_metadata),
             );
         }
     };
     let decoded = match qid_oauth::endpoints::decode_access_token(&state, token).await {
         Ok(data) => data,
         Err(_) => {
-            return qid_http::oauth_error_response_with_bearer(
+            return qid_http::oauth_error_response_with_bearer_and_metadata(
                 axum::http::StatusCode::UNAUTHORIZED,
                 "invalid_token",
                 "failed to verify access token",
+                Some(&resource_metadata),
             );
         }
     };
@@ -641,10 +744,11 @@ async fn userinfo<R: Repository>(
         .iter()
         .find(|realm| realm.id == decoded.realm_id)
     else {
-        return qid_http::oauth_error_response_with_bearer(
+        return qid_http::oauth_error_response_with_bearer_and_metadata(
             axum::http::StatusCode::UNAUTHORIZED,
             "invalid_token",
             "token realm is not configured",
+            Some(&resource_metadata),
         );
     };
     if !realm.protocols.oidc.enabled || !realm.protocols.oidc.userinfo {
@@ -665,10 +769,11 @@ async fn userinfo<R: Repository>(
         token,
         &decoded,
     ) {
-        return qid_http::oauth_error_response_with_bearer(
+        return qid_http::oauth_error_response_with_bearer_and_metadata(
             axum::http::StatusCode::UNAUTHORIZED,
             "invalid_token",
             &error.to_string(),
+            Some(&resource_metadata),
         );
     }
     let sub = decoded.user_id;

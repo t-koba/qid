@@ -22,12 +22,25 @@ pub use middleware::{
 /// Use this on 401 responses to satisfy RFC 6750 §3, which requires that the
 /// resource server include a challenge that lets clients distinguish between
 /// missing/invalid/expired tokens and other failure modes.
-fn with_bearer_challenge(mut response: Response, error: &str, description: &str) -> Response {
-    let value = format!(
-        "Bearer realm=\"qid\", error=\"{}\", error_description=\"{}\"",
-        error,
-        description.replace('"', "'")
-    );
+fn with_bearer_challenge(
+    mut response: Response,
+    error: &str,
+    description: &str,
+    resource_metadata: Option<&str>,
+) -> Response {
+    let value = match resource_metadata {
+        Some(url) => format!(
+            "Bearer resource_metadata=\"{}\", realm=\"qid\", error=\"{}\", error_description=\"{}\"",
+            url.replace('"', "'"),
+            error,
+            description.replace('"', "'")
+        ),
+        None => format!(
+            "Bearer realm=\"qid\", error=\"{}\", error_description=\"{}\"",
+            error,
+            description.replace('"', "'")
+        ),
+    };
     if let Ok(header) = HeaderValue::from_str(&value) {
         response
             .headers_mut()
@@ -43,9 +56,21 @@ pub fn oauth_error_response_with_bearer(
     error: &str,
     description: &str,
 ) -> Response {
+    oauth_error_response_with_bearer_and_metadata(status, error, description, None)
+}
+
+/// Build a 401 challenge that also carries the RFC 9728 §5
+/// `resource_metadata` pointer so generic clients can discover
+/// protected-resource metadata from the `WWW-Authenticate` response.
+pub fn oauth_error_response_with_bearer_and_metadata(
+    status: StatusCode,
+    error: &str,
+    description: &str,
+    resource_metadata: Option<&str>,
+) -> Response {
     let response = oauth_error_response_with_description(status, error, description);
     if status == StatusCode::UNAUTHORIZED {
-        with_bearer_challenge(response, error, description)
+        with_bearer_challenge(response, error, description, resource_metadata)
     } else {
         response
     }
@@ -75,7 +100,7 @@ pub fn error_response(err: qid_core::QidError) -> axum::response::Response {
     let body = Json(json!({ "error": err.message() }));
     let mut response = (status, body).into_response();
     if response.status() == StatusCode::UNAUTHORIZED {
-        response = with_bearer_challenge(response, "invalid_token", &err.message());
+        response = with_bearer_challenge(response, "invalid_token", &err.message(), None);
     }
     response
 }

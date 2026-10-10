@@ -1453,16 +1453,33 @@ async fn authorize_can_return_signed_jarm_response() {
 #[tokio::test]
 async fn protected_resource_path_inserted_and_401_pointer() {
     let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://mcp".to_string(),
-        resources: vec!["https://id.example.com/mcp".to_string()],
-        scopes: vec!["mcp".to_string()],
-        introspection_client_ids: Vec::new(),
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    let userinfo_url = format!(
+        "{}{}",
+        "https://id.example.com",
+        qid_core::config::ServerPaths::default().userinfo
+    );
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        OAuthResourceServerConfig {
+            audience: "api://mcp".to_string(),
+            resources: vec!["https://id.example.com/mcp".to_string()],
+            scopes: vec!["mcp".to_string()],
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: false,
+        },
+        OAuthResourceServerConfig {
+            audience: "api://userinfo".to_string(),
+            resources: vec![userinfo_url.clone()],
+            scopes: vec!["openid".to_string()],
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: false,
+        },
+    ];
     let (app, state) = setup_with_config(config).await;
+    assert_eq!(state.paths.userinfo, "/oidc/userinfo");
 
+    // Exact RFC 9728 §3.1 derivation resolves.
     let inserted = Request::builder()
         .method(Method::GET)
         .uri(format!(
@@ -1478,6 +1495,68 @@ async fn protected_resource_path_inserted_and_401_pointer() {
     assert_eq!(metadata["resource"], "https://id.example.com/mcp");
     assert_eq!(metadata["audience"], "api://mcp");
 
+    // Query identifiers on the path-inserted URL are ignored: exact wins.
+    let precedence = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "{}/mcp?resource={}",
+            state.paths.well_known_oauth_protected_resource,
+            urlencoding::encode(&userinfo_url)
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let precedence_response = app.clone().oneshot(precedence).await.unwrap();
+    assert_eq!(precedence_response.status(), StatusCode::OK);
+    let bytes = precedence_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(metadata["resource"], "https://id.example.com/mcp");
+
+    // Bare trailing-segment fallback is gone: `/userinfo` does not select
+    // `/oidc/userinfo`, and the full inserted path does.
+    let trailing = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "{}/userinfo",
+            state.paths.well_known_oauth_protected_resource
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let trailing_response = app.clone().oneshot(trailing).await.unwrap();
+    assert_eq!(trailing_response.status(), StatusCode::BAD_REQUEST);
+
+    let full_inserted = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "{}/oidc/userinfo",
+            state.paths.well_known_oauth_protected_resource
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let full_response = app.clone().oneshot(full_inserted).await.unwrap();
+    assert_eq!(full_response.status(), StatusCode::OK);
+    let bytes = full_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(metadata["resource"], userinfo_url);
+
+    // Bare base without an identifier is ambiguous with two servers.
+    let bare = Request::builder()
+        .method(Method::GET)
+        .uri(&state.paths.well_known_oauth_protected_resource)
+        .body(Body::empty())
+        .unwrap();
+    let bare_response = app.clone().oneshot(bare).await.unwrap();
+    assert_eq!(bare_response.status(), StatusCode::BAD_REQUEST);
+
     let unknown = Request::builder()
         .method(Method::GET)
         .uri(format!(
@@ -1489,12 +1568,13 @@ async fn protected_resource_path_inserted_and_401_pointer() {
     let unknown_response = app.clone().oneshot(unknown).await.unwrap();
     assert_eq!(unknown_response.status(), StatusCode::BAD_REQUEST);
 
+    // The 401 pointer identifies the userinfo resource and resolves.
     let userinfo_request = Request::builder()
         .method(Method::GET)
         .uri(&state.paths.userinfo)
         .body(Body::empty())
         .unwrap();
-    let userinfo_response = app.oneshot(userinfo_request).await.unwrap();
+    let userinfo_response = app.clone().oneshot(userinfo_request).await.unwrap();
     assert_eq!(userinfo_response.status(), StatusCode::UNAUTHORIZED);
     let challenge = userinfo_response
         .headers()
@@ -1503,10 +1583,71 @@ async fn protected_resource_path_inserted_and_401_pointer() {
         .to_str()
         .unwrap()
         .to_string();
+    let expected_pointer = format!(
+        "{}{}?resource={}",
+        state.plan.public_base_url.trim_end_matches('/'),
+        state.paths.well_known_oauth_protected_resource,
+        urlencoding::encode(&userinfo_url)
+    );
     assert!(
-        challenge.contains(
-            "resource_metadata=\"https://id.example.com/.well-known/oauth-protected-resource\""
-        ),
+        challenge.contains(&format!("resource_metadata=\"{expected_pointer}\"")),
+        "unexpected challenge: {challenge}"
+    );
+    let pointer_request = Request::builder()
+        .method(Method::GET)
+        .uri(&expected_pointer)
+        .body(Body::empty())
+        .unwrap();
+    let pointer_response = app.oneshot(pointer_request).await.unwrap();
+    assert_eq!(pointer_response.status(), StatusCode::OK);
+    let bytes = pointer_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(metadata["resource"], userinfo_url);
+}
+
+#[tokio::test]
+async fn userinfo_401_omits_pointer_when_userinfo_unconfigured() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        OAuthResourceServerConfig {
+            audience: "api://one".to_string(),
+            resources: vec!["https://api.example.com/one".to_string()],
+            scopes: vec!["one".to_string()],
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: false,
+        },
+        OAuthResourceServerConfig {
+            audience: "api://two".to_string(),
+            resources: vec!["https://api.example.com/two".to_string()],
+            scopes: vec!["two".to_string()],
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: false,
+        },
+    ];
+    let (app, state) = setup_with_config(config).await;
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(&state.paths.userinfo)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let challenge = response
+        .headers()
+        .get("www-authenticate")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        !challenge.contains("resource_metadata"),
         "unexpected challenge: {challenge}"
     );
 }

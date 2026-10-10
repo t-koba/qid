@@ -134,9 +134,22 @@ struct ParsedAuthenticationCredential {
 
 impl WebAuthnService {
     pub fn new(rp_id: &str, rp_name: &str, rp_origin: &str) -> QidResult<Self> {
-        Url::parse(rp_origin).map_err(|e| QidError::BadRequest {
+        let parsed = Url::parse(rp_origin).map_err(|e| QidError::BadRequest {
             message: format!("invalid rp_origin: {e}"),
         })?;
+        if parsed.scheme() != "https" && parsed.host_str() != Some("localhost") {
+            return Err(QidError::BadRequest {
+                message: "WebAuthn RP origin must use https except localhost".to_string(),
+            });
+        }
+        let host = parsed.host_str().ok_or_else(|| QidError::BadRequest {
+            message: "WebAuthn RP origin must include a host".to_string(),
+        })?;
+        if host != rp_id && !host.ends_with(&format!(".{rp_id}")) {
+            return Err(QidError::BadRequest {
+                message: "WebAuthn RP origin host must match RP ID scope".to_string(),
+            });
+        }
         Ok(Self {
             rp: RelyingParty::new(rp_id, rp_origin, rp_name)
                 .allowed_algorithms([COSE_ES256, COSE_ES384, COSE_EDDSA, COSE_RS256]),
@@ -513,6 +526,22 @@ mod tests {
         let disc_map = state.disc_auth.lock().unwrap();
         assert!(disc_map.is_empty());
         drop(disc_map);
+    }
+
+    #[test]
+    fn wired_service_rejects_plain_http_and_cross_site_origins() {
+        assert!(WebAuthnService::new("example.com", "Example", "http://example.com").is_err());
+        assert!(
+            WebAuthnService::new("example.com", "Example", "https://evil.example.net").is_err()
+        );
+    }
+
+    #[test]
+    fn wired_service_accepts_localhost_http_and_scoped_subdomain() {
+        assert!(WebAuthnService::new("localhost", "Example", "http://localhost:5173").is_ok());
+        assert!(
+            WebAuthnService::new("example.com", "Example", "https://login.example.com").is_ok()
+        );
     }
 
     #[test]

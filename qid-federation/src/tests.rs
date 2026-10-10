@@ -694,3 +694,79 @@ async fn trust_chain_validation_route_validates_signed_chain_and_records_audit()
         "https://anchor.example"
     );
 }
+
+#[test]
+fn inbound_jwks_ignores_unknown_kty_and_still_verifies_classical_key() {
+    use qid_crypto::jwk::generate_es256;
+
+    let pair = generate_es256("classical").expect("generate ES256");
+    let mut classical = serde_json::to_value(&pair.public_jwk).expect("jwk json");
+    classical["alg"] = serde_json::json!("ES256");
+    let mixed = serde_json::json!({
+        "keys": [
+            classical,
+            {"kty": "AKP", "alg": "ML-DSA-44", "kid": "pq", "pub": "dGVzdA"},
+        ],
+    });
+    // Strict whole-set parse must fail on the AKP entry (documents the break).
+    assert!(
+        serde_json::from_value::<jsonwebtoken::jwk::JwkSet>(mixed.clone()).is_err(),
+        "strict JWKS parse should reject mixed AKP set",
+    );
+
+    let now = qid_core::util::now_seconds() as usize;
+    let claims = serde_json::json!({
+        "iss": "https://login.corp.example",
+        "aud": "corp-client",
+        "exp": now + 600,
+        "sub": "user-1",
+        "email": "user@corp.example",
+    });
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    header.kid = Some("classical".to_string());
+    let key = jsonwebtoken::EncodingKey::from_ec_pem(pair.private_pem.as_bytes()).expect("ec pem");
+    let token = jsonwebtoken::encode(&header, &claims, &key).expect("sign classical token");
+
+    let provider = InboundIdentityProvider {
+        id: "corp-oidc".to_string(),
+        kind: InboundProviderKind::Oidc,
+        issuer: "https://login.corp.example".to_string(),
+        enabled: true,
+        domains: vec!["corp.example".to_string()],
+        social_provider: None,
+        jit_provisioning: true,
+        account_linking: true,
+        client_id: Some("corp-client".to_string()),
+        client_secret: None,
+        token_url: None,
+        userinfo_url: None,
+        jwks_uri: None,
+        jwks: Some(mixed),
+        saml_signing_certificates: Vec::new(),
+        claim_mappings: Vec::new(),
+    };
+    let verified = verify_inbound_idp_token(
+        &token,
+        &provider,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .expect("classical token verifies despite AKP entry");
+    assert_eq!(verified.get("sub").and_then(|v| v.as_str()), Some("user-1"));
+
+    // Unknown kid still fails closed instead of selecting the AKP entry.
+    let mut bad_header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    bad_header.kid = Some("pq".to_string());
+    let bad_token =
+        jsonwebtoken::encode(&bad_header, &claims, &key).expect("sign with unknown kid");
+    assert!(
+        verify_inbound_idp_token(
+            &bad_token,
+            &provider,
+            "https://login.corp.example",
+            "corp-client",
+        )
+        .is_err(),
+        "unknown kid must fail closed",
+    );
+}

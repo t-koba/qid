@@ -1196,11 +1196,32 @@ pub fn verify_inbound_idp_token(
                     "Asymmetric algorithm requires provider.jwks to be populated",
                 )
             })?;
-            let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_value(jwks_value.clone())
-                .map_err(|e| broker_error("invalid_jwks", &format!("Failed to parse JWKS: {e}")))?;
-            let jwk = jwks.find(kid_str).ok_or_else(|| {
-                broker_error("key_not_found", &format!("No JWK matches kid {kid_str:?}"))
-            })?;
+            // Parse inbound JWKS tolerantly per RFC 7517 robustness: unknown
+            // `kty`/`alg` entries (e.g. RFC 9964 `AKP`/`ML-DSA-*`) are
+            // skipped instead of aborting the whole set, so a PQ key
+            // alongside classical keys cannot break classical verification.
+            // Unknown `kid` values still fail closed via `key_not_found`.
+            let keys_value = jwks_value
+                .get("keys")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| broker_error("invalid_jwks", "JWKS must contain a `keys` array"))?;
+            let mut usable: Vec<jsonwebtoken::jwk::Jwk> = Vec::new();
+            for entry in keys_value {
+                if let Ok(jwk) = serde_json::from_value::<jsonwebtoken::jwk::Jwk>(entry.clone()) {
+                    usable.push(jwk);
+                }
+            }
+            let jwk = usable
+                .iter()
+                .find(|jwk| {
+                    jwk.common
+                        .key_id
+                        .as_deref()
+                        .is_some_and(|kid| kid == kid_str)
+                })
+                .ok_or_else(|| {
+                    broker_error("key_not_found", &format!("No JWK matches kid {kid_str:?}"))
+                })?;
             DecodingKey::from_jwk(jwk)
                 .map_err(|e| broker_error("jwk_decode_failed", &format!("{e}")))?
         }

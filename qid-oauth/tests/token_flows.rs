@@ -3006,3 +3006,130 @@ async fn introspection_rejects_unauthenticated_invalid_token_with_resource_serve
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+struct FailingIntrospectionSigner {
+    inner: LocalSigner,
+}
+
+impl qid_core::jwt::Signer for FailingIntrospectionSigner {
+    fn sign(&self, _claims: &JwtClaims) -> anyhow::Result<String> {
+        anyhow::bail!("introspection signing unavailable")
+    }
+    fn sign_with_typ(&self, _claims: &JwtClaims, _typ: &str) -> anyhow::Result<String> {
+        anyhow::bail!("introspection signing unavailable")
+    }
+    fn decode_signature_only(
+        &self,
+        token: &str,
+    ) -> anyhow::Result<qid_core::jwt::TokenData<JwtClaims>> {
+        self.inner.decode_signature_only(token)
+    }
+    fn decode_with_aud(
+        &self,
+        token: &str,
+        expected_audience: &str,
+    ) -> anyhow::Result<qid_core::jwt::TokenData<JwtClaims>> {
+        self.inner.decode_with_aud(token, expected_audience)
+    }
+    fn algorithm(&self) -> &'static str {
+        self.inner.algorithm()
+    }
+}
+
+#[tokio::test]
+async fn jwt_introspection_signing_failure_fails_closed_without_disclosure() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.introspection.jwt_response = true;
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-jwt-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
+    let (app, token_path, state) = setup_with_config(config.clone()).await;
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=introspection-jwt-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
+        ))
+        .unwrap();
+    let token_response = app.oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let access_token = token_json["access_token"].as_str().unwrap().to_string();
+
+    // Same repo/config/paths but a signer that fails every signature.
+    let failing_signer = Arc::new(FailingIntrospectionSigner {
+        inner: LocalSigner::from_secret("test", b"test-secret-for-tests"),
+    });
+    let failing_state = Arc::new(
+        SharedState::new(
+            config,
+            state.repo.clone(),
+            failing_signer,
+            serde_json::json!({ "keys": [] }),
+        )
+        .unwrap(),
+    );
+    let failing_app = qid_oauth::routes(&failing_state.paths).with_state(failing_state.clone());
+
+    // Requested JWT form must fail closed, not downgrade to unsigned active:true.
+    let jwt_request = Request::builder()
+        .method(Method::POST)
+        .uri(&failing_state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "token={}&client_id=introspection-jwt-client&client_secret=secret&response_format=jwt",
+            urlencoding::encode(&access_token)
+        )))
+        .unwrap();
+    let jwt_response = failing_app.clone().oneshot(jwt_request).await.unwrap();
+    assert!(
+        jwt_response.status().is_client_error() || jwt_response.status().is_server_error(),
+        "signing failure must not return success, got {}",
+        jwt_response.status()
+    );
+    let bytes = jwt_response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        body.get("active").is_none(),
+        "signing failure must not disclose token metadata, got {body}"
+    );
+    assert!(
+        body.get("sub").is_none() && body.get("token_introspection").is_none(),
+        "signing failure must not disclose token metadata, got {body}"
+    );
+
+    // Ordinary JSON introspection without a requested signature still works.
+    let json_request = Request::builder()
+        .method(Method::POST)
+        .uri(&failing_state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "token={}&client_id=introspection-jwt-client&client_secret=secret",
+            urlencoding::encode(&access_token)
+        )))
+        .unwrap();
+    let json_response = failing_app.oneshot(json_request).await.unwrap();
+    assert_eq!(json_response.status(), StatusCode::OK);
+    let bytes = json_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["active"], true);
+    assert!(json.get("token_introspection").is_none());
+}

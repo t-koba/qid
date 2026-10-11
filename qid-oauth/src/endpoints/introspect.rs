@@ -225,12 +225,15 @@ pub async fn introspect<R: Repository>(
             if !filter_decoded_for_resource_server(&mut decoded, server) {
                 return inactive_response();
             }
-            let token_introspection = if req.response_format.as_deref() == Some("jwt") {
-                sign_introspection_response(&state, &decoded, Some(caller.client_id.as_str())).ok()
+            if req.response_format.as_deref() == Some("jwt") {
+                match sign_introspection_response(&state, &decoded, Some(caller.client_id.as_str()))
+                {
+                    Ok(jwt) => active_response(decoded, Some(jwt)),
+                    Err(sign_err) => qid_http::error_response(sign_err),
+                }
             } else {
-                None
-            };
-            active_response(decoded, token_introspection)
+                active_response(decoded, None)
+            }
         }
         Err(_) => inactive_response(),
     }

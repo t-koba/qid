@@ -67,9 +67,17 @@ impl TokenRepository for FileRepository {
                 resource: format!("token family {id}"),
             })?;
         crate::domain::validate_token_family_rotation(family, expected_refresh_hash, refresh_hash)?;
+        let previous_hash = family.current_refresh_hash.clone();
         family.current_refresh_hash = refresh_hash.to_string();
         drop(store);
-        self.save().await
+        if let Err(save_err) = self.save().await {
+            let mut store = self.store.write().await;
+            if let Some(family) = store.token_families.get_mut(id) {
+                family.current_refresh_hash = previous_hash;
+            }
+            return Err(save_err);
+        }
+        Ok(())
     }
 
     async fn revoke_token_family(&self, id: &str) -> QidResult<()> {

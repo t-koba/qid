@@ -482,7 +482,7 @@ pub async fn refresh_token_grant<R: Repository>(
                     message: "invalid refresh token".to_string(),
                 });
             }
-            _ => {
+            QidError::Conflict { .. } => {
                 metrics::counter!("qid_refresh_reuse_detected_total").increment(1);
                 if let Err(revoke_err) = state.repo.revoke_token_family(&family.id).await {
                     tracing::warn!(error = %revoke_err, family_id = %family.id, "revoke_token_family failed after refresh reuse detection");
@@ -491,6 +491,7 @@ pub async fn refresh_token_grant<R: Repository>(
                     message: "invalid refresh token".to_string(),
                 });
             }
+            other => return Err(other),
         }
     }
 

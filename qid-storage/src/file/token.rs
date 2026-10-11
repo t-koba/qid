@@ -56,13 +56,18 @@ impl TokenRepository for FileRepository {
     async fn update_token_family_refresh_hash(
         &self,
         id: &str,
+        expected_refresh_hash: &str,
         refresh_hash: &str,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if let Some(family) = store.token_families.get_mut(id) {
-            crate::domain::validate_token_family_rotation(family, refresh_hash)?;
-            family.current_refresh_hash = refresh_hash.to_string();
-        }
+        let family = store
+            .token_families
+            .get_mut(id)
+            .ok_or_else(|| QidError::NotFound {
+                resource: format!("token family {id}"),
+            })?;
+        crate::domain::validate_token_family_rotation(family, expected_refresh_hash, refresh_hash)?;
+        family.current_refresh_hash = refresh_hash.to_string();
         drop(store);
         self.save().await
     }

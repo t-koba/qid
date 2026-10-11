@@ -110,7 +110,7 @@ async fn file_token_family_reuse_detected() {
     repo.create_token_family(&family).await.unwrap();
     // Same hash presented twice must be detected
     let result = repo
-        .update_token_family_refresh_hash("tf-1", "hash-v1")
+        .update_token_family_refresh_hash("tf-1", "hash-v1", "hash-v1")
         .await;
     assert!(
         result.is_err(),
@@ -323,4 +323,75 @@ async fn file_siem_delivery_queue_survives_reload() {
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0].id, "delivery-1");
     assert_eq!(deliveries[0].attempts, 2);
+}
+
+#[tokio::test]
+async fn file_refresh_rotation_single_winner() {
+    let repo = setup().await;
+    let now = qid_core::util::now_seconds();
+    let family = TokenFamily {
+        id: "tf-race".to_string(),
+        user_id: "user-1".to_string(),
+        client_id: "client-1".to_string(),
+        realm_id: "test".to_string(),
+        current_refresh_hash: "hash-v0".to_string(),
+        audience: Vec::new(),
+        resource: Vec::new(),
+        authorization_details: None,
+        sender_constraint: None,
+        issued_at: now,
+        revoked: false,
+    };
+    repo.create_token_family(&family).await.unwrap();
+    // Both requests read "hash-v0" before either update (barrier after read).
+    let r1 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v1");
+    let r2 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v2");
+    let (r1, r2) = tokio::join!(r1, r2);
+    assert!(
+        r1.is_ok() ^ r2.is_ok(),
+        "exactly one overlapping rotation must win, got {r1:?} / {r2:?}"
+    );
+    let current = repo
+        .get_token_family("tf-race")
+        .await
+        .unwrap()
+        .unwrap()
+        .current_refresh_hash;
+    assert!(
+        current == "hash-v1" || current == "hash-v2",
+        "winner hash must be stored, got {current}"
+    );
+    // Stale expected hash must not rotate again.
+    let stale = repo
+        .update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v3")
+        .await;
+    assert!(stale.is_err(), "stale expected hash must be rejected");
+}
+
+#[tokio::test]
+async fn file_refresh_rotation_revoked_stays_revoked() {
+    let repo = setup().await;
+    let now = qid_core::util::now_seconds();
+    let family = TokenFamily {
+        id: "tf-revoked".to_string(),
+        user_id: "user-1".to_string(),
+        client_id: "client-1".to_string(),
+        realm_id: "test".to_string(),
+        current_refresh_hash: "hash-v0".to_string(),
+        audience: Vec::new(),
+        resource: Vec::new(),
+        authorization_details: None,
+        sender_constraint: None,
+        issued_at: now,
+        revoked: false,
+    };
+    repo.create_token_family(&family).await.unwrap();
+    repo.revoke_token_family("tf-revoked").await.unwrap();
+    let result = repo
+        .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1")
+        .await;
+    assert!(
+        result.is_err(),
+        "no successful consumption after revocation"
+    );
 }

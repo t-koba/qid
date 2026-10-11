@@ -1259,7 +1259,7 @@ async fn test_token_family_crud() {
         fetched.sender_constraint,
         Some(serde_json::json!({"jkt":"refresh-thumbprint"}))
     );
-    repo.update_token_family_refresh_hash("tf-1", "hash2")
+    repo.update_token_family_refresh_hash("tf-1", "hash1", "hash2")
         .await
         .unwrap();
     let updated = repo.get_token_family("tf-1").await.unwrap().unwrap();
@@ -2461,4 +2461,113 @@ async fn test_file_iga_repository_round_trip() {
         .expect("file repository creation failed");
     repo.migrate().await.expect("file migration failed");
     assert_iga_repository_round_trip(&repo).await;
+}
+
+#[tokio::test]
+async fn sql_refresh_rotation_single_winner() {
+    let repo = SqlRepository::connect(&db_url())
+        .await
+        .expect("connect failed");
+    repo.migrate().await.expect("migration failed");
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"realm-race".into(),
+        "https://id.example.com/realms/race",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_user(&User {
+        id: "user-race".to_string(),
+        realm_id: "realm-race".to_string(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    let now = qid_core::util::now_seconds();
+    let family = qid_core::models::TokenFamily {
+        id: "tf-race".to_string(),
+        user_id: "user-race".to_string(),
+        client_id: "client-1".to_string(),
+        realm_id: "realm-race".to_string(),
+        current_refresh_hash: "hash-v0".to_string(),
+        audience: Vec::new(),
+        resource: Vec::new(),
+        authorization_details: None,
+        sender_constraint: None,
+        issued_at: now,
+        revoked: false,
+    };
+    repo.create_token_family(&family).await.unwrap();
+    // Both requests read "hash-v0" before either update (barrier after read).
+    let r1 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v1");
+    let r2 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v2");
+    let (r1, r2) = tokio::join!(r1, r2);
+    assert!(
+        r1.is_ok() ^ r2.is_ok(),
+        "exactly one overlapping rotation must win, got {r1:?} / {r2:?}"
+    );
+    // Stale expected hash must not rotate again.
+    let stale = repo
+        .update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v3")
+        .await;
+    assert!(stale.is_err(), "stale expected hash must be rejected");
+}
+
+#[tokio::test]
+async fn sql_refresh_rotation_revoked_stays_revoked() {
+    let repo = SqlRepository::connect(&db_url())
+        .await
+        .expect("connect failed");
+    repo.migrate().await.expect("migration failed");
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"realm-rev".into(),
+        "https://id.example.com/realms/rev",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_user(&User {
+        id: "user-rev".to_string(),
+        realm_id: "realm-rev".to_string(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    let now = qid_core::util::now_seconds();
+    let family = qid_core::models::TokenFamily {
+        id: "tf-revoked".to_string(),
+        user_id: "user-rev".to_string(),
+        client_id: "client-1".to_string(),
+        realm_id: "realm-rev".to_string(),
+        current_refresh_hash: "hash-v0".to_string(),
+        audience: Vec::new(),
+        resource: Vec::new(),
+        authorization_details: None,
+        sender_constraint: None,
+        issued_at: now,
+        revoked: false,
+    };
+    repo.create_token_family(&family).await.unwrap();
+    repo.revoke_token_family("tf-revoked").await.unwrap();
+    // Revoking twice stays idempotent for concurrent reuse handling.
+    repo.revoke_token_family("tf-revoked").await.unwrap();
+    let result = repo
+        .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1")
+        .await;
+    assert!(
+        result.is_err(),
+        "no successful consumption after revocation"
+    );
 }

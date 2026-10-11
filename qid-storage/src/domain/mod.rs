@@ -23,31 +23,29 @@ pub fn validate_session_creation(existing: Option<&Session>) -> QidResult<()> {
     Ok(())
 }
 
-/// Validate a token family rotation:
+/// Validate an atomic token family rotation:
 /// - Family must not be revoked
+/// - Presented expected hash must still match current (single consumption)
 /// - New hash must differ from current (reuse/replay detection)
 pub fn validate_token_family_rotation(
     family: &TokenFamily,
+    expected_refresh_hash: &str,
     new_refresh_hash: &str,
 ) -> QidResult<()> {
     if family.revoked {
-        return Err(QidError::BadRequest {
+        return Err(QidError::Conflict {
             message: format!("token family {} is revoked", family.id),
         });
     }
-    if family.current_refresh_hash == new_refresh_hash {
-        return Err(QidError::BadRequest {
-            message: format!("token family {} refresh hash reuse detected", family.id),
+    if family.current_refresh_hash != expected_refresh_hash {
+        return Err(QidError::Conflict {
+            message: format!("token family {} refresh token already consumed", family.id),
         });
     }
-    Ok(())
-}
-
-/// Validate that a token family can be revoked (not already revoked).
-pub fn validate_token_family_revocation(family: &TokenFamily) -> QidResult<()> {
-    if family.revoked {
-        return Err(QidError::BadRequest {
-            message: format!("token family {} is already revoked", family.id),
+    if new_refresh_hash == expected_refresh_hash || family.current_refresh_hash == new_refresh_hash
+    {
+        return Err(QidError::Conflict {
+            message: format!("token family {} refresh hash reuse detected", family.id),
         });
     }
     Ok(())

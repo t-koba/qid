@@ -468,6 +468,32 @@ pub async fn refresh_token_grant<R: Repository>(
         family.audience.clone()
     };
 
+    // Atomically consume the presented refresh hash before issuing anything:
+    // only one overlapping redemption can win; the loser is handled as reuse
+    // below and leaves no usable access token behind.
+    if let Err(rotate_err) = state
+        .repo
+        .update_token_family_refresh_hash(&family.id, &expected_hash, &new_hash)
+        .await
+    {
+        match rotate_err {
+            QidError::NotFound { .. } => {
+                return Err(QidError::Unauthorized {
+                    message: "invalid refresh token".to_string(),
+                });
+            }
+            _ => {
+                metrics::counter!("qid_refresh_reuse_detected_total").increment(1);
+                if let Err(revoke_err) = state.repo.revoke_token_family(&family.id).await {
+                    tracing::warn!(error = %revoke_err, family_id = %family.id, "revoke_token_family failed after refresh reuse detection");
+                }
+                return Err(QidError::Unauthorized {
+                    message: "invalid refresh token".to_string(),
+                });
+            }
+        }
+    }
+
     let access_token = AccessToken {
         jti: new_access_jti.clone(),
         family_id: Some(family.id.clone()),
@@ -490,10 +516,6 @@ pub async fn refresh_token_grant<R: Repository>(
         issued_at: now,
     };
     state.repo.create_access_token(&access_token).await?;
-    state
-        .repo
-        .update_token_family_refresh_hash(&family.id, &new_hash)
-        .await?;
 
     let access = format_access_token(
         state,

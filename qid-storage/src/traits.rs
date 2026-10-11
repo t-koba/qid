@@ -153,8 +153,12 @@ pub trait TokenRepository: Send + Sync + 'static {
     async fn mark_authorization_code_used(&self, code_hash: &str) -> QidResult<()>;
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()>;
     async fn get_token_family(&self, id: &str) -> QidResult<Option<TokenFamily>>;
-    async fn update_token_family_refresh_hash(&self, id: &str, refresh_hash: &str)
-    -> QidResult<()>;
+    async fn update_token_family_refresh_hash(
+        &self,
+        id: &str,
+        expected_refresh_hash: &str,
+        refresh_hash: &str,
+    ) -> QidResult<()>;
     async fn revoke_token_family(&self, id: &str) -> QidResult<()>;
     async fn list_token_families(
         &self,

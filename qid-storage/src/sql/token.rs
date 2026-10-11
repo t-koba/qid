@@ -106,37 +106,55 @@ impl TokenRepository for SqlRepository {
     async fn update_token_family_refresh_hash(
         &self,
         id: &str,
+        expected_refresh_hash: &str,
         refresh_hash: &str,
     ) -> QidResult<()> {
+        if expected_refresh_hash == refresh_hash {
+            return Err(QidError::Conflict {
+                message: format!("token family {id} refresh hash reuse detected"),
+            });
+        }
+        let result = sqlx::query(
+            "UPDATE token_families SET current_refresh_hash = ? WHERE id = ? AND current_refresh_hash = ? AND revoked = 0",
+        )
+        .bind(refresh_hash)
+        .bind(id)
+        .bind(expected_refresh_hash)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
         let family = self
             .get_token_family(id)
             .await?
             .ok_or_else(|| QidError::NotFound {
                 resource: format!("token family {id}"),
             })?;
-        crate::domain::validate_token_family_rotation(&family, refresh_hash)?;
-        sqlx::query("UPDATE token_families SET current_refresh_hash = ? WHERE id = ?")
-            .bind(refresh_hash)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::domain::validate_token_family_rotation(
+            &family,
+            expected_refresh_hash,
+            refresh_hash,
+        )?;
+        // Predicate missed but validation passed (unreachable under the
+        // conditional update); fail closed.
+        Err(QidError::Conflict {
+            message: format!("token family {id} refresh token already consumed"),
+        })
     }
 
     async fn revoke_token_family(&self, id: &str) -> QidResult<()> {
-        let family = self
-            .get_token_family(id)
-            .await?
-            .ok_or_else(|| QidError::NotFound {
-                resource: format!("token family {id}"),
-            })?;
-        crate::domain::validate_token_family_revocation(&family)?;
-        sqlx::query("UPDATE token_families SET revoked = 1 WHERE id = ?")
+        let result = sqlx::query("UPDATE token_families SET revoked = 1 WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::NotFound {
+                resource: format!("token family {id}"),
+            });
+        }
         Ok(())
     }
 

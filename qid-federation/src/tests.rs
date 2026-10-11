@@ -770,3 +770,46 @@ fn inbound_jwks_ignores_unknown_kty_and_still_verifies_classical_key() {
         "unknown kid must fail closed",
     );
 }
+
+#[test]
+fn inbound_idp_token_rejects_hmac_alg_fail_closed() {
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    let now = qid_core::util::now_seconds() as usize;
+    let claims = serde_json::json!({
+        "iss": "https://login.corp.example",
+        "aud": "corp-client",
+        "exp": now + 600,
+        "sub": "user-1",
+    });
+    let header = Header::new(Algorithm::HS256);
+    let key = EncodingKey::from_secret(b"corp-client-secret-that-must-never-verify");
+    let token = jsonwebtoken::encode(&header, &claims, &key).expect("sign HS token");
+    // Provider carries both a code-exchange secret and a JWKS: the header
+    // must not be able to reroute verification onto the secret.
+    let provider = InboundIdentityProvider {
+        id: "corp-oidc".to_string(),
+        kind: InboundProviderKind::Oidc,
+        issuer: "https://login.corp.example".to_string(),
+        enabled: true,
+        domains: vec!["corp.example".to_string()],
+        social_provider: None,
+        jit_provisioning: true,
+        account_linking: true,
+        client_id: Some("corp-client".to_string()),
+        client_secret: Some("corp-client-secret-that-must-never-verify".to_string()),
+        token_url: None,
+        userinfo_url: None,
+        jwks_uri: None,
+        jwks: Some(serde_json::json!({"keys": []})),
+        saml_signing_certificates: Vec::new(),
+        claim_mappings: Vec::new(),
+    };
+    let err = verify_inbound_idp_token(
+        &token,
+        &provider,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .unwrap_err();
+    assert_eq!(federation_error_code(&err), "symmetric_alg_not_allowed");
+}

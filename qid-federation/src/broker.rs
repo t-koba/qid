@@ -1141,8 +1141,11 @@ pub fn normalize_enterprise_claims(
 
 /// Verify an inbound ID token from an external OIDC provider.
 ///
-/// Decodes and verifies the JWT signature using the provider's `client_secret`
-/// (for HS256/HS384/HS512) or its cached JWKS (for RS256/RS384/RS512/ES256/etc).
+/// Verifies the JWT signature against the provider's cached JWKS only
+/// (RS256/RS384/RS512/ES256/ES384/EdDSA with `kid` match). Symmetric
+/// `HS256/HS384/HS512` and any other `alg` are rejected fail-closed per
+/// RFC 8725 §3.1: the header `alg` never selects an HMAC path and
+/// `client_secret` (code-exchange credential) is never used as an HMAC key.
 /// Validates `iss`, `aud`, and `exp` claims.
 /// Returns the decoded JWT payload as a `serde_json::Value`.
 pub fn verify_inbound_idp_token(
@@ -1168,16 +1171,17 @@ pub fn verify_inbound_idp_token(
         .map(|&s| s.to_string())
         .collect();
 
+    // RFC 8725 §3.1: pin the operation to asymmetric JWKS verification.
+    // The header `alg` selects only within this allowlist; symmetric algs
+    // fail closed so a crafted header can never reroute verification to
+    // `client_secret` (RS->HS key confusion, CVE-2015-9235 pattern).
+    if matches!(alg, Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512) {
+        return Err(broker_error(
+            "symmetric_alg_not_allowed",
+            "Inbound ID tokens must use asymmetric JWKS algs; HMAC algs are rejected",
+        ));
+    }
     let key: DecodingKey = match alg {
-        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
-            let secret = provider.client_secret.as_deref().ok_or_else(|| {
-                broker_error(
-                    "missing_client_secret",
-                    "HMAC algorithm requires client_secret",
-                )
-            })?;
-            DecodingKey::from_secret(secret.as_bytes())
-        }
         Algorithm::RS256
         | Algorithm::RS384
         | Algorithm::RS512

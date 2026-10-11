@@ -41,6 +41,12 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 | --- | --- | --- |
 | [RFC 7522](https://www.rfc-editor.org/rfc/rfc7522.html), [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523.html) §2.1+§3, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html) §2.1 | Scoped subset; no interop claimed | Token endpoint serves `urn:ietf:params:oauth:grant-type:token-exchange`, `jwt-bearer` and `saml2-bearer` only when listed in the client `grant_types` allowlist; only `access_token` is issued (`requested_token_type` absent-or-`access_token`, `issued_token_type=access_token`). JWT-bearer is self-issued only (`iss` must equal `client_id`, `aud` must equal the token-endpoint URL, `exp`+`jti` required with replay record, `sub` non-empty, ES256/EdDSA/RS256 against registered `jwks`). SAML2-bearer requires recipient equal to the realm token endpoint with `saml_clock_skew_seconds`; encrypted assertions need `idp_encryption_key_pem_path` else fail closed. Exchange accepts only `access_token`/`jwt`/`saml2` subject types, validates actor `access_token`/`saml2` into `act` and rejects actor `jwt` fail-closed. Discovery advertises `subject_token_types_supported` but not exchange/bearer `grant_types_supported`; external-issuer JWT/SAML needs the exchange path with registered trust, not the bearer grant. Covered by `qid-oauth/tests/token_flows.rs` round-trip and reject tests; any interop claim waits for a passing generic-client fixture recorded with pinned versions. |
 
+## Grant Negotiation (RFC 9635 / RFC 9767)
+
+| Standard | qid status | Boundary |
+| --- | --- | --- |
+| [RFC 9635](https://www.rfc-editor.org/rfc/rfc9635.html), [RFC 9767](https://www.rfc-editor.org/rfc/rfc9767.html) | Helpers only; no interop claimed | `qid-oauth::gnap` behind the non-default `gnap` feature provides `GnapGrantRequest`/`GnapGrantResponse` parse/serialize helpers with round-trip unit tests only. No `POST /gnap` grant/continue/interact route (no route in `docs/http-api.md`), no client key-proof verification, no discovery, and no RFC 9767 RS APIs, structured-token model, or downstream derivation. The feature stays off by default until a fixture shows token-exchange plus RAR cannot express the delegation need. Any interop claim waits for a passing generic-client fixture recorded with pinned RFC 9635+9767 versions. |
+
 ## SAML 2.0 Web SSO (OASIS Core/Bindings)
 
 | Standard | qid status | Boundary |

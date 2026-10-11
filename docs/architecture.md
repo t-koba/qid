@@ -69,7 +69,7 @@ flowchart LR
 | `qid-observability` | Logging, metrics, OTLP, audit helpers, OpenMetrics/syslog helpers. |
 | `qid-diagnostics` | Config, profile, storage, ops, and network readiness checks. |
 | `qid-oidc` | OIDC discovery, authorization, userinfo, logout, WebFinger, Shared Signals Framework. |
-| `qid-oauth` | Token, introspection, revocation, device flow, CIBA, DCR, DPoP, mTLS, private_key_jwt, GNAP/token exchange helpers. |
+| `qid-oauth` | Token, introspection, revocation, device flow, CIBA, DCR, DPoP, mTLS, private_key_jwt, token-exchange helpers (GNAP parse/serialize helpers only, not wired). |
 | `qid-session` | Password auth, browser sessions, refresh, WebAuthn/passkeys, TOTP API, email magic link, push MFA. |
 | `qid-mfa` | MFA factor primitives. |
 | `qid-webauthn` | WebAuthn ceremony helpers and tests. |

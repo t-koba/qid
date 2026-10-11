@@ -21,8 +21,8 @@ use qid_core::error::{QidError, QidResult};
 use std::sync::Arc;
 
 use crate::{
-    EapCode, RadiusAttribute, RadiusCode, RadiusPacket, parse_radius_packet,
-    radius_response_authenticator, verify_radius_message_authenticator,
+    EapCode, RadiusCode, RadiusPacket, parse_radius_packet, radius_response_authenticator,
+    verify_radius_message_authenticator,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,14 +223,11 @@ fn decide_radius_response(
     user_name: &str,
     request: &RadiusPacket,
     authorizer: &(dyn Fn(&str, &RadiusPacket<'_>) -> RadiusAccessDecision + Send + Sync),
-) -> (RadiusCode, Vec<RadiusAttribute<'static>>) {
+) -> (RadiusCode, Vec<(u8, Vec<u8>)>) {
     if user_name.is_empty() {
         return (
             RadiusCode::AccessReject,
-            vec![RadiusAttribute {
-                kind: attrs::REPLY_MESSAGE,
-                value: Box::leak(b"missing user-name".to_vec().into_boxed_slice()),
-            }],
+            vec![(attrs::REPLY_MESSAGE, b"missing user-name".to_vec())],
         );
     }
     match authorizer(user_name, request) {
@@ -238,37 +235,26 @@ fn decide_radius_response(
             reply_message,
             session_timeout_seconds,
         } => {
-            let mut attributes: Vec<RadiusAttribute<'static>> = Vec::new();
+            let mut attributes: Vec<(u8, Vec<u8>)> = Vec::new();
             if let Some(timeout) = session_timeout_seconds {
-                attributes.push(RadiusAttribute {
-                    kind: attrs::SESSION_TIMEOUT,
-                    value: Box::leak(timeout.to_string().into_bytes().into_boxed_slice()),
-                });
+                // RFC 2865 §5.27: Session-Timeout is a 4-octet unsigned integer.
+                attributes.push((attrs::SESSION_TIMEOUT, timeout.to_be_bytes().to_vec()));
             }
-            attributes.push(RadiusAttribute {
-                kind: attrs::REPLY_MESSAGE,
-                value: Box::leak(reply_message.into_bytes().into_boxed_slice()),
-            });
+            attributes.push((attrs::REPLY_MESSAGE, reply_message.into_bytes()));
             for attr in &request.attributes {
                 if attr.kind == attrs::EAP_MESSAGE {
                     let identifier = attr.value.get(1).copied().unwrap_or(0);
-                    let eap: &'static [u8] = Box::leak(
-                        vec![EapCode::Success.as_byte(), identifier, 0, 4].into_boxed_slice(),
-                    );
-                    attributes.push(RadiusAttribute {
-                        kind: attrs::EAP_MESSAGE,
-                        value: eap,
-                    });
+                    attributes.push((
+                        attrs::EAP_MESSAGE,
+                        vec![EapCode::Success.as_byte(), identifier, 0, 4],
+                    ));
                 }
             }
             (RadiusCode::AccessAccept, attributes)
         }
         RadiusAccessDecision::Reject { reply_message } => (
             RadiusCode::AccessReject,
-            vec![RadiusAttribute {
-                kind: attrs::REPLY_MESSAGE,
-                value: Box::leak(reply_message.into_bytes().into_boxed_slice()),
-            }],
+            vec![(attrs::REPLY_MESSAGE, reply_message.into_bytes())],
         ),
     }
 }
@@ -276,19 +262,19 @@ fn decide_radius_response(
 fn encode_radius_packet_with_code(
     packet: &RadiusPacket<'_>,
     code: RadiusCode,
-    attributes: Vec<RadiusAttribute<'static>>,
+    attributes: Vec<(u8, Vec<u8>)>,
 ) -> Vec<u8> {
-    let body_len: usize = attributes.iter().map(|attr| attr.value.len() + 2).sum();
+    let body_len: usize = attributes.iter().map(|(_, value)| value.len() + 2).sum();
     let total_len = 20 + body_len;
     let mut buf = Vec::with_capacity(total_len);
     buf.push(code.as_byte());
     buf.push(packet.identifier);
     buf.extend_from_slice(&(total_len as u16).to_be_bytes());
     buf.extend_from_slice(&packet.authenticator);
-    for attr in &attributes {
-        buf.push(attr.kind);
-        buf.push((attr.value.len() + 2) as u8);
-        buf.extend_from_slice(attr.value);
+    for (kind, value) in &attributes {
+        buf.push(*kind);
+        buf.push((value.len() + 2) as u8);
+        buf.extend_from_slice(value);
     }
     buf
 }
@@ -300,7 +286,7 @@ pub fn encode_radius_response(
     identifier: u8,
     request_authenticator: &[u8; 16],
     code: RadiusCode,
-    attributes: Vec<RadiusAttribute<'static>>,
+    attributes: Vec<(u8, Vec<u8>)>,
     shared_secret: &[u8],
 ) -> Vec<u8> {
     let mut buf = encode_radius_packet_with_code(
@@ -345,22 +331,7 @@ fn find_message_authenticator_offset(packet: &[u8]) -> Option<usize> {
     None
 }
 
-pub mod attrs {
-    pub const USER_NAME: u8 = 1;
-    pub const USER_PASSWORD: u8 = 2;
-    pub const CHAP_PASSWORD: u8 = 3;
-    pub const NAS_IP_ADDRESS: u8 = 4;
-    pub const NAS_PORT: u8 = 5;
-    pub const SERVICE_TYPE: u8 = 6;
-    pub const REPLY_MESSAGE: u8 = 18;
-    pub const STATE: u8 = 24;
-    pub const VENDOR_SPECIFIC: u8 = 26;
-    pub const SESSION_TIMEOUT: u8 = 27;
-    pub const CALLED_STATION_ID: u8 = 30;
-    pub const CALLING_STATION_ID: u8 = 31;
-    pub const EAP_MESSAGE: u8 = 79;
-    pub const MESSAGE_AUTHENTICATOR: u8 = 80;
-}
+pub use crate::attrs;
 
 /// Start a RADIUS authentication UDP server. The server runs until
 /// the supplied `shutdown` future resolves.
@@ -526,7 +497,7 @@ mod tests {
                 session_timeout_seconds: Some(3600),
             });
         assert_eq!(code, RadiusCode::AccessReject);
-        assert_eq!(attributes[0].kind, attrs::REPLY_MESSAGE);
+        assert_eq!(attributes[0].0, attrs::REPLY_MESSAGE);
     }
 
     #[test]
@@ -542,7 +513,11 @@ mod tests {
                 reply_message: "not authorized".to_string(),
             });
         assert_eq!(code, RadiusCode::AccessReject);
-        assert!(attributes.iter().any(|a| a.kind == attrs::REPLY_MESSAGE));
+        assert!(
+            attributes
+                .iter()
+                .any(|(kind, _)| *kind == attrs::REPLY_MESSAGE)
+        );
     }
 
     #[test]
@@ -559,6 +534,32 @@ mod tests {
                 session_timeout_seconds: Some(3600),
             });
         assert_eq!(code, RadiusCode::AccessAccept);
-        assert!(attributes.iter().any(|a| a.kind == attrs::SESSION_TIMEOUT));
+        assert!(
+            attributes
+                .iter()
+                .any(|(kind, _)| *kind == attrs::SESSION_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn session_timeout_encodes_as_four_octet_big_endian() {
+        let request = RadiusPacket {
+            code: RadiusCode::AccessRequest,
+            identifier: 1,
+            authenticator: [0u8; 16],
+            attributes: Vec::new(),
+        };
+        let (_, attributes) =
+            decide_radius_response("alice", &request, &|_, _| RadiusAccessDecision::Accept {
+                reply_message: "accepted".to_string(),
+                session_timeout_seconds: Some(3600),
+            });
+        let value = attributes
+            .iter()
+            .find(|(kind, _)| *kind == attrs::SESSION_TIMEOUT)
+            .map(|(_, value)| value.clone())
+            .expect("Session-Timeout present");
+        // RFC 2865 §5.27: 3600 is 0x00000E10, not ASCII "3600".
+        assert_eq!(value, 3600u32.to_be_bytes().to_vec());
     }
 }

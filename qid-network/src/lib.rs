@@ -665,7 +665,8 @@ pub fn parse_nai(input: &str) -> Nai<'_> {
 
 /// RADIUS typed attribute constants from RFC 2865 and RFC 8044.
 ///
-/// These complement the basic constants in `server::attrs`.
+/// Extended attribute numbers beyond the base `attrs` set (re-exported as
+/// `server::attrs` for the response encoder).
 pub mod radius_attrs {
     // RFC 2865 (base attributes)
     pub const USER_NAME: u8 = 1;

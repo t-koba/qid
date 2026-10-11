@@ -45,7 +45,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | configurable `token`, default `/oauth2/token` | Token endpoint. |
-| `POST` | configurable `introspect`, default `/oauth2/introspect` | Token introspection. |
+| `POST` | configurable `introspect`, default `/oauth2/introspect` | Token introspection (RFC 7662). Requires confidential-client authentication before the token is examined; fails closed with 401 when no OAuth resource server authorizes the caller. |
 | `POST` | configurable `revoke`, default `/oauth2/revoke` | Token revocation. |
 | `POST` | configurable `dynamic_client_registration`, default `/oauth2/register` | Dynamic client registration. |
 | `GET, PUT, DELETE` | configurable `dynamic_client_registration_management`, default `/oauth2/register/:client_id` | DCR management. |

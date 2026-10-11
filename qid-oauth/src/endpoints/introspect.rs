@@ -165,6 +165,14 @@ pub async fn introspect<R: Repository>(
         });
     }
 
+    // RFC 7662 section 2.1: the caller must be authenticated before the token
+    // is examined, so valid and invalid tokens share the same unauthenticated
+    // outcome and cannot be used as a scanning oracle.
+    let caller = match authenticate_introspection_client(&state, &headers, &req).await {
+        Ok(caller) => caller,
+        Err(e) => return qid_http::error_response(e),
+    };
+
     let result = decode_access_token(&state, &req.token).await;
     match result {
         Ok(mut decoded) => {
@@ -176,6 +184,11 @@ pub async fn introspect<R: Repository>(
             else {
                 return inactive_response();
             };
+            if caller.realm_id != decoded.realm_id {
+                return qid_http::error_response(QidError::Unauthorized {
+                    message: "unknown introspection client for token realm".to_string(),
+                });
+            }
             let introspection = &realm.protocols.oauth.introspection;
             if !introspection.enabled {
                 return qid_http::error_response(QidError::BadRequest {
@@ -187,50 +200,33 @@ pub async fn introspect<R: Repository>(
                     message: "jwt introspection response is disabled".to_string(),
                 });
             }
-            let caller = if !realm.protocols.oauth.resource_servers.is_empty() {
-                match authenticate_introspection_client(&state, &headers, &req, &decoded.realm_id)
-                    .await
-                {
-                    Ok(caller) => Some(caller),
-                    Err(e) => return qid_http::error_response(e),
-                }
-            } else {
-                None
+            // Fail closed when no resource server authorizes an introspection
+            // caller: the default configuration must not disclose tokens.
+            if realm.protocols.oauth.resource_servers.is_empty() {
+                return qid_http::error_response(QidError::Unauthorized {
+                    message: "introspection is not configured for token realm".to_string(),
+                });
+            }
+            let Some(server) = select_introspection_resource_server(realm, &req, &decoded) else {
+                return inactive_response();
             };
-            if !realm.protocols.oauth.resource_servers.is_empty() {
-                let Some(caller) = caller.as_ref() else {
-                    return qid_http::error_response(QidError::Unauthorized {
-                        message: "introspection client authentication is required".to_string(),
-                    });
-                };
-                let Some(server) = select_introspection_resource_server(realm, &req, &decoded)
-                else {
-                    return inactive_response();
-                };
-                if !server
-                    .introspection_client_ids
-                    .iter()
-                    .any(|client_id| client_id == &caller.client_id)
-                {
-                    return qid_http::error_response(QidError::Unauthorized {
-                        message: "client is not allowed to introspect this resource server"
-                            .to_string(),
-                    });
-                }
-                if !token_targets_resource_server(&decoded, server) {
-                    return inactive_response();
-                }
-                if !filter_decoded_for_resource_server(&mut decoded, server) {
-                    return inactive_response();
-                }
+            if !server
+                .introspection_client_ids
+                .iter()
+                .any(|client_id| client_id == &caller.client_id)
+            {
+                return qid_http::error_response(QidError::Unauthorized {
+                    message: "client is not allowed to introspect this resource server".to_string(),
+                });
+            }
+            if !token_targets_resource_server(&decoded, server) {
+                return inactive_response();
+            }
+            if !filter_decoded_for_resource_server(&mut decoded, server) {
+                return inactive_response();
             }
             let token_introspection = if req.response_format.as_deref() == Some("jwt") {
-                sign_introspection_response(
-                    &state,
-                    &decoded,
-                    caller.as_ref().map(|caller| caller.client_id.as_str()),
-                )
-                .ok()
+                sign_introspection_response(&state, &decoded, Some(caller.client_id.as_str())).ok()
             } else {
                 None
             };
@@ -252,13 +248,13 @@ fn introspection_rate_limit_client_id(
 #[derive(Debug, Clone)]
 struct IntrospectionCaller {
     client_id: String,
+    realm_id: String,
 }
 
 async fn authenticate_introspection_client<R: Repository>(
     state: &SharedState<R>,
     headers: &HeaderMap,
     req: &IntrospectRequest,
-    realm_id: &str,
 ) -> QidResult<IntrospectionCaller> {
     let basic_client_auth = extract_basic_client_auth(headers);
     let (client_id, presented_secret, used_auth_method) = match basic_client_auth.as_ref() {
@@ -282,16 +278,35 @@ async fn authenticate_introspection_client<R: Repository>(
             message: "multiple client authentication methods are not allowed".to_string(),
         });
     }
-    let client = state
-        .repo
-        .get_client_by_client_id(&RealmId::from(realm_id.to_string()), client_id)
-        .await?
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "unknown introspection client for token realm".to_string(),
-        })?;
+    let client = find_introspection_client_across_realms(state, client_id).await?;
     verify_introspection_client_secret(&client, used_auth_method, presented_secret)?;
     Ok(IntrospectionCaller {
         client_id: client.client_id,
+        realm_id: client.realm_id,
+    })
+}
+
+async fn find_introspection_client_across_realms<R: Repository>(
+    state: &SharedState<R>,
+    client_id: &str,
+) -> QidResult<Client> {
+    let mut found = None;
+    for realm in &state.config.realms {
+        if let Some(client) = state
+            .repo
+            .get_client_by_client_id(&RealmId::from(realm.id.clone()), client_id)
+            .await?
+        {
+            if found.is_some() {
+                return Err(QidError::Unauthorized {
+                    message: "introspection client realm is ambiguous".to_string(),
+                });
+            }
+            found = Some(client);
+        }
+    }
+    found.ok_or_else(|| QidError::Unauthorized {
+        message: "unknown introspection client for token realm".to_string(),
     })
 }
 

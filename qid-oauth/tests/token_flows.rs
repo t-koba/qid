@@ -658,14 +658,23 @@ async fn token_exchange_requires_active_access_token_subject() {
 
 #[tokio::test]
 async fn token_exchange_with_actor_token_emits_actor_claim() {
-    let (app, token_path, state) = setup().await;
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://delegated".to_string(),
+        resources: vec!["https://api.example.com/delegated".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
+    let (app, token_path, state) = setup_with_config(config).await;
 
     let subject_request = Request::builder()
         .method(Method::POST)
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdelegated",
         ))
         .unwrap();
     let subject_response = app.clone().oneshot(subject_request).await.unwrap();
@@ -684,7 +693,7 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "grant_type=client_credentials&client_id=introspection-client&client_secret=secret&scope=actor",
+            "grant_type=client_credentials&client_id=introspection-client&client_secret=secret&scope=actor&resource=https%3A%2F%2Fapi.example.com%2Fdelegated",
         ))
         .unwrap();
     let actor_response = app.clone().oneshot(actor_request).await.unwrap();
@@ -733,7 +742,10 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
     assert_eq!(claims.extra["act"]["client_id"], "introspection-client");
     assert_eq!(claims.extra["act"]["scope"], "actor");
 
-    let introspect_body = format!("token={}", urlencoding::encode(exchanged_token));
+    let introspect_body = format!(
+        "token={}&client_id=introspection-client&client_secret=secret",
+        urlencoding::encode(exchanged_token)
+    );
     let introspect_request = Request::builder()
         .method(Method::POST)
         .uri(&state.paths.introspect)
@@ -1091,6 +1103,14 @@ async fn public_client_credentials_grant_is_rejected() {
 async fn dpop_client_credentials_binds_access_token_cnf() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.dpop.enabled = true;
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
     let (app, token_path, state) = setup_with_config(config).await;
     let proof = build_dpop_proof("dpop-proof-token-flow");
     let expected_jkt = qid_oauth::dpop::dpop_jkt_from_proof(&proof).unwrap();
@@ -1101,7 +1121,7 @@ async fn dpop_client_credentials_binds_access_token_cnf() {
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("DPoP", proof)
         .body(Body::from(
-            "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api",
+            "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
         ))
         .unwrap();
 
@@ -1121,7 +1141,10 @@ async fn dpop_client_credentials_binds_access_token_cnf() {
         serde_json::json!({"jkt": expected_jkt})
     );
 
-    let introspect_body = format!("token={}", urlencoding::encode(access_token));
+    let introspect_body = format!(
+        "token={}&client_id=introspection-client&client_secret=secret",
+        urlencoding::encode(access_token)
+    );
     let introspect_request = Request::builder()
         .method(Method::POST)
         .uri(&state.paths.introspect)
@@ -1317,6 +1340,14 @@ async fn mtls_client_credentials_accepts_authenticated_pep_metadata() {
 async fn opaque_client_credentials_token_introspects_and_revokes() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.tokens.access_token_format = TokenFormat::Opaque;
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let request = Request::builder()
@@ -1324,7 +1355,7 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "grant_type=client_credentials&client_id=opaque-client&client_secret=secret&scope=api",
+            "grant_type=client_credentials&client_id=opaque-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
         ))
         .unwrap();
 
@@ -1339,7 +1370,10 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
         "opaque access token must not be a JWT"
     );
 
-    let introspect_body = format!("token={}", urlencoding::encode(access_token));
+    let introspect_body = format!(
+        "token={}&client_id=introspection-client&client_secret=secret",
+        urlencoding::encode(access_token)
+    );
     let introspect_request = Request::builder()
         .method(Method::POST)
         .uri(&state.paths.introspect)
@@ -1377,7 +1411,7 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
         .uri(&state.paths.introspect)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(format!(
-            "token={}",
+            "token={}&client_id=introspection-client&client_secret=secret",
             urlencoding::encode(access_token)
         )))
         .unwrap();
@@ -1395,14 +1429,23 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
 
 #[tokio::test]
 async fn revocation_requires_client_auth_and_preserves_other_client_tokens() {
-    let (app, token_path, state) = setup().await;
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
+    let (app, token_path, state) = setup_with_config(config).await;
 
     let token_request = Request::builder()
         .method(Method::POST)
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
         ))
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
@@ -1445,7 +1488,7 @@ async fn revocation_requires_client_auth_and_preserves_other_client_tokens() {
         .uri(&state.paths.introspect)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(format!(
-            "token={}",
+            "token={}&client_id=introspection-client&client_secret=secret",
             urlencoding::encode(access_token)
         )))
         .unwrap();
@@ -1612,7 +1655,7 @@ async fn jwt_introspection_response_requires_config_flag() {
         .uri(&state.paths.introspect)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(format!(
-            "token={}&response_format=jwt",
+            "token={}&client_id=introspection-client&client_secret=secret&response_format=jwt",
             urlencoding::encode(access_token)
         )))
         .unwrap();
@@ -1624,6 +1667,14 @@ async fn jwt_introspection_response_requires_config_flag() {
 async fn jwt_introspection_response_returns_signed_response_when_enabled() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.introspection.jwt_response = true;
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-jwt-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let request = Request::builder()
@@ -1631,7 +1682,7 @@ async fn jwt_introspection_response_returns_signed_response_when_enabled() {
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "grant_type=client_credentials&client_id=introspection-jwt-client&client_secret=secret&scope=api",
+            "grant_type=client_credentials&client_id=introspection-jwt-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
         ))
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
@@ -1645,7 +1696,7 @@ async fn jwt_introspection_response_returns_signed_response_when_enabled() {
         .uri(&state.paths.introspect)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(format!(
-            "token={}&response_format=jwt",
+            "token={}&client_id=introspection-jwt-client&client_secret=secret&response_format=jwt",
             urlencoding::encode(access_token)
         )))
         .unwrap();
@@ -2859,6 +2910,99 @@ async fn authorization_code_expired_fails() {
         .body(Body::from(body))
         .unwrap();
 
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn introspection_fails_closed_without_resource_servers() {
+    let (app, token_path, state) = setup().await;
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+        ))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let access_token = token_json["access_token"].as_str().unwrap().to_string();
+
+    for body in [
+        format!("token={}", urlencoding::encode(&access_token)),
+        "token=invalid-token-value".to_string(),
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(&state.paths.introspect)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let authenticated_body = format!(
+        "token={}&client_id=service-client&client_secret=secret",
+        urlencoding::encode(&access_token)
+    );
+    let authenticated_request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(authenticated_body))
+        .unwrap();
+    let authenticated_response = app.clone().oneshot(authenticated_request).await.unwrap();
+    assert_eq!(authenticated_response.status(), StatusCode::UNAUTHORIZED);
+
+    let invalid_authenticated_request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(
+            "token=invalid-token-value&client_id=service-client&client_secret=secret",
+        ))
+        .unwrap();
+    let invalid_authenticated_response = app.oneshot(invalid_authenticated_request).await.unwrap();
+    assert_eq!(invalid_authenticated_response.status(), StatusCode::OK);
+    let bytes = invalid_authenticated_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(introspection["active"], false);
+}
+
+#[tokio::test]
+async fn introspection_rejects_unauthenticated_invalid_token_with_resource_servers() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
+    let (app, _, state) = setup_with_config(config).await;
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from("token=invalid-token-value"))
+        .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

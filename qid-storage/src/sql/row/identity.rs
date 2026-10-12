@@ -189,6 +189,12 @@ impl From<AuthCodeRow> for AuthorizationCode {
     }
 }
 
+fn json_string_vec(value: Option<String>) -> Vec<String> {
+    value
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
+}
+
 #[derive(sqlx::FromRow)]
 pub(in crate::sql) struct TokenFamilyRow {
     id: String,
@@ -216,24 +222,12 @@ impl From<TokenFamilyRow> for TokenFamily {
             client_id: row.client_id,
             realm_id: row.realm_id,
             current_refresh_hash: row.current_refresh_hash,
-            scopes: row
-                .scopes
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            scopes: json_string_vec(row.scopes),
             auth_time: row.auth_time.map(|value| value as u64),
             acr: row.acr,
-            amr: row
-                .amr
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
-            audience: row
-                .audience
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
-            resource: row
-                .resource
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            amr: json_string_vec(row.amr),
+            audience: json_string_vec(row.audience),
+            resource: json_string_vec(row.resource),
             authorization_details: row
                 .authorization_details
                 .and_then(|value| serde_json::from_str(&value).ok()),

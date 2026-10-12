@@ -89,12 +89,14 @@ Failure behavior is intentionally split by security impact:
 
 - request ID middleware
 - request metrics
-- CSRF protection
+- CSRF protection (strict for session operations; non-cookie OAuth routes exempt)
 - Content Security Policy
 - TLS 0-RTT rejection
 - HSTS
 - standard security headers
 - configured CORS
+
+CSRF checks reject cross-site state-changing requests with an `Origin`/`Referer`/`Sec-Fetch-Site` mismatch. Non-cookie OAuth routes authenticate with client credentials, bearer tokens, DPoP/mTLS proof, or PKCE rather than the session cookie and are exempt by exact configured `server.paths` match: token, introspection, revocation, PAR, device/CIBA initiation, dynamic client registration (including the concrete `/:client_id` instance), and `/oauth2/challenge`. Device/CIBA approval sub-paths (`.../approve`) and all session, authorize, logout, and admin operations stay fail-closed. A CORS `allowed_origins` entry does not imply CSRF exemption for session routes.
 
 HTTP Message Signatures can wrap signed OAuth and PEP-facing back-channel routes. Public front-channel and metadata routes stay outside that layer by design.
 

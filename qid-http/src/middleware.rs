@@ -3,7 +3,7 @@
 //! Phase 0: request id, trace logging, CORS, CSRF protection, CSP headers, security headers.
 
 use axum::body::{Body, to_bytes};
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
     header::{CONTENT_SECURITY_POLICY, HOST, ORIGIN, REFERER, STRICT_TRANSPORT_SECURITY},
@@ -11,7 +11,7 @@ use axum::http::{
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use qid_core::config::CorsConfig;
+use qid_core::config::{CorsConfig, ServerPaths};
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use tracing::{Instrument, info, warn};
 
@@ -104,6 +104,67 @@ fn cors_headers(config: &CorsConfig) -> AllowHeaders {
 
 pub async fn csrf_protection_layer(req: Request, next: Next) -> Response {
     if is_state_changing_method(req.method()) && is_cross_site_request(req.headers(), req.uri()) {
+        warn!(
+            method = %req.method(),
+            path = %req.uri().path(),
+            "CSRF check rejected cross-site request"
+        );
+        return (StatusCode::FORBIDDEN, "CSRF check failed").into_response();
+    }
+    next.run(req).await
+}
+
+/// Paths that authenticate without the browser session cookie.
+///
+/// Token, introspection, revocation, PAR, device/CIBA initiation, dynamic
+/// client registration, and the RFC 9470 challenge endpoint authenticate with
+/// client credentials, bearer tokens, DPoP/mTLS proof, or PKCE rather than an
+/// ambient cookie. They are designed for cross-origin and back-channel use
+/// (for example the SPA authorization-code/PKCE exchange) and must not be
+/// blocked by the cookie-oriented CSRF check. Every other state-changing
+/// route stays under strict same-origin CSRF protection.
+pub fn is_csrf_exempt_path(path: &str, paths: &ServerPaths) -> bool {
+    if path == paths.token
+        || path == paths.introspect
+        || path == paths.revoke
+        || path == paths.par
+        || path == paths.device_authorization
+        || path == paths.backchannel_authentication
+        || path == paths.dynamic_client_registration
+        || path == "/oauth2/challenge"
+    {
+        return true;
+    }
+    // Dynamic client registration management uses a templated path such as
+    // `/oauth2/register/:client_id`; match the concrete instance.
+    if let Some((prefix, _)) = paths
+        .dynamic_client_registration_management
+        .split_once("/:")
+    {
+        if path == prefix || path.starts_with(&format!("{prefix}/")) {
+            return true;
+        }
+    } else if path == paths.dynamic_client_registration_management {
+        return true;
+    }
+    false
+}
+
+/// CSRF protection that exempts non-cookie OAuth routes.
+///
+/// Wire with `axum::middleware::from_fn_with_state(paths, ..)` so configured
+/// `server.paths` are honoured. Approval sub-paths (`.../approve`) remain
+/// protected because matching is exact, except for the templated dynamic
+/// client registration management route.
+pub async fn csrf_protection_layer_with_server_paths(
+    State(paths): State<ServerPaths>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if is_state_changing_method(req.method())
+        && !is_csrf_exempt_path(req.uri().path(), &paths)
+        && is_cross_site_request(req.headers(), req.uri())
+    {
         warn!(
             method = %req.method(),
             path = %req.uri().path(),
@@ -713,5 +774,210 @@ mod tests {
 
         verify_content_digest_header(&headers, body).unwrap();
         assert!(verify_content_digest_header(&headers, br#"{"ok":false}"#).is_err());
+    }
+
+    #[test]
+    fn csrf_exempt_paths_cover_oauth_backchannel_but_not_approvals_or_sessions() {
+        use qid_core::config::ServerPaths;
+
+        let paths = ServerPaths::default();
+        assert!(is_csrf_exempt_path(&paths.token, &paths));
+        assert!(is_csrf_exempt_path(&paths.introspect, &paths));
+        assert!(is_csrf_exempt_path(&paths.revoke, &paths));
+        assert!(is_csrf_exempt_path(&paths.par, &paths));
+        assert!(is_csrf_exempt_path(&paths.device_authorization, &paths));
+        assert!(is_csrf_exempt_path(
+            &paths.backchannel_authentication,
+            &paths
+        ));
+        assert!(is_csrf_exempt_path(
+            &paths.dynamic_client_registration,
+            &paths
+        ));
+        assert!(is_csrf_exempt_path("/oauth2/challenge", &paths));
+        assert!(is_csrf_exempt_path("/oauth2/register/my-client", &paths));
+
+        let device_approve = format!("{}/approve", paths.device_authorization);
+        assert!(!is_csrf_exempt_path(&device_approve, &paths));
+        let ciba_approve = format!("{}/approve", paths.backchannel_authentication);
+        assert!(!is_csrf_exempt_path(&ciba_approve, &paths));
+
+        assert!(!is_csrf_exempt_path(&paths.auth_session_refresh, &paths));
+        assert!(!is_csrf_exempt_path(&paths.auth_password, &paths));
+        assert!(!is_csrf_exempt_path(&paths.authorize, &paths));
+        assert!(!is_csrf_exempt_path(&paths.logout, &paths));
+
+        let mut custom = paths.clone();
+        custom.token = "/custom/token".to_string();
+        assert!(is_csrf_exempt_path("/custom/token", &custom));
+        assert!(!is_csrf_exempt_path("/oauth2/token", &custom));
+    }
+
+    #[tokio::test]
+    async fn composed_router_allows_spa_token_but_protects_session() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::{HeaderMap, Request, StatusCode};
+        use axum::routing::post;
+        use tower::ServiceExt;
+
+        use qid_core::config::{CorsConfig, ServerPaths};
+
+        // Mirrors config/usecases/01-getting-started/oidc-spa-pkce.yaml CORS.
+        let paths = ServerPaths::default();
+        let cors = CorsConfig {
+            allowed_origins: vec!["https://spa.example.com".to_string()],
+            allowed_methods: vec!["GET".to_string(), "POST".to_string(), "OPTIONS".to_string()],
+            allowed_headers: vec![
+                "authorization".to_string(),
+                "content-type".to_string(),
+                "dpop".to_string(),
+            ],
+            allow_credentials: true,
+        };
+        let token_path = paths.token.clone();
+        let session_template = paths.auth_session_refresh.clone();
+        let session_concrete = session_template.replace(":realm", "customers");
+        let token_uri = format!("https://id.example.com{token_path}");
+        let session_uri = format!("https://id.example.com{session_concrete}");
+
+        // Daemon layer order (inner to outer): CSRF, CSP, 0-RTT, HSTS,
+        // security headers, CORS. Request-ID/metrics/mTLS are omitted here;
+        // they do not affect the CORS/CSRF composition.
+        let app = Router::new()
+            .route(&token_path, post(|| async { "token-ok" }))
+            .route(&session_template, post(|| async { "session-ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                paths.clone(),
+                csrf_protection_layer_with_server_paths,
+            ))
+            .layer(axum::middleware::from_fn(csp_headers_layer))
+            .layer(axum::middleware::from_fn(zero_rtt_rejection_layer))
+            .layer(axum::middleware::from_fn(hsts_layer))
+            .layer(axum::middleware::from_fn(security_headers_middleware))
+            .layer(cors_layer(&cors));
+
+        async fn send(
+            app: Router,
+            method: &str,
+            uri: &str,
+            origin: Option<&str>,
+            extra: &[(&str, &str)],
+        ) -> (StatusCode, HeaderMap) {
+            let mut builder = Request::builder().method(method).uri(uri);
+            builder = builder.header("host", "id.example.com");
+            if let Some(origin) = origin {
+                builder = builder.header("origin", origin);
+            }
+            for (name, value) in extra {
+                builder = builder.header(*name, *value);
+            }
+            let req = builder.body(Body::empty()).unwrap();
+            let res = app.oneshot(req).await.unwrap();
+            (res.status(), res.headers().clone())
+        }
+
+        fn allow_origin(headers: &HeaderMap) -> Option<String> {
+            headers
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok())
+                .map(ToOwned::to_owned)
+        }
+
+        // Preflight from the configured SPA origin succeeds with ACAO.
+        let (status, headers) = send(
+            app.clone(),
+            "OPTIONS",
+            &token_uri,
+            Some("https://spa.example.com"),
+            &[
+                ("access-control-request-method", "POST"),
+                ("access-control-request-headers", "content-type"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            allow_origin(&headers).as_deref(),
+            Some("https://spa.example.com")
+        );
+
+        // Configured SPA origin reaches the token handler with ACAO.
+        let (status, headers) = send(
+            app.clone(),
+            "POST",
+            &token_uri,
+            Some("https://spa.example.com"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            allow_origin(&headers).as_deref(),
+            Some("https://spa.example.com")
+        );
+
+        // Denied origin still reaches the token handler (no cookie to protect)
+        // but CORS withholds ACAO so the browser blocks the read.
+        let (status, headers) = send(
+            app.clone(),
+            "POST",
+            &token_uri,
+            Some("https://evil.example.com"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(allow_origin(&headers).is_none());
+
+        // Same-origin and machine token posts succeed.
+        let (status, _) = send(
+            app.clone(),
+            "POST",
+            &token_uri,
+            Some("https://id.example.com"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(app.clone(), "POST", &token_uri, None, &[]).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Session operations stay fail-closed even for the allowed CORS origin.
+        let (status, headers) = send(
+            app.clone(),
+            "POST",
+            &session_uri,
+            Some("https://spa.example.com"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            allow_origin(&headers).as_deref(),
+            Some("https://spa.example.com")
+        );
+
+        // Denied session origin is also forbidden.
+        let (status, _) = send(
+            app.clone(),
+            "POST",
+            &session_uri,
+            Some("https://evil.example.com"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Same-origin session post reaches the handler.
+        let (status, _) = send(
+            app.clone(),
+            "POST",
+            &session_uri,
+            Some("https://id.example.com"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
     }
 }

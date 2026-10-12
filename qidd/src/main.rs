@@ -296,7 +296,10 @@ async fn main() -> anyhow::Result<()> {
     let app = app
         .layer(axum::middleware::from_fn(request_id_layer))
         .layer(axum::middleware::from_fn(http_metrics_layer))
-        .layer(axum::middleware::from_fn(qid_http::csrf_protection_layer))
+        .layer(axum::middleware::from_fn_with_state(
+            config.server.paths.clone(),
+            qid_http::csrf_protection_layer_with_server_paths,
+        ))
         .layer(axum::middleware::from_fn(qid_http::csp_headers_layer))
         .layer(axum::middleware::from_fn(
             qid_http::zero_rtt_rejection_layer,

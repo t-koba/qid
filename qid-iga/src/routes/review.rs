@@ -205,9 +205,8 @@ pub(super) async fn create_access_review_decision<R: Repository>(
         reason: req.reason,
         decided_at_epoch_seconds: now_seconds(),
     };
-    if let Err(error) = state.repo.store_iga_access_review_decision(&record).await {
-        return storage_error_response("store_iga_access_review_decision", error);
-    }
+    // Effects first: a recorded revoke must imply applied revocation. Revoking
+    // only touches active grants, so retrying after a failure converges.
     let revoked_grants = if matches!(req.decision, AccessReviewDecision::Revoke) {
         match revoke_active_grants_for_subject_entitlements(
             &state,
@@ -223,6 +222,9 @@ pub(super) async fn create_access_review_decision<R: Repository>(
     } else {
         Vec::new()
     };
+    if let Err(error) = state.repo.store_iga_access_review_decision(&record).await {
+        return storage_error_response("store_iga_access_review_decision", error);
+    }
     Json(serde_json::json!({
         "tenant_id": tenant_id,
         "decision": record,
@@ -363,9 +365,8 @@ pub(super) async fn create_certification<R: Repository>(
         evidence_json: req.evidence_json,
         decided_at_epoch_seconds: now_seconds(),
     };
-    if let Err(error) = state.repo.store_iga_certification(&record).await {
-        return storage_error_response("store_iga_certification", error);
-    }
+    // Effects first, mirroring the campaign decision path: record only after
+    // the revocation effects have applied.
     let revoked_grants = if matches!(req.decision, AccessReviewDecision::Revoke) {
         match revoke_active_grants_for_subject_entitlements(
             &state,
@@ -381,6 +382,9 @@ pub(super) async fn create_certification<R: Repository>(
     } else {
         Vec::new()
     };
+    if let Err(error) = state.repo.store_iga_certification(&record).await {
+        return storage_error_response("store_iga_certification", error);
+    }
     Json(serde_json::json!({
         "tenant_id": tenant_id,
         "certification": record,

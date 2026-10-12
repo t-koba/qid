@@ -1929,3 +1929,86 @@ async fn access_review_route_rejects_unrepresentable_due_time() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn access_review_revoke_decision_retry_converges_without_new_effects() {
+    let (app, repo, session_id) = setup_with_repo().await;
+    let now = qid_core::util::now_seconds();
+    repo.store_iga_access_grant(&IgaAccessGrantRecord {
+        id: "retry-grant-1".to_string(),
+        tenant_id: "test".to_string(),
+        request_id: "retry-request-1".to_string(),
+        subject: "user-9".to_string(),
+        entitlement: "app:erp:read".to_string(),
+        granted_at_epoch_seconds: now,
+        expires_at_epoch_seconds: Some(now + 3600),
+        approval_ids: vec![],
+        revoked: false,
+    })
+    .await
+    .expect("store retry grant failed");
+
+    let campaign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/iga/v1/access-reviews")
+                .header("Content-Type", "application/json")
+                .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                .body(Body::from(r#"{"reviewer":"auditor-1"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(campaign_response.status(), StatusCode::OK);
+    let campaign_body = json(campaign_response).await;
+    let campaign_id = campaign_body["id"].as_str().unwrap().to_string();
+
+    let decide = |app: Router| {
+        let campaign_id = campaign_id.clone();
+        let session_id = session_id.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/iga/v1/access-reviews/{campaign_id}/decisions"))
+                    .header("Content-Type", "application/json")
+                    .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                    .body(Body::from(
+                        r#"{"subject":"user-9","decision":"revoke","reason":"retry probe"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    let first = decide(app.clone()).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = json(first).await;
+    assert_eq!(first_body["decision"]["decision"], "revoke");
+    assert_eq!(
+        first_body["revoked_grants"].as_array().unwrap().len(),
+        1,
+        "first revoke applies the effect before recording"
+    );
+
+    // Retrying the same revoke must be a harmless no-op on grants while still
+    // recording the (duplicate) decision: effects-first keeps retries safe.
+    let second = decide(app.clone()).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = json(second).await;
+    assert!(
+        second_body["revoked_grants"].as_array().unwrap().is_empty(),
+        "retry must find no active grants left to revoke"
+    );
+
+    let grants = repo
+        .list_iga_access_grants("test", Some("user-9"))
+        .await
+        .expect("list retry grants failed");
+    assert_eq!(grants.len(), 1);
+    assert!(grants[0].revoked);
+}

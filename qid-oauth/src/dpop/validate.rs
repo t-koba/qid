@@ -32,7 +32,7 @@ pub fn validate_dpop_proof(
     let claims = validate_dpop_proof_claims(dpop_proof, expected_htm, expected_htu)?;
     if let Some(required_nonce) = required_nonce {
         if claims.nonce.as_deref() != Some(required_nonce) {
-            return Err(QidError::BadRequest {
+            return Err(QidError::DpopNonce {
                 message: "DPoP proof nonce mismatch".to_string(),
             });
         }
@@ -55,7 +55,7 @@ pub fn validate_dpop_proof_with_cache<T: RedisLikeTransport>(
     if let Some(required_nonce) = required_nonce
         && claims.nonce.as_deref() != Some(required_nonce)
     {
-        return Err(QidError::BadRequest {
+        return Err(QidError::DpopNonce {
             message: "DPoP proof nonce mismatch".to_string(),
         });
     }

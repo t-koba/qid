@@ -36,6 +36,7 @@ pub enum ErrorCode {
     ExpiredToken,
     InvalidTarget,
     RequestNotSupported,
+    UseDpopNonce,
 }
 
 impl ErrorCode {
@@ -64,6 +65,7 @@ impl ErrorCode {
             Self::ExpiredToken => "expired_token",
             Self::InvalidTarget => "invalid_target",
             Self::RequestNotSupported => "request_not_supported",
+            Self::UseDpopNonce => "use_dpop_nonce",
         }
     }
 }
@@ -88,6 +90,8 @@ pub enum QidError {
     TooManyRequests { message: String },
     #[error("conflict: {message}")]
     Conflict { message: String },
+    #[error("bad request: {message}")]
+    DpopNonce { message: String },
 }
 
 impl QidError {
@@ -110,6 +114,7 @@ impl QidError {
             QidError::Internal { .. } => ErrorCode::ServerError,
             QidError::TooManyRequests { .. } => ErrorCode::TooManyRequests,
             QidError::Conflict { .. } => ErrorCode::Conflict,
+            QidError::DpopNonce { .. } => ErrorCode::UseDpopNonce,
         }
     }
 
@@ -128,6 +133,7 @@ impl QidError {
             QidError::Internal { .. } => 500,
             QidError::TooManyRequests { .. } => 429,
             QidError::Conflict { .. } => 409,
+            QidError::DpopNonce { .. } => 400,
         }
     }
 }

@@ -1406,6 +1406,46 @@ async fn dpop_nonce_challenge_requires_nonce_retry() {
         .expect("DPoP nonce challenge header should be present")
         .to_string();
     assert!(nonce.starts_with("dpop_nonce_"));
+    let first_json = json_body(first_response).await;
+    assert_eq!(first_json["error"], "use_dpop_nonce");
+    assert!(first_json["error_description"].is_string());
+
+    // A non-nonce failure in a nonce realm keeps its own error category.
+    let wrong_secret_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header(
+            "DPoP",
+            build_dpop_proof_with_nonce("dpop-nonce-wrong-secret", Some(&nonce)),
+        )
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=dpop-client&client_secret=wrong&scope=api",
+        ))
+        .unwrap();
+    let wrong_secret_response = app.clone().oneshot(wrong_secret_request).await.unwrap();
+    assert_eq!(wrong_secret_response.status(), StatusCode::UNAUTHORIZED);
+    let wrong_secret_json = json_body(wrong_secret_response).await;
+    assert_ne!(wrong_secret_json["error"], "use_dpop_nonce");
+
+    // The wrong-secret attempt consumed the first nonce; take a fresh one.
+    let second_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", build_dpop_proof("dpop-nonce-second"))
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api",
+        ))
+        .unwrap();
+    let second_response = app.clone().oneshot(second_request).await.unwrap();
+    assert_eq!(second_response.status(), StatusCode::BAD_REQUEST);
+    let nonce = second_response
+        .headers()
+        .get("DPoP-Nonce")
+        .and_then(|value| value.to_str().ok())
+        .expect("second DPoP nonce challenge header should be present")
+        .to_string();
 
     let proof = build_dpop_proof_with_nonce("dpop-nonce-retry", Some(&nonce));
     let retry_request = Request::builder()
@@ -1429,12 +1469,35 @@ async fn dpop_nonce_challenge_requires_nonce_retry() {
             "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api",
         ))
         .unwrap();
-    let replay_response = app.oneshot(replay_request).await.unwrap();
+    let replay_response = app.clone().oneshot(replay_request).await.unwrap();
     assert_eq!(replay_response.status(), StatusCode::BAD_REQUEST);
     assert!(
         replay_response.headers().get("DPoP-Nonce").is_some(),
         "nonce replay failure should return a fresh challenge"
     );
+    let replay_json = json_body(replay_response).await;
+    assert_eq!(replay_json["error"], "use_dpop_nonce");
+    assert!(replay_json["error_description"].is_string());
+
+    // First challenge body carries the standard code plus the diagnostic text.
+    let unknown_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header(
+            "DPoP",
+            build_dpop_proof_with_nonce("dpop-nonce-unknown", Some("dpop_nonce_bogus")),
+        )
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api",
+        ))
+        .unwrap();
+    let unknown_response = app.oneshot(unknown_request).await.unwrap();
+    assert_eq!(unknown_response.status(), StatusCode::BAD_REQUEST);
+    assert!(unknown_response.headers().get("DPoP-Nonce").is_some());
+    let unknown_json = json_body(unknown_response).await;
+    assert_eq!(unknown_json["error"], "use_dpop_nonce");
+    assert!(unknown_json["error_description"].is_string());
 }
 
 #[tokio::test]

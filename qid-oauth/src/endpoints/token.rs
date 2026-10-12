@@ -252,7 +252,7 @@ fn required_dpop_nonce_for_realm(
         return Ok(None);
     }
     let nonce =
-        crate::dpop::dpop_nonce_from_proof(dpop_proof)?.ok_or_else(|| QidError::BadRequest {
+        crate::dpop::dpop_nonce_from_proof(dpop_proof)?.ok_or_else(|| QidError::DpopNonce {
             message: "DPoP proof nonce is required".to_string(),
         })?;
     Ok(Some(nonce))

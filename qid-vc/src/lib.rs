@@ -191,6 +191,7 @@ pub(crate) fn oauth_error_code(error: &QidError) -> &'static str {
     match error {
         QidError::Unauthorized { .. } => "invalid_token",
         QidError::BadRequest { .. } => "invalid_request",
+        QidError::DpopNonce { .. } => "use_dpop_nonce",
         QidError::NotFound { .. } => "invalid_request",
         QidError::Config { .. }
         | QidError::Crypto { .. }

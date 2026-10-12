@@ -258,7 +258,7 @@ impl DpopState {
     pub fn consume_nonce(&self, nonce: &str, now: u64) -> QidResult<()> {
         let key = format!("{}:{nonce}", self.nonce_namespace);
         let Some(issued_at_bytes) = self.cache.get(&key) else {
-            return Err(QidError::BadRequest {
+            return Err(QidError::DpopNonce {
                 message: "DPoP proof nonce is missing, expired, or already used".to_string(),
             });
         };
@@ -270,7 +270,7 @@ impl DpopState {
                 message: "DPoP nonce cache entry is invalid".to_string(),
             })?;
         if now.saturating_sub(issued_at) >= NONCE_CACHE_TTL_SECS {
-            return Err(QidError::BadRequest {
+            return Err(QidError::DpopNonce {
                 message: "DPoP proof nonce is expired".to_string(),
             });
         }

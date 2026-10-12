@@ -119,11 +119,22 @@ pub fn oauth_error_response_with_description(
 }
 
 /// Attach a DPoP-Nonce challenge header to an OAuth error response.
+///
+/// Structured DPoP nonce failures (RFC 9449 section 8) keep HTTP 400 with
+/// `error` set to `use_dpop_nonce` and the diagnostic text moved to
+/// `error_description`; any other failure keeps its own error category.
 pub fn dpop_nonce_error_response(
     err: qid_core::QidError,
     nonce: Option<&str>,
 ) -> axum::response::Response {
-    let mut response = error_response(err);
+    let mut response = match &err {
+        qid_core::QidError::DpopNonce { message } => oauth_error_response_with_description(
+            StatusCode::BAD_REQUEST,
+            "use_dpop_nonce",
+            message,
+        ),
+        _ => error_response(err),
+    };
     if let Some(nonce) = nonce.and_then(|nonce| HeaderValue::from_str(nonce).ok()) {
         response.headers_mut().insert("DPoP-Nonce", nonce);
     }

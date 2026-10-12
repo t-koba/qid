@@ -2017,6 +2017,9 @@ async fn refresh_rejects_cross_client_caller_without_consuming() {
         Vec::new(),
     )
     .await;
+    let mut foreign = client_credentials_client("foreign-refresh-client", "client_secret_post");
+    foreign.grant_types = vec!["refresh_token".to_string()];
+    state.repo.create_client(&foreign).await.unwrap();
 
     let token_request = Request::builder()
         .method(Method::POST)
@@ -2039,13 +2042,14 @@ async fn refresh_rejects_cross_client_caller_without_consuming() {
     let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let owner_refresh = token_json["refresh_token"].as_str().unwrap().to_string();
 
-    // Foreign confidential caller by form credentials must fail.
+    // Grant-authorized foreign caller by form credentials must fail without
+    // consuming: the owner retry below would otherwise hit reuse detection.
     let foreign_form = Request::builder()
         .method(Method::POST)
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(format!(
-            "grant_type=refresh_token&client_id=service-client&client_secret=secret&refresh_token={}",
+            "grant_type=refresh_token&client_id=foreign-refresh-client&client_secret=secret&refresh_token={}",
             urlencoding::encode(&owner_refresh)
         )))
         .unwrap();
@@ -2053,7 +2057,7 @@ async fn refresh_rejects_cross_client_caller_without_consuming() {
     assert_eq!(foreign_form_response.status(), StatusCode::UNAUTHORIZED);
 
     // Basic selection must win over a spoofed form client_id.
-    let basic = base64::engine::general_purpose::STANDARD.encode("service-client:secret");
+    let basic = base64::engine::general_purpose::STANDARD.encode("foreign-refresh-client:secret");
     let foreign_basic = Request::builder()
         .method(Method::POST)
         .uri(&token_path)

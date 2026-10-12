@@ -376,3 +376,30 @@ fn pep_decision_ttl_matches_decision_cache_policy() {
     assert_eq!(pep_decision_ttl_ms(&Decision::StepUp), 5_000);
     assert_eq!(pep_decision_ttl_ms(&Decision::ApprovalRequired), 5_000);
 }
+
+fn rebac_test_config() -> QidConfig {
+    serde_json::from_value(serde_json::json!({
+        "server": {"listen": "127.0.0.1:1", "public_base_url": "https://proxy.example.com"},
+        "realms": [
+            {"id": "realm-a", "issuer": "https://proxy.example.com/realm-a", "tenant_id": "tenant-a"},
+            {"id": "realm-b", "issuer": "https://proxy.example.com/realm-b"}
+        ]
+    }))
+    .expect("test config must deserialize")
+}
+
+#[test]
+fn rebac_scope_prefers_realm_tenant() {
+    let config = rebac_test_config();
+    assert_eq!(rebac_scope_for_realm(&config, "realm-a"), "tenant-a");
+}
+
+#[test]
+fn rebac_scope_falls_back_to_realm_without_tenant() {
+    let config = rebac_test_config();
+    assert_eq!(rebac_scope_for_realm(&config, "realm-b"), "realm-b");
+    assert_eq!(
+        rebac_scope_for_realm(&config, "unknown-realm"),
+        "unknown-realm"
+    );
+}

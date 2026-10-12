@@ -21,6 +21,7 @@ qid-observability = { workspace = true }
 qid-oauth = { workspace = true }
 qid-ops = { workspace = true }
 metrics = { workspace = true }
+qid-iga = { workspace = true }
 qid-policy = { workspace = true }
 qid-risk = { workspace = true }
 qid-session = { workspace = true }

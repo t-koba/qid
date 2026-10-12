@@ -13,8 +13,9 @@ pub use engine::{
     evaluate_access_request, issue_time_bound_access_grant, validate_access_request_approvals,
 };
 pub use rebac::{
-    CheckResult, RebacEvaluatorBridge, check as rebac_check, check_batch, delete_tuples,
-    expand as rebac_expand, rebac_evaluator_from_repo, write_tuples,
+    CheckResult, RebacEvaluatorBridge, TenantScopedRebacEvaluator, check as rebac_check,
+    check_batch, delete_tuples, expand as rebac_expand, rebac_evaluator_from_repo,
+    tenant_scoped_rebac_evaluator, write_tuples,
 };
 pub use routes::iga_routes;
 

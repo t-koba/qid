@@ -8,7 +8,7 @@ use axum::{
     routing::post,
 };
 use qid_core::{
-    config::ServerPaths,
+    config::{QidConfig, ServerPaths},
     error::{QidError, QidResult},
     state::SharedState,
 };
@@ -1272,6 +1272,18 @@ mod decision;
 
 use decision::*;
 pub use decision::{pep_decision_cache_key, pep_decision_cache_put, pep_decision_ttl_ms};
+/// Tenant scope for ReBAC namespaces in policy decisions: the realm's tenant
+/// when configured, otherwise the realm itself. The fallback matches nothing
+/// the tenant-scoped admin API wrote, keeping relationship checks fail-closed.
+fn rebac_scope_for_realm(config: &QidConfig, realm_id: &str) -> String {
+    config
+        .realms
+        .iter()
+        .find(|realm| realm.id == realm_id)
+        .and_then(|realm| realm.tenant_id.clone())
+        .unwrap_or_else(|| realm_id.to_string())
+}
+
 async fn load_policy_engine<R: Repository>(
     state: &SharedState<R>,
     realm_id: &str,
@@ -1285,7 +1297,12 @@ async fn load_policy_engine<R: Repository>(
             if let Ok(policy_bundle) =
                 serde_json::from_value::<qid_policy::PolicyBundle>(compiled_json.clone())
             {
-                let mut engine = NativePolicyEngine::new();
+                let mut engine = NativePolicyEngine::new().with_rebac_evaluator(
+                    qid_iga::tenant_scoped_rebac_evaluator(
+                        state.repo.clone(),
+                        &rebac_scope_for_realm(&state.config, realm_id),
+                    ),
+                );
                 engine.load(policy_bundle, name.clone());
                 return Ok(engine);
             }
@@ -1294,7 +1311,11 @@ async fn load_policy_engine<R: Repository>(
     }
 
     // Cold path: load from DB and cache
-    let mut engine = NativePolicyEngine::new();
+    let mut engine =
+        NativePolicyEngine::new().with_rebac_evaluator(qid_iga::tenant_scoped_rebac_evaluator(
+            state.repo.clone(),
+            &rebac_scope_for_realm(&state.config, realm_id),
+        ));
 
     if let Some(bundle) = state
         .repo

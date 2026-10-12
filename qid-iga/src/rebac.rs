@@ -153,7 +153,7 @@ pub async fn expand<R: RebacRepository>(
                     t.subject_id.clone(),
                     t.subject_relation.clone(),
                 );
-                if let Some(grand_children) = node_cache.remove(&sub_key) {
+                if let Some(grand_children) = node_cache.get(&sub_key).cloned() {
                     if grand_children.is_empty() {
                         children.push(ExpandNode::Leaf {
                             namespace: t.subject_namespace.clone(),
@@ -287,6 +287,67 @@ pub fn rebac_evaluator_from_repo<R: RebacRepository + Send + Sync + 'static>(
     repo: R,
 ) -> Arc<dyn RebacEvaluator> {
     Arc::new(RebacEvaluatorBridge::new(repo))
+}
+
+/// ReBAC evaluator applying the same `{tenant_id}::{namespace}` scoping as the
+/// admin ReBAC API, so policy rules keep using unscoped namespaces while only
+/// matching tuples written through the tenant-scoped API.
+#[derive(Clone)]
+pub struct TenantScopedRebacEvaluator<R> {
+    repo: Arc<R>,
+    tenant_id: String,
+}
+
+impl<R> TenantScopedRebacEvaluator<R> {
+    pub fn new(repo: Arc<R>, tenant_id: &str) -> Self {
+        Self {
+            repo,
+            tenant_id: tenant_id.to_string(),
+        }
+    }
+
+    fn scoped(&self, namespace: &str) -> String {
+        let prefix = format!("{}::", self.tenant_id);
+        if namespace.starts_with(&prefix) {
+            namespace.to_string()
+        } else {
+            format!("{prefix}{namespace}")
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<R> RebacEvaluator for TenantScopedRebacEvaluator<R>
+where
+    R: RebacRepository + Send + Sync + 'static,
+{
+    async fn check(
+        &self,
+        namespace: &str,
+        object_id: &str,
+        relation: &str,
+        subject_namespace: &str,
+        subject_id: &str,
+    ) -> bool {
+        crate::rebac::check(
+            &*self.repo,
+            &self.scoped(namespace),
+            object_id,
+            relation,
+            &self.scoped(subject_namespace),
+            subject_id,
+        )
+        .await
+        .unwrap_or(false)
+    }
+}
+
+/// Build a tenant-scoped `RebacEvaluator` over a shared repository handle.
+pub fn tenant_scoped_rebac_evaluator<R: RebacRepository + Send + Sync + 'static>(
+    repo: Arc<R>,
+    tenant_id: &str,
+) -> Arc<dyn RebacEvaluator> {
+    Arc::new(TenantScopedRebacEvaluator::new(repo, tenant_id))
 }
 
 #[cfg(test)]
@@ -660,5 +721,114 @@ mod tests {
             }
             _ => panic!("expected nested branch"),
         }
+    }
+
+    fn count_alice_leaves(node: &ExpandNode) -> usize {
+        match node {
+            ExpandNode::Leaf { subject_id, .. } => usize::from(subject_id == "alice"),
+            ExpandNode::Branch { children, .. } => children.iter().map(count_alice_leaves).sum(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_expand_shared_child_appears_under_every_parent() {
+        let (repo, _dir) = make_repo().await;
+        insert(
+            &repo,
+            userset("group", "root", "member", "group", "a", "member"),
+        )
+        .await;
+        insert(
+            &repo,
+            userset("group", "root", "member", "group", "b", "member"),
+        )
+        .await;
+        insert(
+            &repo,
+            userset("group", "a", "member", "group", "shared", "member"),
+        )
+        .await;
+        insert(
+            &repo,
+            userset("group", "b", "member", "group", "shared", "member"),
+        )
+        .await;
+        insert(&repo, direct("group", "shared", "member", "user", "alice")).await;
+
+        let tree = expand(&repo, "group", "root", "member").await.unwrap();
+        let ExpandNode::Branch { children, .. } = &tree else {
+            panic!("expected branch");
+        };
+        assert_eq!(children.len(), 2);
+        for child in children {
+            let ExpandNode::Branch {
+                children: inner, ..
+            } = child
+            else {
+                panic!("expected every parent to keep its shared branch");
+            };
+            assert_eq!(inner.len(), 1);
+        }
+        assert_eq!(count_alice_leaves(&tree), 2);
+    }
+
+    #[tokio::test]
+    async fn test_expand_cyclic_membership_terminates() {
+        let (repo, _dir) = make_repo().await;
+        insert(&repo, direct("group", "cycle-a", "member", "user", "alice")).await;
+        insert(
+            &repo,
+            userset("group", "cycle-a", "member", "group", "cycle-b", "member"),
+        )
+        .await;
+        insert(
+            &repo,
+            userset("group", "cycle-b", "member", "group", "cycle-a", "member"),
+        )
+        .await;
+
+        let tree = expand(&repo, "group", "cycle-a", "member").await.unwrap();
+        assert!(count_alice_leaves(&tree) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_tenant_scoped_evaluator_matches_only_its_tenant() {
+        let (repo, _dir) = make_repo().await;
+        insert(
+            &repo,
+            direct(
+                "tenant-a::document",
+                "doc-1",
+                "viewer",
+                "tenant-a::user",
+                "alice",
+            ),
+        )
+        .await;
+
+        let repo = std::sync::Arc::new(repo);
+        let same_tenant = tenant_scoped_rebac_evaluator(repo.clone(), "tenant-a");
+        assert!(
+            same_tenant
+                .check("document", "doc-1", "viewer", "user", "alice")
+                .await
+        );
+        assert!(
+            same_tenant
+                .check(
+                    "tenant-a::document",
+                    "doc-1",
+                    "viewer",
+                    "tenant-a::user",
+                    "alice"
+                )
+                .await
+        );
+        let other_tenant = tenant_scoped_rebac_evaluator(repo, "tenant-b");
+        assert!(
+            !other_tenant
+                .check("document", "doc-1", "viewer", "user", "alice")
+                .await
+        );
     }
 }

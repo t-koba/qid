@@ -3710,6 +3710,7 @@ dependencies = [
  "qid-core",
  "qid-crypto",
  "qid-http",
+ "qid-iga",
  "qid-oauth",
  "qid-observability",
  "qid-ops",

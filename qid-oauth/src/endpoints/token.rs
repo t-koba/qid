@@ -687,10 +687,9 @@ fn validate_jwt_bearer_assertion<R: Repository>(
     Ok(ValidatedJwtBearerAssertion {
         subject,
         issuer: Some(assertion_issuer),
-        auth_time: claims
-            .get("iat")
-            .and_then(|value| value.as_u64())
-            .or(Some(now)),
+        // iat marks assertion issuance, never user authentication: only an
+        // explicit signed auth_time is preserved, otherwise it stays omitted.
+        auth_time: claims.get("auth_time").and_then(|value| value.as_u64()),
         acr,
         amr,
         cnf,

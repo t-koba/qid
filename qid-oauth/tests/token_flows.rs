@@ -68,6 +68,22 @@ async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> St
         .to_string()
 }
 
+fn decode_claims(state: &Arc<SharedState<SqlRepository>>, token: &str) -> JwtClaims {
+    state.signer.decode_signature_only(token).unwrap().claims
+}
+
+async fn post_token_json(app: Router, token_path: &str, form_body: String) -> serde_json::Value {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(form_body))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await
+}
+
 async fn post_token_status(app: Router, token_path: &str, form_body: String) -> StatusCode {
     let request = Request::builder()
         .method(Method::POST)
@@ -374,7 +390,7 @@ fn token_exchange_client(client_id: &str) -> Client {
         token_endpoint_auth_method: "client_secret_post".to_string(),
         client_secret_hash: Some(qid_core::util::client_secret_hash("secret")),
         mtls_certificate_thumbprints: Vec::new(),
-        jwks: qid_core::models::default_client_jwks(),
+        jwks: private_key_jwt_jwks(),
         redirect_uris: Vec::new(),
         grant_types: vec!["urn:ietf:params:oauth:grant-type:token-exchange".to_string()],
         client_name: None,
@@ -509,8 +525,7 @@ async fn client_credentials_grant_succeeds() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     assert_eq!(json["token_type"], "Bearer");
     assert!(json["access_token"].as_str().unwrap().len() > 10);
     assert_eq!(json["scope"], "api");
@@ -709,11 +724,7 @@ async fn token_exchange_requires_active_access_token_subject() {
     let exchange_json = json_body(exchange_response).await;
     assert_eq!(exchange_json["token_type"], "DPoP");
     let exchanged_token = exchange_json["access_token"].as_str().unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(exchanged_token)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, exchanged_token);
     assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
     assert_eq!(claims.aud.as_deref(), Some("api://payments"));
     assert_eq!(claims.extra["client_id"], "exchange-client");
@@ -784,11 +795,7 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         "urn:ietf:params:oauth:token-type:access_token"
     );
     let exchanged_token = exchange_json["access_token"].as_str().unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(exchanged_token)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, exchanged_token);
     assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
     assert_eq!(claims.extra["act"]["sub"], "service:introspection-client");
     assert_eq!(claims.extra["act"]["client_id"], "introspection-client");
@@ -909,13 +916,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
     assert_eq!(status, StatusCode::OK);
 
     // Rejected inputs stay live: neither foreign record was revoked.
-    let foreign_jwt_jti = state
-        .signer
-        .decode_signature_only(&foreign_jwt)
-        .unwrap()
-        .claims
-        .jti
-        .unwrap();
+    let foreign_jwt_jti = decode_claims(&state, &foreign_jwt).jti.unwrap();
     for jti in [
         foreign_jwt_jti,
         foreign_opaque.strip_prefix("oat_").unwrap().to_string(),
@@ -970,6 +971,82 @@ async fn client_credentials_rejects_scope_outside_any_target_ceiling() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn jwt_bearer_preserves_explicit_auth_time_and_omits_otherwise() {
+    // RFC 7523 section 3: iat marks assertion issuance, never the
+    // authentication event, so only an explicit auth_time is preserved.
+    let (app, token_path, state) = setup().await;
+    let now = util::now_seconds();
+    let token_url = format!("https://id.example.com{token_path}");
+    let (private_pem, jwk) = dpop_private_pem_and_jwk();
+    let assertion = |iss: &str, jti: &str, iat: Option<u64>, auth_time: Option<u64>| {
+        let mut payload = serde_json::json!({
+            "iss": iss,
+            "sub": "workload-123",
+            "aud": token_url,
+            "exp": now + 300,
+            "jti": jti,
+        });
+        if let Some(iat) = iat {
+            payload["iat"] = serde_json::json!(iat);
+        }
+        if let Some(auth_time) = auth_time {
+            payload["auth_time"] = serde_json::json!(auth_time);
+        }
+        sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "JWT", &payload).unwrap()
+    };
+    let token_for = |assertion: String| {
+        post_token_json(
+            app.clone(),
+            &token_path,
+            format!(
+                "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&client_id=jwt-bearer-client&client_secret=secret&assertion={}&audience=api://workload&scope=workload",
+                urlencoding::encode(&assertion)
+            ),
+        )
+    };
+    // Recent issuance with an hour-old authentication preserves the old time.
+    let json = token_for(assertion(
+        "jwt-bearer-client",
+        "auth-time-old",
+        Some(now),
+        Some(now - 3600),
+    ))
+    .await;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.extra["auth_time"], serde_json::json!(now - 3600));
+    // Present iat without auth_time, and neither claim, both omit auth_time.
+    for (jti, iat) in [
+        ("auth-time-no-time", Some(now)),
+        ("auth-time-no-claims", None),
+    ] {
+        let json = token_for(assertion("jwt-bearer-client", jti, iat, None)).await;
+        let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+        assert!(
+            !claims.extra.contains_key("auth_time"),
+            "{jti} must omit auth_time"
+        );
+    }
+    // The shared JWT-as-subject exchange path preserves it the same way.
+    let exchange_assertion = assertion(
+        "exchange-client",
+        "auth-time-exchange",
+        Some(now),
+        Some(now - 3600),
+    );
+    let json = post_token_json(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:jwt&subject_token={}&audience=api://payments&resource=https%3A%2F%2Fapi.example.com%2Fpayments&scope=payments",
+            urlencoding::encode(&exchange_assertion)
+        ),
+    )
+    .await;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.extra["auth_time"], serde_json::json!(now - 3600));
 }
 
 #[tokio::test]
@@ -1038,11 +1115,7 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
     );
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let access_token = json["access_token"].as_str().unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(access_token)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, access_token);
     assert_eq!(claims.sub.as_deref(), Some("workload-123"));
     assert_eq!(claims.aud.as_deref(), Some("api://workload"));
     assert_eq!(claims.extra["client_id"], "jwt-bearer-client");
@@ -1084,11 +1157,7 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
     );
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let access_token = json["access_token"].as_str().unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(access_token)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, access_token);
     assert_eq!(claims.sub.as_deref(), Some("saml-subject-123"));
     assert_eq!(claims.aud.as_deref(), Some("api://saml"));
     assert_eq!(claims.extra["client_id"], "saml-bearer-client");
@@ -1205,11 +1274,7 @@ async fn client_credentials_enforces_registered_resource_server_policy() {
     let profile_response = app.clone().oneshot(profile_request).await.unwrap();
     assert_eq!(profile_response.status(), StatusCode::OK);
     let json = json_body(profile_response).await;
-    let claims = state
-        .signer
-        .decode_signature_only(json["access_token"].as_str().unwrap())
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
     assert_eq!(claims.aud.as_deref(), Some("api://profile"));
     assert_eq!(
         claims.extra["resource"],
@@ -1273,11 +1338,7 @@ async fn client_credentials_enforces_registered_resource_server_policy() {
         String::from_utf8_lossy(&bytes)
     );
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(json["access_token"].as_str().unwrap())
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
     assert_eq!(claims.aud.as_deref(), Some("api://payments"));
     assert!(claims.extra["cnf"]["jkt"].is_string());
 }
@@ -1327,15 +1388,10 @@ async fn dpop_client_credentials_binds_access_token_cnf() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     assert_eq!(json["token_type"], "DPoP");
     let access_token = json["access_token"].as_str().unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(access_token)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, access_token);
     assert_eq!(
         claims.extra["cnf"],
         serde_json::json!({"jkt": expected_jkt})
@@ -1580,14 +1636,9 @@ async fn mtls_client_credentials_accepts_authenticated_pep_metadata() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     assert_eq!(json["token_type"], "Bearer");
-    let claims = state
-        .signer
-        .decode_signature_only(json["access_token"].as_str().unwrap())
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
     assert_eq!(claims.extra["token_type"], "Bearer");
     assert_eq!(claims.extra["cnf"]["x5t#S256"], registered_thumbprint);
     assert!(claims.extra["cnf"]["jkt"].is_null());
@@ -1642,11 +1693,7 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
     let json = json_body(token_response).await;
     let access_token = json["access_token"].as_str().unwrap().to_string();
     assert_eq!(json["token_type"], "Bearer");
-    let issued_claims = state
-        .signer
-        .decode_signature_only(&access_token)
-        .unwrap()
-        .claims;
+    let issued_claims = decode_claims(&state, &access_token);
     assert_eq!(
         issued_claims.extra["cnf"]["x5t#S256"],
         serde_json::Value::String(registered_thumbprint.to_string())
@@ -1688,8 +1735,7 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
         .unwrap();
     let jwt_response = app.oneshot(jwt_request).await.unwrap();
     assert_eq!(jwt_response.status(), StatusCode::OK);
-    let bytes = jwt_response.into_body().collect().await.unwrap().to_bytes();
-    let jwt_introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let jwt_introspection = json_body(jwt_response).await;
     assert_eq!(jwt_introspection["active"], true);
     assert_eq!(
         jwt_introspection["cnf"]["x5t#S256"],
@@ -1698,11 +1744,7 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
     let token_introspection = jwt_introspection["token_introspection"]
         .as_str()
         .expect("JWT introspection response should be present");
-    let claims = state
-        .signer
-        .decode_signature_only(token_introspection)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, token_introspection);
     assert_eq!(claims.aud.as_deref(), Some("introspection-client"));
     assert_eq!(
         claims.extra["cnf"]["x5t#S256"],
@@ -1764,11 +1806,7 @@ async fn refresh_preserves_original_scope_ceiling() {
     let refresh_json = json_body(refresh_response).await;
     assert_eq!(refresh_json["scope"], "read profile");
     let access_1 = refresh_json["access_token"].as_str().unwrap().to_string();
-    let claims_1 = state
-        .signer
-        .decode_signature_only(&access_1)
-        .unwrap()
-        .claims;
+    let claims_1 = decode_claims(&state, &access_1);
     assert_eq!(
         claims_1.extra["scope"],
         serde_json::Value::String("read profile".to_string())
@@ -1883,11 +1921,7 @@ async fn refresh_preserves_original_authentication_context() {
     assert_eq!(token_response.status(), StatusCode::OK);
     let token_json = json_body(token_response).await;
     let first_access = token_json["access_token"].as_str().unwrap().to_string();
-    let first_claims = state
-        .signer
-        .decode_signature_only(&first_access)
-        .unwrap()
-        .claims;
+    let first_claims = decode_claims(&state, &first_access);
     assert_eq!(
         first_claims.extra["auth_time"],
         serde_json::json!(original_auth_time)
@@ -1913,11 +1947,7 @@ async fn refresh_preserves_original_authentication_context() {
     assert_eq!(refresh_response.status(), StatusCode::OK);
     let refresh_json = json_body(refresh_response).await;
     let second_access = refresh_json["access_token"].as_str().unwrap().to_string();
-    let second_claims = state
-        .signer
-        .decode_signature_only(&second_access)
-        .unwrap()
-        .claims;
+    let second_claims = decode_claims(&state, &second_access);
     assert_eq!(
         second_claims.extra["auth_time"],
         serde_json::json!(original_auth_time)
@@ -1977,11 +2007,7 @@ async fn refresh_omits_unknown_authentication_context_without_inventing_time() {
     assert_eq!(token_response.status(), StatusCode::OK);
     let token_json = json_body(token_response).await;
     let first_access = token_json["access_token"].as_str().unwrap().to_string();
-    let first_claims = state
-        .signer
-        .decode_signature_only(&first_access)
-        .unwrap()
-        .claims;
+    let first_claims = decode_claims(&state, &first_access);
     assert!(
         !first_claims.extra.contains_key("auth_time"),
         "unknown auth_time must be omitted, got {:?}",
@@ -2004,11 +2030,7 @@ async fn refresh_omits_unknown_authentication_context_without_inventing_time() {
     assert_eq!(refresh_response.status(), StatusCode::OK);
     let refresh_json = json_body(refresh_response).await;
     let second_access = refresh_json["access_token"].as_str().unwrap().to_string();
-    let second_claims = state
-        .signer
-        .decode_signature_only(&second_access)
-        .unwrap()
-        .claims;
+    let second_claims = decode_claims(&state, &second_access);
     assert!(!second_claims.extra.contains_key("auth_time"));
     assert!(!second_claims.extra.contains_key("acr"));
     assert!(!second_claims.extra.contains_key("amr"));
@@ -2225,8 +2247,7 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     let access_token = json["access_token"].as_str().unwrap();
     assert!(access_token.starts_with("oat_oat_"));
     assert!(
@@ -2474,8 +2495,7 @@ async fn jwt_introspection_response_requires_config_flag() {
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     let access_token = json["access_token"].as_str().unwrap();
 
     let request = Request::builder()
@@ -2515,8 +2535,7 @@ async fn jwt_introspection_response_returns_signed_response_when_enabled() {
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     let access_token = json["access_token"].as_str().unwrap();
 
     let request = Request::builder()
@@ -2530,15 +2549,10 @@ async fn jwt_introspection_response_returns_signed_response_when_enabled() {
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     assert_eq!(json["active"], true);
     let token_introspection = json["token_introspection"].as_str().unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(token_introspection)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, token_introspection);
     assert_eq!(claims.extra["active"], true);
     assert_eq!(claims.extra["client_id"], "introspection-jwt-client");
     assert_eq!(claims.extra["scope"], "api");
@@ -2613,11 +2627,7 @@ async fn introspection_enforces_resource_server_policy() {
         serde_json::json!(["https://api.example.com/profile"])
     );
     let token_introspection = introspection["token_introspection"].as_str().unwrap();
-    let claims = state
-        .signer
-        .decode_signature_only(token_introspection)
-        .unwrap()
-        .claims;
+    let claims = decode_claims(&state, token_introspection);
     assert_eq!(claims.aud.as_deref(), Some("introspection-client"));
     assert_eq!(claims.extra["client_id"], "service-client");
     assert_eq!(
@@ -2710,14 +2720,9 @@ async fn authorization_code_grant_succeeds() {
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     let access_token = json["access_token"].as_str().unwrap();
-    let access_claims = state
-        .signer
-        .decode_signature_only(access_token)
-        .unwrap()
-        .claims;
+    let access_claims = decode_claims(&state, access_token);
     assert_eq!(
         access_claims.extra["resource"],
         serde_json::json!(["https://api.example.com"])
@@ -2764,11 +2769,7 @@ async fn authorization_code_grant_succeeds() {
     assert_eq!(refresh_response.status(), StatusCode::OK);
     let refresh_json = json_body(refresh_response).await;
     let refreshed_access = refresh_json["access_token"].as_str().unwrap();
-    let refreshed_claims = state
-        .signer
-        .decode_signature_only(refreshed_access)
-        .unwrap()
-        .claims;
+    let refreshed_claims = decode_claims(&state, refreshed_access);
     assert_eq!(
         refreshed_claims.extra["resource"],
         serde_json::json!(["https://api.example.com"])
@@ -2941,8 +2942,7 @@ async fn dynamic_client_registration_returns_secret_for_confidential_client() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     let secret = json["client_secret"].as_str().unwrap();
     assert!(secret.starts_with("secret_"));
     assert!(json["registration_access_token"].as_str().unwrap().len() > 20);
@@ -3048,8 +3048,7 @@ async fn dynamic_client_registration_management_updates_client() {
         .unwrap();
     let get_response = app.oneshot(get_request).await.unwrap();
     assert_eq!(get_response.status(), StatusCode::OK);
-    let bytes = get_response.into_body().collect().await.unwrap().to_bytes();
-    let get_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let get_json = json_body(get_response).await;
     assert_eq!(
         get_json["registration_client_uri"],
         "https://id.example.com/oauth2/register/dcr-managed-client"
@@ -3219,8 +3218,7 @@ async fn device_authorization_returns_codes_for_known_client() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     assert!(json["device_code"].as_str().unwrap().starts_with("dc_"));
     assert!(
         json["verification_uri"]
@@ -3454,8 +3452,7 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(response).await;
     let auth_req_id = json["auth_req_id"].as_str().unwrap();
 
     let pending_body = format!(
@@ -3856,8 +3853,7 @@ async fn jwt_introspection_signing_failure_fails_closed_without_disclosure() {
         "signing failure must not return success, got {}",
         jwt_response.status()
     );
-    let bytes = jwt_response.into_body().collect().await.unwrap().to_bytes();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let body = json_body(jwt_response).await;
     assert!(
         body.get("active").is_none(),
         "signing failure must not disclose token metadata, got {body}"

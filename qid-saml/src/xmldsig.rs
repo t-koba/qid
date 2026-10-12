@@ -320,14 +320,25 @@ fn parse_references(signed_info: &str) -> QidResult<Vec<Reference>> {
             while let Some(rel) = transforms_block[scan..].find("Algorithm=") {
                 let abs2 = scan + rel + "Algorithm=".len();
                 let rest = &transforms_block[abs2..];
-                let open_quote = rest.find('"').unwrap_or(rest.len());
-                let after_open = open_quote + 1;
-                let close_quote = rest[after_open..]
-                    .find('"')
-                    .map(|i| after_open + i)
-                    .unwrap_or(rest.len());
-                let value = rest[after_open..close_quote].to_string();
-                transforms.push(value);
+                // XML attributes may use either quote style; anything else is
+                // malformed input and must fail closed, never panic.
+                let quote = match rest.as_bytes().first() {
+                    Some(b'"') => b'"',
+                    Some(b'\'') => b'\'',
+                    _ => {
+                        return Err(QidError::BadRequest {
+                            message: "SAML <ds:Transform Algorithm> must be quoted".to_string(),
+                        });
+                    }
+                };
+                let close_quote =
+                    rest[1..]
+                        .find(quote as char)
+                        .map(|i| i + 1)
+                        .ok_or_else(|| QidError::BadRequest {
+                            message: "SAML <ds:Transform Algorithm> must be quoted".to_string(),
+                        })?;
+                transforms.push(rest[1..close_quote].to_string());
                 scan = abs2 + close_quote + 1;
             }
         }
@@ -1299,6 +1310,54 @@ mod tests {
         let canonical = canonicalize_saml_element(input).unwrap();
         assert!(canonical.contains("a=\"1\""));
         assert!(canonical.contains("b=\"2\""));
+    }
+
+    fn signed_info_with_transform(transform_xml: &str) -> String {
+        format!(
+            r##"<ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#x"><ds:Transforms>{transform_xml}</ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>e30=</ds:DigestValue></ds:Reference></ds:SignedInfo>"##
+        )
+    }
+
+    fn verify_document(document: &str) -> QidResult<()> {
+        verify_saml_xml_signature(SamlSignatureInputs {
+            document,
+            public_key_pem: b"",
+            profile: SamlXmlSignatureAlgorithm::RsaSha256,
+        })
+    }
+
+    fn signed_envelope(signed_info: &str) -> String {
+        format!(
+            r##"<root xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:Signature>{signed_info}<ds:SignatureValue>e30=</ds:SignatureValue></ds:Signature></root>"##
+        )
+    }
+
+    #[test]
+    fn transform_algorithm_accepts_single_quotes() {
+        let signed_info = signed_info_with_transform(
+            "<ds:Transform Algorithm='http://www.w3.org/2000/09/xmldsig#enveloped-signature'/>",
+        );
+        let references = parse_references(&signed_info).expect("single quotes must parse");
+        assert_eq!(references.len(), 1);
+        assert_eq!(
+            references[0].transforms,
+            vec!["http://www.w3.org/2000/09/xmldsig#enveloped-signature".to_string()]
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_unquoted_transform_algorithm_without_panicking() {
+        let signed_info = signed_info_with_transform("<ds:Transform Algorithm=/>");
+        let err = verify_document(&signed_envelope(&signed_info)).unwrap_err();
+        assert!(err.message().contains("must be quoted"));
+    }
+
+    #[test]
+    fn verifier_rejects_single_quoted_unsupported_transform() {
+        let signed_info =
+            signed_info_with_transform("<ds:Transform Algorithm='http://example.com/evil'/>");
+        let err = verify_document(&signed_envelope(&signed_info)).unwrap_err();
+        assert!(err.message().contains("unsupported SAML transform"));
     }
 
     #[test]

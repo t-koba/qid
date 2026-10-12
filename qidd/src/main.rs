@@ -81,6 +81,10 @@ impl SharedCache for PrefixedSharedCache {
     fn delete(&self, key: &str) {
         self.inner.delete(&self.key(key));
     }
+
+    fn take(&self, key: &str) -> Option<Vec<u8>> {
+        self.inner.take(&self.key(key))
+    }
 }
 
 #[derive(Parser)]

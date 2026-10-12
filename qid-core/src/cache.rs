@@ -29,6 +29,16 @@ pub trait SharedCache: Send + Sync {
     fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64);
     fn set_if_absent(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) -> QidResult<bool>;
     fn delete(&self, key: &str);
+    /// Remove and return the live value for `key`, if any. The default splits
+    /// get and delete; backends that must uphold single-use under concurrency
+    /// override this with an atomic take.
+    fn take(&self, key: &str) -> Option<Vec<u8>> {
+        let value = self.get(key);
+        if value.is_some() {
+            self.delete(key);
+        }
+        value
+    }
 }
 
 /// In-memory cache backed by a HashMap with TTL-based eviction.
@@ -97,6 +107,17 @@ impl SharedCache for MemoryCache {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
         store.remove(key);
     }
+
+    fn take(&self, key: &str) -> Option<Vec<u8>> {
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let live = matches!(store.get(key), Some(entry) if entry.expires_at > Instant::now());
+        if live {
+            store.remove(key).map(|entry| entry.value)
+        } else {
+            store.remove(key);
+            None
+        }
+    }
 }
 
 #[cfg(feature = "redis-cache")]
@@ -160,6 +181,17 @@ pub mod redis_cache {
         fn delete(&self, key: &str) {
             let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
             let _: Result<(), _> = conn.del(key);
+        }
+
+        fn take(&self, key: &str) -> Option<Vec<u8>> {
+            let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            redis::Script::new(
+                r"local v = redis.call('GET', KEYS[1]); if v then redis.call('DEL', KEYS[1]); return v; else return false; end",
+            )
+            .key(key)
+            .invoke::<Option<Vec<u8>>>(&mut *conn)
+            .ok()
+            .flatten()
         }
     }
 }
@@ -254,15 +286,15 @@ impl DpopState {
         Ok(nonce)
     }
 
-    /// Consume a DPoP nonce exactly once.
+    /// Consume a DPoP nonce exactly once. The take is atomic on backends
+    /// that override it, so concurrent consumers cannot both succeed.
     pub fn consume_nonce(&self, nonce: &str, now: u64) -> QidResult<()> {
         let key = format!("{}:{nonce}", self.nonce_namespace);
-        let Some(issued_at_bytes) = self.cache.get(&key) else {
+        let Some(issued_at_bytes) = self.cache.take(&key) else {
             return Err(QidError::DpopNonce {
                 message: "DPoP proof nonce is missing, expired, or already used".to_string(),
             });
         };
-        self.cache.delete(&key);
         let issued_at = String::from_utf8(issued_at_bytes)
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -378,6 +410,31 @@ mod tests {
             .unwrap();
         let replay = state.record_jti("jwt-jti", 1_000, 1_002).unwrap_err();
         assert!(replay.message().contains("already used"));
+    }
+
+    #[test]
+    fn concurrent_nonce_consumers_have_exactly_one_winner() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+        const RACERS: usize = 8;
+        let state = DpopState::new();
+        let nonce = state.issue_nonce(1_000).unwrap();
+        let barrier = Barrier::new(RACERS);
+        let wins = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..RACERS {
+                scope.spawn(|| {
+                    barrier.wait();
+                    if state.consume_nonce(&nonce, 1_001).is_ok() {
+                        wins.fetch_add(1, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        assert_eq!(wins.load(Ordering::SeqCst), 1);
+        assert!(state.consume_nonce(&nonce, 1_002).is_err());
     }
 
     #[test]

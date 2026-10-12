@@ -2,4 +2,11 @@
 ignore = [
     "RUSTSEC-2023-0071",
     "RUSTSEC-2025-0134",
+    # RUSTSEC-2024-0449: unsafe-libyaml 0.2.11 is unmaintained (archived
+    # upstream 2024-03-25). It arrives transitively via figment 0.10 "yaml" ->
+    # serde_yaml 0.9 (deprecated) and parses only operator-supplied local
+    # config files (.yaml/.yml), never remote input; the 64-bit unsoundness
+    # advisory RUSTSEC-2023-0075 is patched in 0.2.11. Kept in sync with
+    # deny.toml; replacement with a maintained parser is tracked follow-up.
+    "RUSTSEC-2024-0449",
 ]

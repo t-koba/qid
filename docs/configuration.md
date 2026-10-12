@@ -269,6 +269,12 @@ policy:
 
 `qidd` supports local policy bundle files at startup. Remote `http://` and `https://` bundle sources are rejected during daemon startup.
 
+When no rule matches, the bundle's own `default_decision` applies; a realm
+without a configured bundle falls back to the realm `policy.default_decision`
+(`deny` unless configured). Unknown decision names are rejected at startup,
+and absent risk or authentication-age evidence never satisfies a rule — not
+even under negation.
+
 ## Observability
 
 `observability.logs.format` defaults to `json`; `redact_pii` can be enabled.

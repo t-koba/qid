@@ -1272,6 +1272,30 @@ mod decision;
 
 use decision::*;
 pub use decision::{pep_decision_cache_key, pep_decision_cache_put, pep_decision_ttl_ms};
+/// Fallback bundle for a realm without a configured policy bundle: no
+/// rules, with the realm's configured default decision.
+fn fallback_bundle_for_realm(
+    config: &QidConfig,
+    realm_id: &str,
+) -> QidResult<qid_policy::PolicyBundle> {
+    let name = config
+        .realms
+        .iter()
+        .find(|realm| realm.id == realm_id)
+        .map(|realm| realm.policy.default_decision.clone())
+        .unwrap_or_else(|| "deny".to_string());
+    let Some(default_decision) = qid_policy::Decision::parse(&name) else {
+        return Err(QidError::Config {
+            message: format!("realm {realm_id} has invalid policy default_decision: {name}"),
+        });
+    };
+    Ok(qid_policy::PolicyBundle {
+        version: "1".to_string(),
+        rules: Vec::new(),
+        default_decision,
+    })
+}
+
 /// Tenant scope for ReBAC namespaces in policy decisions: the realm's tenant
 /// when configured, otherwise the realm itself. The fallback matches nothing
 /// the tenant-scoped admin API wrote, keeping relationship checks fail-closed.
@@ -1335,13 +1359,11 @@ async fn load_policy_engine<R: Repository>(
             .unwrap_or_else(|e| e.into_inner()) =
             Some((format!("{realm_id}:{}", bundle.name), bundle.compiled_json));
     } else {
-        // Default deny keeps PEP integration fail-closed when no bundle is configured.
+        // No bundle is configured: fall back to the realm's configured
+        // default (deny unless configured). Unknown values fail closed and
+        // loudly; startup validation rejects them first.
         metrics::counter!("qid_proxy_pep_decision_fail_closed_total").increment(1);
-        let default = qid_policy::PolicyBundle {
-            version: "1".to_string(),
-            rules: Vec::new(),
-            default_decision: qid_policy::Decision::Deny,
-        };
+        let default = fallback_bundle_for_realm(&state.config, realm_id)?;
         engine.load(default, "default".to_string());
     }
 

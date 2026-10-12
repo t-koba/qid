@@ -22,6 +22,40 @@ pub enum Decision {
     Conditional,
 }
 
+impl Decision {
+    /// Snake-case name matching the serialized form (`allow`, `step_up`, …).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Decision::Allow => "allow",
+            Decision::Deny => "deny",
+            Decision::StepUp => "step_up",
+            Decision::ConsentRequired => "consent_required",
+            Decision::LocalResponse => "local_response",
+            Decision::ApprovalRequired => "approval_required",
+            Decision::Quarantine => "quarantine",
+            Decision::AuditOnly => "audit_only",
+            Decision::Conditional => "conditional",
+        }
+    }
+
+    /// Parse a snake-case decision name; `None` for unknown values so
+    /// configuration surfaces reject them instead of ignoring them.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "allow" => Some(Decision::Allow),
+            "deny" => Some(Decision::Deny),
+            "step_up" => Some(Decision::StepUp),
+            "consent_required" => Some(Decision::ConsentRequired),
+            "local_response" => Some(Decision::LocalResponse),
+            "approval_required" => Some(Decision::ApprovalRequired),
+            "quarantine" => Some(Decision::Quarantine),
+            "audit_only" => Some(Decision::AuditOnly),
+            "conditional" => Some(Decision::Conditional),
+            _ => None,
+        }
+    }
+}
+
 /// AuthZEN §7.1 typed obligation. Each obligation carries a namespace and
 /// version, an opaque name, and a JSON payload that the PEP knows how to
 /// interpret. INTEROP §3 forbids using bare string obligations because
@@ -129,49 +163,58 @@ impl PolicyContext {
         self.pep_registration.as_deref()
     }
 
-    pub fn resolve_field_path(&self, path: &str) -> Vec<Value> {
+    /// Resolve a field path to its evidence values, or `None` when the input
+    /// is absent. Absence is never replaced with a favorable stand-in: an
+    /// unknown risk score is not zero risk, and a missing authentication age
+    /// is not fresh authentication. Present-but-empty lists stay `Some`.
+    pub fn resolve_field_path(&self, path: &str) -> Option<Vec<Value>> {
         let normalized = path.strip_prefix("context.").unwrap_or(path);
         match normalized {
-            "group" | "groups" => self
-                .groups
-                .iter()
-                .map(|s| Value::String(s.clone()))
-                .collect(),
-            "role" | "roles" => self
-                .roles
-                .iter()
-                .map(|s| Value::String(s.clone()))
-                .collect(),
-            "posture" | "device.posture" => self
-                .posture
-                .iter()
-                .map(|s| Value::String(s.clone()))
-                .collect(),
-            "acr" | "auth.acr" => vec![Value::String(self.acr.clone().unwrap_or_default())],
-            "auth_age_seconds" | "auth.age_seconds" => {
-                vec![Value::Number(self.auth_age_seconds.unwrap_or(0).into())]
-            }
-            "risk_score" | "risk.score" => {
-                vec![Value::Number(self.risk_score.unwrap_or(0).into())]
-            }
-            "resource.host" => vec![Value::String(
-                self.resource_host.clone().unwrap_or_default(),
-            )],
-            "resource.action" => vec![Value::String(
-                self.resource_action.clone().unwrap_or_default(),
-            )],
-            "subject_id" | "subject" | "principal" => {
-                vec![Value::String(self.subject_id.clone().unwrap_or_default())]
-            }
-            "device_id" | "device.id" => {
-                vec![Value::String(self.device_id.clone().unwrap_or_default())]
-            }
-            "pep_registration" | "pep.registration" => vec![Value::String(
-                self.effective_pep_registration()
-                    .unwrap_or_default()
-                    .to_string(),
-            )],
-            _ => Vec::new(),
+            "group" | "groups" => Some(
+                self.groups
+                    .iter()
+                    .map(|s| Value::String(s.clone()))
+                    .collect(),
+            ),
+            "role" | "roles" => Some(
+                self.roles
+                    .iter()
+                    .map(|s| Value::String(s.clone()))
+                    .collect(),
+            ),
+            "posture" | "device.posture" => Some(
+                self.posture
+                    .iter()
+                    .map(|s| Value::String(s.clone()))
+                    .collect(),
+            ),
+            "acr" | "auth.acr" => self.acr.clone().map(|acr| vec![Value::String(acr)]),
+            "auth_age_seconds" | "auth.age_seconds" => self
+                .auth_age_seconds
+                .map(|age| vec![Value::Number(age.into())]),
+            "risk_score" | "risk.score" => self
+                .risk_score
+                .map(|score| vec![Value::Number(score.into())]),
+            "resource.host" => self
+                .resource_host
+                .clone()
+                .map(|host| vec![Value::String(host)]),
+            "resource.action" => self
+                .resource_action
+                .clone()
+                .map(|action| vec![Value::String(action)]),
+            "subject_id" | "subject" | "principal" => self
+                .subject_id
+                .clone()
+                .map(|subject| vec![Value::String(subject)]),
+            "device_id" | "device.id" => self
+                .device_id
+                .clone()
+                .map(|device| vec![Value::String(device)]),
+            "pep_registration" | "pep.registration" => self
+                .effective_pep_registration()
+                .map(|registration| vec![Value::String(registration.to_string())]),
+            _ => None,
         }
     }
 
@@ -295,10 +338,13 @@ impl Expression {
     }
 }
 
-pub(crate) fn condition_matches(condition: &Condition, ctx: &PolicyContext) -> bool {
-    let value = ctx.resolve_field_path(&condition.field);
+/// Whether a condition holds: `Some(true/false)` on present evidence,
+/// `None` when the referenced field is absent. Absent evidence never
+/// satisfies a rule on its own — not even under negation.
+pub(crate) fn condition_matches(condition: &Condition, ctx: &PolicyContext) -> Option<bool> {
+    let value = ctx.resolve_field_path(&condition.field)?;
 
-    match condition.op.as_str() {
+    Some(match condition.op.as_str() {
         "equals" | "==" => value.iter().any(|v| v == &condition.value),
         "contains" | "has" => value.iter().any(|v| match (v, &condition.value) {
             (Value::String(s), Value::String(target)) => s == target,
@@ -338,36 +384,47 @@ pub(crate) fn condition_matches(condition: &Condition, ctx: &PolicyContext) -> b
             _ => false,
         },
         _ => false,
-    }
+    })
 }
 
+/// Evaluate an expression with Kleene three-valued logic: `Some(true)`
+/// only on positively established evidence, `Some(false)` on established
+/// counter-evidence, and `None` when an input is absent. In particular
+/// `Not` over absent evidence is unknown — never a match — so missing risk
+/// or authentication age cannot satisfy a rule through negation either.
 pub(crate) fn evaluate_expression<'a>(
     expr: &'a Expression,
     ctx: &'a PolicyContext,
     rebac: Option<&'a dyn RebacEvaluator>,
-) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Option<bool>> + Send + 'a>> {
     Box::pin(async move {
         match expr {
             Expression::Condition(c) => condition_matches(c, ctx),
             Expression::And { and } => {
+                let mut unknown = false;
                 for e in and {
-                    if !evaluate_expression(e, ctx, rebac).await {
-                        return false;
+                    match evaluate_expression(e, ctx, rebac).await {
+                        Some(false) => return Some(false),
+                        None => unknown = true,
+                        Some(true) => {}
                     }
                 }
-                true
+                Some(!unknown)
             }
             Expression::Or { or } => {
+                let mut unknown = false;
                 for e in or {
-                    if evaluate_expression(e, ctx, rebac).await {
-                        return true;
+                    match evaluate_expression(e, ctx, rebac).await {
+                        Some(true) => return Some(true),
+                        None => unknown = true,
+                        Some(false) => {}
                     }
                 }
-                false
+                Some(unknown)
             }
-            Expression::Not { not } => !evaluate_expression(not, ctx, rebac).await,
-            Expression::InGroup { in_group } => ctx.in_group(in_group),
-            Expression::MatchAction { action } => ctx.action_matches(action),
+            Expression::Not { not } => evaluate_expression(not, ctx, rebac).await.map(|v| !v),
+            Expression::InGroup { in_group } => Some(ctx.in_group(in_group)),
+            Expression::MatchAction { action } => Some(ctx.action_matches(action)),
             Expression::FieldCondition { field, op, value } => {
                 field_condition_matches(field, op, value, ctx)
             }
@@ -377,27 +434,30 @@ pub(crate) fn evaluate_expression<'a>(
                 relation,
                 subject_namespace,
             } => {
-                let Some(rebac) = rebac else {
-                    return false;
-                };
-                let Some(subject_id) = ctx.subject_id.as_deref() else {
-                    return false;
-                };
-                rebac
-                    .check(
-                        namespace,
-                        object_id,
-                        relation,
-                        subject_namespace,
-                        subject_id,
-                    )
-                    .await
+                let rebac = rebac?;
+                let subject_id = ctx.subject_id.as_deref()?;
+                Some(
+                    rebac
+                        .check(
+                            namespace,
+                            object_id,
+                            relation,
+                            subject_namespace,
+                            subject_id,
+                        )
+                        .await,
+                )
             }
         }
     })
 }
 
-fn field_condition_matches(field: &str, op: &str, value: &Value, ctx: &PolicyContext) -> bool {
+fn field_condition_matches(
+    field: &str,
+    op: &str,
+    value: &Value,
+    ctx: &PolicyContext,
+) -> Option<bool> {
     let cond = Condition {
         field: field.to_string(),
         op: op.to_string(),

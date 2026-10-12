@@ -987,6 +987,13 @@ async fn seed_configured_realms_and_clients(
             }
         }
 
+        if qid_policy::Decision::parse(&realm.policy.default_decision).is_none() {
+            bail!(
+                "realm {} has invalid policy default_decision: {}",
+                realm.id,
+                realm.policy.default_decision
+            );
+        }
         for bundle_config in &realm.policy.bundles {
             let compiled_json = read_policy_bundle_source(config_path, &bundle_config.source)
                 .await

@@ -133,15 +133,23 @@ impl PolicyEngine for NativePolicyEngine {
             }
         }
 
-        trace.push("No matching rule; default deny".to_string());
+        // No rule matched: honor the bundle's configured default instead of
+        // silently denying. Without a bundle there is no configuration to
+        // honor, so fail closed.
+        let default = self
+            .bundle
+            .as_ref()
+            .map(|bundle| bundle.default_decision.clone())
+            .unwrap_or(Decision::Deny);
+        trace.push(format!("No matching rule; default {}", default.as_str()));
         record_metrics(_start);
         DecisionDetails {
             obligations: Vec::new(),
             context: None,
-            decision: Decision::Deny,
+            decision: default.clone(),
             policy_id: self.bundle_id.clone(),
             rate_limit_profile: None,
-            policy_tags: vec!["qid:default-deny".to_string()],
+            policy_tags: vec![format!("qid:default-{}", default.as_str())],
             inject_headers: None,
             pep: PepPolicyActions::default(),
             matched_rules,
@@ -171,14 +179,16 @@ fn rule_matches<'a>(
             return false;
         }
 
+        // A rule matches only on positively established evidence; absent
+        // inputs (`None`) never satisfy a rule.
         for condition in &rule.conditions {
-            if !condition_matches(condition, ctx) {
+            if condition_matches(condition, ctx) != Some(true) {
                 return false;
             }
         }
 
         if let Some(ref expr) = rule.expression
-            && !evaluate_expression(expr, ctx, rebac).await
+            && evaluate_expression(expr, ctx, rebac).await != Some(true)
         {
             return false;
         }
@@ -654,24 +664,31 @@ mod tests {
         };
         assert_eq!(
             ctx.resolve_field_path("group"),
-            vec![Value::String("finance".to_string())]
+            Some(vec![Value::String("finance".to_string())])
         );
         assert_eq!(
             ctx.resolve_field_path("device.posture"),
-            vec![Value::String("managed".to_string())]
+            Some(vec![Value::String("managed".to_string())])
         );
         assert_eq!(
             ctx.resolve_field_path("auth.acr"),
-            vec![Value::String("phishing-resistant".to_string())]
+            Some(vec![Value::String("phishing-resistant".to_string())])
         );
         assert_eq!(
             ctx.resolve_field_path("risk.score"),
-            vec![Value::Number(30.into())]
+            Some(vec![Value::Number(30.into())])
         );
         assert_eq!(
             ctx.resolve_field_path("resource.host"),
-            vec![Value::String("api.finance.example.com".to_string())]
+            Some(vec![Value::String("api.finance.example.com".to_string())])
         );
+        // Absent inputs resolve to absence, never to favorable stand-ins.
+        let empty = PolicyContext::default();
+        assert_eq!(empty.resolve_field_path("risk.score"), None);
+        assert_eq!(empty.resolve_field_path("auth.age_seconds"), None);
+        assert_eq!(empty.resolve_field_path("subject"), None);
+        assert_eq!(empty.resolve_field_path("group"), Some(vec![]));
+        assert_eq!(empty.resolve_field_path("no.such.field"), None);
         assert!(ctx.in_group("finance"));
         assert!(!ctx.in_group("engineering"));
         assert!(ctx.action_matches("egress.connect"));
@@ -1012,5 +1029,195 @@ mod tests {
             Decision::Deny,
             "no-bundle Native must default-deny for any subject"
         );
+    }
+
+    fn allow_rule(name: &str, conditions: Vec<Condition>) -> Rule {
+        Rule {
+            name: name.to_string(),
+            rule_type: RuleType::Allow,
+            action: "*".to_string(),
+            resource_host: None,
+            conditions,
+            expression: None,
+            rate_limit_profile: None,
+            inject_headers: None,
+            pep: PepPolicyActions::default(),
+        }
+    }
+
+    fn number_condition(field: &str, op: &str, value: u64) -> Condition {
+        Condition {
+            field: field.to_string(),
+            op: op.to_string(),
+            value: Value::Number(value.into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn absent_risk_and_age_cannot_satisfy_allow_rule() {
+        let mut engine = NativePolicyEngine::new();
+        engine.load(
+            PolicyBundle {
+                version: "1".to_string(),
+                rules: vec![allow_rule(
+                    "low-risk-fresh",
+                    vec![
+                        number_condition("risk.score", "<=", 10),
+                        number_condition("auth.age_seconds", "<", 300),
+                    ],
+                )],
+                default_decision: Decision::Deny,
+            },
+            "test".to_string(),
+        );
+
+        // Missing evidence is not zero risk or fresh authentication.
+        assert_eq!(
+            engine.decide(&PolicyContext::default()).await.decision,
+            Decision::Deny
+        );
+        let fresh = PolicyContext {
+            risk_score: Some(5),
+            auth_age_seconds: Some(100),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&fresh).await.decision, Decision::Allow);
+        let stale = PolicyContext {
+            risk_score: Some(5),
+            auth_age_seconds: Some(1_000),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&stale).await.decision, Decision::Deny);
+    }
+
+    #[tokio::test]
+    async fn negation_over_absent_evidence_does_not_match() {
+        let mut engine = NativePolicyEngine::new();
+        let mut rule = allow_rule("not-high-risk", vec![]);
+        rule.expression = Some(Expression::Not {
+            not: Box::new(Expression::FieldCondition {
+                field: "risk.score".to_string(),
+                op: ">".to_string(),
+                value: Value::Number(100.into()),
+            }),
+        });
+        engine.load(
+            PolicyBundle {
+                version: "1".to_string(),
+                rules: vec![rule],
+                default_decision: Decision::Deny,
+            },
+            "test".to_string(),
+        );
+
+        // Unknown risk is neither established low nor high: no match.
+        assert_eq!(
+            engine.decide(&PolicyContext::default()).await.decision,
+            Decision::Deny
+        );
+        let low = PolicyContext {
+            risk_score: Some(50),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&low).await.decision, Decision::Allow);
+        let high = PolicyContext {
+            risk_score: Some(200),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&high).await.decision, Decision::Deny);
+    }
+
+    #[tokio::test]
+    async fn forbid_rule_ignores_absent_evidence() {
+        let mut engine = NativePolicyEngine::new();
+        engine.load(
+            PolicyBundle {
+                version: "1".to_string(),
+                rules: vec![Rule {
+                    name: "block-high-risk".to_string(),
+                    rule_type: RuleType::Forbid,
+                    action: "*".to_string(),
+                    resource_host: None,
+                    conditions: vec![number_condition("risk.score", ">", 100)],
+                    expression: None,
+                    rate_limit_profile: None,
+                    inject_headers: None,
+                    pep: PepPolicyActions::default(),
+                }],
+                default_decision: Decision::Allow,
+            },
+            "test".to_string(),
+        );
+
+        // Unknown risk cannot trigger the forbid rule; the configured
+        // default applies instead.
+        let details = engine.decide(&PolicyContext::default()).await;
+        assert_eq!(details.decision, Decision::Allow);
+        assert!(
+            details
+                .policy_tags
+                .contains(&"qid:default-allow".to_string())
+        );
+        let high = PolicyContext {
+            risk_score: Some(200),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&high).await.decision, Decision::Deny);
+    }
+
+    #[tokio::test]
+    async fn no_match_honors_configured_default_decision() {
+        let mut engine = NativePolicyEngine::new();
+        engine.load(
+            PolicyBundle {
+                version: "1".to_string(),
+                rules: vec![allow_rule(
+                    "finance-only",
+                    vec![Condition {
+                        field: "group".to_string(),
+                        op: "equals".to_string(),
+                        value: Value::String("finance".to_string()),
+                    }],
+                )],
+                default_decision: Decision::StepUp,
+            },
+            "test".to_string(),
+        );
+
+        let details = engine.decide(&PolicyContext::default()).await;
+        assert_eq!(details.decision, Decision::StepUp);
+        assert!(
+            details
+                .policy_tags
+                .contains(&"qid:default-step_up".to_string())
+        );
+        assert!(
+            details
+                .trace
+                .iter()
+                .any(|line| line.contains("default step_up")),
+            "trace must name the applied default, got: {:?}",
+            details.trace
+        );
+    }
+
+    #[test]
+    fn decision_names_round_trip_and_reject_unknown() {
+        for decision in [
+            Decision::Allow,
+            Decision::Deny,
+            Decision::StepUp,
+            Decision::ConsentRequired,
+            Decision::LocalResponse,
+            Decision::ApprovalRequired,
+            Decision::Quarantine,
+            Decision::AuditOnly,
+            Decision::Conditional,
+        ] {
+            assert_eq!(Decision::parse(decision.as_str()), Some(decision));
+        }
+        assert_eq!(Decision::parse("bogus"), None);
+        assert_eq!(Decision::parse(""), None);
+        assert_eq!(Decision::parse("ALLOW"), None);
     }
 }

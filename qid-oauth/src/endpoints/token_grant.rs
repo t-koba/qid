@@ -530,9 +530,9 @@ pub async fn refresh_token_grant<R: Repository>(
         resource: family.resource.clone(),
         authorization_details: family.authorization_details.clone(),
         cnf: cnf.cloned().or(family.sender_constraint.clone()),
-        auth_time: Some(now),
-        acr: None,
-        amr: Vec::new(),
+        auth_time: family.auth_time,
+        acr: family.acr.clone(),
+        amr: family.amr.clone(),
         nonce: None,
         sender_constraint: cnf.cloned().or(family.sender_constraint.clone()),
         token_format: token_ttl(state, &family.realm_id).access_token_format,
@@ -555,9 +555,9 @@ pub async fn refresh_token_grant<R: Repository>(
             resource: Some(&family.resource),
             authorization_details: family.authorization_details.as_ref(),
             cnf: cnf.or(family.sender_constraint.as_ref()),
-            auth_time: Some(now),
-            acr: None,
-            amr: None,
+            auth_time: family.auth_time,
+            acr: family.acr.as_deref(),
+            amr: Some(&family.amr),
             nonce: None,
             act: None,
             authorization_code: None,
@@ -854,6 +854,9 @@ mod tests {
             realm_id: "test".to_string(),
             current_refresh_hash: good_hash,
             scopes: vec!["api".to_string()],
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
             audience: vec!["reuse-client".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1048,6 +1051,9 @@ mod tests {
             realm_id: "test".to_string(),
             current_refresh_hash: util::sha256_base64url("dpop-good-jti"),
             scopes: vec!["api".to_string()],
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
             audience: vec!["dpop-public".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1096,6 +1102,9 @@ mod tests {
             realm_id: "test".to_string(),
             current_refresh_hash: util::sha256_base64url("dpop-conf-jti"),
             scopes: vec!["api".to_string()],
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
             audience: vec!["dpop-conf".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1218,6 +1227,9 @@ mod tests {
             realm_id: "test".to_string(),
             current_refresh_hash: util::sha256_base64url("scope-file-jti-1"),
             scopes: vec!["read".to_string(), "profile".to_string()],
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
             audience: vec!["scope-file-client".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1286,6 +1298,9 @@ mod tests {
             realm_id: "test".to_string(),
             current_refresh_hash: util::sha256_base64url("scope-legacy-jti"),
             scopes: Vec::new(),
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
             audience: vec!["scope-file-client".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1302,6 +1317,176 @@ mod tests {
             matches!(err, QidError::Unauthorized { .. }),
             "legacy family without scope ceiling must fail closed, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_preserves_original_authentication_context_file() {
+        // File-repository counterpart: original auth_time/acr/amr survive
+        // refresh with advancing issuance; unknown context stays omitted.
+        let (state, repo) = setup_state().await;
+        let client = Client {
+            id: "auth-file-id".to_string(),
+            realm_id: "test".to_string(),
+            client_id: "auth-file-client".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: serde_json::json!({ "keys": [] }),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["refresh_token".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        };
+        repo.create_client(&client).await.unwrap();
+        let user = User {
+            id: "auth-file-user".to_string(),
+            realm_id: "test".to_string(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        };
+        repo.create_user(&user).await.unwrap();
+
+        async fn signed_refresh(
+            state: &std::sync::Arc<SharedState<FileRepository>>,
+            family_id: &str,
+            jti: &str,
+        ) -> String {
+            let now = util::now_seconds();
+            let mut extra = HashMap::new();
+            extra.insert(
+                "family_id".to_string(),
+                serde_json::Value::String(family_id.to_string()),
+            );
+            let claims = JwtClaims {
+                iss: Some("https://id.example.com".to_string()),
+                sub: Some("auth-file-user".to_string()),
+                aud: Some("auth-file-client".to_string()),
+                exp: Some((now + 3600) as usize),
+                nbf: Some(now as usize),
+                iat: Some(now as usize),
+                jti: Some(jti.to_string()),
+                extra,
+            };
+            state.signer.sign(&claims).unwrap()
+        }
+
+        fn refresh_req(token: String) -> TokenRequest {
+            TokenRequest {
+                grant_type: "refresh_token".to_string(),
+                refresh_token: Some(token),
+                code: None,
+                redirect_uri: None,
+                code_verifier: None,
+                client_id: None,
+                client_secret: None,
+                scope: None,
+                client_assertion: None,
+                client_assertion_type: None,
+                device_code: None,
+                auth_req_id: None,
+                assertion: None,
+                subject_token: None,
+                subject_token_type: None,
+                actor_token: None,
+                actor_token_type: None,
+                requested_token_type: None,
+                audience: None,
+                resource: None,
+                authorization_details: None,
+            }
+        }
+
+        let now = util::now_seconds();
+        let original_auth_time = now - 3600;
+        let family = TokenFamily {
+            id: "auth-file-family".to_string(),
+            user_id: user.id.clone(),
+            client_id: "auth-file-client".to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url("auth-file-jti-1"),
+            scopes: vec!["openid".to_string()],
+            auth_time: Some(original_auth_time),
+            acr: Some("urn:qid:acr:password".to_string()),
+            amr: vec!["pwd".to_string()],
+            audience: vec!["auth-file-client".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: None,
+            issued_at: now - 3600,
+            revoked: false,
+        };
+        repo.create_token_family(&family).await.unwrap();
+
+        let token_1 = signed_refresh(&state, &family.id, "auth-file-jti-1").await;
+        let refreshed = refresh_token_grant(&state, &refresh_req(token_1), None)
+            .await
+            .unwrap();
+        let access = refreshed.access_token.clone();
+        let claims = state.signer.decode_signature_only(&access).unwrap().claims;
+        assert_eq!(
+            claims.extra["auth_time"],
+            serde_json::json!(original_auth_time)
+        );
+        assert_eq!(
+            claims.extra["acr"],
+            serde_json::json!("urn:qid:acr:password")
+        );
+        assert_eq!(claims.extra["amr"], serde_json::json!(["pwd"]));
+        assert!(u64::try_from(claims.iat.unwrap()).unwrap() >= now);
+        let stored = repo
+            .get_access_token(&claims.jti.clone().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.auth_time, Some(original_auth_time));
+        assert_eq!(stored.acr.as_deref(), Some("urn:qid:acr:password"));
+        assert_eq!(stored.amr, vec!["pwd".to_string()]);
+
+        let legacy = TokenFamily {
+            id: "auth-legacy-family".to_string(),
+            user_id: user.id.clone(),
+            client_id: "auth-file-client".to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url("auth-legacy-jti"),
+            scopes: vec!["openid".to_string()],
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
+            audience: vec!["auth-file-client".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: None,
+            issued_at: now,
+            revoked: false,
+        };
+        repo.create_token_family(&legacy).await.unwrap();
+        let legacy_token = signed_refresh(&state, &legacy.id, "auth-legacy-jti").await;
+        let legacy_refreshed = refresh_token_grant(&state, &refresh_req(legacy_token), None)
+            .await
+            .unwrap();
+        let legacy_claims = state
+            .signer
+            .decode_signature_only(&legacy_refreshed.access_token)
+            .unwrap()
+            .claims;
+        assert!(!legacy_claims.extra.contains_key("auth_time"));
+        assert!(!legacy_claims.extra.contains_key("acr"));
+        assert!(!legacy_claims.extra.contains_key("amr"));
     }
 
     #[tokio::test]

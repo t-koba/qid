@@ -197,6 +197,9 @@ pub(in crate::sql) struct TokenFamilyRow {
     realm_id: String,
     current_refresh_hash: String,
     scopes: Option<String>,
+    auth_time: Option<i64>,
+    acr: Option<String>,
+    amr: Option<String>,
     audience: Option<String>,
     resource: Option<String>,
     authorization_details: Option<String>,
@@ -215,6 +218,12 @@ impl From<TokenFamilyRow> for TokenFamily {
             current_refresh_hash: row.current_refresh_hash,
             scopes: row
                 .scopes
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default(),
+            auth_time: row.auth_time.map(|value| value as u64),
+            acr: row.acr,
+            amr: row
+                .amr
                 .and_then(|value| serde_json::from_str(&value).ok())
                 .unwrap_or_default(),
             audience: row

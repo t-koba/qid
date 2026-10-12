@@ -1658,6 +1658,394 @@ async fn refresh_preserves_original_scope_ceiling() {
 }
 
 #[tokio::test]
+async fn refresh_preserves_original_authentication_context() {
+    // RFC 9068 section 2.2.1: auth_time/acr/amr are fixed across all access
+    // tokens deriving from an authorization response, including refresh.
+    // Refresh must not manufacture a recent auth_time or drop assurance.
+    let (app, token_path, state) = setup().await;
+    let user = User {
+        id: "auth-context-user".to_string(),
+        realm_id: "test".to_string(),
+        email: Some("auth-context@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Auth Context User".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    state.repo.create_user(&user).await.unwrap();
+
+    let original_auth_time = util::now_seconds() - 3600;
+    let code = "auth-context-code-1";
+    let code_verifier = "f1e2d3c4b5a69788796a5b4c3d2e1f0012345678";
+    let auth_code = AuthorizationCode {
+        code_hash: util::sha256_base64url(code),
+        client_id: "test-client".to_string(),
+        user_id: "auth-context-user".to_string(),
+        realm_id: "test".to_string(),
+        redirect_uri: "https://app.example.com/callback".to_string(),
+        state: None,
+        nonce: None,
+        auth_time: Some(original_auth_time),
+        acr: Some("urn:qid:acr:password".to_string()),
+        amr: vec!["pwd".to_string()],
+        code_challenge: Some(util::sha256_base64url(code_verifier)),
+        code_challenge_method: Some("S256".to_string()),
+        scopes: vec!["openid".to_string()],
+        resource: Vec::new(),
+        authorization_details: None,
+        expires_at: util::now_seconds() + 300,
+        used: false,
+        created_at: util::now_seconds(),
+    };
+    state
+        .repo
+        .create_authorization_code(&auth_code)
+        .await
+        .unwrap();
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={}",
+            urlencoding::encode(code),
+            urlencoding::encode(code_verifier)
+        )))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let first_access = token_json["access_token"].as_str().unwrap().to_string();
+    let first_claims = state
+        .signer
+        .decode_signature_only(&first_access)
+        .unwrap()
+        .claims;
+    assert_eq!(
+        first_claims.extra["auth_time"],
+        serde_json::json!(original_auth_time)
+    );
+    assert_eq!(
+        first_claims.extra["acr"],
+        serde_json::json!("urn:qid:acr:password")
+    );
+    assert_eq!(first_claims.extra["amr"], serde_json::json!(["pwd"]));
+    let first_iat = first_claims.iat.unwrap();
+    let refresh_1 = token_json["refresh_token"].as_str().unwrap().to_string();
+
+    let refresh_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&refresh_1)
+        )))
+        .unwrap();
+    let refresh_response = app.oneshot(refresh_request).await.unwrap();
+    assert_eq!(refresh_response.status(), StatusCode::OK);
+    let bytes = refresh_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let second_access = refresh_json["access_token"].as_str().unwrap().to_string();
+    let second_claims = state
+        .signer
+        .decode_signature_only(&second_access)
+        .unwrap()
+        .claims;
+    assert_eq!(
+        second_claims.extra["auth_time"],
+        serde_json::json!(original_auth_time)
+    );
+    assert_eq!(
+        second_claims.extra["acr"],
+        serde_json::json!("urn:qid:acr:password")
+    );
+    assert_eq!(second_claims.extra["amr"], serde_json::json!(["pwd"]));
+    let second_iat = second_claims.iat.unwrap();
+    assert!(
+        second_iat >= first_iat,
+        "refreshed token must advance issuance, got {second_iat} < {first_iat}"
+    );
+    let stored_jti = second_claims.jti.clone().unwrap();
+    let stored = state
+        .repo
+        .get_access_token(&stored_jti)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.auth_time, Some(original_auth_time));
+    assert_eq!(stored.acr.as_deref(), Some("urn:qid:acr:password"));
+    assert_eq!(stored.amr, vec!["pwd".to_string()]);
+}
+
+#[tokio::test]
+async fn refresh_omits_unknown_authentication_context_without_inventing_time() {
+    // Legacy/unknown context: omit unavailable claims, never synthesize now.
+    let (app, token_path, state) = setup().await;
+    let user = User {
+        id: "auth-unknown-user".to_string(),
+        realm_id: "test".to_string(),
+        email: Some("auth-unknown@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Auth Unknown User".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    state.repo.create_user(&user).await.unwrap();
+
+    let code = "auth-unknown-code-1";
+    let code_verifier = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+    let auth_code = AuthorizationCode {
+        code_hash: util::sha256_base64url(code),
+        client_id: "test-client".to_string(),
+        user_id: "auth-unknown-user".to_string(),
+        realm_id: "test".to_string(),
+        redirect_uri: "https://app.example.com/callback".to_string(),
+        state: None,
+        nonce: None,
+        auth_time: None,
+        acr: None,
+        amr: Vec::new(),
+        code_challenge: Some(util::sha256_base64url(code_verifier)),
+        code_challenge_method: Some("S256".to_string()),
+        scopes: vec!["openid".to_string()],
+        resource: Vec::new(),
+        authorization_details: None,
+        expires_at: util::now_seconds() + 300,
+        used: false,
+        created_at: util::now_seconds(),
+    };
+    state
+        .repo
+        .create_authorization_code(&auth_code)
+        .await
+        .unwrap();
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={}",
+            urlencoding::encode(code),
+            urlencoding::encode(code_verifier)
+        )))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let first_access = token_json["access_token"].as_str().unwrap().to_string();
+    let first_claims = state
+        .signer
+        .decode_signature_only(&first_access)
+        .unwrap()
+        .claims;
+    assert!(
+        !first_claims.extra.contains_key("auth_time"),
+        "unknown auth_time must be omitted, got {:?}",
+        first_claims.extra.get("auth_time")
+    );
+    assert!(!first_claims.extra.contains_key("acr"));
+    assert!(!first_claims.extra.contains_key("amr"));
+    let refresh_1 = token_json["refresh_token"].as_str().unwrap().to_string();
+
+    let refresh_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&refresh_1)
+        )))
+        .unwrap();
+    let refresh_response = app.oneshot(refresh_request).await.unwrap();
+    assert_eq!(refresh_response.status(), StatusCode::OK);
+    let bytes = refresh_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let second_access = refresh_json["access_token"].as_str().unwrap().to_string();
+    let second_claims = state
+        .signer
+        .decode_signature_only(&second_access)
+        .unwrap()
+        .claims;
+    assert!(!second_claims.extra.contains_key("auth_time"));
+    assert!(!second_claims.extra.contains_key("acr"));
+    assert!(!second_claims.extra.contains_key("amr"));
+}
+
+#[tokio::test]
+async fn refresh_preserves_authentication_context_for_opaque_tokens() {
+    // Opaque counterpart: stored records and introspection carry the original
+    // auth_time/acr/amr across refresh with advancing issuance.
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.tokens.access_token_format = TokenFormat::Opaque;
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let user = User {
+        id: "auth-opaque-user".to_string(),
+        realm_id: "test".to_string(),
+        email: Some("auth-opaque@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Auth Opaque User".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    state.repo.create_user(&user).await.unwrap();
+
+    let original_auth_time = util::now_seconds() - 3600;
+    let code = "auth-opaque-code-1";
+    let code_verifier = "b1c2d3e4f5a60718293a4b5c6d7e8f9012345678";
+    let auth_code = AuthorizationCode {
+        code_hash: util::sha256_base64url(code),
+        client_id: "test-client".to_string(),
+        user_id: "auth-opaque-user".to_string(),
+        realm_id: "test".to_string(),
+        redirect_uri: "https://app.example.com/callback".to_string(),
+        state: None,
+        nonce: None,
+        auth_time: Some(original_auth_time),
+        acr: Some("urn:qid:acr:password".to_string()),
+        amr: vec!["pwd".to_string()],
+        code_challenge: Some(util::sha256_base64url(code_verifier)),
+        code_challenge_method: Some("S256".to_string()),
+        scopes: vec!["openid".to_string()],
+        resource: vec!["https://api.example.com/default".to_string()],
+        authorization_details: None,
+        expires_at: util::now_seconds() + 300,
+        used: false,
+        created_at: util::now_seconds(),
+    };
+    state
+        .repo
+        .create_authorization_code(&auth_code)
+        .await
+        .unwrap();
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={}",
+            urlencoding::encode(code),
+            urlencoding::encode(code_verifier)
+        )))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let first_opaque = token_json["access_token"].as_str().unwrap().to_string();
+    assert!(first_opaque.starts_with("oat_"));
+    let first_jti = qid_oauth::endpoints::decode_opaque_access_token(&first_opaque).unwrap();
+    let first_stored = state
+        .repo
+        .get_access_token(first_jti)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_stored.auth_time, Some(original_auth_time));
+    let refresh_1 = token_json["refresh_token"].as_str().unwrap().to_string();
+
+    let refresh_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&refresh_1)
+        )))
+        .unwrap();
+    let refresh_response = app.clone().oneshot(refresh_request).await.unwrap();
+    assert_eq!(refresh_response.status(), StatusCode::OK);
+    let bytes = refresh_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let second_opaque = refresh_json["access_token"].as_str().unwrap().to_string();
+    assert!(second_opaque.starts_with("oat_"));
+    let second_jti = qid_oauth::endpoints::decode_opaque_access_token(&second_opaque).unwrap();
+    let second_stored = state
+        .repo
+        .get_access_token(second_jti)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second_stored.auth_time, Some(original_auth_time));
+    assert_eq!(second_stored.acr.as_deref(), Some("urn:qid:acr:password"));
+    assert_eq!(second_stored.amr, vec!["pwd".to_string()]);
+    assert!(second_stored.issued_at >= first_stored.issued_at);
+
+    let introspect_body = format!(
+        "token={}&client_id=introspection-client&client_secret=secret",
+        urlencoding::encode(&second_opaque)
+    );
+    let introspect_request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(introspect_body))
+        .unwrap();
+    let introspect_response = app.oneshot(introspect_request).await.unwrap();
+    assert_eq!(introspect_response.status(), StatusCode::OK);
+    let bytes = introspect_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(introspection["active"], true);
+    assert_eq!(
+        introspection["auth_time"],
+        serde_json::json!(original_auth_time)
+    );
+    assert_eq!(introspection["acr"], "urn:qid:acr:password");
+    assert_eq!(introspection["amr"], serde_json::json!(["pwd"]));
+}
+
+#[tokio::test]
 async fn opaque_client_credentials_token_introspects_and_revokes() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.tokens.access_token_format = TokenFormat::Opaque;

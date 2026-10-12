@@ -58,6 +58,12 @@ pub struct TokenFamily {
     #[serde(default)]
     pub scopes: Vec<String>,
     #[serde(default)]
+    pub auth_time: Option<u64>,
+    #[serde(default)]
+    pub acr: Option<String>,
+    #[serde(default)]
+    pub amr: Vec<String>,
+    #[serde(default)]
     pub audience: Vec<String>,
     #[serde(default)]
     pub resource: Vec<String>,

@@ -115,6 +115,7 @@ pub async fn saml_inbound_acs<R: Repository>(
         &provider.id,
         &validated,
         util::now_seconds(),
+        realm_config.protocols.saml.max_clock_skew_seconds,
     ) {
         return (
             StatusCode::BAD_REQUEST,
@@ -200,17 +201,26 @@ fn saml_replay_keys(
     ]
 }
 
+/// Replay entries must outlive the whole acceptance window: validation
+/// tolerates an expiry up to `skew_seconds` in the past, so the retention
+/// deadline extends the nominal expiry by that skew.
+fn saml_replay_deadline(validated: &ValidatedSamlAcsResponse, skew_seconds: u64) -> u64 {
+    validated.expires_at.saturating_add(skew_seconds)
+}
+
 fn record_saml_acs_replay(
     cache: &qid_core::cache::DpopState,
     realm: &str,
     provider_id: &str,
     validated: &ValidatedSamlAcsResponse,
     now: u64,
+    skew_seconds: u64,
 ) -> Result<(), QidError> {
+    let deadline = saml_replay_deadline(validated, skew_seconds);
     for key in saml_replay_keys(realm, provider_id, validated) {
         cache.record_replay_key(
             &key,
-            validated.expires_at,
+            deadline,
             now,
             "SAML Response or Assertion ID has already been used (replay detected)",
         )?;
@@ -877,6 +887,93 @@ mod tests {
         assert_eq!(validated.claims.subject, "subject@example.com");
     }
 
+    /// Test cache with a manually advanced clock for deterministic TTL probes.
+    struct ManualClockCache {
+        now: std::sync::Mutex<u64>,
+        store: std::sync::Mutex<std::collections::HashMap<String, (Vec<u8>, u64)>>,
+    }
+
+    impl ManualClockCache {
+        fn new(now: u64) -> Self {
+            Self {
+                now: std::sync::Mutex::new(now),
+                store: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+
+        /// Move the manual clock forward; entries expire lazily on access.
+        fn advance(&self, now: u64) {
+            *self.now.lock().unwrap() = now;
+        }
+    }
+
+    impl qid_core::cache::SharedCache for ManualClockCache {
+        fn get(&self, key: &str) -> Option<Vec<u8>> {
+            let now = *self.now.lock().unwrap();
+            let store = self.store.lock().unwrap();
+            store
+                .get(key)
+                .filter(|(_, expires_at)| *expires_at > now)
+                .map(|(value, _)| value.clone())
+        }
+
+        fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) {
+            let now = *self.now.lock().unwrap();
+            self.store
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), (value, now.saturating_add(ttl_seconds)));
+        }
+
+        fn set_if_absent(
+            &self,
+            key: &str,
+            value: Vec<u8>,
+            ttl_seconds: u64,
+        ) -> qid_core::QidResult<bool> {
+            if self.get(key).is_some() {
+                return Ok(false);
+            }
+            self.set(key, value, ttl_seconds);
+            Ok(true)
+        }
+
+        fn delete(&self, key: &str) {
+            self.store.lock().unwrap().remove(key);
+        }
+    }
+
+    #[test]
+    fn acs_replay_survives_through_skew_acceptance_window() {
+        // Nominal expiry 1100 with 60s skew: acceptance at 1099 records, and an
+        // identical presentation at 1102 still validates (within skew) so it
+        // must still be rejected as replay even though raw expiry has passed.
+        let audience = "https://id.example.com/realms/corp";
+        let acs_url = "https://id.example.com/federation/corp/saml/acs";
+        let provider = provider();
+        let unsigned = response_with_conditions(
+            &format!(
+                r#"<saml:Conditions NotBefore="1000" NotOnOrAfter="1100"><saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions>"#
+            ),
+            r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1100""#,
+            "",
+        );
+        let signed = sign_response(&unsigned);
+        let first = validate_saml_acs_response(&signed, &provider, audience, acs_url, 1_099, 60)
+            .expect("presentation before nominal expiry must validate");
+        assert_eq!(first.expires_at, 1_100);
+        let inner = std::sync::Arc::new(ManualClockCache::new(1_099));
+        let cache = qid_core::cache::DpopState::with_cache(inner.clone());
+        record_saml_acs_replay(&cache, "corp", &provider.id, &first, 1_099, 60)
+            .expect("first presentation must record");
+        inner.advance(1_102);
+        let second = validate_saml_acs_response(&signed, &provider, audience, acs_url, 1_102, 60)
+            .expect("identical response within skew must still validate");
+        let err =
+            record_saml_acs_replay(&cache, "corp", &provider.id, &second, 1_102, 60).unwrap_err();
+        assert!(err.message().contains("already been used"));
+    }
+
     #[test]
     fn acs_replay_detects_same_assertion_under_new_response_id() {
         let audience = "https://id.example.com/realms/corp";
@@ -892,7 +989,7 @@ mod tests {
         )
         .expect("first presentation must validate");
         let cache = qid_core::cache::DpopState::new();
-        record_saml_acs_replay(&cache, "corp", &provider.id, &first, 1_700_000_000)
+        record_saml_acs_replay(&cache, "corp", &provider.id, &first, 1_700_000_000, 60)
             .expect("first presentation must record");
         // Same signed assertion, only the unsigned Response ID relabelled.
         let relabelled = signed_response(audience).replace("ID=\"resp-1\"", "ID=\"resp-2\"");
@@ -907,7 +1004,7 @@ mod tests {
         .expect("relabelled response still validates the same assertion");
         assert_eq!(second.assertion_id, first.assertion_id);
         assert_ne!(second.response_id, first.response_id);
-        let err = record_saml_acs_replay(&cache, "corp", &provider.id, &second, 1_700_000_000)
+        let err = record_saml_acs_replay(&cache, "corp", &provider.id, &second, 1_700_000_000, 60)
             .unwrap_err();
         assert!(err.message().contains("already been used"));
     }

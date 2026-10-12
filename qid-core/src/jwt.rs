@@ -32,10 +32,13 @@ pub trait Signer: Send + Sync {
     /// Sign with a custom `typ` header value (default `"JWT"`).
     fn sign_with_typ(&self, claims: &JwtClaims, typ: &str) -> anyhow::Result<String>;
 
-    /// Verify the signature only. Callers MUST validate `aud`, `iss`, `exp`, and any
-    /// protocol-specific claims (for example `events` for OIDC Back-Channel Logout) on
-    /// their own. Production token validation paths must use [`Signer::decode_with_aud`]
-    /// so that audience binding is enforced by default.
+    /// Verify the signature and algorithm, require `exp` present, and reject
+    /// tokens expired beyond the 60s leeway. `aud`, `iss`, `sub`, and `nbf`
+    /// are not validated here. Callers MUST enforce audience/issuer binding
+    /// via [`Signer::decode_with_aud`] where needed, and MUST NOT use this
+    /// function to inspect expired tokens. Production token validation paths
+    /// must use [`Signer::decode_with_aud`] so that audience binding is
+    /// enforced by default.
     fn decode_signature_only(&self, token: &str) -> anyhow::Result<TokenData<JwtClaims>>;
 
     /// Verify the signature and enforce audience binding. The token's `aud` claim

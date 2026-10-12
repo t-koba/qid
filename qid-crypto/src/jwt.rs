@@ -150,12 +150,11 @@ impl Signer for LocalSigner {
         Ok(encode(&header, claims, &self.encoding_key)?)
     }
 
-    /// Verify the JWT signature and decode the payload using the local signer's key.
-    ///
-    /// NOTE: This method performs signature-only validation and does NOT validate
-    /// audience (`aud`), issuer (`iss`), or expiration (`exp`) claims.
-    /// Callers MUST validate these claims themselves. Production validation paths
-    /// must use [`Signer::decode_with_aud`] instead.
+    /// Verify the JWT signature and algorithm, require `exp` present, and reject
+    /// tokens expired beyond the 60s leeway. `aud`, `iss`, `sub`, and `nbf`
+    /// are not validated here. Callers MUST enforce audience/issuer binding
+    /// via [`Signer::decode_with_aud`] where needed, and MUST NOT use this
+    /// function to inspect expired tokens.
     fn decode_signature_only(&self, token: &str) -> anyhow::Result<TokenData<JwtClaims>> {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_aud = false;
@@ -267,12 +266,11 @@ impl<T: RemoteSignerTransport + Send + Sync> Signer for RemoteJwtSigner<T> {
             .map_err(|err| anyhow::anyhow!(err.message()))
     }
 
-    /// Verify the JWT signature and decode the payload using the remote signer's public key.
-    ///
-    /// NOTE: This method performs signature-only validation and does NOT validate
-    /// audience (`aud`), issuer (`iss`), or expiration (`exp`) claims.
-    /// Callers MUST validate these claims themselves. Production validation paths
-    /// must use [`Signer::decode_with_aud`] instead.
+    /// Verify the JWT signature and algorithm, require `exp` present, and reject
+    /// tokens expired beyond the 60s leeway. `aud`, `iss`, `sub`, and `nbf`
+    /// are not validated here. Callers MUST enforce audience/issuer binding
+    /// via [`Signer::decode_with_aud`] where needed, and MUST NOT use this
+    /// function to inspect expired tokens.
     fn decode_signature_only(&self, token: &str) -> anyhow::Result<TokenData<JwtClaims>> {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_aud = false;
@@ -918,6 +916,110 @@ mod tests {
         assert_eq!(signer.key_id(), "kms-key-1");
         assert_eq!(signer.algorithm(), "ES256");
         assert_eq!(decoded.claims.sub.as_deref(), Some("subject"));
+    }
+
+    #[test]
+    fn decode_signature_only_pins_expiry_and_audience_contract() {
+        // Contract: signature+alg verified, exp required and enforced with
+        // 60s leeway; aud/iss/sub/nbf are not validated here.
+        use qid_core::jwt::Signer;
+        let key = generate_es256("contract").expect("key generation failed");
+        let signer = LocalSigner::from_ec_pem("contract", key.private_pem.as_bytes()).unwrap();
+        let base = JwtClaims {
+            iss: Some("https://issuer.example.com".to_string()),
+            sub: Some("subject".to_string()),
+            aud: Some("audience".to_string()),
+            exp: Some(2_000_000_000),
+            nbf: Some(1_000_000_000),
+            iat: Some(1_000_000_000),
+            jti: Some("jti".to_string()),
+            extra: HashMap::new(),
+        };
+        let valid = signer.sign(&base).expect("signing failed");
+        assert!(signer.decode_signature_only(&valid).is_ok());
+
+        let expired = JwtClaims {
+            exp: Some(1_000_000_000),
+            ..base.clone()
+        };
+        let expired_token = signer.sign(&expired).expect("signing failed");
+        assert!(signer.decode_signature_only(&expired_token).is_err());
+
+        let missing_exp = JwtClaims {
+            exp: None,
+            ..base.clone()
+        };
+        let missing_token = signer.sign(&missing_exp).expect("signing failed");
+        assert!(signer.decode_signature_only(&missing_token).is_err());
+
+        let future_nbf = JwtClaims {
+            exp: Some(2_000_000_000),
+            nbf: Some(3_000_000_000),
+            ..base.clone()
+        };
+        let nbf_token = signer.sign(&future_nbf).expect("signing failed");
+        assert!(signer.decode_signature_only(&nbf_token).is_ok());
+
+        let other_aud = JwtClaims {
+            aud: Some("other-audience".to_string()),
+            ..base.clone()
+        };
+        let aud_token = signer.sign(&other_aud).expect("signing failed");
+        assert!(signer.decode_signature_only(&aud_token).is_ok());
+        assert!(signer.decode_with_aud(&aud_token, "audience").is_err());
+    }
+
+    #[test]
+    fn remote_decode_signature_only_pins_expiry_and_audience_contract() {
+        use qid_core::jwt::Signer;
+        let generated = generate_es256("kms-key-1").expect("key generation failed");
+        let signing_key = Es256SigningKey::from_pkcs8_pem(&generated.private_pem)
+            .expect("private key should parse");
+        let transport = Es256RemoteJwtTransport { signing_key };
+        let signer = RemoteJwtSigner::new(transport, remote_config(), &generated.public_jwk)
+            .expect("remote signer should be created");
+        let base = JwtClaims {
+            iss: Some("https://issuer.example.com".to_string()),
+            sub: Some("subject".to_string()),
+            aud: Some("audience".to_string()),
+            exp: Some(2_000_000_000),
+            nbf: Some(1_000_000_000),
+            iat: Some(1_000_000_000),
+            jti: Some("jti".to_string()),
+            extra: HashMap::new(),
+        };
+        let valid = signer.sign(&base).expect("signing failed");
+        assert!(signer.decode_signature_only(&valid).is_ok());
+
+        let expired = JwtClaims {
+            exp: Some(1_000_000_000),
+            ..base.clone()
+        };
+        let expired_token = signer.sign(&expired).expect("signing failed");
+        assert!(signer.decode_signature_only(&expired_token).is_err());
+
+        let missing_exp = JwtClaims {
+            exp: None,
+            ..base.clone()
+        };
+        let missing_token = signer.sign(&missing_exp).expect("signing failed");
+        assert!(signer.decode_signature_only(&missing_token).is_err());
+
+        let future_nbf = JwtClaims {
+            exp: Some(2_000_000_000),
+            nbf: Some(3_000_000_000),
+            ..base.clone()
+        };
+        let nbf_token = signer.sign(&future_nbf).expect("signing failed");
+        assert!(signer.decode_signature_only(&nbf_token).is_ok());
+
+        let other_aud = JwtClaims {
+            aud: Some("other-audience".to_string()),
+            ..base.clone()
+        };
+        let aud_token = signer.sign(&other_aud).expect("signing failed");
+        assert!(signer.decode_signature_only(&aud_token).is_ok());
+        assert!(signer.decode_with_aud(&aud_token, "audience").is_err());
     }
 
     #[test]

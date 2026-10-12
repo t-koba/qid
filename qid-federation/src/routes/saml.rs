@@ -109,15 +109,12 @@ pub async fn saml_inbound_acs<R: Repository>(
                 .into_response();
         }
     };
-    let replay_key = format!(
-        "saml-acs:{}:{}:{}:{}",
-        realm, provider.id, validated.response_id, validated.assertion_id
-    );
-    if let Err(e) = state.assertion_replay_cache.record_replay_key(
-        &replay_key,
-        validated.expires_at,
+    if let Err(e) = record_saml_acs_replay(
+        &state.assertion_replay_cache,
+        &realm,
+        &provider.id,
+        &validated,
         util::now_seconds(),
-        "SAML Response or Assertion ID has already been used (replay detected)",
     ) {
         return (
             StatusCode::BAD_REQUEST,
@@ -180,6 +177,45 @@ struct ValidatedSamlAcsResponse {
     response_id: String,
     assertion_id: String,
     expires_at: u64,
+}
+
+/// Replay keys for one ACS presentation: the composite key preserves exact
+/// duplicate detection, while the assertion-scoped key closes the relabelling
+/// bypass where an assertion-only signature lets a new unsigned Response ID
+/// mint a fresh composite key for the same assertion.
+fn saml_replay_keys(
+    realm: &str,
+    provider_id: &str,
+    validated: &ValidatedSamlAcsResponse,
+) -> [String; 2] {
+    [
+        format!(
+            "saml-acs:{realm}:{provider_id}:{}:{}",
+            validated.response_id, validated.assertion_id
+        ),
+        format!(
+            "saml-acs-assertion:{realm}:{provider_id}:{}",
+            validated.assertion_id
+        ),
+    ]
+}
+
+fn record_saml_acs_replay(
+    cache: &qid_core::cache::DpopState,
+    realm: &str,
+    provider_id: &str,
+    validated: &ValidatedSamlAcsResponse,
+    now: u64,
+) -> Result<(), QidError> {
+    for key in saml_replay_keys(realm, provider_id, validated) {
+        cache.record_replay_key(
+            &key,
+            validated.expires_at,
+            now,
+            "SAML Response or Assertion ID has already been used (replay detected)",
+        )?;
+    }
+    Ok(())
 }
 
 fn extract_saml_response_issuer(xml: &str) -> Result<String, QidError> {
@@ -839,6 +875,41 @@ mod tests {
         )
         .expect("all audience groups match this realm");
         assert_eq!(validated.claims.subject, "subject@example.com");
+    }
+
+    #[test]
+    fn acs_replay_detects_same_assertion_under_new_response_id() {
+        let audience = "https://id.example.com/realms/corp";
+        let acs_url = "https://id.example.com/federation/corp/saml/acs";
+        let provider = provider();
+        let first = validate_saml_acs_response(
+            &signed_response(audience),
+            &provider,
+            audience,
+            acs_url,
+            1_700_000_000,
+            60,
+        )
+        .expect("first presentation must validate");
+        let cache = qid_core::cache::DpopState::new();
+        record_saml_acs_replay(&cache, "corp", &provider.id, &first, 1_700_000_000)
+            .expect("first presentation must record");
+        // Same signed assertion, only the unsigned Response ID relabelled.
+        let relabelled = signed_response(audience).replace("ID=\"resp-1\"", "ID=\"resp-2\"");
+        let second = validate_saml_acs_response(
+            &relabelled,
+            &provider,
+            audience,
+            acs_url,
+            1_700_000_000,
+            60,
+        )
+        .expect("relabelled response still validates the same assertion");
+        assert_eq!(second.assertion_id, first.assertion_id);
+        assert_ne!(second.response_id, first.response_id);
+        let err = record_saml_acs_replay(&cache, "corp", &provider.id, &second, 1_700_000_000)
+            .unwrap_err();
+        assert!(err.message().contains("already been used"));
     }
 
     #[test]

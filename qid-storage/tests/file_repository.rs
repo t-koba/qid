@@ -395,3 +395,59 @@ async fn file_refresh_rotation_revoked_stays_revoked() {
         "no successful consumption after revocation"
     );
 }
+
+#[tokio::test]
+async fn file_interval_flush_retries_after_transient_failure() {
+    let path = std::env::temp_dir().join(format!("qid_file_retry_{}.json", ulid::Ulid::new()));
+    let repo = FileRepository::new_with_flush_mode(
+        path.to_str().unwrap(),
+        FileFlushMode::Interval(Duration::from_secs(60)),
+    )
+    .await
+    .unwrap();
+    repo.migrate().await.unwrap();
+    qid_storage::RealmRepository::create_realm(
+        &repo,
+        &TenantId::from("tenant-1"),
+        &RealmId::from("test"),
+        "https://id.example.com",
+        Some("Test Realm"),
+    )
+    .await
+    .unwrap();
+
+    repo.create_user(&User {
+        id: "user-retry".to_string(),
+        realm_id: "test".to_string(),
+        email: Some("retry@example.com".to_string()),
+        email_verified: true,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+
+    let tmp_path = path.with_extension("tmp");
+    // Ensure a clean slate, then block the atomic write by making tmp a directory.
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+    let _ = tokio::fs::remove_dir(&tmp_path).await;
+    tokio::fs::create_dir(&tmp_path).await.unwrap();
+
+    let first = repo.flush().await;
+    assert!(
+        first.is_err(),
+        "transient storage failure must be reported, got {first:?}"
+    );
+
+    tokio::fs::remove_dir(&tmp_path).await.unwrap();
+
+    // No further mutation: retry must persist the outstanding write.
+    repo.flush().await.unwrap();
+    let flushed = tokio::fs::read_to_string(&path).await.unwrap();
+    assert!(
+        flushed.contains("user-retry"),
+        "retry flush must persist outstanding write without another mutation"
+    );
+}

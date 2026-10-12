@@ -211,7 +211,13 @@ impl FileRepository {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return Ok(());
         }
-        self.flush_store().await
+        let result = self.flush_store().await;
+        if result.is_err() {
+            // Restore dirty without clearing concurrent mutations so a
+            // transient failure retries instead of silently dropping writes.
+            self.dirty.fetch_or(true, Ordering::AcqRel);
+        }
+        result
     }
 
     async fn flush_store(&self) -> QidResult<()> {

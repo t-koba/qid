@@ -249,13 +249,13 @@ fn header_to_str(value: &HeaderValue) -> Option<&str> {
 /// Set Content-Security-Policy headers on every response.
 ///
 /// Phase 0: strict policy allowing only same-origin resources, no scripts,
-/// no objects, and no base URI manipulation.
+/// no objects, no base URI manipulation, and no framing.
 pub async fn csp_headers_layer(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
     response.headers_mut().insert(
         CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'none'; object-src 'none'; base-uri 'none'",
+            "default-src 'self'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
         ),
     );
     response
@@ -713,6 +713,36 @@ mod tests {
         assert_eq!(
             cors_origins(&config),
             vec![HeaderValue::from_static("https://app.example.com")]
+        );
+    }
+
+    #[tokio::test]
+    async fn csp_headers_deny_framing_despite_x_frame_options_skip() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(csp_headers_layer))
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let csp = res
+            .headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            csp.contains("frame-ancestors 'none'"),
+            "CSP must deny framing, got: {csp}"
         );
     }
 

@@ -313,6 +313,7 @@ pub async fn client_credentials_grant<R: Repository>(
 pub async fn refresh_token_grant<R: Repository>(
     state: &SharedState<R>,
     req: &TokenRequest,
+    authenticated_client: &Client,
     cnf: Option<&serde_json::Value>,
 ) -> QidResult<TokenResponse> {
     let refresh_token = req
@@ -330,19 +331,19 @@ pub async fn refresh_token_grant<R: Repository>(
         })?;
     let claims = data.claims;
 
-    // RFC 9700 §4.13: refresh tokens MUST be bound to the issuer's intended
-    // audience. The `aud` claim of a refresh token issued by qid carries the
-    // client_id of the client that originally requested it. We re-validate
-    // that binding here against the registered client.
+    // RFC 6749 section 6 and RFC 9700 section 4.13: the refresh token must
+    // have been issued to the authenticated caller. The `aud` claim carries
+    // the original client_id; it must match the caller before any mutation
+    // so foreign attempts cannot consume or revoke the owner's family.
     let refresh_aud = claims
         .aud
         .as_deref()
         .ok_or_else(|| QidError::Unauthorized {
             message: "refresh token missing aud claim".to_string(),
         })?;
-    if !client_id_is_registered(state, refresh_aud).await? {
+    if refresh_aud != authenticated_client.client_id {
         return Err(QidError::Unauthorized {
-            message: "refresh token audience is not a registered client".to_string(),
+            message: "refresh token was not issued to authenticated client".to_string(),
         });
     }
 
@@ -365,6 +366,13 @@ pub async fn refresh_token_grant<R: Repository>(
         .ok_or_else(|| QidError::Unauthorized {
             message: "invalid refresh token".to_string(),
         })?;
+    if family.client_id != authenticated_client.client_id
+        || family.realm_id != authenticated_client.realm_id
+    {
+        return Err(QidError::Unauthorized {
+            message: "refresh token was not issued to authenticated client".to_string(),
+        });
+    }
 
     if family.revoked {
         return Err(QidError::Unauthorized {
@@ -610,23 +618,6 @@ async fn find_client_across_realms<R: Repository>(
     })
 }
 
-async fn client_id_is_registered<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<bool> {
-    for realm_config in &state.config.realms {
-        if state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
-            .await?
-            .is_some()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -667,6 +658,90 @@ mod tests {
         let jwks = serde_json::json!({});
         let state = Arc::new(SharedState::new(config, repo.clone(), signer, jwks).unwrap());
         (state, repo)
+    }
+
+    fn refresh_test_client(
+        id: &str,
+        client_id: &str,
+        client_type: ClientType,
+        auth_method: &str,
+    ) -> Client {
+        Client {
+            id: id.to_string(),
+            realm_id: "test".to_string(),
+            client_id: client_id.to_string(),
+            client_type,
+            token_endpoint_auth_method: auth_method.to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: serde_json::json!({ "keys": [] }),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["refresh_token".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        }
+    }
+
+    async fn signed_refresh(
+        state: &std::sync::Arc<SharedState<FileRepository>>,
+        user_id: &str,
+        client_id: &str,
+        family_id: &str,
+        jti: &str,
+    ) -> String {
+        let now = util::now_seconds();
+        let mut extra = HashMap::new();
+        extra.insert(
+            "family_id".to_string(),
+            serde_json::Value::String(family_id.to_string()),
+        );
+        let claims = JwtClaims {
+            iss: Some("https://id.example.com".to_string()),
+            sub: Some(user_id.to_string()),
+            aud: Some(client_id.to_string()),
+            exp: Some((now + 3600) as usize),
+            nbf: Some(now as usize),
+            iat: Some(now as usize),
+            jti: Some(jti.to_string()),
+            extra,
+        };
+        state.signer.sign(&claims).unwrap()
+    }
+
+    fn refresh_req(token: String, scope: Option<String>) -> TokenRequest {
+        TokenRequest {
+            grant_type: "refresh_token".to_string(),
+            refresh_token: Some(token),
+            code: None,
+            redirect_uri: None,
+            code_verifier: None,
+            client_id: None,
+            client_secret: None,
+            scope,
+            client_assertion: None,
+            client_assertion_type: None,
+            device_code: None,
+            auth_req_id: None,
+            assertion: None,
+            subject_token: None,
+            subject_token_type: None,
+            actor_token: None,
+            actor_token_type: None,
+            requested_token_type: None,
+            audience: None,
+            resource: None,
+            authorization_details: None,
+        }
     }
 
     #[tokio::test]
@@ -807,30 +882,12 @@ mod tests {
         let (state, repo) = setup_state().await;
         let now = util::now_seconds();
 
-        let client = Client {
-            id: "reuse-client-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "reuse-client".to_string(),
-            client_type: ClientType::Confidential,
-            token_endpoint_auth_method: "client_secret_basic".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: serde_json::json!({ "keys": [] }),
-            redirect_uris: Vec::new(),
-            grant_types: vec!["refresh_token".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        };
+        let client = refresh_test_client(
+            "reuse-client-id",
+            "reuse-client",
+            ClientType::Confidential,
+            "client_secret_basic",
+        );
         repo.create_client(&client).await.unwrap();
 
         let user = User {
@@ -908,7 +965,7 @@ mod tests {
             authorization_details: None,
         };
 
-        let result = refresh_token_grant(&state, &req, None).await;
+        let result = refresh_token_grant(&state, &req, &client, None).await;
         assert!(result.is_err(), "reuse should be rejected");
 
         let updated = repo.get_token_family(&family.id).await.unwrap().unwrap();
@@ -926,56 +983,16 @@ mod tests {
         let (state, repo) = setup_state().await;
         let now = util::now_seconds();
 
-        let public_client = Client {
-            id: "dpop-public-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "dpop-public".to_string(),
-            client_type: ClientType::Public,
-            token_endpoint_auth_method: "none".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: serde_json::json!({ "keys": [] }),
-            redirect_uris: Vec::new(),
-            grant_types: vec!["refresh_token".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        };
+        let public_client =
+            refresh_test_client("dpop-public-id", "dpop-public", ClientType::Public, "none");
         repo.create_client(&public_client).await.unwrap();
 
-        let confidential_client = Client {
-            id: "dpop-conf-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "dpop-conf".to_string(),
-            client_type: ClientType::Confidential,
-            token_endpoint_auth_method: "client_secret_basic".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: serde_json::json!({ "keys": [] }),
-            redirect_uris: Vec::new(),
-            grant_types: vec!["refresh_token".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        };
+        let confidential_client = refresh_test_client(
+            "dpop-conf-id",
+            "dpop-conf",
+            ClientType::Confidential,
+            "client_secret_basic",
+        );
         repo.create_client(&confidential_client).await.unwrap();
 
         let user = User {
@@ -989,58 +1006,6 @@ mod tests {
             org: None,
         };
         repo.create_user(&user).await.unwrap();
-
-        async fn signed_refresh(
-            state: &std::sync::Arc<SharedState<FileRepository>>,
-            user_id: &str,
-            client_id: &str,
-            family_id: &str,
-            jti: &str,
-        ) -> String {
-            let now = util::now_seconds();
-            let mut extra = HashMap::new();
-            extra.insert(
-                "family_id".to_string(),
-                serde_json::Value::String(family_id.to_string()),
-            );
-            let claims = qid_crypto::JwtClaims {
-                iss: Some("https://id.example.com".to_string()),
-                sub: Some(user_id.to_string()),
-                aud: Some(client_id.to_string()),
-                exp: Some((now + 3600) as usize),
-                nbf: Some(now as usize),
-                iat: Some(now as usize),
-                jti: Some(jti.to_string()),
-                extra,
-            };
-            state.signer.sign(&claims).unwrap()
-        }
-
-        fn refresh_req(token: String) -> TokenRequest {
-            TokenRequest {
-                grant_type: "refresh_token".to_string(),
-                refresh_token: Some(token),
-                code: None,
-                redirect_uri: None,
-                code_verifier: None,
-                client_id: None,
-                client_secret: None,
-                scope: None,
-                client_assertion: None,
-                client_assertion_type: None,
-                device_code: None,
-                auth_req_id: None,
-                assertion: None,
-                subject_token: None,
-                subject_token_type: None,
-                actor_token: None,
-                actor_token_type: None,
-                requested_token_type: None,
-                audience: None,
-                resource: None,
-                authorization_details: None,
-            }
-        }
 
         // Public DPoP-bound family.
         let bound_jkt = "test-jkt-public-key-a";
@@ -1066,7 +1031,7 @@ mod tests {
         // No DPoP proof must fail closed.
         let token =
             signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
-        let err = refresh_token_grant(&state, &refresh_req(token), None)
+        let err = refresh_token_grant(&state, &refresh_req(token, None), &public_client, None)
             .await
             .unwrap_err();
         assert!(
@@ -1078,9 +1043,14 @@ mod tests {
         let wrong = serde_json::json!({ "jkt": "different-key" });
         let token =
             signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
-        let err = refresh_token_grant(&state, &refresh_req(token), Some(&wrong))
-            .await
-            .unwrap_err();
+        let err = refresh_token_grant(
+            &state,
+            &refresh_req(token, None),
+            &public_client,
+            Some(&wrong),
+        )
+        .await
+        .unwrap_err();
         assert!(
             err.to_string().contains("DPoP binding required"),
             "wrong-key refresh must fail closed, got {err:?}"
@@ -1090,7 +1060,13 @@ mod tests {
         let same = serde_json::json!({ "jkt": bound_jkt });
         let token =
             signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
-        let ok = refresh_token_grant(&state, &refresh_req(token), Some(&same)).await;
+        let ok = refresh_token_grant(
+            &state,
+            &refresh_req(token, None),
+            &public_client,
+            Some(&same),
+        )
+        .await;
         assert!(ok.is_ok(), "same-key refresh must succeed: {ok:?}");
 
         // Confidential DPoP-bound family without fresh proof still succeeds
@@ -1121,7 +1097,13 @@ mod tests {
             "dpop-conf-jti",
         )
         .await;
-        let ok = refresh_token_grant(&state, &refresh_req(token), None).await;
+        let ok = refresh_token_grant(
+            &state,
+            &refresh_req(token, None),
+            &confidential_client,
+            None,
+        )
+        .await;
         assert!(ok.is_ok(), "confidential refresh must succeed: {ok:?}");
     }
 
@@ -1132,30 +1114,12 @@ mod tests {
         // do not consume the refresh token, and the family ceiling survives
         // narrowing. Legacy families without scope state fail closed.
         let (state, repo) = setup_state().await;
-        let client = Client {
-            id: "scope-file-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "scope-file-client".to_string(),
-            client_type: ClientType::Public,
-            token_endpoint_auth_method: "none".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: serde_json::json!({ "keys": [] }),
-            redirect_uris: Vec::new(),
-            grant_types: vec!["refresh_token".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        };
+        let client = refresh_test_client(
+            "scope-file-id",
+            "scope-file-client",
+            ClientType::Public,
+            "none",
+        );
         repo.create_client(&client).await.unwrap();
         let user = User {
             id: "scope-file-user".to_string(),
@@ -1168,56 +1132,6 @@ mod tests {
             org: None,
         };
         repo.create_user(&user).await.unwrap();
-
-        async fn signed_refresh(
-            state: &std::sync::Arc<SharedState<FileRepository>>,
-            family_id: &str,
-            jti: &str,
-        ) -> String {
-            let now = util::now_seconds();
-            let mut extra = HashMap::new();
-            extra.insert(
-                "family_id".to_string(),
-                serde_json::Value::String(family_id.to_string()),
-            );
-            let claims = JwtClaims {
-                iss: Some("https://id.example.com".to_string()),
-                sub: Some("scope-file-user".to_string()),
-                aud: Some("scope-file-client".to_string()),
-                exp: Some((now + 3600) as usize),
-                nbf: Some(now as usize),
-                iat: Some(now as usize),
-                jti: Some(jti.to_string()),
-                extra,
-            };
-            state.signer.sign(&claims).unwrap()
-        }
-
-        fn refresh_req(token: String, scope: Option<String>) -> TokenRequest {
-            TokenRequest {
-                grant_type: "refresh_token".to_string(),
-                refresh_token: Some(token),
-                code: None,
-                redirect_uri: None,
-                code_verifier: None,
-                client_id: None,
-                client_secret: None,
-                scope,
-                client_assertion: None,
-                client_assertion_type: None,
-                device_code: None,
-                auth_req_id: None,
-                assertion: None,
-                subject_token: None,
-                subject_token_type: None,
-                actor_token: None,
-                actor_token_type: None,
-                requested_token_type: None,
-                audience: None,
-                resource: None,
-                authorization_details: None,
-            }
-        }
 
         let now = util::now_seconds();
         let family = TokenFamily {
@@ -1239,8 +1153,15 @@ mod tests {
         };
         repo.create_token_family(&family).await.unwrap();
 
-        let token_1 = signed_refresh(&state, &family.id, "scope-file-jti-1").await;
-        let first = refresh_token_grant(&state, &refresh_req(token_1, None), None)
+        let token_1 = signed_refresh(
+            &state,
+            "scope-file-user",
+            "scope-file-client",
+            &family.id,
+            "scope-file-jti-1",
+        )
+        .await;
+        let first = refresh_token_grant(&state, &refresh_req(token_1, None), &client, None)
             .await
             .unwrap();
         assert_eq!(first.scope.as_deref(), Some("read profile"));
@@ -1249,6 +1170,7 @@ mod tests {
         let narrowed = refresh_token_grant(
             &state,
             &refresh_req(token_2, Some("read".to_string())),
+            &client,
             None,
         )
         .await
@@ -1256,7 +1178,7 @@ mod tests {
         assert_eq!(narrowed.scope.as_deref(), Some("read"));
         let token_3 = narrowed.refresh_token.clone().unwrap();
 
-        let restored = refresh_token_grant(&state, &refresh_req(token_3, None), None)
+        let restored = refresh_token_grant(&state, &refresh_req(token_3, None), &client, None)
             .await
             .unwrap();
         assert_eq!(restored.scope.as_deref(), Some("read profile"));
@@ -1271,6 +1193,7 @@ mod tests {
         let err = refresh_token_grant(
             &state,
             &refresh_req(token_4.clone(), Some("write".to_string())),
+            &client,
             None,
         )
         .await
@@ -1286,7 +1209,7 @@ mod tests {
             .unwrap()
             .current_refresh_hash;
         assert_eq!(before, after, "failed scope check must not consume refresh");
-        let retry = refresh_token_grant(&state, &refresh_req(token_4, None), None)
+        let retry = refresh_token_grant(&state, &refresh_req(token_4, None), &client, None)
             .await
             .unwrap();
         assert_eq!(retry.scope.as_deref(), Some("read profile"));
@@ -1309,8 +1232,15 @@ mod tests {
             revoked: false,
         };
         repo.create_token_family(&legacy).await.unwrap();
-        let legacy_token = signed_refresh(&state, &legacy.id, "scope-legacy-jti").await;
-        let err = refresh_token_grant(&state, &refresh_req(legacy_token, None), None)
+        let legacy_token = signed_refresh(
+            &state,
+            "scope-file-user",
+            "scope-file-client",
+            &legacy.id,
+            "scope-legacy-jti",
+        )
+        .await;
+        let err = refresh_token_grant(&state, &refresh_req(legacy_token, None), &client, None)
             .await
             .unwrap_err();
         assert!(
@@ -1324,30 +1254,12 @@ mod tests {
         // File-repository counterpart: original auth_time/acr/amr survive
         // refresh with advancing issuance; unknown context stays omitted.
         let (state, repo) = setup_state().await;
-        let client = Client {
-            id: "auth-file-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "auth-file-client".to_string(),
-            client_type: ClientType::Public,
-            token_endpoint_auth_method: "none".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: serde_json::json!({ "keys": [] }),
-            redirect_uris: Vec::new(),
-            grant_types: vec!["refresh_token".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        };
+        let client = refresh_test_client(
+            "auth-file-id",
+            "auth-file-client",
+            ClientType::Public,
+            "none",
+        );
         repo.create_client(&client).await.unwrap();
         let user = User {
             id: "auth-file-user".to_string(),
@@ -1360,56 +1272,6 @@ mod tests {
             org: None,
         };
         repo.create_user(&user).await.unwrap();
-
-        async fn signed_refresh(
-            state: &std::sync::Arc<SharedState<FileRepository>>,
-            family_id: &str,
-            jti: &str,
-        ) -> String {
-            let now = util::now_seconds();
-            let mut extra = HashMap::new();
-            extra.insert(
-                "family_id".to_string(),
-                serde_json::Value::String(family_id.to_string()),
-            );
-            let claims = JwtClaims {
-                iss: Some("https://id.example.com".to_string()),
-                sub: Some("auth-file-user".to_string()),
-                aud: Some("auth-file-client".to_string()),
-                exp: Some((now + 3600) as usize),
-                nbf: Some(now as usize),
-                iat: Some(now as usize),
-                jti: Some(jti.to_string()),
-                extra,
-            };
-            state.signer.sign(&claims).unwrap()
-        }
-
-        fn refresh_req(token: String) -> TokenRequest {
-            TokenRequest {
-                grant_type: "refresh_token".to_string(),
-                refresh_token: Some(token),
-                code: None,
-                redirect_uri: None,
-                code_verifier: None,
-                client_id: None,
-                client_secret: None,
-                scope: None,
-                client_assertion: None,
-                client_assertion_type: None,
-                device_code: None,
-                auth_req_id: None,
-                assertion: None,
-                subject_token: None,
-                subject_token_type: None,
-                actor_token: None,
-                actor_token_type: None,
-                requested_token_type: None,
-                audience: None,
-                resource: None,
-                authorization_details: None,
-            }
-        }
 
         let now = util::now_seconds();
         let original_auth_time = now - 3600;
@@ -1432,8 +1294,15 @@ mod tests {
         };
         repo.create_token_family(&family).await.unwrap();
 
-        let token_1 = signed_refresh(&state, &family.id, "auth-file-jti-1").await;
-        let refreshed = refresh_token_grant(&state, &refresh_req(token_1), None)
+        let token_1 = signed_refresh(
+            &state,
+            "auth-file-user",
+            "auth-file-client",
+            &family.id,
+            "auth-file-jti-1",
+        )
+        .await;
+        let refreshed = refresh_token_grant(&state, &refresh_req(token_1, None), &client, None)
             .await
             .unwrap();
         let access = refreshed.access_token.clone();
@@ -1475,10 +1344,18 @@ mod tests {
             revoked: false,
         };
         repo.create_token_family(&legacy).await.unwrap();
-        let legacy_token = signed_refresh(&state, &legacy.id, "auth-legacy-jti").await;
-        let legacy_refreshed = refresh_token_grant(&state, &refresh_req(legacy_token), None)
-            .await
-            .unwrap();
+        let legacy_token = signed_refresh(
+            &state,
+            "auth-file-user",
+            "auth-file-client",
+            &legacy.id,
+            "auth-legacy-jti",
+        )
+        .await;
+        let legacy_refreshed =
+            refresh_token_grant(&state, &refresh_req(legacy_token, None), &client, None)
+                .await
+                .unwrap();
         let legacy_claims = state
             .signer
             .decode_signature_only(&legacy_refreshed.access_token)
@@ -1487,6 +1364,80 @@ mod tests {
         assert!(!legacy_claims.extra.contains_key("auth_time"));
         assert!(!legacy_claims.extra.contains_key("acr"));
         assert!(!legacy_claims.extra.contains_key("amr"));
+    }
+
+    #[tokio::test]
+    async fn refresh_rejects_foreign_authenticated_caller_without_consuming() {
+        // RFC 6749 section 6: only the owning client may redeem its family.
+        // A foreign caller must fail before mutation so the owner's token
+        // stays usable.
+        let (state, repo) = setup_state().await;
+        let now = util::now_seconds();
+        let owner = refresh_test_client("owner-id", "owner-client", ClientType::Public, "none");
+        let foreign =
+            refresh_test_client("foreign-id", "foreign-client", ClientType::Public, "none");
+        repo.create_client(&owner).await.unwrap();
+        repo.create_client(&foreign).await.unwrap();
+        let user = User {
+            id: "owner-user".to_string(),
+            realm_id: "test".to_string(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        };
+        repo.create_user(&user).await.unwrap();
+        let family = TokenFamily {
+            id: "owner-family".to_string(),
+            user_id: user.id.clone(),
+            client_id: "owner-client".to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url("owner-jti-1"),
+            scopes: vec!["openid".to_string()],
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
+            audience: vec!["owner-client".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: None,
+            issued_at: now,
+            revoked: false,
+        };
+        repo.create_token_family(&family).await.unwrap();
+
+        let stolen = signed_refresh(
+            &state,
+            "owner-user",
+            "owner-client",
+            &family.id,
+            "owner-jti-1",
+        )
+        .await;
+        let before = repo
+            .get_token_family(&family.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_refresh_hash;
+        let err = refresh_token_grant(&state, &refresh_req(stolen.clone(), None), &foreign, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QidError::Unauthorized { .. }),
+            "foreign caller must be rejected, got {err:?}"
+        );
+        let after = repo
+            .get_token_family(&family.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_refresh_hash;
+        assert_eq!(before, after, "foreign attempt must not consume refresh");
+        let ok = refresh_token_grant(&state, &refresh_req(stolen, None), &owner, None).await;
+        assert!(ok.is_ok(), "owner must still succeed: {ok:?}");
     }
 
     #[tokio::test]

@@ -181,7 +181,7 @@ async fn handle_token<R: Repository>(
         "client_credentials" => {
             client_credentials_grant(state, req, effective_client_id, cnf.as_ref()).await
         }
-        "refresh_token" => refresh_token_grant(state, req, cnf.as_ref()).await,
+        "refresh_token" => refresh_token_grant(state, req, &client, cnf.as_ref()).await,
         "urn:ietf:params:oauth:grant-type:token-exchange" => {
             advanced_subject_grant(state, req, &client, "token-exchange", cnf.as_ref()).await
         }

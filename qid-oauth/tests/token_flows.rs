@@ -149,6 +149,58 @@ async fn setup_with_config(config: QidConfig) -> (Router, String, Arc<SharedStat
     (app, token_path, state)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn create_user_with_code(
+    state: &Arc<SharedState<SqlRepository>>,
+    user_id: &str,
+    code: &str,
+    verifier: &str,
+    scopes: Vec<String>,
+    auth_time: Option<u64>,
+    acr: Option<String>,
+    amr: Vec<String>,
+    resource: Vec<String>,
+) {
+    state
+        .repo
+        .create_user(&User {
+            id: user_id.to_string(),
+            realm_id: "test".to_string(),
+            email: Some(format!("{user_id}@example.com")),
+            email_verified: true,
+            display_name: Some(user_id.to_string()),
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_authorization_code(&AuthorizationCode {
+            code_hash: util::sha256_base64url(code),
+            client_id: "test-client".to_string(),
+            user_id: user_id.to_string(),
+            realm_id: "test".to_string(),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            state: None,
+            nonce: None,
+            auth_time,
+            acr,
+            amr,
+            code_challenge: Some(util::sha256_base64url(verifier)),
+            code_challenge_method: Some("S256".to_string()),
+            scopes,
+            resource,
+            authorization_details: None,
+            expires_at: util::now_seconds() + 300,
+            used: false,
+            created_at: util::now_seconds(),
+        })
+        .await
+        .unwrap();
+}
+
 async fn seed_token_flow_clients(state: &Arc<SharedState<SqlRepository>>) {
     let clients = [
         Client {
@@ -1473,45 +1525,20 @@ async fn refresh_preserves_original_scope_ceiling() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.default_scope = "write".to_string();
     let (app, token_path, state) = setup_with_config(config).await;
-    let user = User {
-        id: "scope-ceiling-user".to_string(),
-        realm_id: "test".to_string(),
-        email: Some("scope-ceiling@example.com".to_string()),
-        email_verified: true,
-        display_name: Some("Scope Ceiling User".to_string()),
-        failed_login_attempts: 0,
-        locked_until: None,
-        org: None,
-    };
-    state.repo.create_user(&user).await.unwrap();
-
     let code = "scope-ceiling-code-1";
     let code_verifier = "e1f2a3b4c5d60718293a4b5c6d7e8f9012345678";
-    let auth_code = AuthorizationCode {
-        code_hash: util::sha256_base64url(code),
-        client_id: "test-client".to_string(),
-        user_id: "scope-ceiling-user".to_string(),
-        realm_id: "test".to_string(),
-        redirect_uri: "https://app.example.com/callback".to_string(),
-        state: None,
-        nonce: None,
-        auth_time: Some(1234),
-        acr: None,
-        amr: vec!["pwd".to_string()],
-        code_challenge: Some(util::sha256_base64url(code_verifier)),
-        code_challenge_method: Some("S256".to_string()),
-        scopes: vec!["read".to_string(), "profile".to_string()],
-        resource: Vec::new(),
-        authorization_details: None,
-        expires_at: util::now_seconds() + 300,
-        used: false,
-        created_at: util::now_seconds(),
-    };
-    state
-        .repo
-        .create_authorization_code(&auth_code)
-        .await
-        .unwrap();
+    create_user_with_code(
+        &state,
+        "scope-ceiling-user",
+        code,
+        code_verifier,
+        vec!["read".to_string(), "profile".to_string()],
+        Some(1234),
+        None,
+        vec!["pwd".to_string()],
+        Vec::new(),
+    )
+    .await;
 
     let token_request = Request::builder()
         .method(Method::POST)
@@ -1663,46 +1690,21 @@ async fn refresh_preserves_original_authentication_context() {
     // tokens deriving from an authorization response, including refresh.
     // Refresh must not manufacture a recent auth_time or drop assurance.
     let (app, token_path, state) = setup().await;
-    let user = User {
-        id: "auth-context-user".to_string(),
-        realm_id: "test".to_string(),
-        email: Some("auth-context@example.com".to_string()),
-        email_verified: true,
-        display_name: Some("Auth Context User".to_string()),
-        failed_login_attempts: 0,
-        locked_until: None,
-        org: None,
-    };
-    state.repo.create_user(&user).await.unwrap();
-
     let original_auth_time = util::now_seconds() - 3600;
     let code = "auth-context-code-1";
     let code_verifier = "f1e2d3c4b5a69788796a5b4c3d2e1f0012345678";
-    let auth_code = AuthorizationCode {
-        code_hash: util::sha256_base64url(code),
-        client_id: "test-client".to_string(),
-        user_id: "auth-context-user".to_string(),
-        realm_id: "test".to_string(),
-        redirect_uri: "https://app.example.com/callback".to_string(),
-        state: None,
-        nonce: None,
-        auth_time: Some(original_auth_time),
-        acr: Some("urn:qid:acr:password".to_string()),
-        amr: vec!["pwd".to_string()],
-        code_challenge: Some(util::sha256_base64url(code_verifier)),
-        code_challenge_method: Some("S256".to_string()),
-        scopes: vec!["openid".to_string()],
-        resource: Vec::new(),
-        authorization_details: None,
-        expires_at: util::now_seconds() + 300,
-        used: false,
-        created_at: util::now_seconds(),
-    };
-    state
-        .repo
-        .create_authorization_code(&auth_code)
-        .await
-        .unwrap();
+    create_user_with_code(
+        &state,
+        "auth-context-user",
+        code,
+        code_verifier,
+        vec!["openid".to_string()],
+        Some(original_auth_time),
+        Some("urn:qid:acr:password".to_string()),
+        vec!["pwd".to_string()],
+        Vec::new(),
+    )
+    .await;
 
     let token_request = Request::builder()
         .method(Method::POST)
@@ -1795,45 +1797,20 @@ async fn refresh_preserves_original_authentication_context() {
 async fn refresh_omits_unknown_authentication_context_without_inventing_time() {
     // Legacy/unknown context: omit unavailable claims, never synthesize now.
     let (app, token_path, state) = setup().await;
-    let user = User {
-        id: "auth-unknown-user".to_string(),
-        realm_id: "test".to_string(),
-        email: Some("auth-unknown@example.com".to_string()),
-        email_verified: true,
-        display_name: Some("Auth Unknown User".to_string()),
-        failed_login_attempts: 0,
-        locked_until: None,
-        org: None,
-    };
-    state.repo.create_user(&user).await.unwrap();
-
     let code = "auth-unknown-code-1";
     let code_verifier = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
-    let auth_code = AuthorizationCode {
-        code_hash: util::sha256_base64url(code),
-        client_id: "test-client".to_string(),
-        user_id: "auth-unknown-user".to_string(),
-        realm_id: "test".to_string(),
-        redirect_uri: "https://app.example.com/callback".to_string(),
-        state: None,
-        nonce: None,
-        auth_time: None,
-        acr: None,
-        amr: Vec::new(),
-        code_challenge: Some(util::sha256_base64url(code_verifier)),
-        code_challenge_method: Some("S256".to_string()),
-        scopes: vec!["openid".to_string()],
-        resource: Vec::new(),
-        authorization_details: None,
-        expires_at: util::now_seconds() + 300,
-        used: false,
-        created_at: util::now_seconds(),
-    };
-    state
-        .repo
-        .create_authorization_code(&auth_code)
-        .await
-        .unwrap();
+    create_user_with_code(
+        &state,
+        "auth-unknown-user",
+        code,
+        code_verifier,
+        vec!["openid".to_string()],
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await;
 
     let token_request = Request::builder()
         .method(Method::POST)
@@ -1913,46 +1890,21 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
         high_risk: false,
     }];
     let (app, token_path, state) = setup_with_config(config).await;
-    let user = User {
-        id: "auth-opaque-user".to_string(),
-        realm_id: "test".to_string(),
-        email: Some("auth-opaque@example.com".to_string()),
-        email_verified: true,
-        display_name: Some("Auth Opaque User".to_string()),
-        failed_login_attempts: 0,
-        locked_until: None,
-        org: None,
-    };
-    state.repo.create_user(&user).await.unwrap();
-
     let original_auth_time = util::now_seconds() - 3600;
     let code = "auth-opaque-code-1";
     let code_verifier = "b1c2d3e4f5a60718293a4b5c6d7e8f9012345678";
-    let auth_code = AuthorizationCode {
-        code_hash: util::sha256_base64url(code),
-        client_id: "test-client".to_string(),
-        user_id: "auth-opaque-user".to_string(),
-        realm_id: "test".to_string(),
-        redirect_uri: "https://app.example.com/callback".to_string(),
-        state: None,
-        nonce: None,
-        auth_time: Some(original_auth_time),
-        acr: Some("urn:qid:acr:password".to_string()),
-        amr: vec!["pwd".to_string()],
-        code_challenge: Some(util::sha256_base64url(code_verifier)),
-        code_challenge_method: Some("S256".to_string()),
-        scopes: vec!["openid".to_string()],
-        resource: vec!["https://api.example.com/default".to_string()],
-        authorization_details: None,
-        expires_at: util::now_seconds() + 300,
-        used: false,
-        created_at: util::now_seconds(),
-    };
-    state
-        .repo
-        .create_authorization_code(&auth_code)
-        .await
-        .unwrap();
+    create_user_with_code(
+        &state,
+        "auth-opaque-user",
+        code,
+        code_verifier,
+        vec!["openid".to_string()],
+        Some(original_auth_time),
+        Some("urn:qid:acr:password".to_string()),
+        vec!["pwd".to_string()],
+        vec!["https://api.example.com/default".to_string()],
+    )
+    .await;
 
     let token_request = Request::builder()
         .method(Method::POST)
@@ -2043,6 +1995,90 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
     );
     assert_eq!(introspection["acr"], "urn:qid:acr:password");
     assert_eq!(introspection["amr"], serde_json::json!(["pwd"]));
+}
+
+#[tokio::test]
+async fn refresh_rejects_cross_client_caller_without_consuming() {
+    // RFC 6749 section 6: the authenticated caller must own the family.
+    // A confidential refresh token must not redeem via another client's
+    // authentication, whether by form, Basic, or unauthenticated public use.
+    let (app, token_path, state) = setup().await;
+    let code = "cross-client-code-1";
+    let code_verifier = "c1d2e3f4a5b60718293a4b5c6d7e8f9012345678";
+    create_user_with_code(
+        &state,
+        "cross-client-user",
+        code,
+        code_verifier,
+        vec!["openid".to_string()],
+        Some(util::now_seconds() - 60),
+        None,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await;
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={}",
+            urlencoding::encode(code),
+            urlencoding::encode(code_verifier)
+        )))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let owner_refresh = token_json["refresh_token"].as_str().unwrap().to_string();
+
+    // Foreign confidential caller by form credentials must fail.
+    let foreign_form = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=service-client&client_secret=secret&refresh_token={}",
+            urlencoding::encode(&owner_refresh)
+        )))
+        .unwrap();
+    let foreign_form_response = app.clone().oneshot(foreign_form).await.unwrap();
+    assert_eq!(foreign_form_response.status(), StatusCode::UNAUTHORIZED);
+
+    // Basic selection must win over a spoofed form client_id.
+    let basic = base64::engine::general_purpose::STANDARD.encode("service-client:secret");
+    let foreign_basic = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Authorization", format!("Basic {basic}"))
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&owner_refresh)
+        )))
+        .unwrap();
+    let foreign_basic_response = app.clone().oneshot(foreign_basic).await.unwrap();
+    assert_eq!(foreign_basic_response.status(), StatusCode::UNAUTHORIZED);
+
+    // Owner public caller still succeeds: foreign attempts did not consume.
+    let owner_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&owner_refresh)
+        )))
+        .unwrap();
+    let owner_response = app.oneshot(owner_request).await.unwrap();
+    assert_eq!(owner_response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

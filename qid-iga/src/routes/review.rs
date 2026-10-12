@@ -53,6 +53,13 @@ pub(super) async fn create_access_review<R: Repository>(
         &dormant_subjects,
         &orphan_subjects,
     );
+    let due_at_epoch_seconds = match req.due_in_seconds {
+        Some(seconds) => match now.checked_add(seconds) {
+            Some(due_at) => Some(due_at),
+            None => return bad_request_response("access_review_due_time_overflow"),
+        },
+        None => None,
+    };
     let record = IgaAccessReviewCampaignRecord {
         id: campaign.id.clone(),
         tenant_id: tenant_id.clone(),
@@ -61,7 +68,7 @@ pub(super) async fn create_access_review<R: Repository>(
             .unwrap_or_else(|_| serde_json::json!([])),
         status: "open".to_string(),
         created_at_epoch_seconds: now,
-        due_at_epoch_seconds: req.due_in_seconds.map(|seconds| now + seconds),
+        due_at_epoch_seconds,
     };
     if let Err(error) = state.repo.store_iga_access_review_campaign(&record).await {
         return storage_error_response("store_iga_access_review_campaign", error);

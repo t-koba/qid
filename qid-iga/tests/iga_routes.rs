@@ -1851,3 +1851,81 @@ async fn validate_approvals_is_idempotent_and_prevents_double_issuance() {
         .expect("list grants failed");
     assert_eq!(grants.len(), 1, "only one grant must exist");
 }
+
+#[tokio::test]
+async fn access_request_route_rejects_unrepresentable_duration() {
+    let (app, _repo, session_id) = setup_with_repo().await;
+    let entitlement = serde_json::json!({
+        "id": "app:test:overflow",
+        "display_name": "Overflow probe",
+        "owner": "test",
+        "risk_level": "low",
+        "conflicting_entitlements": [],
+        "active": true
+    });
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/iga/v1/entitlements")
+                .header("Content-Type", "application/json")
+                .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                .body(Body::from(entitlement.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/iga/v1/access-requests")
+                .header("Content-Type", "application/json")
+                .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                .body(Body::from(
+                    r#"{
+                        "subject":"user-1",
+                        "entitlement":"app:test:overflow",
+                        "current_entitlements":[],
+                        "requested_duration_seconds":18446744073709551615,
+                        "reason":"unbounded grant"
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    assert_eq!(body["status"], "rejected");
+    assert!(
+        body["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|violation| violation == "duration_overflow")
+    );
+    assert!(body["expires_at_epoch_seconds"].is_null());
+}
+
+#[tokio::test]
+async fn access_review_route_rejects_unrepresentable_due_time() {
+    let (app, _repo, session_id) = setup_with_repo().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/iga/v1/access-reviews")
+                .header("Content-Type", "application/json")
+                .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                .body(Body::from(
+                    r#"{"reviewer":"auditor-1","due_in_seconds":18446744073709551615}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

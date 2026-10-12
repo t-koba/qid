@@ -206,8 +206,24 @@ pub fn evaluate_access_request(
         (None, max) => max,
     };
 
+    // An unrepresentable expiry cannot bound the grant, so fail closed: record the
+    // violation and reject instead of granting without an expiry.
+    let now = now_seconds();
+    let (expires_at_epoch_seconds, duration_overflow) = match effective_duration {
+        Some(duration) => match now.checked_add(duration) {
+            Some(expires_at) => (Some(expires_at), false),
+            None => (None, true),
+        },
+        None => (None, false),
+    };
+    if duration_overflow {
+        violations.push("duration_overflow".to_string());
+    }
+
     let approval_steps = approval_steps_for(entitlement, &violations);
-    let status = if !violations.is_empty() && entitlement.risk_level >= EntitlementRiskLevel::High {
+    let status = if duration_overflow
+        || (!violations.is_empty() && entitlement.risk_level >= EntitlementRiskLevel::High)
+    {
         AccessRequestStatus::Rejected
     } else if approval_steps.is_empty() {
         AccessRequestStatus::AutoApproved
@@ -222,7 +238,7 @@ pub fn evaluate_access_request(
         status,
         approval_steps,
         violations,
-        expires_at_epoch_seconds: effective_duration.map(|duration| now_seconds() + duration),
+        expires_at_epoch_seconds,
     }
 }
 
@@ -666,5 +682,55 @@ pub(crate) fn certification_type_as_str(certification_type: &CertificationType) 
         CertificationType::Manager => "manager",
         CertificationType::ApplicationOwner => "application_owner",
         CertificationType::PrivilegedRole => "privileged_role",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn overflow_probe_entitlement() -> Entitlement {
+        Entitlement {
+            id: "app:test:overflow".to_string(),
+            display_name: "Overflow probe".to_string(),
+            owner: "test".to_string(),
+            risk_level: EntitlementRiskLevel::Low,
+            conflicting_entitlements: Vec::new(),
+            max_duration_seconds: None,
+        }
+    }
+
+    #[test]
+    fn unrepresentable_duration_rejects_instead_of_granting_without_expiry() {
+        let catalog = vec![overflow_probe_entitlement()];
+        let evaluation =
+            evaluate_access_request("user-1", "app:test:overflow", &[], Some(u64::MAX), &catalog);
+        assert_eq!(evaluation.status, AccessRequestStatus::Rejected);
+        assert!(
+            evaluation
+                .violations
+                .iter()
+                .any(|violation| violation == "duration_overflow")
+        );
+        assert_eq!(evaluation.expires_at_epoch_seconds, None);
+    }
+
+    #[test]
+    fn largest_representable_duration_still_evaluates() {
+        let catalog = vec![overflow_probe_entitlement()];
+        let evaluation = evaluate_access_request(
+            "user-1",
+            "app:test:overflow",
+            &[],
+            Some(u64::MAX - now_seconds() - 3_600),
+            &catalog,
+        );
+        assert!(
+            !evaluation
+                .violations
+                .iter()
+                .any(|violation| violation == "duration_overflow")
+        );
+        assert!(evaluation.expires_at_epoch_seconds.is_some());
     }
 }

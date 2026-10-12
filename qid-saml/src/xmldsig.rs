@@ -9,17 +9,27 @@
 //!   3. Verify the `<ds:SignatureValue>` using the supplied public key
 //!      (RSA-SHA256 or ECDSA-SHA256).
 //!
-//! The C14N implementation is intentionally limited: it covers the
-//! subset of Canonical XML 1.0 that appears in SAML 2.0 AuthnRequest,
-//! Response, LogoutRequest, and LogoutResponse documents. It rejects
-//! anything that uses exclusive C14N or transform chains with XPath
-//! filters; those configurations must be offloaded to a full XMLDSig
-//! library in production.
+//! The C14N implementation is intentionally limited: it covers
+//! Canonical XML 1.0 and Exclusive XML Canonicalization 1.0 without
+//! XPath filtering, as they appear in SAML 2.0 AuthnRequest, Response,
+//! LogoutRequest, and LogoutResponse documents. SignedInfo
+//! canonicalization follows the declared
+//! `<ds:CanonicalizationMethod Algorithm>` exactly; reference digests
+//! follow each reference's declared `<ds:Transform>` list exactly.
+//! Unknown canonicalization methods, unknown transforms, and XPath
+//! filters fail closed and must be offloaded to a full XMLDSig library
+//! in production.
 
 use base64::Engine;
 use qid_core::error::{QidError, QidResult};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+
+/// Exact XMLDSig algorithm URIs accepted by the verifier. Matching is by
+/// equality: invented URIs that merely contain these strings are rejected.
+pub const ENVELOPED_SIGNATURE_URI: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
+pub const C14N10_URI: &str = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
+pub const EXC_C14N_URI: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
 
 /// Algorithms that this module can verify. The set is intentionally
 /// narrow and aligned with the SAML 2.0 Security Profile.
@@ -123,7 +133,7 @@ pub fn verify_saml_xml_signature(inputs: SamlSignatureInputs<'_>) -> QidResult<(
         verify_reference(document, reference)?;
     }
 
-    let signed_info_c14n = if uses_exclusive_c14n(&references) {
+    let signed_info_c14n = if signed_info_uses_exclusive_c14n(signed_info)? {
         let ns_prefixes = extract_ns_prefixes(signature);
         canonicalize_exclusive(signed_info, &ns_prefixes)?
     } else {
@@ -343,10 +353,9 @@ fn parse_references(signed_info: &str) -> QidResult<Vec<Reference>> {
             }
         }
         for transform in &transforms {
-            let lower = transform.to_ascii_lowercase();
-            if !lower.contains("enveloped-signature")
-                && !lower.contains("exc-c14n")
-                && !lower.contains("c14n")
+            if transform != ENVELOPED_SIGNATURE_URI
+                && transform != EXC_C14N_URI
+                && transform != C14N10_URI
             {
                 return Err(QidError::BadRequest {
                     message: format!("unsupported SAML transform {transform}"),
@@ -370,12 +379,25 @@ fn parse_references(signed_info: &str) -> QidResult<Vec<Reference>> {
 }
 
 /// Check if any reference uses Exclusive XML Canonicalization.
-fn uses_exclusive_c14n(references: &[Reference]) -> bool {
-    references.iter().any(|r| {
-        r.transforms
-            .iter()
-            .any(|t| t.to_ascii_lowercase().contains("exc-c14n"))
-    })
+/// Select SignedInfo canonicalization from its own declared method.
+/// Reference transforms describe reference digest processing, never
+/// SignedInfo canonicalization, so they must not influence this choice.
+fn signed_info_uses_exclusive_c14n(signed_info: &str) -> QidResult<bool> {
+    let method =
+        extract_tag_attr(signed_info, "CanonicalizationMethod", "Algorithm").ok_or_else(|| {
+            QidError::BadRequest {
+                message: "SAML <ds:CanonicalizationMethod Algorithm> is required".to_string(),
+            }
+        })?;
+    if method == EXC_C14N_URI {
+        Ok(true)
+    } else if method == C14N10_URI {
+        Ok(false)
+    } else {
+        Err(QidError::BadRequest {
+            message: format!("unsupported SAML canonicalization method {method}"),
+        })
+    }
 }
 
 /// Extract namespace prefix declarations from the signature element.
@@ -417,7 +439,7 @@ fn verify_reference(document: &str, reference: &Reference) -> QidResult<()> {
     let target_owned: String = if reference
         .transforms
         .iter()
-        .any(|t| t.contains("enveloped-signature"))
+        .any(|t| t == ENVELOPED_SIGNATURE_URI)
     {
         if let Some(start) = find_open_tag(target_slice, "Signature") {
             let end =
@@ -432,10 +454,7 @@ fn verify_reference(document: &str, reference: &Reference) -> QidResult<()> {
     } else {
         target_slice.to_string()
     };
-    let use_exc = reference
-        .transforms
-        .iter()
-        .any(|t| t.to_ascii_lowercase().contains("exc-c14n"));
+    let use_exc = reference.transforms.iter().any(|t| t == EXC_C14N_URI);
     let canonical = if use_exc {
         let ns_prefixes = extract_ns_prefixes(document);
         canonicalize_exclusive(&target_owned, &ns_prefixes)?
@@ -1330,6 +1349,48 @@ mod tests {
         format!(
             r##"<root xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:Signature>{signed_info}<ds:SignatureValue>e30=</ds:SignatureValue></ds:Signature></root>"##
         )
+    }
+
+    fn signed_info_with_method(method_attr: &str) -> String {
+        format!(
+            r##"<ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:CanonicalizationMethod {method_attr}/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#x"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>e30=</ds:DigestValue></ds:Reference></ds:SignedInfo>"##
+        )
+    }
+
+    #[test]
+    fn signed_info_canonicalization_follows_declared_method() {
+        let inclusive = signed_info_with_method(
+            r#"Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315""#,
+        );
+        assert!(
+            !signed_info_uses_exclusive_c14n(&inclusive).expect("inclusive method must parse"),
+            "an exclusive reference transform must not select exclusive SignedInfo canonicalization"
+        );
+        let exclusive =
+            signed_info_with_method(r#"Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#""#);
+        assert!(signed_info_uses_exclusive_c14n(&exclusive).expect("exclusive method must parse"));
+    }
+
+    #[test]
+    fn signed_info_canonicalization_rejects_missing_and_unknown_methods() {
+        let missing = signed_info_with_method("");
+        let err = signed_info_uses_exclusive_c14n(&missing).unwrap_err();
+        assert!(err.message().contains("CanonicalizationMethod"));
+        let unknown = signed_info_with_method(r#"Algorithm="http://example.com/invented-c14n""#);
+        let err = signed_info_uses_exclusive_c14n(&unknown).unwrap_err();
+        assert!(
+            err.message()
+                .contains("unsupported SAML canonicalization method")
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_invented_transform_containing_c14n() {
+        let signed_info = signed_info_with_transform(
+            "<ds:Transform Algorithm='http://example.com/not-c14n-at-all'/>",
+        );
+        let err = verify_document(&signed_envelope(&signed_info)).unwrap_err();
+        assert!(err.message().contains("unsupported SAML transform"));
     }
 
     #[test]

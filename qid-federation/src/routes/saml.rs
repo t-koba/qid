@@ -405,13 +405,34 @@ fn validate_saml_response_protocol(
                     .to_string(),
         });
     }
-    let audiences = assertion
+    // SAML AudienceRestriction groups combine with AND semantics: the realm
+    // issuer must appear in every group. Only direct Audience children of a
+    // direct AudienceRestriction group under Conditions count; stray Audience
+    // elements elsewhere never satisfy the check.
+    let conditions = assertion
         .descendants()
-        .filter(|node| is_element(*node, "Audience"))
-        .filter_map(|node| node.text())
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    if !audiences.contains(&expected_audience) {
+        .find(|node| is_element(*node, "Conditions"));
+    let mut restriction_count = 0;
+    if let Some(conditions) = conditions {
+        for restriction in conditions
+            .children()
+            .filter(|node| is_element(*node, "AudienceRestriction"))
+        {
+            restriction_count += 1;
+            let group = restriction
+                .children()
+                .filter(|node| is_element(*node, "Audience"))
+                .filter_map(|node| node.text())
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            if !group.contains(&expected_audience) {
+                return Err(QidError::BadRequest {
+                    message: "SAML Assertion Audience does not match realm issuer".to_string(),
+                });
+            }
+        }
+    }
+    if restriction_count == 0 {
         return Err(QidError::BadRequest {
             message: "SAML Assertion Audience does not match realm issuer".to_string(),
         });
@@ -635,6 +656,20 @@ mod tests {
         audience: &str,
         confirmation_data_attrs: &str,
     ) -> String {
+        response_with_conditions(
+            &format!(
+                r#"<saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300"><saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions>"#
+            ),
+            confirmation_data_attrs,
+            "",
+        )
+    }
+
+    fn response_with_conditions(
+        conditions_xml: &str,
+        confirmation_data_attrs: &str,
+        extra_xml: &str,
+    ) -> String {
         format!(
             r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="resp-1" Version="2.0" IssueInstant="1700000000" Destination="https://id.example.com/federation/corp/saml/acs">
   <saml:Issuer>https://idp.partner.example/metadata</saml:Issuer>
@@ -648,15 +683,31 @@ mod tests {
         <saml:SubjectConfirmationData {confirmation_data_attrs}/>
       </saml:SubjectConfirmation>
     </saml:Subject>
-    <saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300">
-      <saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction>
-    </saml:Conditions>
+    {conditions_xml}
     <saml:AttributeStatement>
       <saml:Attribute Name="email"><saml:AttributeValue>subject@example.com</saml:AttributeValue></saml:Attribute>
-    </saml:AttributeStatement>
+    </saml:AttributeStatement>{extra_xml}
   </saml:Assertion>
 </samlp:Response>"#
         )
+    }
+
+    fn sign_response(unsigned: &str) -> String {
+        let assertion_start = unsigned
+            .find("<saml:Assertion")
+            .expect("test response must contain assertion");
+        let assertion_end = unsigned
+            .find("</saml:Assertion>")
+            .map(|pos| pos + "</saml:Assertion>".len())
+            .expect("test response must contain assertion close");
+        let signature = qid_saml::sign_saml_element_with_key(
+            &unsigned[assertion_start..assertion_end],
+            "assert-1",
+            qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
+            TEST_KEY.as_bytes(),
+        )
+        .expect("test SAML response must sign");
+        unsigned.replace("<!--SIGNATURE-->", &signature)
     }
 
     fn signed_response(audience: &str) -> String {
@@ -726,6 +777,68 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.message().contains("Audience"));
+    }
+
+    #[test]
+    fn acs_validation_rejects_excluding_audience_restriction_group() {
+        // AND semantics: one group for this realm plus one for another realm
+        // must fail, even though the realm issuer appears in the assertion.
+        let unsigned = response_with_conditions(
+            r#"<saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300"><saml:AudienceRestriction><saml:Audience>https://id.example.com/realms/corp</saml:Audience></saml:AudienceRestriction><saml:AudienceRestriction><saml:Audience>https://other.example.com/realms/corp</saml:Audience></saml:AudienceRestriction></saml:Conditions>"#,
+            r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
+            "",
+        );
+        let err = validate_saml_acs_response(
+            &sign_response(&unsigned),
+            &provider(),
+            "https://id.example.com/realms/corp",
+            "https://id.example.com/federation/corp/saml/acs",
+            1_700_000_000,
+            60,
+        )
+        .unwrap_err();
+        assert!(err.message().contains("Audience"));
+    }
+
+    #[test]
+    fn acs_validation_ignores_audience_outside_restriction_groups() {
+        // A matching Audience outside Conditions/AudienceRestriction must not
+        // satisfy the check when the only real group excludes this realm.
+        let unsigned = response_with_conditions(
+            r#"<saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300"><saml:AudienceRestriction><saml:Audience>https://other.example.com/realms/corp</saml:Audience></saml:AudienceRestriction></saml:Conditions>"#,
+            r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
+            r#"<saml:Audience xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://id.example.com/realms/corp</saml:Audience>"#,
+        );
+        let err = validate_saml_acs_response(
+            &sign_response(&unsigned),
+            &provider(),
+            "https://id.example.com/realms/corp",
+            "https://id.example.com/federation/corp/saml/acs",
+            1_700_000_000,
+            60,
+        )
+        .unwrap_err();
+        assert!(err.message().contains("Audience"));
+    }
+
+    #[test]
+    fn acs_validation_accepts_repeated_matching_audience_groups() {
+        // Every group contains this realm, so AND semantics are satisfied.
+        let unsigned = response_with_conditions(
+            r#"<saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300"><saml:AudienceRestriction><saml:Audience>https://id.example.com/realms/corp</saml:Audience></saml:AudienceRestriction><saml:AudienceRestriction><saml:Audience>https://id.example.com/realms/corp</saml:Audience><saml:Audience>https://partner.example.com/app</saml:Audience></saml:AudienceRestriction></saml:Conditions>"#,
+            r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
+            "",
+        );
+        let validated = validate_saml_acs_response(
+            &sign_response(&unsigned),
+            &provider(),
+            "https://id.example.com/realms/corp",
+            "https://id.example.com/federation/corp/saml/acs",
+            1_700_000_000,
+            60,
+        )
+        .expect("all audience groups match this realm");
+        assert_eq!(validated.claims.subject, "subject@example.com");
     }
 
     #[test]

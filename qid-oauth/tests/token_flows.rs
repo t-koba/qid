@@ -68,7 +68,7 @@ async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> St
         .to_string()
 }
 
-async fn post_exchange_status(app: Router, token_path: &str, form_body: String) -> StatusCode {
+async fn post_token_status(app: Router, token_path: &str, form_body: String) -> StatusCode {
     let request = Request::builder()
         .method(Method::POST)
         .uri(token_path)
@@ -873,7 +873,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
 
     // Foreign JWT and opaque subjects are rejected without issuing.
     for subject in [&foreign_jwt, &foreign_opaque] {
-        let status = post_exchange_status(
+        let status = post_token_status(
             app.clone(),
             &token_path,
             format!(
@@ -885,7 +885,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
     // A same-realm subject with a foreign actor is rejected as well.
-    let status = post_exchange_status(
+    let status = post_token_status(
         app.clone(),
         &token_path,
         format!(
@@ -897,7 +897,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Same-realm exchange still succeeds: the gate is a boundary, not a block.
-    let status = post_exchange_status(
+    let status = post_token_status(
         app.clone(),
         &token_path,
         format!(
@@ -923,6 +923,53 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
         let record = state.repo.get_access_token(&jti).await.unwrap().unwrap();
         assert!(!record.revoked);
     }
+}
+
+#[tokio::test]
+async fn client_credentials_rejects_scope_outside_any_target_ceiling() {
+    // RFC 8707 section 2.2: each target's scope list is its own ceiling, so
+    // adding a permissive target must not widen a restrictive one.
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        OAuthResourceServerConfig {
+            audience: "api://reader".to_string(),
+            resources: Vec::new(),
+            scopes: vec!["read".to_string()],
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: false,
+        },
+        OAuthResourceServerConfig {
+            audience: "api://admin".to_string(),
+            resources: Vec::new(),
+            scopes: vec!["admin".to_string()],
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: false,
+        },
+    ];
+    let (app, token_path, _) = setup_with_config(config).await;
+    let status = post_token_status(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=admin&audience=api%3A%2F%2Freader".to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let status = post_token_status(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=admin&audience=api%3A%2F%2Freader%20api%3A%2F%2Fadmin".to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let status = post_token_status(
+        app,
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=admin&audience=api%3A%2F%2Fadmin".to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]

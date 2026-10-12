@@ -52,8 +52,7 @@ pub fn resolve_token_audience(
         return Ok(requested_audiences.to_vec());
     }
     let mut audiences = BTreeSet::new();
-    let mut allowed_scopes = BTreeSet::new();
-    let mut has_scope_restriction = false;
+    let mut selected_servers = Vec::new();
     for audience in requested_audiences {
         let server = resource_server_by_audience(resource_servers, audience).ok_or_else(|| {
             QidError::Unauthorized {
@@ -61,7 +60,7 @@ pub fn resolve_token_audience(
             }
         })?;
         require_sender_constraint(server, cnf)?;
-        collect_allowed_scopes(server, &mut allowed_scopes, &mut has_scope_restriction);
+        selected_servers.push(server);
         audiences.insert(audience.clone());
     }
     for resource in resources {
@@ -79,7 +78,7 @@ pub fn resolve_token_audience(
             });
         }
         require_sender_constraint(server, cnf)?;
-        collect_allowed_scopes(server, &mut allowed_scopes, &mut has_scope_restriction);
+        selected_servers.push(server);
         audiences.insert(server.audience.clone());
     }
     if audiences.is_empty() {
@@ -88,7 +87,7 @@ pub fn resolve_token_audience(
                 .to_string(),
         });
     }
-    validate_scopes(scopes, &allowed_scopes, has_scope_restriction)?;
+    validate_scopes_per_target(scopes, &selected_servers)?;
     Ok(audiences.into_iter().collect())
 }
 
@@ -128,31 +127,28 @@ fn require_sender_constraint(
     Ok(())
 }
 
-fn collect_allowed_scopes(
-    resource_server: &OAuthResourceServerConfig,
-    allowed_scopes: &mut BTreeSet<String>,
-    has_scope_restriction: &mut bool,
-) {
-    if resource_server.scopes.is_empty() {
-        return;
-    }
-    *has_scope_restriction = true;
-    allowed_scopes.extend(resource_server.scopes.iter().cloned());
-}
-
-fn validate_scopes(
+/// Validate requested scopes against every selected target: each configured
+/// resource-server scope list is that target's ceiling (RFC 8707 section 2.2
+/// recommends downscoping to each resource's needs), so a scope must appear
+/// in all selected servers that restrict scopes. Servers with an empty scope
+/// list impose no restriction, preserving the current opt-in semantics.
+fn validate_scopes_per_target(
     scopes: &[String],
-    allowed_scopes: &BTreeSet<String>,
-    has_scope_restriction: bool,
+    servers: &[&OAuthResourceServerConfig],
 ) -> QidResult<()> {
-    if !has_scope_restriction {
-        return Ok(());
-    }
-    for scope in scopes {
-        if !allowed_scopes.contains(scope) {
-            return Err(QidError::BadRequest {
-                message: format!("requested scope {scope} is not allowed for resource server"),
-            });
+    for server in servers {
+        if server.scopes.is_empty() {
+            continue;
+        }
+        for scope in scopes {
+            if !server.scopes.contains(scope) {
+                return Err(QidError::BadRequest {
+                    message: format!(
+                        "requested scope {scope} is not allowed for resource server {}",
+                        server.audience
+                    ),
+                });
+            }
         }
     }
     Ok(())
@@ -242,6 +238,88 @@ mod tests {
                 Some(&cnf),
             )
             .is_err()
+        );
+    }
+
+    fn server(audience: &str, scopes: Vec<&str>) -> OAuthResourceServerConfig {
+        OAuthResourceServerConfig {
+            audience: audience.to_string(),
+            resources: Vec::new(),
+            scopes: scopes.into_iter().map(str::to_string).collect(),
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: false,
+        }
+    }
+
+    #[test]
+    fn scope_ceiling_applies_per_target() {
+        let realm = realm_with_resource_servers(vec![
+            server("api://reader", vec!["read"]),
+            server("api://admin", vec!["admin"]),
+        ]);
+        // Single restrictive target still enforces its ceiling.
+        assert!(
+            super::resolve_token_audience(
+                &realm,
+                &["api://reader".to_string()],
+                &[],
+                &["admin".to_string()],
+                None,
+            )
+            .is_err()
+        );
+        // Adding a permissive target must not widen the restrictive ceiling.
+        assert!(
+            super::resolve_token_audience(
+                &realm,
+                &["api://reader".to_string(), "api://admin".to_string()],
+                &[],
+                &["admin".to_string()],
+                None,
+            )
+            .is_err()
+        );
+        // A scope inside every selected ceiling succeeds with both audiences.
+        let audiences = super::resolve_token_audience(
+            &realm_with_resource_servers(vec![
+                server("api://reader", vec!["read", "admin"]),
+                server("api://admin", vec!["admin"]),
+            ]),
+            &["api://reader".to_string(), "api://admin".to_string()],
+            &[],
+            &["admin".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(audiences, vec!["api://admin", "api://reader"]);
+    }
+
+    #[test]
+    fn unrestricted_target_imposes_no_scope_ceiling() {
+        let realm = realm_with_resource_servers(vec![
+            server("api://open", Vec::new()),
+            server("api://reader", vec!["read"]),
+        ]);
+        assert!(
+            super::resolve_token_audience(
+                &realm,
+                &["api://open".to_string(), "api://reader".to_string()],
+                &[],
+                &["read".to_string()],
+                None,
+            )
+            .is_ok()
+        );
+        assert!(
+            super::resolve_token_audience(
+                &realm,
+                &["api://open".to_string()],
+                &[],
+                &["anything".to_string()],
+                None,
+            )
+            .is_ok()
         );
     }
 

@@ -263,13 +263,13 @@ pub async fn csp_headers_layer(req: Request, next: Next) -> Response {
 
 /// Set `Strict-Transport-Security` headers on every response.
 ///
-/// RFC 6797 §7.2 requires HSTS to be sent over plaintext HTTP responses that
-/// may be served alongside HTTPS endpoints. We default to a one-year policy
-/// with `includeSubDomains` and `preload` directives because the deployment
-/// is expected to serve exclusively under its own domain.
+/// Per RFC 6797, user agents ignore HSTS received over plaintext HTTP and
+/// honor it only over TLS. We default to a one-year policy with
+/// `includeSubDomains`. `preload` stays opt-in because it requires operator
+/// submission to browser preload lists.
 pub async fn hsts_layer(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
-    let value = HeaderValue::from_static("max-age=31536000; includeSubDomains; preload");
+    let value = HeaderValue::from_static("max-age=31536000; includeSubDomains");
     response
         .headers_mut()
         .insert(STRICT_TRANSPORT_SECURITY, value);
@@ -743,6 +743,43 @@ mod tests {
         assert!(
             csp.contains("frame-ancestors 'none'"),
             "CSP must deny framing, got: {csp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hsts_layer_defaults_without_preload() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(hsts_layer));
+
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let hsts = res
+            .headers()
+            .get("strict-transport-security")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            hsts.contains("max-age=31536000"),
+            "HSTS must carry one-year max-age, got: {hsts}"
+        );
+        assert!(
+            hsts.contains("includeSubDomains"),
+            "HSTS must include subdomains, got: {hsts}"
+        );
+        assert!(
+            !hsts.contains("preload"),
+            "HSTS preload must stay opt-in, got: {hsts}"
         );
     }
 

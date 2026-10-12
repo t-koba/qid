@@ -1220,4 +1220,151 @@ mod tests {
         assert_eq!(Decision::parse(""), None);
         assert_eq!(Decision::parse("ALLOW"), None);
     }
+
+    fn expression_rule(name: &str, expression: Expression) -> Rule {
+        Rule {
+            name: name.to_string(),
+            rule_type: RuleType::Allow,
+            action: "*".to_string(),
+            resource_host: None,
+            conditions: vec![],
+            expression: Some(expression),
+            rate_limit_profile: None,
+            inject_headers: None,
+            pep: PepPolicyActions::default(),
+        }
+    }
+
+    fn risk_above(value: u64) -> Expression {
+        Expression::FieldCondition {
+            field: "risk.score".to_string(),
+            op: ">".to_string(),
+            value: Value::Number(value.into()),
+        }
+    }
+
+    fn group_is(name: &str) -> Expression {
+        Expression::FieldCondition {
+            field: "group".to_string(),
+            op: "equals".to_string(),
+            value: Value::String(name.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn or_with_absent_evidence_stays_unknown() {
+        let mut engine = NativePolicyEngine::new();
+        engine.load(
+            PolicyBundle {
+                version: "1".to_string(),
+                rules: vec![expression_rule(
+                    "risky-or-finance",
+                    Expression::Or {
+                        or: vec![risk_above(100), group_is("finance")],
+                    },
+                )],
+                default_decision: Decision::Deny,
+            },
+            "test".to_string(),
+        );
+
+        // Absent risk with a non-matching group is unknown, not a match:
+        // absence must not satisfy a disjunction.
+        assert_eq!(
+            engine.decide(&PolicyContext::default()).await.decision,
+            Decision::Deny
+        );
+        let finance = PolicyContext {
+            groups: vec!["finance".to_string()],
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&finance).await.decision, Decision::Allow);
+        let risky = PolicyContext {
+            risk_score: Some(200),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&risky).await.decision, Decision::Allow);
+    }
+
+    #[tokio::test]
+    async fn and_with_absent_evidence_stays_unknown() {
+        let mut engine = NativePolicyEngine::new();
+        engine.load(
+            PolicyBundle {
+                version: "1".to_string(),
+                rules: vec![expression_rule(
+                    "risky-finance",
+                    Expression::And {
+                        and: vec![risk_above(100), group_is("finance")],
+                    },
+                )],
+                default_decision: Decision::Deny,
+            },
+            "test".to_string(),
+        );
+
+        assert_eq!(
+            engine.decide(&PolicyContext::default()).await.decision,
+            Decision::Deny
+        );
+        let both = PolicyContext {
+            groups: vec!["finance".to_string()],
+            risk_score: Some(200),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&both).await.decision, Decision::Allow);
+        // Established counter-evidence still denies the conjunction even
+        // when the other input is absent.
+        let low_unknown_group = PolicyContext {
+            risk_score: Some(10),
+            ..PolicyContext::default()
+        };
+        assert_eq!(
+            engine.decide(&low_unknown_group).await.decision,
+            Decision::Deny
+        );
+    }
+
+    #[tokio::test]
+    async fn negation_over_conjunction_with_absent_evidence_does_not_match() {
+        let mut engine = NativePolicyEngine::new();
+        engine.load(
+            PolicyBundle {
+                version: "1".to_string(),
+                rules: vec![expression_rule(
+                    "not-risky-finance",
+                    Expression::Not {
+                        not: Box::new(Expression::And {
+                            and: vec![risk_above(100), group_is("finance")],
+                        }),
+                    },
+                )],
+                default_decision: Decision::Deny,
+            },
+            "test".to_string(),
+        );
+
+        // And(absent, true) is unknown, so its negation is unknown too:
+        // absent evidence never satisfies the rule through negation.
+        let finance_unknown_risk = PolicyContext {
+            groups: vec!["finance".to_string()],
+            ..PolicyContext::default()
+        };
+        assert_eq!(
+            engine.decide(&finance_unknown_risk).await.decision,
+            Decision::Deny
+        );
+        // Established counter-evidence annihilates the conjunction even
+        // with the other input absent, so the negation matches soundly.
+        assert_eq!(
+            engine.decide(&PolicyContext::default()).await.decision,
+            Decision::Allow
+        );
+        let plain = PolicyContext {
+            groups: vec!["engineering".to_string()],
+            risk_score: Some(10),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&plain).await.decision, Decision::Allow);
+    }
 }

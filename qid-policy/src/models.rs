@@ -409,7 +409,9 @@ pub(crate) fn evaluate_expression<'a>(
                         Some(true) => {}
                     }
                 }
-                Some(!unknown)
+                // Absent evidence keeps the conjunction unknown, never false:
+                // only established counter-evidence (above) denies the match.
+                if unknown { None } else { Some(true) }
             }
             Expression::Or { or } => {
                 let mut unknown = false;
@@ -420,7 +422,9 @@ pub(crate) fn evaluate_expression<'a>(
                         Some(false) => {}
                     }
                 }
-                Some(unknown)
+                // Absent evidence keeps the disjunction unknown, never true:
+                // only established evidence (above) grants the match.
+                if unknown { None } else { Some(false) }
             }
             Expression::Not { not } => evaluate_expression(not, ctx, rebac).await.map(|v| !v),
             Expression::InGroup { in_group } => Some(ctx.in_group(in_group)),

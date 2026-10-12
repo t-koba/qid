@@ -675,6 +675,38 @@ fn select_resource_server<'a>(
     }
 }
 
+/// Extract the UserInfo access token, accepting the `Bearer` and `DPoP`
+/// authorization schemes (RFC 9449 section 7.1). Binding enforcement stays in
+/// `enforce_sender_constrained_access_token`; other credential surfaces keep
+/// using the shared Bearer-only extractor unchanged.
+fn extract_userinfo_token(headers: &axum::http::HeaderMap) -> QidResult<(&str, bool)> {
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| QidError::Unauthorized {
+            message: "bearer access token is required".to_string(),
+        })?
+        .trim();
+    let Some((scheme, token)) = value.split_once(' ') else {
+        return Err(QidError::Unauthorized {
+            message: "Authorization header must use the Bearer or DPoP scheme".to_string(),
+        });
+    };
+    let is_dpop = scheme.eq_ignore_ascii_case("DPoP");
+    if !is_dpop && !scheme.eq_ignore_ascii_case("Bearer") {
+        return Err(QidError::Unauthorized {
+            message: "Authorization header must use the Bearer or DPoP scheme".to_string(),
+        });
+    }
+    let token = token.trim();
+    if token.is_empty() || token.contains(' ') {
+        return Err(QidError::Unauthorized {
+            message: "access token is malformed".to_string(),
+        });
+    }
+    Ok((token, is_dpop))
+}
+
 async fn userinfo<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: axum::http::HeaderMap,
@@ -690,8 +722,8 @@ async fn userinfo<R: Repository>(
         });
     }
     let resource_metadata = userinfo_resource_metadata_url(&state);
-    let token = match qid_oauth::endpoints::extract_bearer_token(&headers) {
-        Ok(token) => token,
+    let (token, is_dpop_scheme) = match extract_userinfo_token(&headers) {
+        Ok(parsed) => parsed,
         Err(_) => {
             return qid_http::oauth_error_response_with_bearer_and_metadata(
                 axum::http::StatusCode::UNAUTHORIZED,
@@ -725,6 +757,20 @@ async fn userinfo<R: Repository>(
             resource_metadata.as_deref(),
         );
     };
+    if is_dpop_scheme
+        && decoded
+            .cnf
+            .as_ref()
+            .and_then(|cnf| cnf.get("jkt"))
+            .is_none()
+    {
+        return qid_http::oauth_error_response_with_bearer_and_metadata(
+            axum::http::StatusCode::UNAUTHORIZED,
+            "invalid_token",
+            "DPoP scheme requires a sender-constrained access token",
+            resource_metadata.as_deref(),
+        );
+    }
     if !realm.protocols.oidc.enabled || !realm.protocols.oidc.userinfo {
         return qid_http::error_response(QidError::BadRequest {
             message: "OIDC UserInfo is disabled for token realm".to_string(),

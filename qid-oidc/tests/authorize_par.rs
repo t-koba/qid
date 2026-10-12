@@ -46,6 +46,32 @@ fn db_url() -> String {
     format!("sqlite:{}", path.display())
 }
 
+fn dpop_test_key() -> (String, qid_crypto::Jwk) {
+    static KEY: OnceLock<(String, qid_crypto::Jwk)> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let generated = generate_es256("userinfo-dpop-key").expect("DPoP key generation failed");
+        (generated.private_pem, generated.public_jwk)
+    })
+    .clone()
+}
+
+fn dpop_proof(
+    jti: &str,
+    htm: &str,
+    htu: &str,
+    ath: Option<&str>,
+    key: Option<(String, qid_crypto::Jwk)>,
+) -> String {
+    let (private_pem, jwk) = key.unwrap_or_else(dpop_test_key);
+    let mut payload =
+        serde_json::json!({"jti": jti, "htm": htm, "htu": htu, "iat": util::now_seconds()});
+    if let Some(ath) = ath {
+        payload["ath"] = serde_json::json!(ath);
+    }
+    sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "dpop+jwt", &payload)
+        .expect("DPoP proof signing failed")
+}
+
 async fn setup() -> (Router, Arc<SharedState<SqlRepository>>) {
     let mut config = test_helpers::test_config();
     // The test signer is HS256-based; permit HS256 for the test realm so
@@ -1650,4 +1676,162 @@ async fn userinfo_401_omits_pointer_when_userinfo_unconfigured() {
         !challenge.contains("resource_metadata"),
         "unexpected challenge: {challenge}"
     );
+}
+
+#[tokio::test]
+async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
+    // RFC 9449 section 7.1: an issued DPoP-bound token must work with the
+    // DPoP authorization scheme, with proof, key, and ath enforced.
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.dpop.enabled = true;
+    let (app, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&Client {
+            id: "client-userinfo-service".to_string(),
+            realm_id: "test".to_string(),
+            client_id: "userinfo-service".to_string(),
+            client_type: ClientType::Confidential,
+            token_endpoint_auth_method: "client_secret_post".to_string(),
+            client_secret_hash: Some(qid_core::util::client_secret_hash("secret")),
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: qid_core::models::default_client_jwks(),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["client_credentials".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        })
+        .await
+        .unwrap();
+
+    let token_htu = format!("https://id.example.com{}", state.paths.token);
+    let issue_proof = dpop_proof("userinfo-issue-1", "POST", &token_htu, None, None);
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.token)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", issue_proof)
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=userinfo-service&client_secret=secret&scope=openid",
+        ))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let token_bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&token_bytes).unwrap();
+    assert_eq!(token_json["token_type"], "DPoP");
+    let bound_token = token_json["access_token"].as_str().unwrap().to_string();
+
+    let userinfo_htu = format!("https://id.example.com{}", state.paths.userinfo);
+    let ath = util::sha256_base64url(&bound_token);
+    let get_userinfo = |scheme: &str, token: &str, proof: Option<String>| {
+        let mut builder = Request::builder()
+            .method(Method::GET)
+            .uri(&state.paths.userinfo)
+            .header("Authorization", format!("{scheme} {token}"));
+        if let Some(proof) = proof {
+            builder = builder.header("DPoP", proof);
+        }
+        app.clone().oneshot(builder.body(Body::empty()).unwrap())
+    };
+    let valid_proof = || dpop_proof("userinfo-use", "GET", &userinfo_htu, Some(&ath), None);
+
+    // DPoP scheme with a correct proof succeeds.
+    let response = get_userinfo("DPoP", &bound_token, Some(valid_proof()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Missing proof, wrong key, and wrong ath all fail without disclosing.
+    let response = get_userinfo("DPoP", &bound_token, None).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let other_key = generate_es256("userinfo-other-key").unwrap();
+    let response = get_userinfo(
+        "DPoP",
+        &bound_token,
+        Some(dpop_proof(
+            "userinfo-wrong-key",
+            "GET",
+            &userinfo_htu,
+            Some(&ath),
+            Some((other_key.private_pem, other_key.public_jwk)),
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = get_userinfo(
+        "DPoP",
+        &bound_token,
+        Some(dpop_proof(
+            "userinfo-wrong-ath",
+            "GET",
+            &userinfo_htu,
+            Some("nope"),
+            None,
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // The DPoP scheme requires a sender-constrained token.
+    let plain_request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.token)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=userinfo-service&client_secret=secret&scope=openid",
+        ))
+        .unwrap();
+    let plain_response = app.clone().oneshot(plain_request).await.unwrap();
+    assert_eq!(plain_response.status(), StatusCode::OK);
+    let plain_bytes = plain_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let plain_json: serde_json::Value = serde_json::from_slice(&plain_bytes).unwrap();
+    let plain_token = plain_json["access_token"].as_str().unwrap();
+    let plain_ath = util::sha256_base64url(plain_token);
+    let response = get_userinfo(
+        "DPoP",
+        plain_token,
+        Some(dpop_proof(
+            "userinfo-plain",
+            "GET",
+            &userinfo_htu,
+            Some(&plain_ath),
+            None,
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Ordinary Bearer presentation of the unbound token still works.
+    let bearer_request = Request::builder()
+        .method(Method::GET)
+        .uri(&state.paths.userinfo)
+        .header("Authorization", format!("Bearer {plain_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let bearer_response = app.oneshot(bearer_request).await.unwrap();
+    assert_eq!(bearer_response.status(), StatusCode::OK);
 }

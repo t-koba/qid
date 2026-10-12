@@ -319,7 +319,9 @@ pub struct HttpMessageSignatureConfig {
 impl Default for HttpMessageSignatureConfig {
     fn default() -> Self {
         Self {
-            shared_secret: b"qid-fapi-default-please-override".to_vec(),
+            // No placeholder secret: verification must fail closed without
+            // operator-configured key material.
+            shared_secret: Vec::new(),
             key_id: None,
             keys: Vec::new(),
             max_age_seconds: 300,
@@ -442,12 +444,18 @@ fn select_http_message_signature_secret<'a>(
             .iter()
             .find(|key| key.key_id == key_id)
             .ok_or_else(|| "HTTP message signature keyid is not allowed".to_string())?;
+        if key.shared_secret.is_empty() {
+            return Err("HTTP message signature secret is not configured".to_string());
+        }
         return Ok(key.shared_secret.as_slice());
     }
     if let Some(expected_key_id) = config.key_id.as_deref()
         && key_id != Some(expected_key_id)
     {
         return Err("HTTP message signature keyid is not allowed".to_string());
+    }
+    if config.shared_secret.is_empty() {
+        return Err("HTTP message signature secret is not configured".to_string());
     }
     Ok(config.shared_secret.as_slice())
 }
@@ -815,7 +823,10 @@ mod tests {
             .header("host", "example.com")
             .body(axum::body::Body::empty())
             .unwrap();
-        let config = HttpMessageSignatureConfig::default();
+        let config = HttpMessageSignatureConfig {
+            shared_secret: b"test-secret-32-bytes-long-for-hmac".to_vec(),
+            ..HttpMessageSignatureConfig::default()
+        };
         let err = verify_http_message_signature(
             &req,
             "sig1=(\"@method\" \"@path\");alg=\"rsa-pss-sha512\";created=1700000000",
@@ -835,7 +846,10 @@ mod tests {
             .header("content-digest", "sha-256=:aGk=:")
             .body(axum::body::Body::empty())
             .unwrap();
-        let config = HttpMessageSignatureConfig::default();
+        let config = HttpMessageSignatureConfig {
+            shared_secret: b"test-secret-32-bytes-long-for-hmac".to_vec(),
+            ..HttpMessageSignatureConfig::default()
+        };
         let err = verify_http_message_signature(
             &req,
             "sig1=(\"@method\" \"@query\" \"content-digest\");alg=\"hmac-sha256\"",
@@ -847,6 +861,30 @@ mod tests {
             err.contains("unsupported covered component"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn http_signature_fails_closed_without_secret() {
+        let config = HttpMessageSignatureConfig::default();
+        assert!(
+            config.shared_secret.is_empty(),
+            "default must not carry a placeholder secret"
+        );
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("https://example.com/path")
+            .header("host", "example.com")
+            .header("content-digest", "sha-256=:aGk=:")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let err = verify_http_message_signature(
+            &req,
+            "sig1=(\"@method\" \"@path\" \"content-digest\");alg=\"hmac-sha256\"",
+            "sig1=:aGk=:",
+            &config,
+        )
+        .expect_err("unconfigured secret must fail closed");
+        assert!(err.contains("not configured"), "unexpected error: {err}");
     }
 
     #[test]

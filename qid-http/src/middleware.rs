@@ -277,7 +277,8 @@ pub async fn hsts_layer(req: Request, next: Next) -> Response {
 }
 
 pub async fn zero_rtt_rejection_layer(req: Request, next: Next) -> Response {
-    if req.headers().contains_key("early-data") || req.headers().contains_key("Early-Data") {
+    // HeaderMap keys are case-insensitive, so one lookup covers all casings.
+    if req.headers().contains_key("early-data") {
         let mut response = Response::new(axum::body::Body::empty());
         *response.status_mut() = StatusCode::TOO_EARLY;
         response.headers_mut().insert(
@@ -788,6 +789,42 @@ mod tests {
         assert!(
             !hsts.contains("preload"),
             "HSTS preload must stay opt-in, got: {hsts}"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_rtt_rejection_is_case_insensitive() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(zero_rtt_rejection_layer));
+
+        async fn status_for(app: Router, name: Option<&str>) -> StatusCode {
+            let mut builder = Request::builder().uri("/health");
+            if let Some(name) = name {
+                builder = builder.header(name, "1");
+            }
+            let req = builder.body(Body::empty()).unwrap();
+            app.oneshot(req).await.unwrap().status()
+        }
+
+        assert_eq!(status_for(app.clone(), None).await, StatusCode::OK);
+        assert_eq!(
+            status_for(app.clone(), Some("early-data")).await,
+            StatusCode::TOO_EARLY
+        );
+        assert_eq!(
+            status_for(app.clone(), Some("Early-Data")).await,
+            StatusCode::TOO_EARLY
+        );
+        assert_eq!(
+            status_for(app.clone(), Some("EARLY-DATA")).await,
+            StatusCode::TOO_EARLY
         );
     }
 

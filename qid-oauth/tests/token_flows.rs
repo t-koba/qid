@@ -1337,6 +1337,135 @@ async fn mtls_client_credentials_accepts_authenticated_pep_metadata() {
 }
 
 #[tokio::test]
+async fn mtls_bound_token_introspects_without_presented_certificate() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.mtls.enabled = true;
+    config.realms[0].protocols.oauth.introspection.jwt_response = true;
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations = vec![PepRegistrationConfig {
+        name: "egress-main".to_string(),
+        audience: Some("qid-pep-adapter".to_string()),
+        capabilities: Vec::new(),
+        assertion: Default::default(),
+        decision: Default::default(),
+        auth: Default::default(),
+    }];
+    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://default".to_string(),
+        resources: vec!["https://api.example.com/default".to_string()],
+        scopes: Vec::new(),
+        introspection_client_ids: vec!["introspection-client".to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let registered_thumbprint = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    let adapter_auth = build_adapter_auth_token(
+        &state,
+        "egress-main",
+        "qid-pep-adapter",
+        registered_thumbprint,
+    );
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header(
+            "x-qid-pep-adapter-authorization",
+            format!("Bearer {adapter_auth}"),
+        )
+        .header("x-qid-mtls-x5t-s256", registered_thumbprint)
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=mtls-client&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
+        ))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let access_token = json["access_token"].as_str().unwrap().to_string();
+    assert_eq!(json["token_type"], "Bearer");
+    let issued_claims = state
+        .signer
+        .decode_signature_only(&access_token)
+        .unwrap()
+        .claims;
+    assert_eq!(
+        issued_claims.extra["cnf"]["x5t#S256"],
+        serde_json::Value::String(registered_thumbprint.to_string())
+    );
+
+    // RFC 8705 section 3.2: the introspection caller authenticates as a
+    // resource server and receives cnf.x5t#S256 as metadata. The inspected
+    // token's certificate is not presented on this call; comparison happens
+    // at the protected resource.
+    let introspect_body = format!(
+        "token={}&client_id=introspection-client&client_secret=secret",
+        urlencoding::encode(&access_token)
+    );
+    let introspect_request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(introspect_body))
+        .unwrap();
+    let introspect_response = app.clone().oneshot(introspect_request).await.unwrap();
+    assert_eq!(introspect_response.status(), StatusCode::OK);
+    let bytes = introspect_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(introspection["active"], true);
+    assert_eq!(introspection["client_id"], "mtls-client");
+    assert_eq!(
+        introspection["cnf"]["x5t#S256"],
+        serde_json::Value::String(registered_thumbprint.to_string())
+    );
+
+    let jwt_body = format!(
+        "token={}&client_id=introspection-client&client_secret=secret&response_format=jwt",
+        urlencoding::encode(&access_token)
+    );
+    let jwt_request = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(jwt_body))
+        .unwrap();
+    let jwt_response = app.oneshot(jwt_request).await.unwrap();
+    assert_eq!(jwt_response.status(), StatusCode::OK);
+    let bytes = jwt_response.into_body().collect().await.unwrap().to_bytes();
+    let jwt_introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(jwt_introspection["active"], true);
+    assert_eq!(
+        jwt_introspection["cnf"]["x5t#S256"],
+        serde_json::Value::String(registered_thumbprint.to_string())
+    );
+    let token_introspection = jwt_introspection["token_introspection"]
+        .as_str()
+        .expect("JWT introspection response should be present");
+    let claims = state
+        .signer
+        .decode_signature_only(token_introspection)
+        .unwrap()
+        .claims;
+    assert_eq!(claims.aud.as_deref(), Some("introspection-client"));
+    assert_eq!(
+        claims.extra["cnf"]["x5t#S256"],
+        serde_json::Value::String(registered_thumbprint.to_string())
+    );
+}
+
+#[tokio::test]
 async fn opaque_client_credentials_token_introspects_and_revokes() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.tokens.access_token_format = TokenFormat::Opaque;

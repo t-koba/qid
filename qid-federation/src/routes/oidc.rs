@@ -102,11 +102,7 @@ pub async fn extract_claims_from_oidc_response(
             && let Ok(payload) = util::decode_base64url(parts[1])
             && let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&payload)
         {
-            let sub = claims
-                .get("sub")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let sub = extract_oidc_subject(&claims, "ID token")?;
             let mut map = std::collections::BTreeMap::new();
             if let Some(obj) = claims.as_object() {
                 for (k, v) in obj {
@@ -134,11 +130,7 @@ pub async fn extract_claims_from_oidc_response(
     })?;
 
     let userinfo = fetch_userinfo(userinfo_url, access_token).await?;
-    let sub = userinfo
-        .get("sub")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let sub = extract_oidc_subject(&userinfo, "userinfo")?;
     let mut map = std::collections::BTreeMap::new();
     if let Some(obj) = userinfo.as_object() {
         for (k, v) in obj {
@@ -150,6 +142,18 @@ pub async fn extract_claims_from_oidc_response(
         subject: sub,
         claims: map,
     })
+}
+
+/// Require a non-empty string subject before any link lookup or persistence.
+/// Missing, non-string, and empty `sub` values fail closed instead of
+/// collapsing distinct provider responses onto one shared identity.
+fn extract_oidc_subject(source: &serde_json::Value, context: &str) -> Result<String, QidError> {
+    match source.get("sub").and_then(|v| v.as_str()) {
+        Some(sub) if !sub.is_empty() => Ok(sub.to_string()),
+        _ => Err(QidError::BadRequest {
+            message: format!("OIDC {context} subject (sub) must be a non-empty string"),
+        }),
+    }
 }
 
 mod util {
@@ -345,5 +349,51 @@ pub async fn oidc_inbound_callback<R: Repository>(
             Json(serde_json::json!({"error": "login_plan_execution_failed", "message": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id_token_response(sub_json: &str) -> serde_json::Value {
+        use base64::Engine;
+        let body = if sub_json.is_empty() {
+            "\"iss\":\"https://provider.example.com\"".to_string()
+        } else {
+            format!("\"iss\":\"https://provider.example.com\",{sub_json}")
+        };
+        let payload =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{{{body}}}"));
+        serde_json::json!({ "id_token": format!("header.{payload}.signature") })
+    }
+
+    #[tokio::test]
+    async fn oidc_rejects_missing_non_string_and_empty_subjects() {
+        for (name, sub_json) in [
+            ("missing", ""),
+            ("non-string", "\"sub\":123"),
+            ("empty", "\"sub\":\"\""),
+        ] {
+            let response = id_token_response(sub_json);
+            let err =
+                extract_claims_from_oidc_response(&response, None, "https://provider.example.com")
+                    .await
+                    .unwrap_err();
+            assert!(
+                err.message().contains("subject (sub)"),
+                "{name} subject must fail closed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn oidc_accepts_valid_subject() {
+        let response = id_token_response("\"sub\":\"user-123\"");
+        let claims =
+            extract_claims_from_oidc_response(&response, None, "https://provider.example.com")
+                .await
+                .expect("valid subject must extract");
+        assert_eq!(claims.subject, "user-123");
     }
 }

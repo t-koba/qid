@@ -196,6 +196,7 @@ pub(in crate::sql) struct TokenFamilyRow {
     client_id: String,
     realm_id: String,
     current_refresh_hash: String,
+    scopes: Option<String>,
     audience: Option<String>,
     resource: Option<String>,
     authorization_details: Option<String>,
@@ -212,6 +213,10 @@ impl From<TokenFamilyRow> for TokenFamily {
             client_id: row.client_id,
             realm_id: row.realm_id,
             current_refresh_hash: row.current_refresh_hash,
+            scopes: row
+                .scopes
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default(),
             audience: row
                 .audience
                 .and_then(|value| serde_json::from_str(&value).ok())

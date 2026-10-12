@@ -1229,6 +1229,7 @@ async fn test_token_family_crud() {
         client_id: "client-1".to_string(),
         realm_id: "realm-tf".to_string(),
         current_refresh_hash: "hash1".to_string(),
+        scopes: vec!["read".to_string(), "write".to_string()],
         audience: vec!["api://orders".to_string()],
         resource: vec!["https://api.example.com/orders".to_string()],
         authorization_details: Some(serde_json::json!([
@@ -1247,6 +1248,10 @@ async fn test_token_family_crud() {
         .unwrap()
         .expect("family not found");
     assert_eq!(fetched.current_refresh_hash, "hash1");
+    assert_eq!(
+        fetched.scopes,
+        vec!["read".to_string(), "write".to_string()]
+    );
     assert_eq!(fetched.audience, vec!["api://orders"]);
     assert_eq!(fetched.resource, vec!["https://api.example.com/orders"]);
     assert_eq!(
@@ -2496,6 +2501,7 @@ async fn sql_refresh_rotation_single_winner() {
         client_id: "client-1".to_string(),
         realm_id: "realm-race".to_string(),
         current_refresh_hash: "hash-v0".to_string(),
+        scopes: Vec::new(),
         audience: Vec::new(),
         resource: Vec::new(),
         authorization_details: None,
@@ -2552,6 +2558,7 @@ async fn sql_refresh_rotation_revoked_stays_revoked() {
         client_id: "client-1".to_string(),
         realm_id: "realm-rev".to_string(),
         current_refresh_hash: "hash-v0".to_string(),
+        scopes: Vec::new(),
         audience: Vec::new(),
         resource: Vec::new(),
         authorization_details: None,

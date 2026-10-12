@@ -52,6 +52,7 @@ pub async fn issue_token_pair<R: Repository>(
         client_id: client_id.to_string(),
         realm_id: realm_id.to_string(),
         current_refresh_hash: qid_core::util::sha256_base64url(&refresh_jti),
+        scopes: scopes.to_vec(),
         audience: token_audience(client_id, claims),
         resource: token_resource(claims),
         authorization_details: claims.authorization_details.cloned(),

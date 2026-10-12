@@ -56,6 +56,8 @@ pub struct TokenFamily {
     pub realm_id: String,
     pub current_refresh_hash: String,
     #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
     pub audience: Vec<String>,
     #[serde(default)]
     pub resource: Vec<String>,

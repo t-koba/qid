@@ -1466,6 +1466,198 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
 }
 
 #[tokio::test]
+async fn refresh_preserves_original_scope_ceiling() {
+    // RFC 6749 section 6: omitted scope means the original grant, explicit
+    // scope must be a subset, and the replacement refresh token keeps the
+    // original ceiling. The realm default must never widen a grant.
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.default_scope = "write".to_string();
+    let (app, token_path, state) = setup_with_config(config).await;
+    let user = User {
+        id: "scope-ceiling-user".to_string(),
+        realm_id: "test".to_string(),
+        email: Some("scope-ceiling@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Scope Ceiling User".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    state.repo.create_user(&user).await.unwrap();
+
+    let code = "scope-ceiling-code-1";
+    let code_verifier = "e1f2a3b4c5d60718293a4b5c6d7e8f9012345678";
+    let auth_code = AuthorizationCode {
+        code_hash: util::sha256_base64url(code),
+        client_id: "test-client".to_string(),
+        user_id: "scope-ceiling-user".to_string(),
+        realm_id: "test".to_string(),
+        redirect_uri: "https://app.example.com/callback".to_string(),
+        state: None,
+        nonce: None,
+        auth_time: Some(1234),
+        acr: None,
+        amr: vec!["pwd".to_string()],
+        code_challenge: Some(util::sha256_base64url(code_verifier)),
+        code_challenge_method: Some("S256".to_string()),
+        scopes: vec!["read".to_string(), "profile".to_string()],
+        resource: Vec::new(),
+        authorization_details: None,
+        expires_at: util::now_seconds() + 300,
+        used: false,
+        created_at: util::now_seconds(),
+    };
+    state
+        .repo
+        .create_authorization_code(&auth_code)
+        .await
+        .unwrap();
+
+    let token_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={}",
+            urlencoding::encode(code),
+            urlencoding::encode(code_verifier)
+        )))
+        .unwrap();
+    let token_response = app.clone().oneshot(token_request).await.unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let bytes = token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(token_json["scope"], "read profile");
+    let refresh_1 = token_json["refresh_token"].as_str().unwrap().to_string();
+
+    // Omitted scope must issue the original grant, not the realm default.
+    let refresh_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&refresh_1)
+        )))
+        .unwrap();
+    let refresh_response = app.clone().oneshot(refresh_request).await.unwrap();
+    assert_eq!(refresh_response.status(), StatusCode::OK);
+    let bytes = refresh_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(refresh_json["scope"], "read profile");
+    let access_1 = refresh_json["access_token"].as_str().unwrap().to_string();
+    let claims_1 = state
+        .signer
+        .decode_signature_only(&access_1)
+        .unwrap()
+        .claims;
+    assert_eq!(
+        claims_1.extra["scope"],
+        serde_json::Value::String("read profile".to_string())
+    );
+    let stored_jti_1 = claims_1.jti.clone().unwrap();
+    let stored_1 = state
+        .repo
+        .get_access_token(&stored_jti_1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored_1.scopes,
+        vec!["read".to_string(), "profile".to_string()]
+    );
+    let refresh_2 = refresh_json["refresh_token"].as_str().unwrap().to_string();
+
+    // Explicit subset narrows this access token but must not shrink the family.
+    let narrow_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}&scope=read",
+            urlencoding::encode(&refresh_2)
+        )))
+        .unwrap();
+    let narrow_response = app.clone().oneshot(narrow_request).await.unwrap();
+    assert_eq!(narrow_response.status(), StatusCode::OK);
+    let bytes = narrow_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let narrow_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(narrow_json["scope"], "read");
+    let refresh_3 = narrow_json["refresh_token"].as_str().unwrap().to_string();
+
+    // Omitted scope after narrowing must return the full original ceiling.
+    let full_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&refresh_3)
+        )))
+        .unwrap();
+    let full_response = app.clone().oneshot(full_request).await.unwrap();
+    assert_eq!(full_response.status(), StatusCode::OK);
+    let bytes = full_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let full_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(full_json["scope"], "read profile");
+    let refresh_4 = full_json["refresh_token"].as_str().unwrap().to_string();
+
+    // Requesting a scope outside the original grant must fail without
+    // consuming the current refresh token.
+    let exceed_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}&scope=write",
+            urlencoding::encode(&refresh_4)
+        )))
+        .unwrap();
+    let exceed_response = app.clone().oneshot(exceed_request).await.unwrap();
+    assert_eq!(exceed_response.status(), StatusCode::BAD_REQUEST);
+
+    let retry_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+            urlencoding::encode(&refresh_4)
+        )))
+        .unwrap();
+    let retry_response = app.oneshot(retry_request).await.unwrap();
+    assert_eq!(retry_response.status(), StatusCode::OK);
+    let bytes = retry_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let retry_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(retry_json["scope"], "read profile");
+}
+
+#[tokio::test]
 async fn opaque_client_credentials_token_introspects_and_revokes() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.tokens.access_token_format = TokenFormat::Opaque;

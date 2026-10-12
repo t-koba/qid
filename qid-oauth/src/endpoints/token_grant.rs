@@ -404,7 +404,31 @@ pub async fn refresh_token_grant<R: Repository>(
         })?;
 
     let issuer = realm.issuer.clone();
-    let scopes = vec![realm.oauth_default_scope.clone()];
+    // RFC 6749 section 6: refresh preserves the original scope ceiling.
+    // Omitted scope means the originally granted scopes; an explicit scope
+    // must be a subset of that grant. The family ceiling never widens on
+    // refresh, even when one access-token request narrows scope. Families
+    // without trustworthy scope state fail closed and require fresh
+    // authorization rather than inheriting the current default.
+    if family.scopes.is_empty() {
+        return Err(QidError::Unauthorized {
+            message: "refresh token scope is not established".to_string(),
+        });
+    }
+    let scopes = match req.scope.as_deref() {
+        Some(requested) => {
+            let narrowed: Vec<String> = requested.split_whitespace().map(str::to_string).collect();
+            for scope in &narrowed {
+                if !family.scopes.contains(scope) {
+                    return Err(QidError::BadRequest {
+                        message: format!("requested scope {scope} exceeds granted scope"),
+                    });
+                }
+            }
+            narrowed
+        }
+        None => family.scopes.clone(),
+    };
 
     // mTLS refresh token binding enforcement:
     // if the original token family had an x5t#S256 sender constraint,
@@ -829,6 +853,7 @@ mod tests {
             client_id: "reuse-client".to_string(),
             realm_id: "test".to_string(),
             current_refresh_hash: good_hash,
+            scopes: vec!["api".to_string()],
             audience: vec!["reuse-client".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1022,6 +1047,7 @@ mod tests {
             client_id: "dpop-public".to_string(),
             realm_id: "test".to_string(),
             current_refresh_hash: util::sha256_base64url("dpop-good-jti"),
+            scopes: vec!["api".to_string()],
             audience: vec!["dpop-public".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1069,6 +1095,7 @@ mod tests {
             client_id: "dpop-conf".to_string(),
             realm_id: "test".to_string(),
             current_refresh_hash: util::sha256_base64url("dpop-conf-jti"),
+            scopes: vec!["api".to_string()],
             audience: vec!["dpop-conf".to_string()],
             resource: Vec::new(),
             authorization_details: None,
@@ -1087,6 +1114,194 @@ mod tests {
         .await;
         let ok = refresh_token_grant(&state, &refresh_req(token), None).await;
         assert!(ok.is_ok(), "confidential refresh must succeed: {ok:?}");
+    }
+
+    #[tokio::test]
+    async fn refresh_preserves_original_scope_ceiling_file() {
+        // File-repository counterpart to the SQL HTTP fixture: omitted scope
+        // means the original grant, explicit scope must be a subset, failures
+        // do not consume the refresh token, and the family ceiling survives
+        // narrowing. Legacy families without scope state fail closed.
+        let (state, repo) = setup_state().await;
+        let client = Client {
+            id: "scope-file-id".to_string(),
+            realm_id: "test".to_string(),
+            client_id: "scope-file-client".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: serde_json::json!({ "keys": [] }),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["refresh_token".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        };
+        repo.create_client(&client).await.unwrap();
+        let user = User {
+            id: "scope-file-user".to_string(),
+            realm_id: "test".to_string(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        };
+        repo.create_user(&user).await.unwrap();
+
+        async fn signed_refresh(
+            state: &std::sync::Arc<SharedState<FileRepository>>,
+            family_id: &str,
+            jti: &str,
+        ) -> String {
+            let now = util::now_seconds();
+            let mut extra = HashMap::new();
+            extra.insert(
+                "family_id".to_string(),
+                serde_json::Value::String(family_id.to_string()),
+            );
+            let claims = JwtClaims {
+                iss: Some("https://id.example.com".to_string()),
+                sub: Some("scope-file-user".to_string()),
+                aud: Some("scope-file-client".to_string()),
+                exp: Some((now + 3600) as usize),
+                nbf: Some(now as usize),
+                iat: Some(now as usize),
+                jti: Some(jti.to_string()),
+                extra,
+            };
+            state.signer.sign(&claims).unwrap()
+        }
+
+        fn refresh_req(token: String, scope: Option<String>) -> TokenRequest {
+            TokenRequest {
+                grant_type: "refresh_token".to_string(),
+                refresh_token: Some(token),
+                code: None,
+                redirect_uri: None,
+                code_verifier: None,
+                client_id: None,
+                client_secret: None,
+                scope,
+                client_assertion: None,
+                client_assertion_type: None,
+                device_code: None,
+                auth_req_id: None,
+                assertion: None,
+                subject_token: None,
+                subject_token_type: None,
+                actor_token: None,
+                actor_token_type: None,
+                requested_token_type: None,
+                audience: None,
+                resource: None,
+                authorization_details: None,
+            }
+        }
+
+        let now = util::now_seconds();
+        let family = TokenFamily {
+            id: "scope-file-family".to_string(),
+            user_id: user.id.clone(),
+            client_id: "scope-file-client".to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url("scope-file-jti-1"),
+            scopes: vec!["read".to_string(), "profile".to_string()],
+            audience: vec!["scope-file-client".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: None,
+            issued_at: now,
+            revoked: false,
+        };
+        repo.create_token_family(&family).await.unwrap();
+
+        let token_1 = signed_refresh(&state, &family.id, "scope-file-jti-1").await;
+        let first = refresh_token_grant(&state, &refresh_req(token_1, None), None)
+            .await
+            .unwrap();
+        assert_eq!(first.scope.as_deref(), Some("read profile"));
+        let token_2 = first.refresh_token.clone().unwrap();
+
+        let narrowed = refresh_token_grant(
+            &state,
+            &refresh_req(token_2, Some("read".to_string())),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(narrowed.scope.as_deref(), Some("read"));
+        let token_3 = narrowed.refresh_token.clone().unwrap();
+
+        let restored = refresh_token_grant(&state, &refresh_req(token_3, None), None)
+            .await
+            .unwrap();
+        assert_eq!(restored.scope.as_deref(), Some("read profile"));
+        let token_4 = restored.refresh_token.clone().unwrap();
+
+        let before = repo
+            .get_token_family(&family.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_refresh_hash;
+        let err = refresh_token_grant(
+            &state,
+            &refresh_req(token_4.clone(), Some("write".to_string())),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, QidError::BadRequest { .. }),
+            "exceeding scope must be invalid_scope, got {err:?}"
+        );
+        let after = repo
+            .get_token_family(&family.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_refresh_hash;
+        assert_eq!(before, after, "failed scope check must not consume refresh");
+        let retry = refresh_token_grant(&state, &refresh_req(token_4, None), None)
+            .await
+            .unwrap();
+        assert_eq!(retry.scope.as_deref(), Some("read profile"));
+
+        let legacy = TokenFamily {
+            id: "scope-legacy-family".to_string(),
+            user_id: user.id.clone(),
+            client_id: "scope-file-client".to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url("scope-legacy-jti"),
+            scopes: Vec::new(),
+            audience: vec!["scope-file-client".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: None,
+            issued_at: now,
+            revoked: false,
+        };
+        repo.create_token_family(&legacy).await.unwrap();
+        let legacy_token = signed_refresh(&state, &legacy.id, "scope-legacy-jti").await;
+        let err = refresh_token_grant(&state, &refresh_req(legacy_token, None), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QidError::Unauthorized { .. }),
+            "legacy family without scope ceiling must fail closed, got {err:?}"
+        );
     }
 
     #[tokio::test]

@@ -69,13 +69,14 @@ impl TokenRepository for SqlRepository {
 
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, audience, resource, authorization_details, sender_constraint, issued_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, scopes, audience, resource, authorization_details, sender_constraint, issued_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&family.id)
         .bind(&family.user_id)
         .bind(&family.client_id)
         .bind(&family.realm_id)
         .bind(&family.current_refresh_hash)
+        .bind(serde_json::to_string(&family.scopes).unwrap_or_default())
         .bind(serde_json::to_string(&family.audience).unwrap_or_default())
         .bind(serde_json::to_string(&family.resource).unwrap_or_default())
         .bind(

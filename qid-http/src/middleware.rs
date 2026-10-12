@@ -136,18 +136,40 @@ pub fn is_csrf_exempt_path(path: &str, paths: &ServerPaths) -> bool {
         return true;
     }
     // Dynamic client registration management uses a templated path such as
-    // `/oauth2/register/:client_id`; match the concrete instance.
-    if let Some((prefix, _)) = paths
-        .dynamic_client_registration_management
-        .split_once("/:")
-    {
-        if path == prefix || path.starts_with(&format!("{prefix}/")) {
-            return true;
-        }
-    } else if path == paths.dynamic_client_registration_management {
-        return true;
+    // `/oauth2/register/:client_id`; match the concrete instance segment-wise
+    // so earlier params (for example `/api/:realm/register/:client_id`) do not
+    // exempt unrelated paths sharing a leading prefix.
+    matches_path_template(&paths.dynamic_client_registration_management, path)
+}
+
+/// Match a configured `server.paths` template against a concrete request path.
+///
+/// Templates use Axum `:param` segments (for example `:client_id` or
+/// `:realm`). Each param matches exactly one non-empty path segment; all
+/// other segments must match exactly, including segment count. Templates
+/// without params require an exact match.
+fn matches_path_template(template: &str, path: &str) -> bool {
+    if !template.contains(':') {
+        return template == path;
     }
-    false
+    let mut template_segments = template.split('/');
+    let mut path_segments = path.split('/');
+    loop {
+        match (template_segments.next(), path_segments.next()) {
+            (Some(expected), Some(actual)) => {
+                if expected.starts_with(':') {
+                    // Param name must be non-empty (`/ :` alone is not a param).
+                    if expected.len() <= 1 || actual.is_empty() {
+                        return false;
+                    }
+                } else if expected != actual {
+                    return false;
+                }
+            }
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
 }
 
 /// CSRF protection that exempts non-cookie OAuth routes.
@@ -796,6 +818,10 @@ mod tests {
         ));
         assert!(is_csrf_exempt_path("/oauth2/challenge", &paths));
         assert!(is_csrf_exempt_path("/oauth2/register/my-client", &paths));
+        // Nested paths under the management prefix stay protected; only a
+        // single concrete `:client_id` segment is exempt.
+        assert!(!is_csrf_exempt_path("/oauth2/register/foo/bar", &paths));
+        assert!(!is_csrf_exempt_path("/oauth2/register/", &paths));
 
         let device_approve = format!("{}/approve", paths.device_authorization);
         assert!(!is_csrf_exempt_path(&device_approve, &paths));
@@ -811,6 +837,53 @@ mod tests {
         custom.token = "/custom/token".to_string();
         assert!(is_csrf_exempt_path("/custom/token", &custom));
         assert!(!is_csrf_exempt_path("/oauth2/token", &custom));
+    }
+
+    #[test]
+    fn csrf_exempt_dcr_management_matches_template_segment_wise() {
+        use qid_core::config::ServerPaths;
+
+        let paths = ServerPaths {
+            dynamic_client_registration: "/api/clients".to_string(),
+            dynamic_client_registration_management: "/api/:realm/register/:client_id".to_string(),
+            ..ServerPaths::default()
+        };
+
+        // Concrete management instance is exempt.
+        assert!(is_csrf_exempt_path(
+            "/api/customers/register/my-client",
+            &paths
+        ));
+        // Unrelated paths sharing the leading `/api` prefix stay protected,
+        // including the session route from the failing scenario.
+        assert!(!is_csrf_exempt_path(
+            "/api/v1/customers/auth/session/refresh",
+            &paths
+        ));
+        assert!(!is_csrf_exempt_path(
+            "/api/customers/auth/session/refresh",
+            &paths
+        ));
+        // Wrong segment count or empty param stays protected.
+        assert!(!is_csrf_exempt_path(
+            "/api/customers/register/my-client/extra",
+            &paths
+        ));
+        assert!(!is_csrf_exempt_path("/api/customers/register/", &paths));
+        assert!(!is_csrf_exempt_path("/api/customers/register", &paths));
+        assert!(!is_csrf_exempt_path("/api/other/register", &paths));
+
+        // Non-templated management path requires an exact match.
+        let exact = ServerPaths {
+            dynamic_client_registration_management: "/custom/register/manage".to_string(),
+            ..ServerPaths::default()
+        };
+        assert!(is_csrf_exempt_path("/custom/register/manage", &exact));
+        assert!(!is_csrf_exempt_path(
+            "/custom/register/manage/extra",
+            &exact
+        ));
+        assert!(!is_csrf_exempt_path("/custom/register", &exact));
     }
 
     #[tokio::test]

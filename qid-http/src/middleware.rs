@@ -102,18 +102,6 @@ fn cors_headers(config: &CorsConfig) -> AllowHeaders {
     )
 }
 
-pub async fn csrf_protection_layer(req: Request, next: Next) -> Response {
-    if is_state_changing_method(req.method()) && is_cross_site_request(req.headers(), req.uri()) {
-        warn!(
-            method = %req.method(),
-            path = %req.uri().path(),
-            "CSRF check rejected cross-site request"
-        );
-        return (StatusCode::FORBIDDEN, "CSRF check failed").into_response();
-    }
-    next.run(req).await
-}
-
 /// Paths that authenticate without the browser session cookie.
 ///
 /// Token, introspection, revocation, PAR, device/CIBA initiation, dynamic

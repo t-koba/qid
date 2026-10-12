@@ -13,8 +13,8 @@ pub mod ratelimit;
 pub mod security_headers;
 
 pub use middleware::{
-    cors_layer, csp_headers_layer, csrf_protection_layer, csrf_protection_layer_with_server_paths,
-    hsts_layer, is_csrf_exempt_path, security_headers_middleware, zero_rtt_rejection_layer,
+    cors_layer, csp_headers_layer, csrf_protection_layer_with_server_paths, hsts_layer,
+    is_csrf_exempt_path, security_headers_middleware, zero_rtt_rejection_layer,
 };
 
 /// Attach a `WWW-Authenticate: Bearer` challenge header to a response.

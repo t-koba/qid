@@ -144,6 +144,15 @@ async fn authorize_with_browser_session<R: Repository>(
     {
         return Ok(None);
     }
+    let session_acr = session
+        .acr
+        .clone()
+        .unwrap_or_else(|| "urn:qid:acr:password".to_string());
+    // Essential requirements gate session reuse too (login fallback);
+    // voluntary `acr_values` alone do not block it.
+    if unmet_essential_acr(resolved.claims.as_deref(), &session_acr).is_some() {
+        return Ok(None);
+    }
     let Some(user) = state.repo.get_user_by_id(&session.user_id).await? else {
         return Ok(None);
     };
@@ -154,10 +163,7 @@ async fn authorize_with_browser_session<R: Repository>(
 
     let auth_result = qid_session::auth::AuthResult {
         user,
-        acr: session
-            .acr
-            .clone()
-            .unwrap_or_else(|| "urn:qid:acr:password".to_string()),
+        acr: session_acr,
         amr: if session.amr.is_empty() {
             vec!["pwd".to_string()]
         } else {
@@ -251,7 +257,8 @@ pub async fn authorize_post<R: Repository>(
         }
     };
 
-    // Check acr_values / essential acr claim against the session ACR
+    // `acr_values` alone stays a failed request here (stricter than the
+    // voluntary OIDC Core §5.5.1.1 semantics); essential `claims` are shared.
     let session_acr = auth_result.acr.as_str();
     if let Some(ref acr_values) = resolved.acr_values {
         let requested: Vec<&str> = acr_values.split_whitespace().collect();
@@ -268,31 +275,14 @@ pub async fn authorize_post<R: Repository>(
             );
         }
     }
-    // Check claims parameter for essential acr
-    if let Some(ref claims_json) = resolved.claims
-        && let Ok(claims_value) = serde_json::from_str::<serde_json::Value>(claims_json)
-        && let Some(acr_claim) = claims_value.pointer("/id_token/acr")
-    {
-        let essential = acr_claim
-            .get("essential")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if essential && let Some(values) = acr_claim.get("values").and_then(|v| v.as_array()) {
-            let values_str: Vec<&str> = values.iter().filter_map(|v| v.as_str()).collect();
-            if !values_str.is_empty() && !values_str.contains(&session_acr) {
-                let msg = format!(
-                    "essential acr claim requires values {:?}, session ACR is {session_acr}",
-                    values_str
-                );
-                return authorization_error_response(
-                    &state,
-                    &resolved,
-                    &client,
-                    "unmet_authentication_requirements",
-                    &msg,
-                );
-            }
-        }
+    if let Some(message) = unmet_essential_acr(resolved.claims.as_deref(), session_acr) {
+        return authorization_error_response(
+            &state,
+            &resolved,
+            &client,
+            "unmet_authentication_requirements",
+            &message,
+        );
     }
 
     let auth_time = qid_core::util::now_seconds();
@@ -313,6 +303,77 @@ pub async fn authorize_post<R: Repository>(
     {
         Ok(response) => response,
         Err(e) => qid_http::error_response(e),
+    }
+}
+
+/// Unmet essential `/id_token/acr` requirement, if any (`value`/`values`).
+fn unmet_essential_acr(claims_json: Option<&str>, session_acr: &str) -> Option<String> {
+    let claims_value = serde_json::from_str::<serde_json::Value>(claims_json?).ok()?;
+    let acr_claim = claims_value.pointer("/id_token/acr")?;
+    let essential = acr_claim
+        .get("essential")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !essential {
+        return None;
+    }
+    let mut requested: Vec<&str> = Vec::new();
+    if let Some(value) = acr_claim.get("value").and_then(|v| v.as_str()) {
+        requested.push(value);
+    }
+    if let Some(values) = acr_claim.get("values").and_then(|v| v.as_array()) {
+        requested.extend(values.iter().filter_map(|v| v.as_str()));
+    }
+    if !requested.is_empty() && !requested.contains(&session_acr) {
+        return Some(format!(
+            "essential acr claim requires {requested:?}, session ACR is {session_acr}"
+        ));
+    }
+    None
+}
+
+/// Whether two `claims` parameter documents conflict. Compared semantically so
+/// key order and whitespace do not cause false conflicts; unparseable inputs
+/// fall back to a string comparison.
+fn claims_documents_conflict(first: &str, second: &str) -> bool {
+    match (
+        serde_json::from_str::<serde_json::Value>(first),
+        serde_json::from_str::<serde_json::Value>(second),
+    ) {
+        (Ok(a), Ok(b)) => a != b,
+        _ => first != second,
+    }
+}
+
+/// Merge a `claims` document: absent takes it, equal keeps it, else fail.
+fn merge_claims_param(target: &mut Option<String>, source: Option<String>) -> QidResult<()> {
+    let Some(source) = source else {
+        return Ok(());
+    };
+    match target.as_deref() {
+        None => *target = Some(source),
+        Some(current) if !claims_documents_conflict(current, &source) => {}
+        Some(_) => {
+            return Err(QidError::BadRequest {
+                message: "claims conflicts with request_uri payload".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Merge a `max_age` value: absent takes it, equal keeps it, else fail.
+fn merge_max_age_param(target: &mut Option<u64>, source: Option<u64>) -> QidResult<()> {
+    let Some(source) = source else {
+        return Ok(());
+    };
+    if target.is_none_or(|existing| existing == source) {
+        *target = Some(source);
+        Ok(())
+    } else {
+        Err(QidError::BadRequest {
+            message: "max_age conflicts with request_uri payload".to_string(),
+        })
     }
 }
 
@@ -462,6 +523,9 @@ async fn resolve_authorize_request<R: Repository>(
     )?;
     merge_optional_authorize_param(&mut merged.nonce, par_params.nonce, "nonce")?;
     merge_optional_authorize_param(&mut merged.prompt, par_params.prompt, "prompt")?;
+    merge_optional_authorize_param(&mut merged.acr_values, par_params.acr_values, "acr_values")?;
+    merge_claims_param(&mut merged.claims, par_params.claims)?;
+    merge_max_age_param(&mut merged.max_age, par_params.max_age)?;
 
     if merged.client_id != par.client_id {
         return Err(QidError::Unauthorized {
@@ -567,15 +631,19 @@ async fn merge_request_object<R: Repository>(
         request_object_string(&payload, "prompt"),
         "prompt",
     )?;
-    if let Some(max_age) = payload.get("max_age").and_then(|v| v.as_u64()) {
-        if merged.max_age.is_none_or(|existing| existing == max_age) {
-            merged.max_age = Some(max_age);
-        } else {
-            return Err(QidError::BadRequest {
-                message: "max_age conflicts with request_uri payload".to_string(),
-            });
-        }
-    }
+    merge_max_age_param(
+        &mut merged.max_age,
+        payload.get("max_age").and_then(|v| v.as_u64()),
+    )?;
+    merge_optional_authorize_param(
+        &mut merged.acr_values,
+        request_object_string(&payload, "acr_values"),
+        "acr_values",
+    )?;
+    merge_claims_param(
+        &mut merged.claims,
+        payload.get("claims").map(|value| value.to_string()),
+    )?;
     Ok(())
 }
 

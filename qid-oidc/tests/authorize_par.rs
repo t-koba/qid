@@ -151,12 +151,76 @@ async fn setup_with_config(config: QidConfig) -> (Router, Arc<SharedState<SqlRep
     (app, state)
 }
 
-async fn sign_registered_request_object(
+/// Read the redirect `location` header.
+fn redirect_location(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Assert a login challenge with no issued code.
+async fn assert_login_challenge(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("location").is_none());
+    assert_eq!(json_body(response).await["challenge"], "login_required");
+}
+
+/// Assert a code-issuing redirect.
+fn assert_code_issued(response: &axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert!(redirect_location(response).contains("code=ac_"));
+}
+
+/// Parse a response body as JSON.
+async fn json_body(response: axum::response::Response) -> serde_json::Value {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// GET a URI, optionally with a browser session cookie.
+async fn get_uri(
+    app: Router,
+    uri: impl Into<String>,
+    cookie: Option<&str>,
+) -> axum::response::Response {
+    let mut builder = Request::builder().method(Method::GET).uri(uri.into());
+    if let Some(cookie) = cookie {
+        builder = builder.header("Cookie", cookie);
+    }
+    app.oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// Shared password-login form body.
+const LOGIN_FORM: &str = "email=par%40example.com&password=correct-password";
+
+/// POST an `application/x-www-form-urlencoded` body.
+async fn post_form(app: Router, uri: impl Into<String>, body: &str) -> axum::response::Response {
+    app.oneshot(
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri.into())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+/// Sign an authorization request object for `par-client`.
+async fn signed_request_object(
     state: &Arc<SharedState<SqlRepository>>,
-    claims: JwtClaims,
-    kid: &str,
+    jti: &str,
+    key: &str,
+    extra: HashMap<String, serde_json::Value>,
 ) -> String {
-    let generated = generate_es256(kid).unwrap();
+    let generated = generate_es256(key).unwrap();
     let mut client = state
         .repo
         .get_client_by_client_id(&"test".into(), "par-client")
@@ -167,7 +231,18 @@ async fn sign_registered_request_object(
         "keys": [serde_json::to_value(&generated.public_jwk).unwrap()]
     });
     state.repo.update_client(&client).await.unwrap();
-    let payload = serde_json::to_value(claims).unwrap();
+    let mut payload = serde_json::json!({
+        "iss": "par-client",
+        "sub": "par-client",
+        "aud": "https://id.example.com",
+        "exp": util::now_seconds() + 60,
+        "nbf": util::now_seconds(),
+        "iat": util::now_seconds(),
+        "jti": jti,
+    });
+    for (name, value) in extra {
+        payload[name] = value;
+    }
     sign_es256_jwt_with_jwk_header(
         generated.private_pem.as_bytes(),
         &generated.public_jwk,
@@ -175,6 +250,73 @@ async fn sign_registered_request_object(
         &payload,
     )
     .unwrap()
+}
+
+/// Redeem an authorization code with PKCE and return the token JSON.
+async fn redeem_code(
+    app: Router,
+    token_path: String,
+    code: &str,
+    verifier: &str,
+) -> serde_json::Value {
+    let body = format!(
+        "grant_type=authorization_code&client_id=par-client&code={}&redirect_uri={}&code_verifier={verifier}",
+        urlencoding::encode(code),
+        urlencoding::encode("https://app.example.com/callback")
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(token_path)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await
+}
+
+/// GET an authorize URL carrying only a PAR `request_uri`.
+async fn get_par_request(
+    app: Router,
+    state: &Arc<SharedState<SqlRepository>>,
+    request_uri: &str,
+    cookie: Option<&str>,
+) -> axum::response::Response {
+    get_uri(
+        app,
+        format!(
+            "{}?request_uri={}",
+            state.paths.authorize,
+            urlencoding::encode(request_uri)
+        ),
+        cookie,
+    )
+    .await
+}
+
+/// Store a pushed authorization request for `request_uri`.
+async fn store_par_request(
+    state: &Arc<SharedState<SqlRepository>>,
+    request_uri: &str,
+    params_json: serde_json::Value,
+) {
+    state
+        .repo
+        .store_par_request(&ParRequest {
+            request_uri: request_uri.to_string(),
+            client_id: "par-client".to_string(),
+            realm_id: "test".to_string(),
+            params_json,
+            expires_at: util::now_seconds() + 60,
+            used: false,
+            created_at: util::now_seconds(),
+        })
+        .await
+        .unwrap();
 }
 
 async fn create_browser_session(state: &Arc<SharedState<SqlRepository>>, session_id: &str) -> u64 {
@@ -202,16 +344,14 @@ async fn create_browser_session(state: &Arc<SharedState<SqlRepository>>, session
 #[tokio::test]
 async fn discovery_metadata_only_advertises_implemented_bearer_grants() {
     let (app, state) = setup().await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_oauth_authorization_server)
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.clone().oneshot(request).await.unwrap();
+    let response = get_uri(
+        app,
+        state.paths.well_known_oauth_authorization_server.clone(),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(response).await;
     let grant_types = metadata["grant_types_supported"].as_array().unwrap();
     assert!(!grant_types.contains(&serde_json::json!(
         "urn:ietf:params:oauth:grant-type:jwt-bearer"
@@ -233,16 +373,14 @@ async fn discovery_metadata_only_advertises_implemented_bearer_grants() {
 #[tokio::test]
 async fn discovery_metadata_hides_disabled_oauth_endpoints() {
     let (app, state) = setup().await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_oauth_authorization_server)
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.clone().oneshot(request).await.unwrap();
+    let response = get_uri(
+        app.clone(),
+        state.paths.well_known_oauth_authorization_server.clone(),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(response).await;
     assert!(
         metadata
             .get("pushed_authorization_request_endpoint")
@@ -266,13 +404,7 @@ async fn discovery_metadata_hides_disabled_oauth_endpoints() {
         .unwrap();
     let openid_response = app.oneshot(openid_request).await.unwrap();
     assert_eq!(openid_response.status(), StatusCode::OK);
-    let bytes = openid_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let openid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let openid = json_body(openid_response).await;
     assert!(openid.get("device_authorization_endpoint").is_none());
     assert!(openid.get("registration_endpoint").is_none());
     assert_eq!(openid["backchannel_logout_supported"], true);
@@ -295,16 +427,14 @@ async fn discovery_metadata_advertises_enabled_oauth_endpoints() {
         .dynamic_client_registration
         .enabled = true;
     let (app, state) = setup_with_config(config).await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_oauth_authorization_server)
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.clone().oneshot(request).await.unwrap();
+    let response = get_uri(
+        app.clone(),
+        state.paths.well_known_oauth_authorization_server.clone(),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(response).await;
     assert_eq!(
         metadata["pushed_authorization_request_endpoint"],
         "https://id.example.com/oauth2/par"
@@ -338,16 +468,14 @@ async fn discovery_metadata_reflects_disabled_oidc_logout_channels() {
     config.realms[0].protocols.oidc.logout.backchannel = false;
     config.realms[0].protocols.oidc.logout.frontchannel = false;
     let (app, state) = setup_with_config(config).await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_openid_configuration)
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.clone().oneshot(request).await.unwrap();
+    let response = get_uri(
+        app.clone(),
+        state.paths.well_known_openid_configuration.clone(),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(response).await;
     assert_eq!(metadata["backchannel_logout_supported"], false);
     assert_eq!(metadata["frontchannel_logout_supported"], false);
 
@@ -395,13 +523,7 @@ async fn oidc_disabled_hides_openid_metadata_and_rejects_oidc_handlers() {
     let userinfo_response = app.clone().oneshot(userinfo_request).await.unwrap();
     assert_eq!(userinfo_response.status(), StatusCode::BAD_REQUEST);
 
-    let logout_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.logout)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::empty())
-        .unwrap();
-    let logout_response = app.oneshot(logout_request).await.unwrap();
+    let logout_response = post_form(app, &state.paths.logout, "").await;
     assert_eq!(logout_response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -418,13 +540,7 @@ async fn oidc_authorization_code_disabled_hides_authorize_metadata_and_rejects_a
         .unwrap();
     let metadata_response = app.clone().oneshot(metadata_request).await.unwrap();
     assert_eq!(metadata_response.status(), StatusCode::OK);
-    let bytes = metadata_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(metadata_response).await;
     assert!(metadata.get("authorization_endpoint").is_none());
     assert!(
         !metadata["grant_types_supported"]
@@ -452,29 +568,22 @@ async fn oidc_authorization_code_disabled_hides_authorize_metadata_and_rejects_a
 async fn authorize_get_uses_browser_session_cookie_to_issue_code() {
     let (app, state) = setup().await;
     let auth_time = create_browser_session(&state, "sid-authorize").await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let response = get_uri(
+        app,
+        format!(
             "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid%20profile&state=session-state&nonce=session-nonce&code_challenge={}&code_challenge_method=S256",
             state.paths.authorize,
             urlencoding::encode("https://app.example.com/callback"),
             util::sha256_base64url("verifier")
-        ))
-        .header("Cookie", "__Host-qid=sid-authorize")
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+        ),
+        Some("__Host-qid=sid-authorize"),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
-    let location = response
-        .headers()
-        .get("location")
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let location = redirect_location(&response);
     assert!(location.starts_with("https://app.example.com/callback?code=ac_"));
     assert!(location.contains("state=session-state"));
-    let code = extract_query_param(location, "code").expect("redirect should include code");
+    let code = extract_query_param(&location, "code").expect("redirect should include code");
     let code_hash = util::sha256_base64url(&code);
     let stored_code = state
         .repo
@@ -498,22 +607,19 @@ async fn authorize_get_uses_browser_session_cookie_to_issue_code() {
 async fn authorize_get_prompt_login_ignores_browser_session_cookie() {
     let (app, state) = setup().await;
     create_browser_session(&state, "sid-prompt-login").await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let response = get_uri(
+        app,
+        format!(
             "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=prompt-state&prompt=login&code_challenge={}&code_challenge_method=S256",
             state.paths.authorize,
             urlencoding::encode("https://app.example.com/callback"),
             util::sha256_base64url("verifier")
-        ))
-        .header("Cookie", "__Host-qid=sid-prompt-login")
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+        ),
+        Some("__Host-qid=sid-prompt-login"),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let challenge: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let challenge = json_body(response).await;
     assert_eq!(challenge["challenge"], "login_required");
     assert_eq!(challenge["client_id"], "par-client");
     assert_eq!(challenge["state"], "prompt-state");
@@ -524,14 +630,7 @@ async fn logout_redirect_requires_registered_client_uri() {
     let (app, state) = setup().await;
     let body =
         "client_id=par-client&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback";
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.logout)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &state.paths.logout, body).await;
     assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(
         response.headers().get("location").unwrap(),
@@ -544,14 +643,7 @@ async fn logout_rejects_unregistered_redirect_uri() {
     let (app, state) = setup().await;
     let body =
         "client_id=par-client&post_logout_redirect_uri=https%3A%2F%2Fevil.example.com%2Fcallback";
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.logout)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &state.paths.logout, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -568,13 +660,7 @@ async fn discovery_metadata_advertises_mtls_auth_only_when_enabled() {
         .oneshot(disabled_request)
         .await
         .unwrap();
-    let disabled_bytes = disabled_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let disabled_metadata: serde_json::Value = serde_json::from_slice(&disabled_bytes).unwrap();
+    let disabled_metadata = json_body(disabled_response).await;
     assert!(
         !disabled_metadata["token_endpoint_auth_methods_supported"]
             .as_array()
@@ -585,15 +671,14 @@ async fn discovery_metadata_advertises_mtls_auth_only_when_enabled() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.mtls.enabled = true;
     let (app, state) = setup_with_config(config).await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_oauth_authorization_server)
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
+    let response = get_uri(
+        app,
+        state.paths.well_known_oauth_authorization_server.clone(),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(response).await;
     let methods = metadata["token_endpoint_auth_methods_supported"]
         .as_array()
         .unwrap();
@@ -626,32 +711,30 @@ async fn discovery_metadata_advertises_configured_protected_resources() {
     ];
     let (app, state) = setup_with_config(config).await;
 
-    let as_request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_oauth_authorization_server)
-        .body(Body::empty())
-        .unwrap();
-    let as_response = app.clone().oneshot(as_request).await.unwrap();
+    let as_response = get_uri(
+        app.clone(),
+        &state.paths.well_known_oauth_authorization_server,
+        None,
+    )
+    .await;
     assert_eq!(as_response.status(), StatusCode::OK);
-    let bytes = as_response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(as_response).await;
     let protected_resources = metadata["protected_resources"].as_array().unwrap();
     assert!(protected_resources.contains(&serde_json::json!("api://payments")));
     assert!(protected_resources.contains(&serde_json::json!("https://api.example.com/payments")));
 
-    let pr_request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let pr_response = get_uri(
+        app.clone(),
+        format!(
             "{}?resource={}",
             state.paths.well_known_oauth_protected_resource,
             urlencoding::encode("https://api.example.com/payments")
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let pr_response = app.clone().oneshot(pr_request).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(pr_response.status(), StatusCode::OK);
-    let bytes = pr_response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(pr_response).await;
     assert_eq!(metadata["resource"], "https://api.example.com/payments");
     assert_eq!(metadata["audience"], "api://payments");
     assert_eq!(
@@ -665,33 +748,23 @@ async fn discovery_metadata_advertises_configured_protected_resources() {
     );
     assert_eq!(metadata["mtls_endpoint_aliases_supported"], true);
 
-    let audience_request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let audience_response = get_uri(
+        app.clone(),
+        format!(
             "{}?audience={}",
             state.paths.well_known_oauth_protected_resource,
             urlencoding::encode("api://profile")
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let audience_response = app.clone().oneshot(audience_request).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(audience_response.status(), StatusCode::OK);
-    let bytes = audience_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(audience_response).await;
     assert_eq!(metadata["resource"], "https://api.example.com/profile");
     assert_eq!(metadata["sender_constrained_access_tokens"], false);
 
-    let missing_request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_oauth_protected_resource)
-        .body(Body::empty())
-        .unwrap();
-    let missing_response = app.oneshot(missing_request).await.unwrap();
+    let missing_response =
+        get_uri(app, &state.paths.well_known_oauth_protected_resource, None).await;
     assert_eq!(missing_response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -701,71 +774,32 @@ async fn path_issuer_single_realm_requires_scoped_discovery_metadata() {
     config.realms[0].issuer = "https://id.example.com/realms/test".to_string();
     let (app, _state) = setup_with_config(config).await;
 
-    let global_oidc_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/.well-known/openid-configuration")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let global_oidc_response =
+        get_uri(app.clone(), "/.well-known/openid-configuration", None).await;
     assert_eq!(global_oidc_response.status(), StatusCode::BAD_REQUEST);
 
-    let global_oauth_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/.well-known/oauth-authorization-server")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let global_oauth_response =
+        get_uri(app.clone(), "/.well-known/oauth-authorization-server", None).await;
     assert_eq!(global_oauth_response.status(), StatusCode::BAD_REQUEST);
 
-    let scoped_oidc_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/realms/test/.well-known/openid-configuration")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let scoped_oidc_response = get_uri(
+        app.clone(),
+        "/realms/test/.well-known/openid-configuration",
+        None,
+    )
+    .await;
     assert_eq!(scoped_oidc_response.status(), StatusCode::OK);
-    let bytes = scoped_oidc_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(scoped_oidc_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/test");
 
-    let scoped_oauth_response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/.well-known/oauth-authorization-server/realms/test")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let scoped_oauth_response = get_uri(
+        app,
+        "/.well-known/oauth-authorization-server/realms/test",
+        None,
+    )
+    .await;
     assert_eq!(scoped_oauth_response.status(), StatusCode::OK);
-    let bytes = scoped_oauth_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(scoped_oauth_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/test");
 }
 
@@ -781,78 +815,37 @@ async fn realm_scoped_discovery_metadata_supports_multi_realm() {
     config.realms.push(realm_b);
     let (app, _state) = setup_with_config(config).await;
 
-    let global_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/.well-known/openid-configuration")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let global_response = get_uri(app.clone(), "/.well-known/openid-configuration", None).await;
     assert_eq!(global_response.status(), StatusCode::BAD_REQUEST);
 
-    let scoped_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/realms/realm-b/.well-known/openid-configuration")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let scoped_response = get_uri(
+        app.clone(),
+        "/realms/realm-b/.well-known/openid-configuration",
+        None,
+    )
+    .await;
     assert_eq!(scoped_response.status(), StatusCode::OK);
-    let bytes = scoped_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(scoped_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/realm-b");
     assert_eq!(
         metadata["check_session_iframe"],
         "https://id.example.com/realms/realm-b/session/check"
     );
 
-    let oauth_metadata_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/.well-known/oauth-authorization-server/realms/realm-b")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let oauth_metadata_response = get_uri(
+        app.clone(),
+        "/.well-known/oauth-authorization-server/realms/realm-b",
+        None,
+    )
+    .await;
     assert_eq!(oauth_metadata_response.status(), StatusCode::OK);
-    let bytes = oauth_metadata_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let oauth_metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let oauth_metadata = json_body(oauth_metadata_response).await;
     assert_eq!(
         oauth_metadata["issuer"],
         "https://id.example.com/realms/realm-b"
     );
 
-    let iframe_response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/realms/realm-b/session/check")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let iframe_response = get_uri(app, "/realms/realm-b/session/check", None).await;
     assert_eq!(iframe_response.status(), StatusCode::OK);
     let iframe = iframe_response
         .into_body()
@@ -871,38 +864,17 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
     let (_base_app, state) = setup_with_config(config).await;
     let app = qid_oidc::shared_signals::ssf_routes::<SqlRepository>().with_state(state.clone());
 
-    let global_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/.well-known/ssf-configuration")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let global_response = get_uri(app.clone(), "/.well-known/ssf-configuration", None).await;
     assert_eq!(global_response.status(), StatusCode::BAD_REQUEST);
 
-    let scoped_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/realms/test/.well-known/ssf-configuration")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let scoped_response = get_uri(
+        app.clone(),
+        "/realms/test/.well-known/ssf-configuration",
+        None,
+    )
+    .await;
     assert_eq!(scoped_response.status(), StatusCode::OK);
-    let bytes = scoped_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(scoped_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/test");
     assert_eq!(
         metadata["delivery_methods_supported"][0]["url"],
@@ -1105,95 +1077,60 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
 async fn authorize_consumes_par_request_uri_once_after_successful_login() {
     let (app, state) = setup().await;
     let request_uri = "urn:ietf:params:oauth:request_uri:test-par";
-    state
-        .repo
-        .store_par_request(&ParRequest {
-            request_uri: request_uri.to_string(),
-            client_id: "par-client".to_string(),
-            realm_id: "test".to_string(),
-            params_json: serde_json::json!({
-                "client_id": "par-client",
-                "response_type": "code",
-                "redirect_uri": "https://app.example.com/callback",
-                "scope": "openid profile",
-                "state": "state-from-par",
-                "code_challenge": util::sha256_base64url("verifier"),
-                "code_challenge_method": "S256",
-                "authorization_details": [
-                    {
-                        "type": "payment_initiation",
-                        "actions": ["initiate"],
-                        "locations": ["https://payments.example.com"]
-                    }
-                ]
-            }),
-            expires_at: util::now_seconds() + 60,
-            used: false,
-            created_at: util::now_seconds(),
-        })
-        .await
-        .unwrap();
+    store_par_request(
+        &state,
+        request_uri,
+        serde_json::json!({
+            "client_id": "par-client",
+            "response_type": "code",
+            "redirect_uri": "https://app.example.com/callback",
+            "scope": "openid profile",
+            "state": "state-from-par",
+            "code_challenge": util::sha256_base64url("verifier"),
+            "code_challenge_method": "S256",
+            "authorization_details": [
+                {
+                    "type": "payment_initiation",
+                    "actions": ["initiate"],
+                    "locations": ["https://payments.example.com"]
+                }
+            ]
+        }),
+    )
+    .await;
 
-    let get_request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let get_response = get_uri(
+        app.clone(),
+        format!(
             "{}?request_uri={}",
             state.paths.authorize,
             urlencoding::encode(request_uri)
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let get_response = app.clone().oneshot(get_request).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(get_response.status(), StatusCode::OK);
-    let bytes = get_response.into_body().collect().await.unwrap().to_bytes();
-    let challenge: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let challenge = json_body(get_response).await;
     assert_eq!(challenge["client_id"], "par-client");
     assert_eq!(challenge["state"], "state-from-par");
 
-    let post_request = Request::builder()
-        .method(Method::POST)
-        .uri(format!(
+    let post_response = post_form(
+        app.clone(),
+        format!(
             "{}?request_uri={}",
             state.paths.authorize,
             urlencoding::encode(request_uri)
-        ))
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(
-            "email=par%40example.com&password=correct-password",
-        ))
-        .unwrap();
-    let post_response = app.clone().oneshot(post_request).await.unwrap();
+        ),
+        LOGIN_FORM,
+    )
+    .await;
     assert_eq!(post_response.status(), StatusCode::TEMPORARY_REDIRECT);
-    let location = post_response
-        .headers()
-        .get("location")
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let location = redirect_location(&post_response);
     assert!(location.starts_with("https://app.example.com/callback?code=ac_"));
     assert!(location.contains("state=state-from-par"));
-    let code = extract_query_param(location, "code").expect("redirect should include code");
+    let code = extract_query_param(&location, "code").expect("redirect should include code");
 
-    let token_body = format!(
-        "grant_type=authorization_code&client_id=par-client&code={}&redirect_uri={}&code_verifier=verifier",
-        urlencoding::encode(&code),
-        urlencoding::encode("https://app.example.com/callback")
-    );
-    let token_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.token)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(token_body))
-        .unwrap();
-    let token_response = app.clone().oneshot(token_request).await.unwrap();
-    assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = redeem_code(app.clone(), state.paths.token.clone(), &code, "verifier").await;
     let access_token = token_json["access_token"].as_str().unwrap();
     let claims = state
         .signer
@@ -1211,16 +1148,16 @@ async fn authorize_consumes_par_request_uri_once_after_successful_login() {
         ])
     );
 
-    let replay_request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let replay_response = get_uri(
+        app,
+        format!(
             "{}?request_uri={}",
             state.paths.authorize,
             urlencoding::encode(request_uri)
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let replay_response = app.oneshot(replay_request).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(replay_response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -1228,44 +1165,37 @@ async fn authorize_consumes_par_request_uri_once_after_successful_login() {
 async fn authorize_rejects_invalid_authorization_details_from_par() {
     let (app, state) = setup().await;
     let request_uri = "urn:ietf:params:oauth:request_uri:invalid-rar";
-    state
-        .repo
-        .store_par_request(&ParRequest {
-            request_uri: request_uri.to_string(),
-            client_id: "par-client".to_string(),
-            realm_id: "test".to_string(),
-            params_json: serde_json::json!({
-                "client_id": "par-client",
-                "response_type": "code",
-                "redirect_uri": "https://app.example.com/callback",
-                "scope": "openid profile",
-                "state": "state-invalid-rar",
-                "code_challenge": util::sha256_base64url("verifier"),
-                "code_challenge_method": "S256",
-                "authorization_details": [
-                    {
-                        "actions": ["initiate"],
-                        "locations": ["https://payments.example.com"]
-                    }
-                ]
-            }),
-            expires_at: util::now_seconds() + 60,
-            used: false,
-            created_at: util::now_seconds(),
-        })
-        .await
-        .unwrap();
+    store_par_request(
+        &state,
+        request_uri,
+        serde_json::json!({
+            "client_id": "par-client",
+            "response_type": "code",
+            "redirect_uri": "https://app.example.com/callback",
+            "scope": "openid profile",
+            "state": "state-invalid-rar",
+            "code_challenge": util::sha256_base64url("verifier"),
+            "code_challenge_method": "S256",
+            "authorization_details": [
+                {
+                    "actions": ["initiate"],
+                    "locations": ["https://payments.example.com"]
+                }
+            ]
+        }),
+    )
+    .await;
 
-    let get_request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let response = get_uri(
+        app,
+        format!(
             "{}?request_uri={}",
             state.paths.authorize,
             urlencoding::encode(request_uri)
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(get_request).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -1305,77 +1235,36 @@ async fn authorize_accepts_signed_request_object() {
             "locations": ["https://api.example.com/accounts"]
         }]),
     );
-    let request_object = sign_registered_request_object(
-        &state,
-        JwtClaims {
-            iss: Some("par-client".to_string()),
-            sub: Some("par-client".to_string()),
-            aud: Some("https://id.example.com".to_string()),
-            exp: Some((util::now_seconds() + 60) as usize),
-            nbf: Some(util::now_seconds() as usize),
-            iat: Some(util::now_seconds() as usize),
-            jti: Some("jar-test".to_string()),
-            extra,
-        },
-        "jar-test-key",
+    let request_object = signed_request_object(&state, "jar-test", "jar-test-key", extra).await;
+
+    let get_response = get_uri(
+        app.clone(),
+        format!(
+            "{}?request={}",
+            state.paths.authorize,
+            urlencoding::encode(&request_object)
+        ),
+        None,
     )
     .await;
-
-    let get_request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
-            "{}?request={}",
-            state.paths.authorize,
-            urlencoding::encode(&request_object)
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let get_response = app.clone().oneshot(get_request).await.unwrap();
     assert_eq!(get_response.status(), StatusCode::OK);
 
-    let post_request = Request::builder()
-        .method(Method::POST)
-        .uri(format!(
+    let post_response = post_form(
+        app.clone(),
+        format!(
             "{}?request={}",
             state.paths.authorize,
             urlencoding::encode(&request_object)
-        ))
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(
-            "email=par%40example.com&password=correct-password",
-        ))
-        .unwrap();
-    let post_response = app.clone().oneshot(post_request).await.unwrap();
+        ),
+        LOGIN_FORM,
+    )
+    .await;
     assert_eq!(post_response.status(), StatusCode::TEMPORARY_REDIRECT);
-    let location = post_response
-        .headers()
-        .get("location")
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let location = redirect_location(&post_response);
     assert!(location.contains("state=state-from-jar"));
-    let code = extract_query_param(location, "code").expect("redirect should include code");
+    let code = extract_query_param(&location, "code").expect("redirect should include code");
 
-    let token_body = format!(
-        "grant_type=authorization_code&client_id=par-client&code={}&redirect_uri={}&code_verifier=jar-verifier",
-        urlencoding::encode(&code),
-        urlencoding::encode("https://app.example.com/callback")
-    );
-    let token_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.token)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(token_body))
-        .unwrap();
-    let token_response = app.oneshot(token_request).await.unwrap();
-    assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = redeem_code(app, state.paths.token.clone(), &code, "jar-verifier").await;
     let access_token = token_json["access_token"].as_str().unwrap();
     let claims = state
         .signer
@@ -1413,44 +1302,23 @@ async fn authorize_can_return_signed_jarm_response() {
         "code_challenge_method".to_string(),
         serde_json::json!("S256"),
     );
-    let request_object = sign_registered_request_object(
-        &state,
-        JwtClaims {
-            iss: Some("par-client".to_string()),
-            sub: Some("par-client".to_string()),
-            aud: Some("https://id.example.com".to_string()),
-            exp: Some((util::now_seconds() + 60) as usize),
-            nbf: Some(util::now_seconds() as usize),
-            iat: Some(util::now_seconds() as usize),
-            jti: Some("jarm-request-test".to_string()),
-            extra,
-        },
-        "jarm-request-test-key",
-    )
-    .await;
+    let request_object =
+        signed_request_object(&state, "jarm-request-test", "jarm-request-test-key", extra).await;
 
-    let post_request = Request::builder()
-        .method(Method::POST)
-        .uri(format!(
+    let post_response = post_form(
+        app.clone(),
+        format!(
             "{}?request={}",
             state.paths.authorize,
             urlencoding::encode(&request_object)
-        ))
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(
-            "email=par%40example.com&password=correct-password",
-        ))
-        .unwrap();
-    let post_response = app.clone().oneshot(post_request).await.unwrap();
+        ),
+        LOGIN_FORM,
+    )
+    .await;
     assert_eq!(post_response.status(), StatusCode::TEMPORARY_REDIRECT);
-    let location = post_response
-        .headers()
-        .get("location")
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let location = redirect_location(&post_response);
     assert!(location.starts_with("https://app.example.com/callback?response="));
-    let response = extract_query_param(location, "response").expect("JARM response is required");
+    let response = extract_query_param(&location, "response").expect("JARM response is required");
     let response_claims = state
         .signer
         .decode_signature_only(&response)
@@ -1461,19 +1329,7 @@ async fn authorize_can_return_signed_jarm_response() {
     let code = response_claims.extra["code"].as_str().unwrap();
     assert!(code.starts_with("ac_"));
 
-    let token_body = format!(
-        "grant_type=authorization_code&client_id=par-client&code={}&redirect_uri={}&code_verifier=jarm-verifier",
-        urlencoding::encode(code),
-        urlencoding::encode("https://app.example.com/callback")
-    );
-    let token_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.token)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(token_body))
-        .unwrap();
-    let token_response = app.oneshot(token_request).await.unwrap();
-    assert_eq!(token_response.status(), StatusCode::OK);
+    redeem_code(app, state.paths.token.clone(), code, "jarm-verifier").await;
 }
 
 #[tokio::test]
@@ -1506,101 +1362,80 @@ async fn protected_resource_path_inserted_and_401_pointer() {
     assert_eq!(state.paths.userinfo, "/oidc/userinfo");
 
     // Exact RFC 9728 §3.1 derivation resolves.
-    let inserted = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
-            "{}/mcp",
-            state.paths.well_known_oauth_protected_resource
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let response = app.clone().oneshot(inserted).await.unwrap();
+    let response = get_uri(
+        app.clone(),
+        format!("{}/mcp", state.paths.well_known_oauth_protected_resource),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(response).await;
     assert_eq!(metadata["resource"], "https://id.example.com/mcp");
     assert_eq!(metadata["audience"], "api://mcp");
 
     // Query identifiers on the path-inserted URL are ignored: exact wins.
-    let precedence = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let precedence_response = get_uri(
+        app.clone(),
+        format!(
             "{}/mcp?resource={}",
             state.paths.well_known_oauth_protected_resource,
             urlencoding::encode(&userinfo_url)
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let precedence_response = app.clone().oneshot(precedence).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(precedence_response.status(), StatusCode::OK);
-    let bytes = precedence_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(precedence_response).await;
     assert_eq!(metadata["resource"], "https://id.example.com/mcp");
 
     // Bare trailing-segment fallback is gone: `/userinfo` does not select
     // `/oidc/userinfo`, and the full inserted path does.
-    let trailing = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let trailing_response = get_uri(
+        app.clone(),
+        format!(
             "{}/userinfo",
             state.paths.well_known_oauth_protected_resource
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let trailing_response = app.clone().oneshot(trailing).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(trailing_response.status(), StatusCode::BAD_REQUEST);
 
-    let full_inserted = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let full_response = get_uri(
+        app.clone(),
+        format!(
             "{}/oidc/userinfo",
             state.paths.well_known_oauth_protected_resource
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let full_response = app.clone().oneshot(full_inserted).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(full_response.status(), StatusCode::OK);
-    let bytes = full_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(full_response).await;
     assert_eq!(metadata["resource"], userinfo_url);
 
     // Bare base without an identifier is ambiguous with two servers.
-    let bare = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_oauth_protected_resource)
-        .body(Body::empty())
-        .unwrap();
-    let bare_response = app.clone().oneshot(bare).await.unwrap();
+    let bare_response = get_uri(
+        app.clone(),
+        &state.paths.well_known_oauth_protected_resource,
+        None,
+    )
+    .await;
     assert_eq!(bare_response.status(), StatusCode::BAD_REQUEST);
 
-    let unknown = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
+    let unknown_response = get_uri(
+        app.clone(),
+        format!(
             "{}/unknown-resource",
             state.paths.well_known_oauth_protected_resource
-        ))
-        .body(Body::empty())
-        .unwrap();
-    let unknown_response = app.clone().oneshot(unknown).await.unwrap();
+        ),
+        None,
+    )
+    .await;
     assert_eq!(unknown_response.status(), StatusCode::BAD_REQUEST);
 
     // The 401 pointer identifies the userinfo resource and resolves.
-    let userinfo_request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.userinfo)
-        .body(Body::empty())
-        .unwrap();
-    let userinfo_response = app.clone().oneshot(userinfo_request).await.unwrap();
+    let userinfo_response = get_uri(app.clone(), &state.paths.userinfo, None).await;
     assert_eq!(userinfo_response.status(), StatusCode::UNAUTHORIZED);
     let challenge = userinfo_response
         .headers()
@@ -1619,20 +1454,9 @@ async fn protected_resource_path_inserted_and_401_pointer() {
         challenge.contains(&format!("resource_metadata=\"{expected_pointer}\"")),
         "unexpected challenge: {challenge}"
     );
-    let pointer_request = Request::builder()
-        .method(Method::GET)
-        .uri(&expected_pointer)
-        .body(Body::empty())
-        .unwrap();
-    let pointer_response = app.oneshot(pointer_request).await.unwrap();
+    let pointer_response = get_uri(app, &expected_pointer, None).await;
     assert_eq!(pointer_response.status(), StatusCode::OK);
-    let bytes = pointer_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let metadata = json_body(pointer_response).await;
     assert_eq!(metadata["resource"], userinfo_url);
 }
 
@@ -1658,12 +1482,7 @@ async fn userinfo_401_omits_pointer_when_userinfo_unconfigured() {
         },
     ];
     let (app, state) = setup_with_config(config).await;
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.userinfo)
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
+    let response = get_uri(app, &state.paths.userinfo, None).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let challenge = response
         .headers()
@@ -1727,13 +1546,7 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let token_bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&token_bytes).unwrap();
+    let token_json = json_body(token_response).await;
     assert_eq!(token_json["token_type"], "DPoP");
     let bound_token = token_json["access_token"].as_str().unwrap().to_string();
 
@@ -1791,23 +1604,14 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // The DPoP scheme requires a sender-constrained token.
-    let plain_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.token)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(
-            "grant_type=client_credentials&client_id=userinfo-service&client_secret=secret&scope=openid",
-        ))
-        .unwrap();
-    let plain_response = app.clone().oneshot(plain_request).await.unwrap();
+    let plain_response = post_form(
+        app.clone(),
+        state.paths.token.clone(),
+        "grant_type=client_credentials&client_id=userinfo-service&client_secret=secret&scope=openid",
+    )
+    .await;
     assert_eq!(plain_response.status(), StatusCode::OK);
-    let plain_bytes = plain_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let plain_json: serde_json::Value = serde_json::from_slice(&plain_bytes).unwrap();
+    let plain_json = json_body(plain_response).await;
     let plain_token = plain_json["access_token"].as_str().unwrap();
     let plain_ath = util::sha256_base64url(plain_token);
     let response = get_userinfo(
@@ -1826,12 +1630,149 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // Ordinary Bearer presentation of the unbound token still works.
-    let bearer_request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.userinfo)
-        .header("Authorization", format!("Bearer {plain_token}"))
-        .body(Body::empty())
+    let bearer_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(&state.paths.userinfo)
+                .header("Authorization", format!("Bearer {plain_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
         .unwrap();
-    let bearer_response = app.oneshot(bearer_request).await.unwrap();
     assert_eq!(bearer_response.status(), StatusCode::OK);
+}
+
+/// Base authorize query with PKCE; `extra` appends raw query parameters.
+fn authorize_query(state: &Arc<SharedState<SqlRepository>>, extra: impl Into<String>) -> String {
+    format!(
+        "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=s&nonce=n&code_challenge={}&code_challenge_method=S256{}",
+        state.paths.authorize,
+        urlencoding::encode("https://app.example.com/callback"),
+        util::sha256_base64url("verifier"),
+        extra.into(),
+    )
+}
+
+/// Authorize query carrying one essential acr fragment in `claims`.
+fn essential_acr_query(state: &Arc<SharedState<SqlRepository>>, fragment: &str) -> String {
+    let raw = format!("{{\"id_token\":{{\"acr\":{{\"essential\":true,{fragment}}}}}}}");
+    authorize_query(state, format!("&claims={}", urlencoding::encode(&raw)))
+}
+
+#[tokio::test]
+async fn authorize_session_reuse_enforces_essential_acr() {
+    let (app, state) = setup().await;
+    create_browser_session(&state, "sid-acr").await;
+
+    // Unmet essential values fall back to login: no redirect, no code.
+    let unmet = essential_acr_query(&state, "\"values\":[\"urn:qid:acr:password\"]");
+    let challenged = get_uri(app.clone(), unmet, Some("__Host-qid=sid-acr")).await;
+    assert_login_challenge(challenged).await;
+
+    // Voluntary `acr_values` alone never block reuse.
+    let voluntary = authorize_query(&state, "&acr_values=urn:qid:acr:password");
+    let reused = get_uri(app, voluntary, Some("__Host-qid=sid-acr")).await;
+    assert_code_issued(&reused);
+}
+
+#[tokio::test]
+async fn authorize_post_enforces_essential_acr_value() {
+    let (app, state) = setup().await;
+
+    // An unmet singular essential value fails the login flow without a code.
+    let unmet = essential_acr_query(&state, "\"value\":\"urn:qid:acr:phishing-resistant\"");
+    let denied = post_form(app.clone(), unmet, LOGIN_FORM).await;
+    assert_eq!(denied.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = redirect_location(&denied);
+    assert!(location.contains("error=unmet_authentication_requirements"));
+    assert!(!location.contains("code=ac_"));
+
+    // The password session satisfies its own essential value.
+    let matched = essential_acr_query(&state, "\"value\":\"urn:qid:acr:password\"");
+    let issued = post_form(app, matched, LOGIN_FORM).await;
+    assert_code_issued(&issued);
+}
+
+#[tokio::test]
+async fn authorize_par_preserves_assurance_requirements() {
+    let (app, state) = setup().await;
+    create_browser_session(&state, "sid-par-acr").await;
+    let base_params = |extra: (&str, serde_json::Value)| {
+        let mut params = serde_json::json!({
+            "client_id": "par-client",
+            "response_type": "code",
+            "redirect_uri": "https://app.example.com/callback",
+            "code_challenge": util::sha256_base64url("verifier"),
+            "code_challenge_method": "S256",
+        });
+        params[extra.0] = extra.1;
+        params
+    };
+
+    // Essential claims carried only by PAR still gate session reuse.
+    let claims_uri = "urn:ietf:params:oauth:request_uri:acr-claims";
+    let claims_params = base_params((
+        "claims",
+        serde_json::json!(
+            "{\"id_token\":{\"acr\":{\"essential\":true,\"values\":[\"urn:qid:acr:password\"]}}}"
+        ),
+    ));
+    store_par_request(&state, claims_uri, claims_params).await;
+    let challenged = get_par_request(
+        app.clone(),
+        &state,
+        claims_uri,
+        Some("__Host-qid=sid-par-acr"),
+    )
+    .await;
+    assert_login_challenge(challenged).await;
+
+    // A PAR-only max_age is honored against the reused session.
+    let age_uri = "urn:ietf:params:oauth:request_uri:acr-max-age";
+    let age_params = base_params(("max_age", serde_json::json!(1)));
+    store_par_request(&state, age_uri, age_params).await;
+    let stale = get_par_request(app, &state, age_uri, Some("__Host-qid=sid-par-acr")).await;
+    assert_login_challenge(stale).await;
+}
+
+#[tokio::test]
+async fn authorize_signed_request_preserves_essential_acr() {
+    let (app, state) = setup().await;
+    create_browser_session(&state, "sid-jar-acr").await;
+    let extra: HashMap<String, serde_json::Value> = [
+        ("client_id", serde_json::json!("par-client")),
+        ("response_type", serde_json::json!("code")),
+        (
+            "redirect_uri",
+            serde_json::json!("https://app.example.com/callback"),
+        ),
+        (
+            "code_challenge",
+            serde_json::json!(util::sha256_base64url("verifier")),
+        ),
+        ("code_challenge_method", serde_json::json!("S256")),
+        (
+            "claims",
+            serde_json::json!({
+                "id_token": {"acr": {"essential": true, "values": ["urn:qid:acr:password"]}}
+            }),
+        ),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect();
+    let request_object = signed_request_object(&state, "acr-jar-test", "acr-jar-key", extra).await;
+    let challenged = get_uri(
+        app,
+        format!(
+            "{}?request={}",
+            state.paths.authorize,
+            urlencoding::encode(&request_object)
+        ),
+        Some("__Host-qid=sid-jar-acr"),
+    )
+    .await;
+    assert_login_challenge(challenged).await;
 }

@@ -48,6 +48,36 @@ fn build_dpop_proof(jti: &str) -> String {
     build_dpop_proof_with_nonce(jti, None)
 }
 
+async fn json_body(response: axum::response::Response) -> serde_json::Value {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> String {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(form_body.to_string()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn post_exchange_status(app: Router, token_path: &str, form_body: String) -> StatusCode {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(form_body))
+        .unwrap();
+    app.oneshot(request).await.unwrap().status()
+}
+
 fn dpop_private_pem_and_jwk() -> (String, Jwk) {
     static KEY: OnceLock<(String, Jwk)> = OnceLock::new();
     KEY.get_or_init(|| {
@@ -660,13 +690,7 @@ async fn token_exchange_requires_active_access_token_subject() {
         .unwrap();
     let subject_response = app.clone().oneshot(subject_request).await.unwrap();
     assert_eq!(subject_response.status(), StatusCode::OK);
-    let bytes = subject_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let subject_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let subject_json = json_body(subject_response).await;
     let subject_token = subject_json["access_token"].as_str().unwrap();
 
     let exchange_body = format!(
@@ -682,13 +706,7 @@ async fn token_exchange_requires_active_access_token_subject() {
         .unwrap();
     let exchange_response = app.oneshot(exchange_request).await.unwrap();
     assert_eq!(exchange_response.status(), StatusCode::OK);
-    let bytes = exchange_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let exchange_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let exchange_json = json_body(exchange_response).await;
     assert_eq!(exchange_json["token_type"], "DPoP");
     let exchanged_token = exchange_json["access_token"].as_str().unwrap();
     let claims = state
@@ -731,13 +749,7 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         .unwrap();
     let subject_response = app.clone().oneshot(subject_request).await.unwrap();
     assert_eq!(subject_response.status(), StatusCode::OK);
-    let subject_bytes = subject_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let subject_json: serde_json::Value = serde_json::from_slice(&subject_bytes).unwrap();
+    let subject_json = json_body(subject_response).await;
     let subject_token = subject_json["access_token"].as_str().unwrap();
 
     let actor_request = Request::builder()
@@ -750,13 +762,7 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         .unwrap();
     let actor_response = app.clone().oneshot(actor_request).await.unwrap();
     assert_eq!(actor_response.status(), StatusCode::OK);
-    let actor_bytes = actor_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let actor_json: serde_json::Value = serde_json::from_slice(&actor_bytes).unwrap();
+    let actor_json = json_body(actor_response).await;
     let actor_token = actor_json["access_token"].as_str().unwrap();
 
     let exchange_body = format!(
@@ -772,13 +778,7 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         .unwrap();
     let exchange_response = app.clone().oneshot(exchange_request).await.unwrap();
     assert_eq!(exchange_response.status(), StatusCode::OK);
-    let exchange_bytes = exchange_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let exchange_json: serde_json::Value = serde_json::from_slice(&exchange_bytes).unwrap();
+    let exchange_json = json_body(exchange_response).await;
     assert_eq!(
         exchange_json["issued_token_type"],
         "urn:ietf:params:oauth:token-type:access_token"
@@ -806,16 +806,123 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         .unwrap();
     let introspect_response = app.oneshot(introspect_request).await.unwrap();
     assert_eq!(introspect_response.status(), StatusCode::OK);
-    let introspect_bytes = introspect_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&introspect_bytes).unwrap();
+    let introspection = json_body(introspect_response).await;
     assert_eq!(introspection["act"]["sub"], "service:introspection-client");
     assert_eq!(introspection["act"]["client_id"], "introspection-client");
     assert_eq!(introspection["act"]["scope"], "actor");
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_foreign_realm_tokens() {
+    // RFC 8693 section 2.1: grant enablement is not cross-realm trust. Local
+    // subject and actor tokens must belong to the exchange client realm.
+    let mut config = test_helpers::test_config();
+    for (id, issuer, format) in [
+        (
+            "foreign-jwt",
+            "https://foreign.example.com",
+            TokenFormat::Jwt,
+        ),
+        (
+            "foreign-opaque",
+            "https://opaque.example.com",
+            TokenFormat::Opaque,
+        ),
+    ] {
+        let mut realm = config.realms[0].clone();
+        realm.id = id.to_string();
+        realm.issuer = issuer.to_string();
+        realm.protocols.oauth.tokens.access_token_format = format;
+        config.realms.push(realm);
+    }
+    let (app, token_path, state) = setup_with_config(config).await;
+    for (realm_id, issuer) in [
+        ("foreign-jwt", "https://foreign.example.com"),
+        ("foreign-opaque", "https://opaque.example.com"),
+    ] {
+        state
+            .repo
+            .create_realm(&"tenant-1".into(), &realm_id.into(), issuer, None)
+            .await
+            .unwrap();
+        let mut client =
+            client_credentials_client(&format!("{realm_id}-service"), "client_secret_post");
+        client.realm_id = realm_id.to_string();
+        state.repo.create_client(&client).await.unwrap();
+    }
+
+    let foreign_jwt = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=foreign-jwt-service&client_secret=secret&scope=api",
+    )
+    .await;
+    let foreign_opaque = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=foreign-opaque-service&client_secret=secret&scope=api",
+    )
+    .await;
+    assert!(foreign_opaque.starts_with("oat_"));
+    let own_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+    )
+    .await;
+
+    // Foreign JWT and opaque subjects are rejected without issuing.
+    for subject in [&foreign_jwt, &foreign_opaque] {
+        let status = post_exchange_status(
+            app.clone(),
+            &token_path,
+            format!(
+                "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://payments&resource=https%3A%2F%2Fapi.example.com%2Fpayments&scope=payments",
+                urlencoding::encode(subject)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    // A same-realm subject with a foreign actor is rejected as well.
+    let status = post_exchange_status(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&actor_token_type=urn:ietf:params:oauth:token-type:access_token&actor_token={}&audience=api://delegated&scope=delegated",
+            urlencoding::encode(&own_token),
+            urlencoding::encode(&foreign_jwt)
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Same-realm exchange still succeeds: the gate is a boundary, not a block.
+    let status = post_exchange_status(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://payments&resource=https%3A%2F%2Fapi.example.com%2Fpayments&scope=payments",
+            urlencoding::encode(&own_token)
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Rejected inputs stay live: neither foreign record was revoked.
+    let foreign_jwt_jti = state
+        .signer
+        .decode_signature_only(&foreign_jwt)
+        .unwrap()
+        .claims
+        .jti
+        .unwrap();
+    for jti in [
+        foreign_jwt_jti,
+        foreign_opaque.strip_prefix("oat_").unwrap().to_string(),
+    ] {
+        let record = state.repo.get_access_token(&jti).await.unwrap().unwrap();
+        assert!(!record.revoked);
+    }
 }
 
 #[tokio::test]
@@ -1050,13 +1157,7 @@ async fn client_credentials_enforces_registered_resource_server_policy() {
         .unwrap();
     let profile_response = app.clone().oneshot(profile_request).await.unwrap();
     assert_eq!(profile_response.status(), StatusCode::OK);
-    let bytes = profile_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(profile_response).await;
     let claims = state
         .signer
         .decode_signature_only(json["access_token"].as_str().unwrap())
@@ -1205,13 +1306,7 @@ async fn dpop_client_credentials_binds_access_token_cnf() {
         .unwrap();
     let introspect_response = app.oneshot(introspect_request).await.unwrap();
     assert_eq!(introspect_response.status(), StatusCode::OK);
-    let bytes = introspect_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(introspect_response).await;
     assert_eq!(
         introspection["cnf"],
         serde_json::json!({"jkt": expected_jkt})
@@ -1434,13 +1529,7 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(token_response).await;
     let access_token = json["access_token"].as_str().unwrap().to_string();
     assert_eq!(json["token_type"], "Bearer");
     let issued_claims = state
@@ -1469,13 +1558,7 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
         .unwrap();
     let introspect_response = app.clone().oneshot(introspect_request).await.unwrap();
     assert_eq!(introspect_response.status(), StatusCode::OK);
-    let bytes = introspect_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(introspect_response).await;
     assert_eq!(introspection["active"], true);
     assert_eq!(introspection["client_id"], "mtls-client");
     assert_eq!(
@@ -1552,13 +1635,7 @@ async fn refresh_preserves_original_scope_ceiling() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     assert_eq!(token_json["scope"], "read profile");
     let refresh_1 = token_json["refresh_token"].as_str().unwrap().to_string();
 
@@ -1574,13 +1651,7 @@ async fn refresh_preserves_original_scope_ceiling() {
         .unwrap();
     let refresh_response = app.clone().oneshot(refresh_request).await.unwrap();
     assert_eq!(refresh_response.status(), StatusCode::OK);
-    let bytes = refresh_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let refresh_json = json_body(refresh_response).await;
     assert_eq!(refresh_json["scope"], "read profile");
     let access_1 = refresh_json["access_token"].as_str().unwrap().to_string();
     let claims_1 = state
@@ -1617,13 +1688,7 @@ async fn refresh_preserves_original_scope_ceiling() {
         .unwrap();
     let narrow_response = app.clone().oneshot(narrow_request).await.unwrap();
     assert_eq!(narrow_response.status(), StatusCode::OK);
-    let bytes = narrow_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let narrow_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let narrow_json = json_body(narrow_response).await;
     assert_eq!(narrow_json["scope"], "read");
     let refresh_3 = narrow_json["refresh_token"].as_str().unwrap().to_string();
 
@@ -1639,13 +1704,7 @@ async fn refresh_preserves_original_scope_ceiling() {
         .unwrap();
     let full_response = app.clone().oneshot(full_request).await.unwrap();
     assert_eq!(full_response.status(), StatusCode::OK);
-    let bytes = full_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let full_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let full_json = json_body(full_response).await;
     assert_eq!(full_json["scope"], "read profile");
     let refresh_4 = full_json["refresh_token"].as_str().unwrap().to_string();
 
@@ -1674,13 +1733,7 @@ async fn refresh_preserves_original_scope_ceiling() {
         .unwrap();
     let retry_response = app.oneshot(retry_request).await.unwrap();
     assert_eq!(retry_response.status(), StatusCode::OK);
-    let bytes = retry_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let retry_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let retry_json = json_body(retry_response).await;
     assert_eq!(retry_json["scope"], "read profile");
 }
 
@@ -1718,13 +1771,7 @@ async fn refresh_preserves_original_authentication_context() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let first_access = token_json["access_token"].as_str().unwrap().to_string();
     let first_claims = state
         .signer
@@ -1754,13 +1801,7 @@ async fn refresh_preserves_original_authentication_context() {
         .unwrap();
     let refresh_response = app.oneshot(refresh_request).await.unwrap();
     assert_eq!(refresh_response.status(), StatusCode::OK);
-    let bytes = refresh_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let refresh_json = json_body(refresh_response).await;
     let second_access = refresh_json["access_token"].as_str().unwrap().to_string();
     let second_claims = state
         .signer
@@ -1824,13 +1865,7 @@ async fn refresh_omits_unknown_authentication_context_without_inventing_time() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let first_access = token_json["access_token"].as_str().unwrap().to_string();
     let first_claims = state
         .signer
@@ -1857,13 +1892,7 @@ async fn refresh_omits_unknown_authentication_context_without_inventing_time() {
         .unwrap();
     let refresh_response = app.oneshot(refresh_request).await.unwrap();
     assert_eq!(refresh_response.status(), StatusCode::OK);
-    let bytes = refresh_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let refresh_json = json_body(refresh_response).await;
     let second_access = refresh_json["access_token"].as_str().unwrap().to_string();
     let second_claims = state
         .signer
@@ -1918,13 +1947,7 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let first_opaque = token_json["access_token"].as_str().unwrap().to_string();
     assert!(first_opaque.starts_with("oat_"));
     let first_jti = qid_oauth::endpoints::decode_opaque_access_token(&first_opaque).unwrap();
@@ -1948,13 +1971,7 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
         .unwrap();
     let refresh_response = app.clone().oneshot(refresh_request).await.unwrap();
     assert_eq!(refresh_response.status(), StatusCode::OK);
-    let bytes = refresh_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let refresh_json = json_body(refresh_response).await;
     let second_opaque = refresh_json["access_token"].as_str().unwrap().to_string();
     assert!(second_opaque.starts_with("oat_"));
     let second_jti = qid_oauth::endpoints::decode_opaque_access_token(&second_opaque).unwrap();
@@ -1981,13 +1998,7 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
         .unwrap();
     let introspect_response = app.oneshot(introspect_request).await.unwrap();
     assert_eq!(introspect_response.status(), StatusCode::OK);
-    let bytes = introspect_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(introspect_response).await;
     assert_eq!(introspection["active"], true);
     assert_eq!(
         introspection["auth_time"],
@@ -2033,13 +2044,7 @@ async fn refresh_rejects_cross_client_caller_without_consuming() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let owner_refresh = token_json["refresh_token"].as_str().unwrap().to_string();
 
     // Grant-authorized foreign caller by form credentials must fail without
@@ -2131,13 +2136,7 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
         .unwrap();
     let introspect_response = app.clone().oneshot(introspect_request).await.unwrap();
     assert_eq!(introspect_response.status(), StatusCode::OK);
-    let bytes = introspect_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(introspect_response).await;
     assert_eq!(introspection["active"], true);
     assert_eq!(introspection["client_id"], "opaque-client");
     assert_eq!(introspection["scope"], "api");
@@ -2166,13 +2165,7 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
         .unwrap();
     let introspect_response = app.oneshot(introspect_request).await.unwrap();
     assert_eq!(introspect_response.status(), StatusCode::OK);
-    let bytes = introspect_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(introspect_response).await;
     assert_eq!(introspection["active"], false);
 }
 
@@ -2199,13 +2192,7 @@ async fn revocation_requires_client_auth_and_preserves_other_client_tokens() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let access_token = token_json["access_token"].as_str().unwrap();
 
     let unauthenticated_request = Request::builder()
@@ -2243,13 +2230,7 @@ async fn revocation_requires_client_auth_and_preserves_other_client_tokens() {
         .unwrap();
     let introspect_response = app.oneshot(introspect_request).await.unwrap();
     assert_eq!(introspect_response.status(), StatusCode::OK);
-    let bytes = introspect_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(introspect_response).await;
     assert_eq!(introspection["active"], true);
     assert_eq!(introspection["client_id"], "service-client");
 }
@@ -2270,13 +2251,7 @@ async fn revocation_rejects_when_disabled() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let access_token = token_json["access_token"].as_str().unwrap();
 
     let revoke_request = Request::builder()
@@ -2347,13 +2322,7 @@ async fn revocation_can_revoke_refresh_token_family() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let refresh_token = token_json["refresh_token"].as_str().unwrap();
 
     let revoke_request = Request::builder()
@@ -2499,13 +2468,7 @@ async fn introspection_enforces_resource_server_policy() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let access_token = token_json["access_token"].as_str().unwrap();
 
     let unauthenticated_body = format!("token={}", urlencoding::encode(access_token));
@@ -2530,13 +2493,7 @@ async fn introspection_enforces_resource_server_policy() {
         .unwrap();
     let allowed_response = app.clone().oneshot(allowed_request).await.unwrap();
     assert_eq!(allowed_response.status(), StatusCode::OK);
-    let bytes = allowed_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(allowed_response).await;
     assert_eq!(introspection["active"], true);
     assert_eq!(introspection["client_id"], "service-client");
     assert_eq!(introspection["scope"], "api");
@@ -2570,13 +2527,7 @@ async fn introspection_enforces_resource_server_policy() {
         .unwrap();
     let wrong_resource_response = app.oneshot(wrong_resource_request).await.unwrap();
     assert_eq!(wrong_resource_response.status(), StatusCode::OK);
-    let bytes = wrong_resource_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let wrong_resource: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let wrong_resource = json_body(wrong_resource_response).await;
     assert_eq!(wrong_resource["active"], false);
     assert!(wrong_resource.get("client_id").is_none());
 }
@@ -2701,13 +2652,7 @@ async fn authorization_code_grant_succeeds() {
         .unwrap();
     let refresh_response = app.oneshot(refresh_request).await.unwrap();
     assert_eq!(refresh_response.status(), StatusCode::OK);
-    let bytes = refresh_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let refresh_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let refresh_json = json_body(refresh_response).await;
     let refreshed_access = refresh_json["access_token"].as_str().unwrap();
     let refreshed_claims = state
         .signer
@@ -2934,13 +2879,7 @@ async fn dynamic_client_registration_management_updates_client() {
         .unwrap();
     let create_response = app.clone().oneshot(create_request).await.unwrap();
     assert_eq!(create_response.status(), StatusCode::OK);
-    let bytes = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let create_json = json_body(create_response).await;
     let secret = create_json["client_secret"].as_str().unwrap();
     let registration_access_token = create_json["registration_access_token"].as_str().unwrap();
     assert_eq!(
@@ -2966,13 +2905,7 @@ async fn dynamic_client_registration_management_updates_client() {
         .unwrap();
     let update_response = app.clone().oneshot(update_request).await.unwrap();
     assert_eq!(update_response.status(), StatusCode::OK);
-    let bytes = update_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(update_response).await;
     assert!(json.get("client_secret").is_none());
     assert!(json["registration_access_token"].as_str().unwrap().len() > 20);
 
@@ -3292,13 +3225,7 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
         .unwrap();
     let authorize_response = app.clone().oneshot(authorize_request).await.unwrap();
     assert_eq!(authorize_response.status(), StatusCode::OK);
-    let bytes = authorize_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(authorize_response).await;
     let device_code = json["device_code"].as_str().unwrap();
     let user_code = json["user_code"].as_str().unwrap();
 
@@ -3376,13 +3303,7 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     assert_eq!(token_json["token_type"], "DPoP");
 
     let replay_request = Request::builder()
@@ -3509,13 +3430,7 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     assert_eq!(token_json["token_type"], "DPoP");
     assert!(token_json["id_token"].as_str().unwrap().len() > 10);
 
@@ -3677,13 +3592,7 @@ async fn introspection_fails_closed_without_resource_servers() {
         .unwrap();
     let token_response = app.clone().oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let access_token = token_json["access_token"].as_str().unwrap().to_string();
 
     for body in [
@@ -3723,13 +3632,7 @@ async fn introspection_fails_closed_without_resource_servers() {
         .unwrap();
     let invalid_authenticated_response = app.oneshot(invalid_authenticated_request).await.unwrap();
     assert_eq!(invalid_authenticated_response.status(), StatusCode::OK);
-    let bytes = invalid_authenticated_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let introspection: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let introspection = json_body(invalid_authenticated_response).await;
     assert_eq!(introspection["active"], false);
 }
 
@@ -3809,13 +3712,7 @@ async fn jwt_introspection_signing_failure_fails_closed_without_disclosure() {
         .unwrap();
     let token_response = app.oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
-    let bytes = token_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let token_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token_json = json_body(token_response).await;
     let access_token = token_json["access_token"].as_str().unwrap().to_string();
 
     // Same repo/config/paths but a signer that fails every signature.
@@ -3872,13 +3769,7 @@ async fn jwt_introspection_signing_failure_fails_closed_without_disclosure() {
         .unwrap();
     let json_response = failing_app.oneshot(json_request).await.unwrap();
     assert_eq!(json_response.status(), StatusCode::OK);
-    let bytes = json_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(json_response).await;
     assert_eq!(json["active"], true);
     assert!(json.get("token_introspection").is_none());
 }

@@ -339,6 +339,11 @@ async fn advanced_subject_grant<R: Repository>(
         match subject_token_type {
             "urn:ietf:params:oauth:token-type:access_token" => {
                 let decoded = decode_access_token(state, subject_material).await?;
+                if decoded.realm_id != realm.id {
+                    return Err(QidError::BadRequest {
+                        message: "subject_token realm does not match client realm".to_string(),
+                    });
+                }
                 subject_user = User {
                     id: decoded.user_id,
                     realm_id: realm.id.clone(),
@@ -558,6 +563,11 @@ async fn validate_token_exchange_actor<R: Repository>(
     match actor_token_type {
         "urn:ietf:params:oauth:token-type:access_token" => {
             let decoded = decode_access_token(state, actor_token).await?;
+            if decoded.realm_id != realm_id {
+                return Err(QidError::BadRequest {
+                    message: "actor_token realm does not match client realm".to_string(),
+                });
+            }
             Ok(Some(serde_json::json!({
                 "sub": decoded.user_id,
                 "client_id": decoded.client_id,

@@ -3899,6 +3899,7 @@ dependencies = [
  "qid-crypto",
  "qid-oauth",
  "qid-storage",
+ "rand 0.8.8",
  "serde",
  "serde_json",
  "sha2",

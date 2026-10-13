@@ -6,6 +6,14 @@ use super::*;
 impl VcRepository for FileRepository {
     async fn store_vc_credential_status(&self, status: &VcCredentialStatusRecord) -> QidResult<()> {
         let mut store = self.store.write().await;
+        if store
+            .vc_credential_statuses
+            .contains_key(&status.credential_id)
+        {
+            return Err(QidError::Storage {
+                message: format!("duplicate vc credential status {}", status.credential_id),
+            });
+        }
         store
             .vc_credential_statuses
             .insert(status.credential_id.clone(), status.clone());

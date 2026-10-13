@@ -16,6 +16,7 @@ qid-core = { workspace = true }
 qid-crypto = { workspace = true }
 qid-oauth = { workspace = true }
 qid-storage = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }

@@ -827,6 +827,12 @@ async fn test_vc_credential_status_crud_and_revocation() {
     assert!(revoked.revoked);
     assert_eq!(revoked.revocation_reason.as_deref(), Some("account_closed"));
     assert_eq!(revoked.revoked_at, Some(1_500));
+    // Statuses are insert-only: re-storing an identifier fails on every backend.
+    let duplicate = repo.store_vc_credential_status(&status).await;
+    assert!(
+        duplicate.is_err(),
+        "duplicate credential status must fail closed"
+    );
 }
 
 #[tokio::test]
@@ -856,6 +862,12 @@ async fn test_file_vc_credential_status_round_trip() {
     assert!(revoked.revoked);
     assert_eq!(revoked.revocation_reason.as_deref(), Some("user_request"));
     assert_eq!(revoked.revoked_at, Some(1_600));
+    // Statuses are insert-only: re-storing an identifier fails on every backend.
+    let duplicate = repo.store_vc_credential_status(&status).await;
+    assert!(
+        duplicate.is_err(),
+        "duplicate credential status must fail closed"
+    );
 }
 
 #[tokio::test]

@@ -448,3 +448,124 @@ async fn credential_issuer_metadata_advertises_supported_configuration() {
         "openid qid_identity"
     );
 }
+
+#[tokio::test]
+async fn credential_second_issuance_revokes_independently() {
+    async fn issue_credential(
+        app: Router,
+        access_token: &str,
+        holder: &qid_crypto::jwk::GeneratedKeyPair,
+        nonce: &str,
+        lifetime_seconds: u64,
+    ) -> String {
+        let proof = credential_proof(&holder.private_pem, &holder.public_jwk, nonce);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/vc/v1/credential")
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "credential_configuration_id": "qid_identity_sd_jwt",
+                    "claims": ["sub", "email", "name"],
+                    "selectively_disclosed_claims": ["email"],
+                    "lifetime_seconds": lifetime_seconds,
+                    "holder_jwk": holder.public_jwk,
+                    "proof": { "jwt": proof },
+                    "nonce": nonce
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        body["credential"].as_str().unwrap().to_string()
+    }
+
+    fn credential_id_of(state: &Arc<SharedState<SqlRepository>>, credential_jwt: &str) -> String {
+        let token_data = state.signer.decode_signature_only(credential_jwt).unwrap();
+        token_data.claims.extra.get("vc").unwrap()["status"]["credential_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    let (app, state, user) = setup().await;
+    let access_token = issue_identity_access_token(&state, &user).await;
+    let first_holder = generate_es256("holder-first").unwrap();
+    let second_holder = generate_es256("holder-second").unwrap();
+    let first_jwt = issue_credential(
+        app.clone(),
+        &access_token,
+        &first_holder,
+        "nonce-first",
+        900,
+    )
+    .await;
+    let second_jwt = issue_credential(
+        app.clone(),
+        &access_token,
+        &second_holder,
+        "nonce-second",
+        3600,
+    )
+    .await;
+    let first_id = credential_id_of(&state, &first_jwt);
+    let second_id = credential_id_of(&state, &second_jwt);
+    assert_ne!(
+        first_id, second_id,
+        "separate issuances must not share an identifier"
+    );
+
+    // Revoking the first credential leaves the second verifiable.
+    let revoke_request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/vc/v1/status/{first_id}/revoke"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "reason": "key_compromised" }).to_string(),
+        ))
+        .unwrap();
+    let revoke_response = app.clone().oneshot(revoke_request).await.unwrap();
+    assert_eq!(revoke_response.status(), StatusCode::OK);
+
+    let thumbprint = qid_vc::holder_binding_from_jwk(&second_holder.public_jwk)
+        .unwrap()
+        .jwk_thumbprint;
+    let proof = sign_es256_jwt_with_jwk_header(
+        second_holder.private_pem.as_bytes(),
+        &second_holder.public_jwk,
+        "openid4vp-proof+jwt",
+        &serde_json::json!({
+            "iss": thumbprint,
+            "aud": "https://verifier.example",
+            "nonce": "nonce-verify",
+            "iat": util::now_seconds(),
+            "jti": "proof-second",
+            "credential_id": second_id,
+            "cnf": { "jkt": thumbprint }
+        }),
+    )
+    .unwrap();
+    let verify_request = Request::builder()
+        .method(Method::POST)
+        .uri("/vc/v1/presentation/verify")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "credential": second_jwt,
+                "disclosed_claims": { "email": "vc@example.com" },
+                "required_claims": ["sub", "email"],
+                "presentation_proof": { "jwt": proof },
+                "expected_audience": "https://verifier.example",
+                "nonce": "nonce-verify"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let verify_response = app.clone().oneshot(verify_request).await.unwrap();
+    assert_eq!(verify_response.status(), StatusCode::OK);
+}

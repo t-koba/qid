@@ -340,17 +340,13 @@ fn validate_status_matches_credential(
             message: "Credential status does not match presented credential".to_string(),
         });
     }
-    // Recompute credential_id from visible_claims to detect tampering.
-    let visible_claims_json = serde_json::to_value(&credential.visible_claims)
-        .map_err(|e| internal_error(format!("visible_claims serialization: {e}")))?;
-    let claims_hash = qid_core::util::sha256_base64url(visible_claims_json.to_string());
-    let expected_credential_id = qid_core::util::sha256_base64url(format!(
-        "{}:{}:{}:{}",
-        credential.issuer, credential.subject, credential.issued_at, claims_hash
-    ));
-    if expected_credential_id != status.credential_id {
+    // The identifier is random and carried inside the signed credential; bind
+    // the fetched status record to the presented credential instead of
+    // recomputing it. Claim integrity rests on the JWT signature, which is
+    // verified before this check.
+    if status.credential_id != credential.status.credential_id {
         return Err(QidError::BadRequest {
-            message: "Credential visible_claims integrity check failed".to_string(),
+            message: "Credential status does not match presented credential".to_string(),
         });
     }
     Ok(())

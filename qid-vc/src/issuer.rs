@@ -13,6 +13,7 @@ use qid_core::{
 use qid_crypto::Jwk;
 use qid_crypto::jwt::verify_jwt_signature_with_jwk;
 use qid_storage::prelude::*;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -311,11 +312,11 @@ pub fn issue_sd_jwt_credential(
     disclosures.sort_by(|a, b| a.claim_name.cmp(&b.claim_name));
 
     let issued_at = qid_core::util::now_seconds();
-    let visible_claims_json = serde_json::to_value(&visible_claims)
-        .map_err(|e| internal_error(format!("visible_claims serialization: {e}")))?;
-    let claims_hash = qid_core::util::sha256_base64url(visible_claims_json.to_string());
-    let credential_id =
-        qid_core::util::sha256_base64url(format!("{issuer}:{subject}:{issued_at}:{claims_hash}"));
+    // Independent unique identifier: never derived from claims or time, so
+    // separate issuances (and retries) never collide or alias revocation.
+    let mut id_bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut id_bytes);
+    let credential_id = qid_core::util::base64_url_encode(&id_bytes);
     Ok(SdJwtCredential {
         issuer: issuer.trim_end_matches('/').to_string(),
         subject: subject.to_string(),
@@ -520,5 +521,47 @@ pub(crate) async fn credential_endpoint<R: Repository>(
     match issue_credential_from_bearer(&state, &headers, request).await {
         Ok(response) => Json(response).into_response(),
         Err(error) => error_response(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::issue_sd_jwt_credential;
+    use std::collections::BTreeMap;
+
+    fn test_claims() -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([
+            ("sub".to_string(), serde_json::json!("user-1")),
+            ("email".to_string(), serde_json::json!("user-1@example.com")),
+        ])
+    }
+
+    #[test]
+    fn issuance_identifiers_are_unique_per_issuance() {
+        // Same subject, same second, different holders and lifetimes: the old
+        // derived formula collided; independent randomness must not.
+        let first = issue_sd_jwt_credential(
+            "https://id.example.com",
+            "user-1",
+            test_claims(),
+            &[],
+            900,
+            "https://id.example.com",
+        )
+        .unwrap();
+        let second = issue_sd_jwt_credential(
+            "https://id.example.com",
+            "user-1",
+            test_claims(),
+            &["email".to_string()],
+            3600,
+            "https://id.example.com",
+        )
+        .unwrap();
+        assert_ne!(
+            first.status.credential_id, second.status.credential_id,
+            "separate issuances must not share an identifier"
+        );
+        assert_eq!(second.expires_at - second.issued_at, 3600);
     }
 }

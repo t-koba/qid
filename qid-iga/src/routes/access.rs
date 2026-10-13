@@ -89,20 +89,17 @@ pub(super) async fn access_request<R: Repository>(
         return bad_request_response("entitlement_required");
     };
     let now = now_seconds();
-    let current_entitlements =
-        match current_entitlements_for_subject(&state, &tenant_id, &req.subject, now).await {
-            Ok(entitlements) => entitlements,
-            Err(response) => return *response,
+    let (current_entitlements, catalog) =
+        match evaluation_inputs(&state, &tenant_id, &req.subject, now).await {
+            Ok(inputs) => inputs,
+            Err(response) => return response,
         };
     let evaluation = evaluate_access_request(
         &req.subject,
         entitlement,
         &current_entitlements,
         req.requested_duration_seconds,
-        &match catalog_for_tenant(&state, &tenant_id).await {
-            Ok(catalog) => catalog,
-            Err(error) => return storage_error_response("list_iga_entitlements", error),
-        },
+        &catalog,
     );
     let record = IgaAccessRequestRecord {
         id: evaluation.request_id.clone(),
@@ -151,20 +148,16 @@ pub(super) async fn access_package_request<R: Repository>(
     else {
         return bad_request_response("access_package_unknown");
     };
-    let catalog = match catalog_for_tenant(state, tenant_id).await {
-        Ok(catalog) => catalog,
-        Err(error) => return storage_error_response("list_iga_entitlements", error),
-    };
     let requested_duration = match (req.requested_duration_seconds, package.max_duration_seconds) {
         (Some(requested), Some(max)) => Some(requested.min(max)),
         (Some(requested), None) => Some(requested),
         (None, max) => max,
     };
     let now = now_seconds();
-    let current_entitlements =
-        match current_entitlements_for_subject(state, tenant_id, &req.subject, now).await {
-            Ok(entitlements) => entitlements,
-            Err(response) => return *response,
+    let (current_entitlements, catalog) =
+        match evaluation_inputs(state, tenant_id, &req.subject, now).await {
+            Ok(inputs) => inputs,
+            Err(response) => return response,
         };
     let request_id = ulid::Ulid::new().to_string();
     // Each member is evaluated against the current grants plus the earlier
@@ -217,6 +210,30 @@ pub(super) async fn access_package_request<R: Repository>(
         "package_evaluation": package_evaluation,
     }))
     .into_response()
+}
+
+async fn evaluation_inputs<R: Repository>(
+    state: &SharedState<R>,
+    tenant_id: &str,
+    subject: &str,
+    now_epoch_seconds: u64,
+) -> Result<(Vec<String>, Vec<Entitlement>), axum::response::Response> {
+    let current_entitlements = match current_entitlements_for_subject(
+        state,
+        tenant_id,
+        subject,
+        now_epoch_seconds,
+    )
+    .await
+    {
+        Ok(entitlements) => entitlements,
+        Err(response) => return Err(*response),
+    };
+    let catalog = match catalog_for_tenant(state, tenant_id).await {
+        Ok(catalog) => catalog,
+        Err(error) => return Err(storage_error_response("list_iga_entitlements", error)),
+    };
+    Ok((current_entitlements, catalog))
 }
 
 async fn current_entitlements_for_subject<R: Repository>(
@@ -388,7 +405,35 @@ pub(super) async fn validate_approvals<R: Repository>(
     };
     let has_existing_grant = existing_grants.iter().any(|g| g.request_id == request_id);
     let grants = if req.issue_grant && validation.valid && !has_existing_grant {
-        issue_grants_for_evaluation(&evaluation, &approvals, now)
+        if let Some(package_id) = stored.entitlement.strip_prefix("access_package:") {
+            // Package approvals materialize one grant per approved member so
+            // later SoD checks and access reviews resolve real entitlements
+            // instead of an opaque marker. Membership is resolved at issuance;
+            // later package edits cannot change already-issued grants.
+            let packages = match state.repo.list_iga_access_packages(&tenant_id).await {
+                Ok(packages) => packages,
+                Err(error) => return storage_error_response("list_iga_access_packages", error),
+            };
+            let Some(package) = packages
+                .into_iter()
+                .find(|package| package.id == package_id && package.active)
+            else {
+                return bad_request_response("access_package_unknown");
+            };
+            match issue_package_member_grants(
+                &evaluation,
+                &package.entitlement_ids,
+                &approvals,
+                now,
+            ) {
+                Ok(grants) => grants,
+                Err(error) => return storage_error_response("issue_package_member_grants", error),
+            }
+        } else {
+            issue_time_bound_access_grant(&evaluation, &approvals, now)
+                .into_iter()
+                .collect()
+        }
     } else {
         Vec::new()
     };

@@ -357,14 +357,32 @@ pub fn validate_access_request_approvals(
     }
 }
 
-pub(crate) fn issue_grants_for_evaluation(
+/// Issue one grant per package member from an already-approved package
+/// evaluation. Members inherit the package expiry bound and approval set;
+/// a member that fails validation after package approval is an internal
+/// inconsistency, never a silent skip.
+pub(crate) fn issue_package_member_grants(
     evaluation: &AccessRequestEvaluation,
+    member_entitlement_ids: &[String],
     approvals: &[AccessApprovalRecord],
     now_epoch_seconds: u64,
-) -> Vec<TimeBoundAccessGrant> {
-    issue_time_bound_access_grant(evaluation, approvals, now_epoch_seconds)
-        .into_iter()
-        .collect()
+) -> qid_core::error::QidResult<Vec<TimeBoundAccessGrant>> {
+    let mut grants = Vec::new();
+    for member_id in member_entitlement_ids {
+        let member_evaluation = AccessRequestEvaluation {
+            entitlement: member_id.clone(),
+            ..evaluation.clone()
+        };
+        grants.push(
+            issue_time_bound_access_grant(&member_evaluation, approvals, now_epoch_seconds)
+                .map_err(|_| qid_core::error::QidError::Internal {
+                    message: format!(
+                        "package member {member_id} failed grant validation after package approval"
+                    ),
+                })?,
+        );
+    }
+    Ok(grants)
 }
 
 pub fn issue_time_bound_access_grant(
@@ -472,7 +490,7 @@ fn approval_steps_for(entitlement: &Entitlement, violations: &[String]) -> Vec<A
     steps
 }
 
-fn sod_conflicts(entitlements: &[String], catalog: &[Entitlement]) -> Vec<String> {
+pub(crate) fn sod_conflicts(entitlements: &[String], catalog: &[Entitlement]) -> Vec<String> {
     let assigned: HashSet<&str> = entitlements.iter().map(String::as_str).collect();
     let mut conflicts = Vec::new();
     for entitlement in catalog {

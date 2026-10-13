@@ -1,107 +1,20 @@
+mod common;
+
 use axum::{
     Router,
     body::Body,
     http::{Method, Request, StatusCode},
 };
-use http_body_util::BodyExt;
-use qid_core::{
-    models::{
-        Admin, AdminElevation, IgaAccessGrantRecord, IgaAccessRequestRecord, IgaApprovalRecord,
-        IgaFindingRecord,
-    },
-    state::SharedState,
-    test_helpers,
+use common::{
+    ADMIN_SESSION_ID_HEADER, json, post_json, request_with_headers, setup_app, store_iga_approval,
 };
-use qid_crypto::LocalSigner;
+use qid_core::models::{IgaAccessGrantRecord, IgaAccessRequestRecord, IgaFindingRecord};
 use qid_storage::{FileRepository, prelude::*};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-const ADMIN_SESSION_ID_HEADER: &str = "x-qid-admin-session-id";
-
-async fn seed_admin(repo: &FileRepository) -> String {
-    let now = qid_core::util::now_seconds();
-    let admin = Admin {
-        id: "test-admin-id".to_string(),
-        tenant_id: "test".to_string(),
-        subject: "security-admin".to_string(),
-        roles: vec!["security.admin".to_string()],
-        created_at: now,
-    };
-    repo.upsert_admin(&admin).await.unwrap();
-    let elevation = AdminElevation {
-        id: format!("admin-session-{}", ulid::Ulid::new()),
-        tenant_id: "test".to_string(),
-        admin_id: admin.id.clone(),
-        acr: Some("urn:qid:acr:phishing-resistant".to_string()),
-        amr: vec!["hwk".to_string()],
-        elevation_expires_at: now + 300,
-        created_at: now,
-    };
-    repo.store_admin_elevation(&elevation).await.unwrap();
-    elevation.id
-}
-
 async fn setup_with_repo() -> (Router, Arc<FileRepository>, String) {
-    let path = std::env::temp_dir().join(format!("qid-iga-{}.json", ulid::Ulid::new()));
-    let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
-    repo.migrate().await.unwrap();
-    let mut config = test_helpers::test_config();
-    config.realms[0].tenant_id = Some("test".to_string());
-    repo.create_realm(
-        &"test".into(),
-        &"test".into(),
-        "https://id.example.com",
-        Some("Test Realm"),
-    )
-    .await
-    .unwrap();
-    let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
-    let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
-    let repo = state.repo.clone();
-    let session_id = seed_admin(&repo).await;
-    (qid_iga::iga_routes().with_state(state), repo, session_id)
-}
-
-async fn json(response: axum::response::Response) -> serde_json::Value {
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
-}
-
-fn request_with_headers(
-    method: Method,
-    uri: &str,
-    body: serde_json::Value,
-    session_id: &str,
-) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("Content-Type", "application/json")
-        .header(ADMIN_SESSION_ID_HEADER, session_id)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-async fn store_iga_approval(
-    repo: &FileRepository,
-    request_id: &str,
-    approver: &str,
-    decision: &str,
-) {
-    let now = qid_core::util::now_seconds();
-    repo.store_iga_approval(&IgaApprovalRecord {
-        id: format!("stored-{approver}-{request_id}"),
-        tenant_id: "test".to_string(),
-        request_id: request_id.to_string(),
-        approver: approver.to_string(),
-        decision: decision.to_string(),
-        approved_at_epoch_seconds: now,
-        expires_at_epoch_seconds: Some(now + 300),
-        reason: Some("stored approval".to_string()),
-    })
-    .await
-    .unwrap();
+    setup_app("qid-iga", Some("test"), "security-admin").await
 }
 
 #[tokio::test]
@@ -283,6 +196,27 @@ async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
     );
 }
 
+async fn create_package_and_request(
+    app: &Router,
+    session_id: &str,
+    package: serde_json::Value,
+    subject: &str,
+) -> serde_json::Value {
+    let package_id = package["id"].clone();
+    post_json(app.clone(), "/iga/v1/access-packages", package, session_id).await;
+    post_json(
+        app.clone(),
+        "/iga/v1/access-requests",
+        serde_json::json!({
+            "subject": subject,
+            "access_package_id": package_id,
+            "reason": "package request",
+        }),
+        session_id,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn access_package_request_rejects_conflicting_members_in_any_order() {
     for entitlement_ids in [
@@ -290,42 +224,20 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
         vec!["app:erp:audit", "app:erp:admin"],
     ] {
         let (app, _repo, session_id) = setup_with_repo().await;
-        let package = serde_json::json!({
-            "id": "pkg-conflicting",
-            "display_name": "Conflicting package",
-            "owner": "security-admin",
-            "entitlement_ids": entitlement_ids,
-            "max_duration_seconds": 1800,
-            "active": true
-        });
-        let create_response = app
-            .clone()
-            .oneshot(request_with_headers(
-                Method::POST,
-                "/iga/v1/access-packages",
-                package,
-                &session_id,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(create_response.status(), StatusCode::OK);
-
-        let request = serde_json::json!({
-            "subject": "user-1",
-            "access_package_id": "pkg-conflicting",
-            "reason": "conflicting package request"
-        });
-        let response = app
-            .oneshot(request_with_headers(
-                Method::POST,
-                "/iga/v1/access-requests",
-                request,
-                &session_id,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = json(response).await;
+        let body = create_package_and_request(
+            &app,
+            &session_id,
+            serde_json::json!({
+                "id": "pkg-conflicting",
+                "display_name": "Conflicting package",
+                "owner": "security-admin",
+                "entitlement_ids": entitlement_ids,
+                "max_duration_seconds": 1800,
+                "active": true
+            }),
+            "user-1",
+        )
+        .await;
         assert_eq!(body["status"], "rejected", "order: {entitlement_ids:?}");
         let violations = body["violations"].as_array().unwrap();
         assert!(
@@ -335,6 +247,97 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
             "conflicting package must surface an SoD violation, got {violations:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn package_member_grant_feeds_later_sod_checks_and_review() {
+    let (app, repo, session_id) = setup_with_repo().await;
+    // No custom entitlements: the tenant falls back to the default catalog
+    // where app:erp:admin and app:erp:audit conflict.
+    let body = create_package_and_request(
+        &app,
+        &session_id,
+        serde_json::json!({
+            "id": "pkg-audit-only",
+            "display_name": "Audit only",
+            "owner": "security-admin",
+            "entitlement_ids": ["app:erp:audit"],
+            "max_duration_seconds": 1800,
+            "active": true
+        }),
+        "user-1",
+    )
+    .await;
+    let request_id = body["id"].as_str().unwrap().to_string();
+
+    // Default audit needs owner (internal-audit) plus security-admin approval.
+    store_iga_approval(&repo, "test", &request_id, "internal-audit", "approved").await;
+    let now = qid_core::util::now_seconds();
+    let validation_body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        serde_json::json!({
+            "issue_grant": true,
+            "approvals": [
+                {
+                    "id": "package-approval-security",
+                    "request_id": request_id,
+                    "approver": "security-admin",
+                    "decision": "approved",
+                    "approved_at_epoch_seconds": now,
+                    "expires_at_epoch_seconds": now + 300,
+                    "reason": "security approved"
+                }
+            ]
+        }),
+        &session_id,
+    )
+    .await;
+    assert_eq!(validation_body["validation"]["valid"], true);
+    let grants_json = validation_body["grants"].as_array().unwrap();
+    assert_eq!(grants_json.len(), 1);
+    assert_eq!(grants_json[0]["entitlement"], "app:erp:audit");
+
+    // A later standalone admin request must see the packaged audit grant.
+    let conflict_body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests",
+        serde_json::json!({
+            "subject": "user-1",
+            "entitlement": "app:erp:admin",
+            "requested_duration_seconds": 3600,
+            "reason": "admin after audit package"
+        }),
+        &session_id,
+    )
+    .await;
+    assert_eq!(conflict_body["status"], "rejected");
+    let violations = conflict_body["violations"].as_array().unwrap();
+    assert!(
+        violations.contains(&serde_json::json!("sod_conflict:app:erp:audit")),
+        "packaged audit grant must trip later SoD checks, got {violations:?}"
+    );
+
+    // Access review resolves the packaged member, not an opaque marker.
+    let review_body = post_json(
+        app,
+        "/iga/v1/access-reviews",
+        serde_json::json!({}),
+        &session_id,
+    )
+    .await;
+    let subjects = review_body["subjects"].as_array().unwrap();
+    let user_subject = subjects
+        .iter()
+        .find(|subject| subject["subject"] == "user-1")
+        .expect("review must include the packaged subject");
+    assert!(
+        user_subject["entitlements"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("app:erp:audit")),
+        "review must list the packaged member entitlement, got {user_subject:?}"
+    );
 }
 
 #[tokio::test]
@@ -497,7 +500,7 @@ async fn approval_validation_route_issues_time_bound_grant_when_complete() {
     assert_eq!(evaluation_response.status(), StatusCode::OK);
     let evaluation = json(evaluation_response).await;
     let request_id = evaluation["id"].as_str().unwrap();
-    store_iga_approval(&repo, request_id, "finance-ops", "approved").await;
+    store_iga_approval(&repo, "test", request_id, "finance-ops", "approved").await;
     let now = qid_core::util::now_seconds();
     let payload = serde_json::json!({
         "issue_grant": true,
@@ -743,7 +746,7 @@ async fn access_package_request_can_issue_grants_for_each_entitlement() {
         .expect("stored IGA package request missing");
     assert_eq!(stored_request.entitlement, "access_package:pkg-custom-ops");
     assert_eq!(stored_request.status, "approval_required");
-    store_iga_approval(&repo, request_id, "security-admin", "approved").await;
+    store_iga_approval(&repo, "test", request_id, "security-admin", "approved").await;
 
     let now = qid_core::util::now_seconds();
     let validation_payload = serde_json::json!({
@@ -782,20 +785,33 @@ async fn access_package_request_can_issue_grants_for_each_entitlement() {
     assert_eq!(validation_response.status(), StatusCode::OK);
     let validation_body = json(validation_response).await;
     assert_eq!(validation_body["validation"]["valid"], true);
-    assert_eq!(validation_body["grants"].as_array().unwrap().len(), 1);
-    assert_eq!(validation_body["grant"]["request_id"], request_id);
+    let grants_json = validation_body["grants"].as_array().unwrap();
+    assert_eq!(grants_json.len(), 2);
+    let mut grant_entitlements: Vec<&str> = grants_json
+        .iter()
+        .map(|grant| grant["entitlement"].as_str().unwrap())
+        .collect();
+    grant_entitlements.sort();
     assert_eq!(
-        validation_body["grant"]["entitlement"],
-        "access_package:pkg-custom-ops"
+        grant_entitlements,
+        vec!["app:custom:admin", "app:custom:read"]
     );
 
     let grants = repo
         .list_iga_access_grants("test", Some("user-1"))
         .await
         .expect("list package grants failed");
-    assert_eq!(grants.len(), 1);
-    assert_eq!(grants[0].entitlement, "access_package:pkg-custom-ops");
-    assert_eq!(grants[0].request_id, request_id);
+    assert_eq!(grants.len(), 2);
+    let mut stored_entitlements: Vec<&str> = grants
+        .iter()
+        .map(|grant| grant.entitlement.as_str())
+        .collect();
+    stored_entitlements.sort();
+    assert_eq!(
+        stored_entitlements,
+        vec!["app:custom:admin", "app:custom:read"]
+    );
+    assert!(grants.iter().all(|grant| grant.request_id == request_id));
 }
 
 #[tokio::test]
@@ -841,7 +857,7 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
     })
     .await
     .expect("store JIT source access request failed");
-    store_iga_approval(&repo, "jit-request-1", "security-admin", "approved").await;
+    store_iga_approval(&repo, "test", "jit-request-1", "security-admin", "approved").await;
 
     let issue_response = app
         .clone()
@@ -1832,7 +1848,7 @@ async fn validate_approvals_is_idempotent_and_prevents_double_issuance() {
     assert_eq!(eval_response.status(), StatusCode::OK);
     let eval_body = json(eval_response).await;
     let request_id = eval_body["id"].as_str().unwrap();
-    store_iga_approval(&repo, request_id, "finance-ops", "approved").await;
+    store_iga_approval(&repo, "test", request_id, "finance-ops", "approved").await;
 
     let now = qid_core::util::now_seconds();
     let payload = serde_json::json!({

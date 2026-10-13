@@ -67,15 +67,6 @@ pub(super) async fn detect_findings<R: Repository>(
         Ok(catalog) => catalog,
         Err(error) => return storage_error_response("list_iga_entitlements", error),
     };
-    let catalog_index: HashMap<&str, &[String]> = catalog
-        .iter()
-        .map(|entitlement| {
-            (
-                entitlement.id.as_str(),
-                entitlement.conflicting_entitlements.as_ref(),
-            )
-        })
-        .collect();
     let grants = match state.repo.list_iga_access_grants(&tenant_id, None).await {
         Ok(grants) => grants,
         Err(error) => return storage_error_response("list_iga_access_grants", error),
@@ -97,29 +88,21 @@ pub(super) async fn detect_findings<R: Repository>(
     for (subject, entitlements) in &mut subject_entitlements {
         entitlements.sort();
         entitlements.dedup();
-        let assigned: HashSet<&str> = entitlements.iter().map(String::as_str).collect();
-        for entitlement_id in entitlements.iter() {
-            if let Some(conflicts) = catalog_index.get(entitlement_id.as_str()) {
-                for conflict in *conflicts {
-                    if assigned.contains(conflict.as_str()) {
-                        let conflict_key = format!("{}+{}", entitlement_id, conflict);
-                        findings.push(IgaFindingRecord {
-                            id: ulid::Ulid::new().to_string(),
-                            tenant_id: tenant_id.clone(),
-                            finding_type: "sod_conflict".to_string(),
-                            subject: subject.clone(),
-                            severity: "high".to_string(),
-                            evidence_json: serde_json::json!({
-                                "source": "iga_access_grants",
-                                "conflict": conflict_key,
-                                "entitlements": entitlements,
-                            }),
-                            detected_at_epoch_seconds: now,
-                            resolved: false,
-                        });
-                    }
-                }
-            }
+        for conflict_key in sod_conflicts(entitlements, &catalog) {
+            findings.push(IgaFindingRecord {
+                id: ulid::Ulid::new().to_string(),
+                tenant_id: tenant_id.clone(),
+                finding_type: "sod_conflict".to_string(),
+                subject: subject.clone(),
+                severity: "high".to_string(),
+                evidence_json: serde_json::json!({
+                    "source": "iga_access_grants",
+                    "conflict": conflict_key,
+                    "entitlements": entitlements,
+                }),
+                detected_at_epoch_seconds: now,
+                resolved: false,
+            });
         }
     }
     for finding in &findings {

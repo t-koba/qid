@@ -190,9 +190,16 @@ if curl -fsS -x http://127.0.0.1:18088 \
 fi
 
 info "sending authenticated request through qpx"
-curl -fsS -x http://127.0.0.1:18088 \
+if ! curl -fsS -x http://127.0.0.1:18088 \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-    http://127.0.0.1:18090/ >/dev/null
+    http://127.0.0.1:18090/ >/dev/null; then
+    info "qpx denied the authenticated request; dumping diagnostics"
+    PAYLOAD_SEGMENT=$(echo "${ACCESS_TOKEN}" | cut -d. -f2)
+    python3 -c "import base64,json,sys; segment=sys.argv[1]; segment += '=' * (-len(segment) % 4); print(json.dumps(json.loads(base64.urlsafe_b64decode(segment))))" "${PAYLOAD_SEGMENT}" || true
+    info "qpxd log tail:"
+    tail -n 40 "${QPXD_LOG}" || true
+    exit 1
+fi
 info "qpx forwarded authenticated request successfully"
 
 info "starting qpxd with RFC 7662 introspection resource server configuration"

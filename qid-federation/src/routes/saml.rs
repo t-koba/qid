@@ -500,6 +500,13 @@ fn validate_saml_response_protocol(
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML Assertion SubjectConfirmationData is required".to_string(),
         })?;
+    if confirmation_data.attribute("NotBefore").is_some() {
+        return Err(QidError::BadRequest {
+            message:
+                "SAML SubjectConfirmationData NotBefore is unsupported for bearer confirmation"
+                    .to_string(),
+        });
+    }
     if confirmation_data.attribute("Recipient") != Some(expected_acs_url) {
         return Err(QidError::BadRequest {
             message: "SAML Assertion Recipient does not match ACS URL".to_string(),
@@ -1007,6 +1014,24 @@ mod tests {
         let err = record_saml_acs_replay(&cache, "corp", &provider.id, &second, 1_700_000_000, 60)
             .unwrap_err();
         assert!(err.message().contains("already been used"));
+    }
+
+    #[test]
+    fn acs_validation_rejects_subject_confirmation_not_before() {
+        let unsigned = response_with_subject_confirmation_data(
+            "https://id.example.com/realms/corp",
+            r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotBefore="1700000100" NotOnOrAfter="1700000300""#,
+        );
+        let err = validate_saml_acs_response(
+            &sign_response(&unsigned),
+            &provider(),
+            "https://id.example.com/realms/corp",
+            "https://id.example.com/federation/corp/saml/acs",
+            1_700_000_000,
+            60,
+        )
+        .unwrap_err();
+        assert!(err.message().contains("SubjectConfirmationData NotBefore"));
     }
 
     #[test]

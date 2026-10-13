@@ -155,6 +155,7 @@ pub(in crate::sql) struct TotpCredentialRow {
     period: i64,
     enabled: i64,
     last_used_step: Option<i64>,
+    created_at: i64,
 }
 
 impl From<TotpCredentialRow> for TotpCredential {
@@ -168,7 +169,7 @@ impl From<TotpCredentialRow> for TotpCredential {
             period: row.period as u64,
             enabled: row.enabled != 0,
             last_used_step: row.last_used_step.map(|v| v as u64),
-            created_at: 0,
+            created_at: row.created_at as u64,
         }
     }
 }

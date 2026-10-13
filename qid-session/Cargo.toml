@@ -41,6 +41,9 @@ hex = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
+qid-core = { workspace = true, features = ["test-utils"] }
 
 [lints]
 workspace = true

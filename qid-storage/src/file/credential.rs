@@ -70,45 +70,20 @@ impl CredentialRepository for FileRepository {
             .cloned())
     }
 
-    async fn update_totp_credential_last_used_step(
-        &self,
-        user_id: &str,
-        last_used_step: u64,
-    ) -> QidResult<()> {
+    async fn consume_totp_step(&self, credential_id: &str, candidate_step: u64) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        if let Some(cred) = store
-            .totp_credentials
-            .values_mut()
-            .find(|c| c.user_id == user_id)
+        let Some(cred) = store.totp_credentials.get_mut(credential_id) else {
+            return Ok(false);
+        };
+        if cred
+            .last_used_step
+            .is_some_and(|used| used >= candidate_step)
         {
-            cred.last_used_step = Some(last_used_step);
+            return Ok(false);
         }
+        cred.last_used_step = Some(candidate_step);
         drop(store);
-        self.save().await
-    }
-
-    async fn delete_totp_credential(&self, user_id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.totp_credentials.retain(|_, c| c.user_id != user_id);
-        drop(store);
-        self.save().await
-    }
-
-    async fn list_totp_credentials(&self, realm_id: &RealmId) -> QidResult<Vec<TotpCredential>> {
-        let store = self.store.read().await;
-        let user_ids: Vec<String> = store
-            .users
-            .values()
-            .filter(|u| u.realm_id == realm_id.0)
-            .map(|u| u.id.clone())
-            .collect();
-        let mut creds: Vec<_> = store
-            .totp_credentials
-            .values()
-            .filter(|c| user_ids.contains(&c.user_id))
-            .cloned()
-            .collect();
-        creds.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(creds)
+        self.save().await?;
+        Ok(true)
     }
 }

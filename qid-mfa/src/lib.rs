@@ -206,11 +206,10 @@ pub fn verify_totp_at(credential: &TotpCredential, code: &str, timestamp: u64) -
         .is_some()
 }
 
-/// Verify a TOTP code AND atomically compute the next `last_used_step`
-/// value that the caller MUST persist. Returning both the boolean result
-/// and the new `last_used_step` from a single function keeps replay
-/// prevention in one place instead of duplicating the boundary check
-/// across every code path.
+/// Validate a TOTP code against a stored credential snapshot and return the
+/// matching time step. Validation alone does not prevent replay: the caller
+/// must atomically claim the returned step through the repository
+/// (`consume_totp_step`) and only proceed when it wins the claim.
 pub fn verify_totp_at_with_step(
     credential: &TotpCredential,
     code: &str,

@@ -175,9 +175,7 @@ delegate!(CredentialRepository {
     list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<qid_core::models::WebAuthnCredential>>;
     store_totp_credential(&self, cred: &qid_core::models::TotpCredential) -> QidResult<()>;
     get_totp_credential(&self, user_id: &str) -> QidResult<Option<qid_core::models::TotpCredential>>;
-    update_totp_credential_last_used_step(&self, user_id: &str, last_used_step: u64) -> QidResult<()>;
-    delete_totp_credential(&self, user_id: &str) -> QidResult<()>;
-    list_totp_credentials(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::TotpCredential>>;
+    consume_totp_step(&self, credential_id: &str, candidate_step: u64) -> QidResult<bool>;
 });
 
 delegate!(VcRepository {

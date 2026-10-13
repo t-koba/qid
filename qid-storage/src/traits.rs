@@ -238,13 +238,10 @@ pub trait CredentialRepository: Send + Sync + 'static {
     async fn list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>>;
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()>;
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>>;
-    async fn update_totp_credential_last_used_step(
-        &self,
-        user_id: &str,
-        last_used_step: u64,
-    ) -> QidResult<()>;
-    async fn delete_totp_credential(&self, user_id: &str) -> QidResult<()>;
-    async fn list_totp_credentials(&self, realm_id: &RealmId) -> QidResult<Vec<TotpCredential>>;
+    /// Atomically advance `last_used_step` to `candidate_step` when it is still
+    /// fresh. Returns whether this caller won the claim; losers and unknown
+    /// credentials both fail closed without persisting anything.
+    async fn consume_totp_step(&self, credential_id: &str, candidate_step: u64) -> QidResult<bool>;
 }
 
 #[async_trait]

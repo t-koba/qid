@@ -1,3 +1,4 @@
+use qid_core::models::TotpCredential;
 use qid_core::models::{
     AccessToken, AppCatalogEntry, AuditEvent, AuditRetentionConfig, AuthorizationCode,
     BackchannelAuthenticationGrant, CiamBrand, CiamConsentGrant, CiamIdentityLink,
@@ -34,6 +35,26 @@ fn db_url() -> String {
     let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("test_{n}.db"));
     format!("sqlite:{}", path.display())
+}
+
+async fn sql_repo() -> SqlRepository {
+    let repo = SqlRepository::connect(&db_url())
+        .await
+        .expect("connect failed");
+    repo.migrate().await.expect("migration failed");
+    repo
+}
+
+async fn file_repo(prefix: &str) -> FileRepository {
+    let dir = std::env::temp_dir().join("qid_test");
+    std::fs::create_dir_all(&dir).ok();
+    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("{prefix}_{n}.json"));
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("file repository creation failed");
+    repo.migrate().await.expect("file migration failed");
+    repo
 }
 
 fn vc_status_record(credential_id: &str) -> VcCredentialStatusRecord {
@@ -130,10 +151,7 @@ where
 
 #[tokio::test]
 async fn test_connect_and_migrate() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let _repo = sql_repo().await;
 }
 
 #[tokio::test]
@@ -270,10 +288,7 @@ async fn test_app_catalog_realm_migration_backfills_single_realm_tenant() {
 
 #[tokio::test]
 async fn test_realm_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-a".into(),
@@ -292,10 +307,7 @@ async fn test_realm_crud() {
 
 #[tokio::test]
 async fn test_audit_event_append_and_list() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-audit".into(),
@@ -372,10 +384,7 @@ async fn test_audit_event_append_and_list() {
 
 #[tokio::test]
 async fn test_audit_retention_config_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
 
     let global = AuditRetentionConfig {
         realm_id: None,
@@ -438,10 +447,7 @@ async fn test_audit_retention_config_crud() {
 
 #[tokio::test]
 async fn test_audit_retention_plan_respects_cutoff_and_legal_hold() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-retention-plan".into(),
@@ -513,10 +519,7 @@ async fn test_audit_retention_plan_respects_cutoff_and_legal_hold() {
 
 #[tokio::test]
 async fn test_user_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-u".into(),
@@ -552,10 +555,7 @@ async fn test_user_crud() {
 
 #[tokio::test]
 async fn test_password_credential_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-p".into(),
@@ -767,34 +767,21 @@ async fn assert_ciam_repository_round_trip(
 
 #[tokio::test]
 async fn test_sql_ciam_repository_round_trip() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
 
     assert_ciam_repository_round_trip(&repo).await;
 }
 
 #[tokio::test]
 async fn test_file_ciam_repository_round_trip() {
-    let n = DB_SEQ.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join("qid_test");
-    std::fs::create_dir_all(&dir).ok();
-    let path = dir.join(format!("test_ciam_{n}.json"));
-    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
-        .await
-        .expect("file repo failed");
-    repo.migrate().await.expect("file migration failed");
+    let repo = file_repo("test_ciam").await;
 
     assert_ciam_repository_round_trip(&repo).await;
 }
 
 #[tokio::test]
 async fn test_sql_workload_certificate_round_trip() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
 
     assert_workload_certificate_round_trip(&repo).await;
 }
@@ -815,10 +802,7 @@ async fn test_file_workload_certificate_round_trip() {
 
 #[tokio::test]
 async fn test_vc_credential_status_crud_and_revocation() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     let status = vc_status_record("credential-sql");
 
     repo.store_vc_credential_status(&status)
@@ -876,10 +860,7 @@ async fn test_file_vc_credential_status_round_trip() {
 
 #[tokio::test]
 async fn test_session_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-s".into(),
@@ -929,10 +910,7 @@ async fn test_session_crud() {
 
 #[tokio::test]
 async fn test_authorization_code_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-ac".into(),
@@ -992,10 +970,7 @@ async fn test_authorization_code_crud() {
 
 #[tokio::test]
 async fn test_client_crud_preserves_token_endpoint_auth_method() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-client".into(),
@@ -1056,10 +1031,7 @@ async fn test_client_crud_preserves_token_endpoint_auth_method() {
 
 #[tokio::test]
 async fn test_device_authorization_grant_polling_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-device".into(),
@@ -1122,10 +1094,7 @@ async fn test_device_authorization_grant_polling_crud() {
 
 #[tokio::test]
 async fn test_backchannel_authentication_grant_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-ciba".into(),
@@ -1229,10 +1198,7 @@ fn test_family(
 
 #[tokio::test]
 async fn test_token_family_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-tf".into(),
@@ -1308,10 +1274,7 @@ async fn test_token_family_crud() {
 
 #[tokio::test]
 async fn test_access_token_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-at".into(),
@@ -1388,10 +1351,7 @@ async fn test_access_token_crud() {
 
 #[tokio::test]
 async fn test_policy_bundle_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-pb".into(),
@@ -1423,10 +1383,7 @@ async fn test_policy_bundle_crud() {
 
 #[tokio::test]
 async fn test_scim_user_enterprise_extension_crud() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-scim".into(),
@@ -1470,10 +1427,7 @@ async fn test_scim_user_enterprise_extension_crud() {
 
 #[tokio::test]
 async fn sql_scim_pages_and_counts_are_stable() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     let realm_id = RealmId::from("realm-scim-page");
     repo.create_realm(
         &TenantId::from("tenant-1"),
@@ -2458,54 +2412,93 @@ async fn assert_iga_repository_round_trip(repo: &impl IgaRepository) {
 
 #[tokio::test]
 async fn test_sql_saas_repository_round_trip() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     assert_saas_repository_round_trip(&repo).await;
 }
 
 #[tokio::test]
 async fn test_file_saas_repository_round_trip() {
-    let dir = std::env::temp_dir().join("qid_test");
-    std::fs::create_dir_all(&dir).ok();
-    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("test_saas_{n}.json"));
-    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
-        .await
-        .expect("file repository creation failed");
-    repo.migrate().await.expect("file migration failed");
+    let repo = file_repo("test_saas").await;
     assert_saas_repository_round_trip(&repo).await;
 }
 
 #[tokio::test]
 async fn test_sql_iga_repository_round_trip() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     assert_iga_repository_round_trip(&repo).await;
 }
 
 #[tokio::test]
 async fn test_file_iga_repository_round_trip() {
-    let dir = std::env::temp_dir().join("qid_test");
-    std::fs::create_dir_all(&dir).ok();
-    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("test_iga_{n}.json"));
-    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
-        .await
-        .expect("file repository creation failed");
-    repo.migrate().await.expect("file migration failed");
+    let repo = file_repo("test_iga").await;
     assert_iga_repository_round_trip(&repo).await;
 }
 
 #[tokio::test]
-async fn sql_refresh_rotation_single_winner() {
-    let repo = SqlRepository::connect(&db_url())
+async fn sql_totp_step_consumption_single_winner() {
+    let repo = sql_repo().await;
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"realm-totp".into(),
+        "https://id.example.com/realms/totp",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_user(&User {
+        id: "user-totp".to_string(),
+        realm_id: "realm-totp".to_string(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    repo.store_totp_credential(&TotpCredential {
+        id: "totp-1".to_string(),
+        user_id: "user-totp".to_string(),
+        secret: "JBSWY3DPEHPK3PXP".to_string(),
+        algorithm: "SHA1".to_string(),
+        digits: 6,
+        period: 30,
+        enabled: true,
+        last_used_step: None,
+        created_at: 1000,
+    })
+    .await
+    .unwrap();
+    // Two claims for the same step race; exactly one wins.
+    let r1 = repo.consume_totp_step("totp-1", 100);
+    let r2 = repo.consume_totp_step("totp-1", 100);
+    let (r1, r2) = tokio::join!(r1, r2);
+    assert!(r1.unwrap() ^ r2.unwrap(), "exactly one step claim must win");
+    // A consumed step never wins again; a later step still advances.
+    assert!(!repo.consume_totp_step("totp-1", 100).await.unwrap());
+    assert!(repo.consume_totp_step("totp-1", 101).await.unwrap());
+    // Unknown credentials fail closed without persisting anything.
+    assert!(!repo.consume_totp_step("totp-missing", 1).await.unwrap());
+    // Re-storing (enrollment confirmation) upserts instead of conflicting.
+    let confirmed = repo
+        .get_totp_credential("user-totp")
         .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+        .unwrap()
+        .unwrap();
+    repo.store_totp_credential(&confirmed).await.unwrap();
+    let stored = repo
+        .get_totp_credential("user-totp")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.last_used_step, Some(101));
+    assert_eq!(stored.created_at, 1000);
+}
+
+#[tokio::test]
+async fn sql_refresh_rotation_single_winner() {
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-race".into(),
@@ -2552,10 +2545,7 @@ async fn sql_refresh_rotation_single_winner() {
 
 #[tokio::test]
 async fn sql_refresh_rotation_revoked_stays_revoked() {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
+    let repo = sql_repo().await;
     repo.create_realm(
         &"tenant-1".into(),
         &"realm-rev".into(),

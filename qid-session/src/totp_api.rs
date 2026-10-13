@@ -198,11 +198,14 @@ async fn totp_verify<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    // Replay prevention and code verification are performed atomically in
-    // `verify_totp_at_with_step`, which is the single source of truth for
-    // TOTP boundary checking.
+    // Enrollment confirmation validates against a transiently enabled copy:
+    // the stored credential stays disabled until a valid proof arrives.
     let now = qid_core::util::now_seconds();
-    let current_step = match verify_totp_at_with_step(&cred, &req.code, now) {
+    let probe = TotpCredential {
+        enabled: true,
+        ..cred.clone()
+    };
+    let current_step = match verify_totp_at_with_step(&probe, &req.code, now) {
         Ok(Some(step)) => step,
         Ok(None) => {
             return qid_http::error_response(QidError::BadRequest {
@@ -211,6 +214,17 @@ async fn totp_verify<R: Repository>(
         }
         Err(e) => return qid_http::error_response(e),
     };
+
+    // Exactly one confirmer wins the step; losers fail without enabling.
+    match state.repo.consume_totp_step(&cred.id, current_step).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return qid_http::error_response(QidError::BadRequest {
+                message: "invalid or already-used TOTP code".to_string(),
+            });
+        }
+        Err(e) => return qid_http::error_response(e),
+    }
 
     cred.enabled = true;
     cred.last_used_step = Some(current_step);
@@ -270,9 +284,8 @@ async fn totp_authenticate<R: Repository>(
         });
     }
 
-    // Replay prevention and code verification are performed atomically in
-    // `verify_totp_at_with_step`, which is the single source of truth for
-    // TOTP boundary checking.
+    // Validation runs against the stored snapshot; the repository decides the
+    // winner. Only the caller that claims the step reaches session creation.
     let now = qid_core::util::now_seconds();
     let current_step = match verify_totp_at_with_step(&cred, &req.code, now) {
         Ok(Some(step)) => step,
@@ -284,13 +297,14 @@ async fn totp_authenticate<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    // Persist last used step to prevent TOTP replay
-    if let Err(e) = state
-        .repo
-        .update_totp_credential_last_used_step(&user.id, current_step)
-        .await
-    {
-        return qid_http::error_response(e);
+    match state.repo.consume_totp_step(&cred.id, current_step).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return qid_http::error_response(QidError::BadRequest {
+                message: "invalid or already-used TOTP code".to_string(),
+            });
+        }
+        Err(e) => return qid_http::error_response(e),
     }
 
     metrics::counter!("qid_mfa_challenges_total", "method" => "totp").increment(1);

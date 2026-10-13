@@ -264,12 +264,13 @@ pub async fn webauthn_auth_start<R: Repository>(
     }
 }
 
-/// AMR a WebAuthn ceremony establishes. Attestation is not evaluated, so no
+/// AMR a WebAuthn ceremony establishes: the `webauthn` method marker that risk
+/// and step-up checks recognise. Attestation is not evaluated, so no
 /// credential carries trusted hardware classification: never claim `hwk`
 /// (RFC 8176 §2). Absence of hardware evidence is not evidence of
 /// software-only keys, so never claim `swk` either.
 fn webauthn_session_amr() -> Vec<String> {
-    vec!["phr".to_string()]
+    vec!["webauthn".to_string()]
 }
 
 pub async fn webauthn_auth_finish<R: Repository>(
@@ -600,11 +601,16 @@ mod tests {
     use super::webauthn_session_amr;
 
     #[test]
-    fn webauthn_session_amr_claims_no_hardware_key() {
+    fn webauthn_session_amr_marks_method_without_hardware_claim() {
         // The provider copies session AMR into ID token claims, so this is a
         // public assurance assertion: attestation-none credentials must not
-        // acquire `hwk` (or `swk`) on their way to tokens.
+        // acquire `hwk` (or `swk`) on their way to tokens, while keeping the
+        // `webauthn` marker that risk and step-up checks recognise.
         let amr = webauthn_session_amr();
+        assert!(
+            amr.iter().any(|method| method == "webauthn"),
+            "webauthn sessions must keep their recognised method marker: {amr:?}"
+        );
         assert!(
             !amr.iter().any(|method| method == "hwk" || method == "swk"),
             "unclassified credential claims hardware assurance: {amr:?}"

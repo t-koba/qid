@@ -48,8 +48,7 @@ async fn sql_repo() -> SqlRepository {
 async fn file_repo(prefix: &str) -> FileRepository {
     let dir = std::env::temp_dir().join("qid_test");
     std::fs::create_dir_all(&dir).ok();
-    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("{prefix}_{n}.json"));
+    let path = dir.join(format!("{prefix}_{}.json", ulid::Ulid::new()));
     let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
         .await
         .expect("file repository creation failed");
@@ -788,10 +787,7 @@ async fn test_sql_workload_certificate_round_trip() {
 
 #[tokio::test]
 async fn test_file_workload_certificate_round_trip() {
-    let path = std::env::temp_dir().join(format!(
-        "qid-file-workload-{}.json",
-        DB_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    let path = std::env::temp_dir().join(format!("qid-file-workload-{}.json", ulid::Ulid::new()));
     let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
         .await
         .expect("file repository creation failed");
@@ -837,10 +833,7 @@ async fn test_vc_credential_status_crud_and_revocation() {
 
 #[tokio::test]
 async fn test_file_vc_credential_status_round_trip() {
-    let path = std::env::temp_dir().join(format!(
-        "qid-file-vc-{}.json",
-        DB_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    let path = std::env::temp_dir().join(format!("qid-file-vc-{}.json", ulid::Ulid::new()));
     let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
         .await
         .expect("file repository creation failed");

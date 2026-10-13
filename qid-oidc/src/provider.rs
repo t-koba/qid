@@ -23,6 +23,8 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use crate::{bad_request, not_found, unauthorized};
+
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeRequest {
     pub request: Option<String>,
@@ -120,9 +122,7 @@ async fn authorize_with_browser_session<R: Repository>(
 ) -> QidResult<Option<Response>> {
     let realm = state
         .realm(&client.realm_id)
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("realm {}", client.realm_id),
-        })?;
+        .ok_or_else(|| not_found(format!("realm {}", client.realm_id)))?;
     let Some(session_id) = headers
         .get(header::COOKIE)
         .and_then(|cookie| cookie.to_str().ok())
@@ -355,9 +355,7 @@ fn merge_claims_param(target: &mut Option<String>, source: Option<String>) -> Qi
         None => *target = Some(source),
         Some(current) if !claims_documents_conflict(current, &source) => {}
         Some(_) => {
-            return Err(QidError::BadRequest {
-                message: "claims conflicts with request_uri payload".to_string(),
-            });
+            return Err(bad_request("claims conflicts with request_uri payload"));
         }
     }
     Ok(())
@@ -372,9 +370,7 @@ fn merge_max_age_param(target: &mut Option<u64>, source: Option<u64>) -> QidResu
         *target = Some(source);
         Ok(())
     } else {
-        Err(QidError::BadRequest {
-            message: "max_age conflicts with request_uri payload".to_string(),
-        })
+        Err(bad_request("max_age conflicts with request_uri payload"))
     }
 }
 
@@ -425,9 +421,9 @@ async fn resolve_authorize_request<R: Repository>(
         && req.request_uri.is_none()
         && realm_requires_signed_request_object(state, &req.client_id).await?
     {
-        return Err(QidError::BadRequest {
-            message: "signed request object is required for this realm".to_string(),
-        });
+        return Err(bad_request(
+            "signed request object is required for this realm",
+        ));
     }
 
     if req.request_uri.is_none() {
@@ -445,9 +441,9 @@ async fn resolve_authorize_request<R: Repository>(
                     .require_pushed_authorization_requests
         });
         if realm_config.is_some_and(|c| c.protocols.oauth.require_pushed_authorization_requests) {
-            return Err(QidError::BadRequest {
-                message: "pushed authorization request is required for this server".to_string(),
-            });
+            return Err(bad_request(
+                "pushed authorization request is required for this server",
+            ));
         }
         require_authorize_fields(&merged)?;
         return Ok(merged);
@@ -455,36 +451,24 @@ async fn resolve_authorize_request<R: Repository>(
     let request_uri = req
         .request_uri
         .as_deref()
-        .ok_or_else(|| QidError::BadRequest {
-            message: "missing request_uri".to_string(),
-        })?;
+        .ok_or_else(|| bad_request("missing request_uri"))?;
     if !request_uri.starts_with("urn:ietf:params:oauth:request_uri:") {
-        return Err(QidError::BadRequest {
-            message: "invalid request_uri".to_string(),
-        });
+        return Err(bad_request("invalid request_uri"));
     }
     let par = state
         .repo
         .get_par_request(request_uri)
         .await?
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "unknown request_uri".to_string(),
-        })?;
+        .ok_or_else(|| unauthorized("unknown request_uri"))?;
     let now = qid_core::util::now_seconds();
     if par.used {
-        return Err(QidError::Unauthorized {
-            message: "request_uri already used".to_string(),
-        });
+        return Err(unauthorized("request_uri already used"));
     }
     if par.expires_at <= now {
-        return Err(QidError::Unauthorized {
-            message: "request_uri expired".to_string(),
-        });
+        return Err(unauthorized("request_uri expired"));
     }
-    let par_params: AuthorizeRequest =
-        serde_json::from_value(par.params_json).map_err(|e| QidError::BadRequest {
-            message: format!("invalid PAR payload: {e}"),
-        })?;
+    let par_params: AuthorizeRequest = serde_json::from_value(par.params_json)
+        .map_err(|e| bad_request(format!("invalid PAR payload: {e}")))?;
     if let Some(request_object) = par_params.request.as_deref() {
         merge_request_object(state, &mut merged, request_object).await?;
     }
@@ -529,9 +513,7 @@ async fn resolve_authorize_request<R: Repository>(
     merge_max_age_param(&mut merged.max_age, par_params.max_age)?;
 
     if merged.client_id != par.client_id {
-        return Err(QidError::Unauthorized {
-            message: "request_uri client mismatch".to_string(),
-        });
+        return Err(unauthorized("request_uri client mismatch"));
     }
 
     require_authorize_fields(&merged)?;
@@ -546,10 +528,8 @@ async fn merge_request_object<R: Repository>(
     merged: &mut AuthorizeParameters,
     request_object: &str,
 ) -> QidResult<()> {
-    let header =
-        jsonwebtoken::decode_header(request_object).map_err(|e| QidError::Unauthorized {
-            message: format!("invalid request object header: {e}"),
-        })?;
+    let header = jsonwebtoken::decode_header(request_object)
+        .map_err(|e| unauthorized(format!("invalid request object header: {e}")))?;
     let alg_name = match header.alg {
         jsonwebtoken::Algorithm::HS256 => "HS256",
         jsonwebtoken::Algorithm::HS384 => "HS384",
@@ -658,18 +638,13 @@ fn request_object_string(claims: &serde_json::Value, name: &str) -> Option<Strin
 fn parse_request_object_payload(request_object: &str) -> QidResult<serde_json::Value> {
     let parts: Vec<&str> = request_object.split('.').collect();
     if parts.len() != 3 {
-        return Err(QidError::Unauthorized {
-            message: "invalid request object format".to_string(),
-        });
+        return Err(unauthorized("invalid request object format"));
     }
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(parts[1])
-        .map_err(|e| QidError::Unauthorized {
-            message: format!("invalid request object payload encoding: {e}"),
-        })?;
-    serde_json::from_slice(&payload).map_err(|e| QidError::Unauthorized {
-        message: format!("invalid request object payload: {e}"),
-    })
+        .map_err(|e| unauthorized(format!("invalid request object payload encoding: {e}")))?;
+    serde_json::from_slice(&payload)
+        .map_err(|e| unauthorized(format!("invalid request object payload: {e}")))
 }
 
 async fn find_request_object_client<R: Repository>(
@@ -679,9 +654,7 @@ async fn find_request_object_client<R: Repository>(
     let client_id = request_object_string(claims, "client_id")
         .or_else(|| request_object_string(claims, "sub"))
         .or_else(|| request_object_string(claims, "iss"))
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "request object missing client identity".to_string(),
-        })?;
+        .ok_or_else(|| unauthorized("request object missing client identity"))?;
     let mut candidates = Vec::new();
     for realm in &state.config.realms {
         if let Some(client) = state
@@ -702,20 +675,14 @@ async fn find_request_object_client<R: Repository>(
     }
     if candidates.len() == 1 && matching_audience.is_empty() {
         tracing::warn!(client_id = %client_id, "request object audience mismatch");
-        return Err(QidError::Unauthorized {
-            message: "invalid request object".to_string(),
-        });
+        return Err(unauthorized("invalid request object"));
     }
     if candidates.is_empty() {
         tracing::warn!(client_id = %client_id, "request object client is not registered");
-        return Err(QidError::Unauthorized {
-            message: "invalid request object".to_string(),
-        });
+        return Err(unauthorized("invalid request object"));
     }
     tracing::warn!(client_id = %client_id, "request object client realm is ambiguous");
-    Err(QidError::Unauthorized {
-        message: "invalid request object".to_string(),
-    })
+    Err(unauthorized("invalid request object"))
 }
 
 fn verify_request_object_signature(
@@ -729,13 +696,9 @@ fn verify_request_object_signature(
         .jwks
         .get("keys")
         .and_then(|value| value.as_array())
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "request object client jwks is missing keys".to_string(),
-        })?;
+        .ok_or_else(|| unauthorized("request object client jwks is missing keys"))?;
     if keys.is_empty() {
-        return Err(QidError::Unauthorized {
-            message: "request object client jwks has no keys".to_string(),
-        });
+        return Err(unauthorized("request object client jwks has no keys"));
     }
     let candidates: Vec<&serde_json::Value> = keys
         .iter()
@@ -747,9 +710,7 @@ fn verify_request_object_signature(
         .collect();
     if candidates.is_empty() {
         tracing::warn!(client_id = %client.client_id, kid = ?kid, "request object kid is not registered for client");
-        return Err(QidError::Unauthorized {
-            message: "invalid request object".to_string(),
-        });
+        return Err(unauthorized("invalid request object"));
     }
     let mut last_error = None;
     for candidate in candidates {
@@ -776,12 +737,10 @@ fn verify_request_object_signature(
             Err(err) => last_error = Some(err.message().to_string()),
         }
     }
-    Err(QidError::Unauthorized {
-        message: format!(
-            "request object signature verification failed: {}",
-            last_error.unwrap_or_else(|| "no usable client key".to_string())
-        ),
-    })
+    Err(unauthorized(format!(
+        "request object signature verification failed: {}",
+        last_error.unwrap_or_else(|| "no usable client key".to_string())
+    )))
 }
 
 fn validate_request_object_registered_claims(
@@ -792,9 +751,7 @@ fn validate_request_object_registered_claims(
         if let Some(value) = request_object_string(claims, claim)
             && value != client_id
         {
-            return Err(QidError::Unauthorized {
-                message: format!("request object {claim} mismatch"),
-            });
+            return Err(unauthorized(format!("request object {claim} mismatch")));
         }
     }
     Ok(())
@@ -805,16 +762,12 @@ fn validate_request_object_time(claims: &serde_json::Value) -> QidResult<()> {
     if let Some(exp) = claims.get("exp").and_then(|value| value.as_u64())
         && exp <= now
     {
-        return Err(QidError::Unauthorized {
-            message: "request object expired".to_string(),
-        });
+        return Err(unauthorized("request object expired"));
     }
     if let Some(nbf) = claims.get("nbf").and_then(|value| value.as_u64())
         && nbf > now
     {
-        return Err(QidError::Unauthorized {
-            message: "request object is not yet valid".to_string(),
-        });
+        return Err(unauthorized("request object is not yet valid"));
     }
     Ok(())
 }
@@ -854,9 +807,7 @@ fn validate_request_object_audience<R: Repository>(
         return Ok(());
     }
     tracing::warn!(realm = %realm_id, "request object audience mismatch");
-    Err(QidError::Unauthorized {
-        message: "invalid request object".to_string(),
-    })
+    Err(unauthorized("invalid request object"))
 }
 
 fn request_object_audience_matches_realm<R: Repository>(
@@ -901,9 +852,9 @@ fn enforce_allowed_request_object_alg<R: Repository>(
     if allowed.iter().any(|value| value == alg) {
         Ok(())
     } else {
-        Err(QidError::Unauthorized {
-            message: format!("request object signing algorithm '{alg}' is not allowed"),
-        })
+        Err(unauthorized(format!(
+            "request object signing algorithm '{alg}' is not allowed"
+        )))
     }
 }
 
@@ -916,9 +867,9 @@ fn merge_optional_json_authorize_param(
         return Ok(());
     };
     match target {
-        Some(current) if current != &source => Err(QidError::BadRequest {
-            message: format!("{name} conflicts with request_uri payload"),
-        }),
+        Some(current) if current != &source => Err(bad_request(format!(
+            "{name} conflicts with request_uri payload"
+        ))),
         Some(_) => Ok(()),
         None => {
             *target = Some(source);
@@ -929,19 +880,13 @@ fn merge_optional_json_authorize_param(
 
 fn require_authorize_fields(req: &AuthorizeParameters) -> QidResult<()> {
     if req.client_id.is_empty() {
-        return Err(QidError::BadRequest {
-            message: "client_id required".to_string(),
-        });
+        return Err(bad_request("client_id required"));
     }
     if req.response_type.is_empty() {
-        return Err(QidError::BadRequest {
-            message: "response_type required".to_string(),
-        });
+        return Err(bad_request("response_type required"));
     }
     if req.redirect_uri.is_empty() {
-        return Err(QidError::BadRequest {
-            message: "redirect_uri required".to_string(),
-        });
+        return Err(bad_request("redirect_uri required"));
     }
     Ok(())
 }
@@ -955,9 +900,9 @@ fn merge_authorize_param(target: &mut String, source: Option<String>, name: &str
         return Ok(());
     }
     if target != &source {
-        return Err(QidError::BadRequest {
-            message: format!("{name} conflicts with request_uri payload"),
-        });
+        return Err(bad_request(format!(
+            "{name} conflicts with request_uri payload"
+        )));
     }
     Ok(())
 }
@@ -971,9 +916,9 @@ fn merge_optional_authorize_param(
         return Ok(());
     };
     match target {
-        Some(current) if current != &source => Err(QidError::BadRequest {
-            message: format!("{name} conflicts with request_uri payload"),
-        }),
+        Some(current) if current != &source => Err(bad_request(format!(
+            "{name} conflicts with request_uri payload"
+        ))),
         Some(_) => Ok(()),
         None => {
             *target = Some(source);
@@ -1001,23 +946,17 @@ async fn validate_authorize_request<R: Repository>(
             }
         })?;
     if !oidc.enabled || !oidc.authorization_code.enabled {
-        return Err(QidError::BadRequest {
-            message: "OIDC authorization code flow is disabled".to_string(),
-        });
+        return Err(bad_request("OIDC authorization code flow is disabled"));
     }
 
     if req.response_type != "code" {
-        return Err(QidError::BadRequest {
-            message: "unsupported response_type".to_string(),
-        });
+        return Err(bad_request("unsupported response_type"));
     }
     if !matches!(
         req.response_mode.as_deref(),
         None | Some("query") | Some("form_post") | Some("jwt")
     ) {
-        return Err(QidError::BadRequest {
-            message: "unsupported response_mode".to_string(),
-        });
+        return Err(bad_request("unsupported response_mode"));
     }
     let oauth = state
         .config
@@ -1032,9 +971,7 @@ async fn validate_authorize_request<R: Repository>(
             }
         })?;
     if oauth.jarm.enabled && req.response_mode.as_deref() != Some("jwt") {
-        return Err(QidError::BadRequest {
-            message: "JARM response_mode=jwt is required".to_string(),
-        });
+        return Err(bad_request("JARM response_mode=jwt is required"));
     }
 
     if !client.redirect_uris.contains(&req.redirect_uri) {
@@ -1043,32 +980,24 @@ async fn validate_authorize_request<R: Repository>(
             realm = %client.realm_id,
             "authorization request redirect_uri is not registered"
         );
-        return Err(QidError::Unauthorized {
-            message: "authorization request is not allowed".to_string(),
-        });
+        return Err(unauthorized("authorization request is not allowed"));
     }
 
     if !client
         .grant_types
         .contains(&"authorization_code".to_string())
     {
-        return Err(QidError::Unauthorized {
-            message: "grant type not allowed".to_string(),
-        });
+        return Err(unauthorized("grant type not allowed"));
     }
 
     let realm = state
         .realm(&client.realm_id)
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("realm {}", client.realm_id),
-        })?;
+        .ok_or_else(|| not_found(format!("realm {}", client.realm_id)))?;
     if realm.pkce_required
         && (req.code_challenge.as_deref().unwrap_or("").is_empty()
             || req.code_challenge_method.as_deref() != Some("S256"))
     {
-        return Err(QidError::BadRequest {
-            message: "S256 PKCE is required".to_string(),
-        });
+        return Err(bad_request("S256 PKCE is required"));
     }
     if let Some(details) = &req.authorization_details {
         qid_core::oauth::validate_authorization_details(details)?;
@@ -1090,18 +1019,14 @@ async fn find_client_across_realms<R: Repository>(
         {
             if found.is_some() {
                 tracing::warn!(client_id = %client_id, "authorization request client realm is ambiguous");
-                return Err(QidError::Unauthorized {
-                    message: "authorization request is not allowed".to_string(),
-                });
+                return Err(unauthorized("authorization request is not allowed"));
             }
             found = Some(client);
         }
     }
     found.ok_or_else(|| {
         tracing::warn!(client_id = %client_id, "authorization request client is unknown");
-        QidError::Unauthorized {
-            message: "authorization request is not allowed".to_string(),
-        }
+        unauthorized("authorization request is not allowed")
     })
 }
 

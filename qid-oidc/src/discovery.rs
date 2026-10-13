@@ -1,6 +1,7 @@
 //! OIDC Provider routes.
 
 use crate::provider::{authorize_get, authorize_post};
+use crate::{bad_request, internal_error, not_found, unauthorized};
 use axum::{
     Form, Json, Router,
     extract::{OriginalUri, Path, Query, State},
@@ -10,7 +11,7 @@ use axum::{
 };
 use qid_core::{
     config::{OAuthProtocolConfig, OAuthResourceServerConfig, OidcProtocolConfig, ServerPaths},
-    error::{QidError, QidResult},
+    error::QidResult,
     jwt::{Audience, JwtClaims},
     models::Client,
     state::SharedState,
@@ -67,24 +68,22 @@ async fn send_backchannel_logout(logout_uri: &str, logout_token: &str) -> QidRes
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .map_err(|error| QidError::Internal {
-            message: format!("failed to build backchannel logout client: {error}"),
+        .map_err(|error| {
+            internal_error(format!(
+                "failed to build backchannel logout client: {error}"
+            ))
         })?;
     let response = client
         .post(logout_uri)
         .form(&[("logout_token", logout_token)])
         .send()
         .await
-        .map_err(|error| QidError::Internal {
-            message: format!("backchannel logout POST failed: {error}"),
-        })?;
+        .map_err(|error| internal_error(format!("backchannel logout POST failed: {error}")))?;
     if !response.status().is_success() {
-        return Err(QidError::BadRequest {
-            message: format!(
-                "backchannel logout endpoint returned HTTP {}",
-                response.status()
-            ),
-        });
+        return Err(bad_request(format!(
+            "backchannel logout endpoint returned HTTP {}",
+            response.status()
+        )));
     }
     Ok(())
 }
@@ -160,9 +159,7 @@ fn openid_configuration_response<R: Repository>(
     let oidc = Some(&realm.protocols.oidc);
     let oidc_config = &realm.protocols.oidc;
     if !oidc_config.enabled {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "OIDC is disabled".to_string(),
-        });
+        return qid_http::error_response(bad_request("OIDC is disabled"));
     }
     let grant_types = grant_types_supported(oauth, Some(oidc_config));
     let auth_methods = token_endpoint_auth_methods_supported(oauth);
@@ -420,26 +417,22 @@ fn metadata_realm<'a, R: Repository>(
             .realms
             .iter()
             .find(|realm| realm.id == realm_id)
-            .ok_or_else(|| QidError::NotFound {
-                resource: format!("realm {realm_id}"),
-            });
+            .ok_or_else(|| not_found(format!("realm {realm_id}")));
     }
     let mut realms = state.config.realms.iter();
     let Some(first) = realms.next() else {
-        return Err(QidError::BadRequest {
-            message: "no realm is configured".to_string(),
-        });
+        return Err(bad_request("no realm is configured"));
     };
     if realms.next().is_some() {
-        return Err(QidError::BadRequest {
-            message: "global OIDC/OAuth metadata is ambiguous for multiple realms; use realm-scoped discovery".to_string(),
-        });
+        return Err(bad_request(
+            "global OIDC/OAuth metadata is ambiguous for multiple realms; use realm-scoped discovery",
+        ));
     }
     let global_issuer = state.plan.public_base_url.trim_end_matches('/');
     if first.issuer.trim_end_matches('/') != global_issuer {
-        return Err(QidError::BadRequest {
-            message: "global OIDC/OAuth metadata is only available when the realm issuer matches server.public_base_url; use realm-scoped discovery".to_string(),
-        });
+        return Err(bad_request(
+            "global OIDC/OAuth metadata is only available when the realm issuer matches server.public_base_url; use realm-scoped discovery",
+        ));
     }
     Ok(first)
 }
@@ -526,10 +519,9 @@ async fn oauth_protected_resource<R: Repository>(
     Query(query): Query<ProtectedResourceQuery>,
 ) -> Response {
     let Some((realm, resource_server)) = select_realm_resource_server(&state, &query) else {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "resource or audience must identify a configured protected resource"
-                .to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "resource or audience must identify a configured protected resource",
+        ));
     };
     protected_resource_response(&state, realm, resource_server)
 }
@@ -554,18 +546,16 @@ async fn oauth_protected_resource_path_inserted<R: Repository>(
         };
         let Some((realm, resource_server)) = select_realm_resource_server(&state, &path_query)
         else {
-            return qid_http::error_response(QidError::BadRequest {
-                message: "resource or audience must identify a configured protected resource"
-                    .to_string(),
-            });
+            return qid_http::error_response(bad_request(
+                "resource or audience must identify a configured protected resource",
+            ));
         };
         return protected_resource_response(&state, realm, resource_server);
     }
     let Some((realm, resource_server)) = select_realm_resource_server(&state, &query) else {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "resource or audience must identify a configured protected resource"
-                .to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "resource or audience must identify a configured protected resource",
+        ));
     };
     protected_resource_response(&state, realm, resource_server)
 }
@@ -683,26 +673,22 @@ fn extract_userinfo_token(headers: &axum::http::HeaderMap) -> QidResult<(&str, b
     let value = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "bearer access token is required".to_string(),
-        })?
+        .ok_or_else(|| unauthorized("bearer access token is required"))?
         .trim();
     let Some((scheme, token)) = value.split_once(' ') else {
-        return Err(QidError::Unauthorized {
-            message: "Authorization header must use the Bearer or DPoP scheme".to_string(),
-        });
+        return Err(unauthorized(
+            "Authorization header must use the Bearer or DPoP scheme",
+        ));
     };
     let is_dpop = scheme.eq_ignore_ascii_case("DPoP");
     if !is_dpop && !scheme.eq_ignore_ascii_case("Bearer") {
-        return Err(QidError::Unauthorized {
-            message: "Authorization header must use the Bearer or DPoP scheme".to_string(),
-        });
+        return Err(unauthorized(
+            "Authorization header must use the Bearer or DPoP scheme",
+        ));
     }
     let token = token.trim();
     if token.is_empty() || token.contains(' ') {
-        return Err(QidError::Unauthorized {
-            message: "access token is malformed".to_string(),
-        });
+        return Err(unauthorized("access token is malformed"));
     }
     Ok((token, is_dpop))
 }
@@ -717,9 +703,7 @@ async fn userinfo<R: Repository>(
         .iter()
         .any(|realm| realm.protocols.oidc.enabled && realm.protocols.oidc.userinfo)
     {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "OIDC UserInfo is disabled".to_string(),
-        });
+        return qid_http::error_response(bad_request("OIDC UserInfo is disabled"));
     }
     let resource_metadata = userinfo_resource_metadata_url(&state);
     let (token, is_dpop_scheme) = match extract_userinfo_token(&headers) {
@@ -772,9 +756,7 @@ async fn userinfo<R: Repository>(
         );
     }
     if !realm.protocols.oidc.enabled || !realm.protocols.oidc.userinfo {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "OIDC UserInfo is disabled for token realm".to_string(),
-        });
+        return qid_http::error_response(bad_request("OIDC UserInfo is disabled for token realm"));
     }
     let htu = format!(
         "{}{}",
@@ -852,26 +834,23 @@ async fn logout<R: Repository>(
                     .as_deref()
                     .and_then(|iss| realm_by_issuer(&state, iss))
                 else {
-                    return qid_http::error_response(QidError::BadRequest {
-                        message: "id_token_hint iss does not match a configured realm issuer"
-                            .to_string(),
-                    });
+                    return qid_http::error_response(bad_request(
+                        "id_token_hint iss does not match a configured realm issuer",
+                    ));
                 };
                 logout_realm_id = Some(realm.id.clone());
                 logout_issuer = Some(realm.issuer.clone());
                 // Validate sub is present
                 if claims.sub.is_none() {
-                    return qid_http::error_response(QidError::BadRequest {
-                        message: "id_token_hint missing sub".to_string(),
-                    });
+                    return qid_http::error_response(bad_request("id_token_hint missing sub"));
                 }
                 // Validate aud if client_id is provided
                 if let Some(ref client_id) = form.client_id
                     && !claims.aud_contains(client_id)
                 {
-                    return qid_http::error_response(QidError::BadRequest {
-                        message: "id_token_hint aud does not match client_id".to_string(),
-                    });
+                    return qid_http::error_response(bad_request(
+                        "id_token_hint aud does not match client_id",
+                    ));
                 }
                 // RP-Initiated Logout 1.0 §2.5: if id_token_hint contains a sid claim,
                 // validate it matches the current browser session.
@@ -884,16 +863,16 @@ async fn logout<R: Repository>(
                     if let Some(current_sid) = current_sid
                         && claims_sid != current_sid
                     {
-                        return qid_http::error_response(QidError::BadRequest {
-                            message: "id_token_hint sid does not match current session".to_string(),
-                        });
+                        return qid_http::error_response(bad_request(
+                            "id_token_hint sid does not match current session",
+                        ));
                     }
                 }
             }
             Err(e) => {
-                return qid_http::error_response(QidError::BadRequest {
-                    message: format!("id_token_hint signature validation failed: {e}"),
-                });
+                return qid_http::error_response(bad_request(format!(
+                    "id_token_hint signature validation failed: {e}"
+                )));
             }
         }
     }
@@ -908,9 +887,9 @@ async fn logout<R: Repository>(
         logout_issuer = Some(realm.issuer.clone());
     }
     if logout_realm_id.is_none() {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "logout requires id_token_hint or client_id to determine realm".to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "logout requires id_token_hint or client_id to determine realm",
+        ));
     }
     let logout_enabled = state
         .config
@@ -935,18 +914,14 @@ async fn logout<R: Repository>(
             }
         });
     if !logout_enabled {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "OIDC logout is disabled".to_string(),
-        });
+        return qid_http::error_response(bad_request("OIDC logout is disabled"));
     }
 
     let cookie_name = logout_realm_id
         .as_deref()
         .and_then(|realm_id| state.realm(realm_id))
         .map(|realm| realm.browser_session.cookie_name.clone())
-        .ok_or_else(|| QidError::BadRequest {
-            message: "logout realm is not available at runtime".to_string(),
-        });
+        .ok_or_else(|| bad_request("logout realm is not available at runtime"));
     let cookie_name = match cookie_name {
         Ok(cookie_name) => cookie_name,
         Err(error) => return qid_http::error_response(error),
@@ -1000,57 +975,33 @@ async fn logout<R: Repository>(
         Err(err) => return qid_http::error_response(err),
     };
 
-    // If this is RP-initiated logout (has client_id and post_logout_redirect_uri), do redirect
-    if let (Some(_), Some(uri)) = (form.client_id.as_ref(), redirect_uri.as_ref()) {
-        let mut resp = Redirect::temporary(uri).into_response();
-        let clear_cookie = format!(
-            "{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
-            cookie_name
-        );
-        let clear_cookie = match HeaderValue::from_str(&clear_cookie) {
-            Ok(value) => value,
-            Err(err) => {
-                return qid_http::error_response(QidError::Internal {
-                    message: format!("failed to build logout cookie header: {err}"),
-                });
-            }
-        };
-        resp.headers_mut().insert(header::SET_COOKIE, clear_cookie);
-        return resp;
-    }
-
-    // OP-initiated logout: send backchannel notifications server-to-server and render
-    // frontchannel iframes for browser-mediated logout.
-    let clear_cookie = format!(
-        "{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
-        cookie_name
-    );
-
-    // Build frontchannel logout iframes
-    let mut iframes = String::new();
-    let Some(issuer) = logout_issuer else {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "logout issuer is not determined".to_string(),
-        });
-    };
+    // Shared notification phase for RP-initiated and OP-initiated logout:
+    // server-side backchannel delivery runs before any redirect or page
+    // completes the logout. Delivery is best-effort; failures are logged
+    // and never block session termination or the completion target.
     let sid = session_id;
-    for client in &clients_with_logout_uris {
-        if let Some(uri) = &client.frontchannel_logout_uri {
-            let iframe_src = match sid {
-                Some(sid) => format!("{}?iss={}&sid={}", uri, issuer, sid),
-                None => format!("{}?iss={}", uri, issuer),
-            };
-            iframes.push_str(&format!(
-                r#"<iframe src="{}" style="display:none;"></iframe>"#,
-                iframe_src
-            ));
+    let mut iframes = String::new();
+    if let Some(issuer) = logout_issuer.as_deref() {
+        for client in &clients_with_logout_uris {
+            if let Some(uri) = &client.frontchannel_logout_uri {
+                let iframe_src = match sid {
+                    Some(sid) => format!("{}?iss={}&sid={}", uri, issuer, sid),
+                    None => format!("{}?iss={}", uri, issuer),
+                };
+                iframes.push_str(&format!(
+                    r#"<iframe src="{}" style="display:none;"></iframe>"#,
+                    iframe_src
+                ));
+            }
         }
     }
 
-    if let Some(ref user_id) = user_id {
+    if let Some(ref user_id) = user_id
+        && let Some(issuer) = logout_issuer.as_deref()
+    {
         for client in &clients_with_logout_uris {
             if let Some(uri) = &client.backchannel_logout_uri
-                && let Some(token) = build_logout_token(&state, &issuer, user_id, sid, client).await
+                && let Some(token) = build_logout_token(&state, issuer, user_id, sid, client).await
                 && let Err(error) = send_backchannel_logout(uri, &token).await
             {
                 tracing::warn!(
@@ -1062,27 +1013,60 @@ async fn logout<R: Repository>(
         }
     }
 
-    let html = format!(
-        r#"<!doctype html>
+    let clear_cookie = match HeaderValue::from_str(&format!(
+        "{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
+        cookie_name
+    )) {
+        Ok(value) => value,
+        Err(err) => {
+            return qid_http::error_response(internal_error(format!(
+                "failed to build logout cookie header: {err}"
+            )));
+        }
+    };
+
+    // A validated redirect is the completion target, not a shortcut: without
+    // frontchannel work the browser redirects immediately, otherwise it visits
+    // the RP logout pages first via a best-effort completion page.
+    let mut resp = if let (Some(_), Some(uri)) = (form.client_id.as_ref(), redirect_uri.as_ref()) {
+        if iframes.is_empty() {
+            Redirect::temporary(uri).into_response()
+        } else {
+            let target = escape_html_attr(uri);
+            let html = format!(
+                r#"<!doctype html>
+<html>
+  <head><meta http-equiv="refresh" content="1;url={target}"></head>
+  <body>
+    {iframes}
+    <p><a href="{target}">Continue</a></p>
+  </body>
+</html>"#,
+            );
+            ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+        }
+    } else {
+        let html = format!(
+            r#"<!doctype html>
 <html>
   <body>
     {}
   </body>
 </html>"#,
-        iframes
-    );
-
-    let mut resp = ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response();
-    let clear_cookie = match HeaderValue::from_str(&clear_cookie) {
-        Ok(value) => value,
-        Err(err) => {
-            return qid_http::error_response(QidError::Internal {
-                message: format!("failed to build logout cookie header: {err}"),
-            });
-        }
+            iframes
+        );
+        ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
     };
     resp.headers_mut().insert(header::SET_COOKIE, clear_cookie);
     resp
+}
+
+fn escape_html_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 async fn backchannel_logout<R: Repository>(
@@ -1125,9 +1109,7 @@ async fn backchannel_logout<R: Repository>(
         );
     };
     if !logout_realm.protocols.oidc.enabled || !logout_realm.protocols.oidc.logout.backchannel {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "OIDC backchannel logout is disabled".to_string(),
-        });
+        return qid_http::error_response(bad_request("OIDC backchannel logout is disabled"));
     }
 
     // The logout_token's `aud` MUST identify a registered client of this OP.
@@ -1184,9 +1166,7 @@ async fn backchannel_logout<R: Repository>(
     let sub = claims.sub.as_deref();
 
     if sid.is_none() && sub.is_none() {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "logout_token must contain sid or sub".to_string(),
-        });
+        return qid_http::error_response(bad_request("logout_token must contain sid or sub"));
     }
 
     // Revoke matching sessions across all realms
@@ -1231,26 +1211,24 @@ async fn frontchannel_logout<R: Repository>(
     Query(query): Query<FrontchannelLogoutQuery>,
 ) -> Response {
     let Some(iss) = query.iss.as_deref() else {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "frontchannel logout requires iss".to_string(),
-        });
+        return qid_http::error_response(bad_request("frontchannel logout requires iss"));
     };
     let Some(realm) = realm_by_issuer(&state, iss) else {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "frontchannel logout iss does not match any configured realm".to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "frontchannel logout iss does not match any configured realm",
+        ));
     };
     if !realm.protocols.oidc.enabled || !realm.protocols.oidc.logout.frontchannel {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "OIDC frontchannel logout is disabled".to_string(),
-        });
+        return qid_http::error_response(bad_request("OIDC frontchannel logout is disabled"));
     }
 
     // Frontchannel logout endpoint - renders an iframe for the RP
     // The OP redirects the user's browser here for frontchannel logout
     // This is typically called by the OP when user logs out at the OP
-    let iss = iss.to_string();
-    let sid = query.sid.unwrap_or_default();
+    // `sid` is caller-supplied and reflected into markup: escape it alongside
+    // `iss` so a crafted value cannot break out of the script string.
+    let iss = escape_html_attr(iss);
+    let sid = escape_html_attr(&query.sid.unwrap_or_default());
 
     let html = format!(
         r#"<!doctype html>
@@ -1286,9 +1264,8 @@ async fn validate_post_logout_redirect_uri<R: Repository>(
     let Some(redirect_uri) = redirect_uri else {
         return Ok(None);
     };
-    let client_id = client_id.ok_or_else(|| QidError::BadRequest {
-        message: "client_id is required for post_logout_redirect_uri".to_string(),
-    })?;
+    let client_id = client_id
+        .ok_or_else(|| bad_request("client_id is required for post_logout_redirect_uri"))?;
     let mut found = None;
     for realm in &state.config.realms {
         if let Some(client) = state
@@ -1297,24 +1274,20 @@ async fn validate_post_logout_redirect_uri<R: Repository>(
             .await?
         {
             if found.is_some() {
-                return Err(QidError::BadRequest {
-                    message: "logout client realm is ambiguous".to_string(),
-                });
+                return Err(bad_request("logout client realm is ambiguous"));
             }
             found = Some(client);
         }
     }
-    let client = found.ok_or_else(|| QidError::BadRequest {
-        message: "unknown logout client".to_string(),
-    })?;
+    let client = found.ok_or_else(|| bad_request("unknown logout client"))?;
     if !client
         .post_logout_redirect_uris
         .iter()
         .any(|registered| registered == redirect_uri)
     {
-        return Err(QidError::BadRequest {
-            message: "post_logout_redirect_uri is not registered for client".to_string(),
-        });
+        return Err(bad_request(
+            "post_logout_redirect_uri is not registered for client",
+        ));
     }
     Ok(Some(redirect_uri.to_string()))
 }
@@ -1332,16 +1305,12 @@ async fn logout_client_realm<'a, R: Repository>(
             .is_some()
         {
             if found.is_some() {
-                return Err(QidError::BadRequest {
-                    message: "logout client realm is ambiguous".to_string(),
-                });
+                return Err(bad_request("logout client realm is ambiguous"));
             }
             found = Some(realm);
         }
     }
-    found.ok_or_else(|| QidError::BadRequest {
-        message: "unknown logout client".to_string(),
-    })
+    found.ok_or_else(|| bad_request("unknown logout client"))
 }
 
 fn parse_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
@@ -1370,9 +1339,9 @@ async fn webfinger<R: Repository>(
     let resource = match query.resource {
         Some(r) => r,
         None => {
-            return qid_http::error_response(QidError::BadRequest {
-                message: "WebFinger requires a resource parameter".to_string(),
-            });
+            return qid_http::error_response(bad_request(
+                "WebFinger requires a resource parameter",
+            ));
         }
     };
     let rel = query.rel.unwrap_or_default();
@@ -1403,24 +1372,20 @@ fn issuer_for_webfinger_resource<R: Repository>(
         .and_then(|acct| acct.rsplit_once('@').map(|(_, domain)| domain))
         .map(str::trim)
         .filter(|domain| !domain.is_empty())
-        .ok_or_else(|| QidError::BadRequest {
-            message: "WebFinger resource must be acct:user@domain".to_string(),
-        })?;
+        .ok_or_else(|| bad_request("WebFinger resource must be acct:user@domain"))?;
     let mut matched = None;
     for realm in &state.config.realms {
         let issuer_host = issuer_host(&realm.issuer);
         if issuer_host.as_deref() == Some(domain) || realm.id == domain {
             if matched.is_some() {
-                return Err(QidError::BadRequest {
-                    message: "WebFinger resource domain matches multiple realms".to_string(),
-                });
+                return Err(bad_request(
+                    "WebFinger resource domain matches multiple realms",
+                ));
             }
             matched = Some(realm.issuer.clone());
         }
     }
-    matched.ok_or_else(|| QidError::NotFound {
-        resource: format!("issuer for WebFinger resource {resource}"),
-    })
+    matched.ok_or_else(|| not_found(format!("issuer for WebFinger resource {resource}")))
 }
 
 fn issuer_host(issuer: &str) -> Option<String> {
@@ -1462,9 +1427,7 @@ fn check_session_iframe_response<R: Repository>(
     let cookie_name = match state.realm(realm_id) {
         Some(realm) => realm.browser_session.cookie_name.clone(),
         None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {realm_id}"),
-            });
+            return qid_http::error_response(not_found(format!("realm {realm_id}")));
         }
     };
     let html = format!(

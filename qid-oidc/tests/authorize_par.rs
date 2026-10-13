@@ -196,6 +196,12 @@ async fn get_uri(
         .unwrap()
 }
 
+async fn get_json(app: Router, uri: impl Into<String>, cookie: Option<&str>) -> serde_json::Value {
+    let response = get_uri(app, uri, cookie).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await
+}
+
 /// Shared password-login form body.
 const LOGIN_FORM: &str = "email=par%40example.com&password=correct-password";
 
@@ -206,6 +212,25 @@ async fn post_form(app: Router, uri: impl Into<String>, body: &str) -> axum::res
             .method(Method::POST)
             .uri(uri.into())
             .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn post_logout(
+    app: Router,
+    uri: String,
+    cookie: &str,
+    body: &str,
+) -> axum::response::Response {
+    app.oneshot(
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Cookie", cookie)
             .body(Body::from(body.to_string()))
             .unwrap(),
     )
@@ -264,17 +289,7 @@ async fn redeem_code(
         urlencoding::encode(code),
         urlencoding::encode("https://app.example.com/callback")
     );
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri(token_path)
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = post_form(app, token_path, &body).await;
     assert_eq!(response.status(), StatusCode::OK);
     json_body(response).await
 }
@@ -344,14 +359,12 @@ async fn create_browser_session(state: &Arc<SharedState<SqlRepository>>, session
 #[tokio::test]
 async fn discovery_metadata_only_advertises_implemented_bearer_grants() {
     let (app, state) = setup().await;
-    let response = get_uri(
+    let metadata = get_json(
         app,
         state.paths.well_known_oauth_authorization_server.clone(),
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let metadata = json_body(response).await;
     let grant_types = metadata["grant_types_supported"].as_array().unwrap();
     assert!(!grant_types.contains(&serde_json::json!(
         "urn:ietf:params:oauth:grant-type:jwt-bearer"
@@ -373,14 +386,12 @@ async fn discovery_metadata_only_advertises_implemented_bearer_grants() {
 #[tokio::test]
 async fn discovery_metadata_hides_disabled_oauth_endpoints() {
     let (app, state) = setup().await;
-    let response = get_uri(
+    let metadata = get_json(
         app.clone(),
         state.paths.well_known_oauth_authorization_server.clone(),
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let metadata = json_body(response).await;
     assert!(
         metadata
             .get("pushed_authorization_request_endpoint")
@@ -397,14 +408,7 @@ async fn discovery_metadata_hides_disabled_oauth_endpoints() {
     assert!(metadata.get("introspection_endpoint").is_some());
     assert!(metadata.get("revocation_endpoint").is_some());
 
-    let openid_request = Request::builder()
-        .method(Method::GET)
-        .uri(&state.paths.well_known_openid_configuration)
-        .body(Body::empty())
-        .unwrap();
-    let openid_response = app.oneshot(openid_request).await.unwrap();
-    assert_eq!(openid_response.status(), StatusCode::OK);
-    let openid = json_body(openid_response).await;
+    let openid = get_json(app, &state.paths.well_known_openid_configuration, None).await;
     assert!(openid.get("device_authorization_endpoint").is_none());
     assert!(openid.get("registration_endpoint").is_none());
     assert_eq!(openid["backchannel_logout_supported"], true);
@@ -427,14 +431,12 @@ async fn discovery_metadata_advertises_enabled_oauth_endpoints() {
         .dynamic_client_registration
         .enabled = true;
     let (app, state) = setup_with_config(config).await;
-    let response = get_uri(
+    let metadata = get_json(
         app.clone(),
         state.paths.well_known_oauth_authorization_server.clone(),
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let metadata = json_body(response).await;
     assert_eq!(
         metadata["pushed_authorization_request_endpoint"],
         "https://id.example.com/oauth2/par"
@@ -468,14 +470,12 @@ async fn discovery_metadata_reflects_disabled_oidc_logout_channels() {
     config.realms[0].protocols.oidc.logout.backchannel = false;
     config.realms[0].protocols.oidc.logout.frontchannel = false;
     let (app, state) = setup_with_config(config).await;
-    let response = get_uri(
+    let metadata = get_json(
         app.clone(),
         state.paths.well_known_openid_configuration.clone(),
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let metadata = json_body(response).await;
     assert_eq!(metadata["backchannel_logout_supported"], false);
     assert_eq!(metadata["frontchannel_logout_supported"], false);
 
@@ -486,6 +486,26 @@ async fn discovery_metadata_reflects_disabled_oidc_logout_channels() {
         .unwrap();
     let logout_response = app.oneshot(logout_request).await.unwrap();
     assert_eq!(logout_response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn frontchannel_logout_page_escapes_reflected_sid() {
+    let (app, state) = setup().await;
+    let uri = format!(
+        "{}?iss={}&sid={}",
+        state.paths.frontchannel_logout,
+        urlencoding::encode("https://id.example.com"),
+        urlencoding::encode(r#""}></script><script>alert(1)</script>"#),
+    );
+    let response = get_uri(app, uri, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        !html.contains("</script><script>"),
+        "raw sid reflected: {html}"
+    );
+    assert!(html.contains("&quot;"));
 }
 
 #[tokio::test]
@@ -639,6 +659,101 @@ async fn logout_redirect_requires_registered_client_uri() {
 }
 
 #[tokio::test]
+async fn logout_attempts_backchannel_before_redirect_response() {
+    let (app, state) = setup().await;
+    let captured: Arc<std::sync::Mutex<Vec<(String, String)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture_state = captured.clone();
+    let capture_app = Router::new().route(
+        "/bc/:client",
+        axum::routing::post(
+            |axum::extract::Path(client): axum::extract::Path<String>, body: String| async move {
+                capture_state.lock().unwrap().push((client, body));
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, capture_app).await.unwrap();
+    });
+    for client_id in ["notify-client", "notify-other"] {
+        let mut client = state
+            .repo
+            .get_client_by_client_id(&"test".into(), "par-client")
+            .await
+            .unwrap()
+            .unwrap();
+        client.id = format!("{client_id}-id");
+        client.client_id = client_id.to_string();
+        client.backchannel_logout_uri = Some(format!("http://127.0.0.1:{port}/bc/{client_id}"));
+        state.repo.create_client(&client).await.unwrap();
+    }
+    create_browser_session(&state, "sid-logout-notify").await;
+
+    let response = post_logout(
+        app,
+        state.paths.logout.clone(),
+        "__Host-qid=sid-logout-notify",
+        "client_id=notify-client&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback",
+    )
+    .await;
+    // No frontchannel registrations: immediate redirect, but only after both
+    // backchannel notifications were attempted.
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert!(response.headers().contains_key("set-cookie"));
+    let paths: Vec<String> = captured
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect();
+    assert_eq!(paths.len(), 2);
+    assert!(paths.contains(&"notify-client".to_string()));
+    assert!(paths.contains(&"notify-other".to_string()));
+    assert!(
+        captured
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, body)| body.contains("logout_token=")),
+        "backchannel posts must carry logout tokens"
+    );
+}
+
+#[tokio::test]
+async fn logout_redirect_with_frontchannel_renders_completion_page() {
+    let (app, state) = setup().await;
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.id = "notify-front-id".to_string();
+    client.client_id = "notify-front".to_string();
+    client.frontchannel_logout_uri = Some("https://rp.example.com/frontchannel".to_string());
+    state.repo.create_client(&client).await.unwrap();
+    create_browser_session(&state, "sid-logout-front").await;
+
+    let response = post_logout(
+        app,
+        state.paths.logout.clone(),
+        "__Host-qid=sid-logout-front",
+        "client_id=notify-front&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback",
+    )
+    .await;
+    // Frontchannel work exists: a completion page carries the notification,
+    // not an immediate redirect.
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(html.contains("https://rp.example.com/frontchannel"));
+    assert!(html.contains("sid-logout-front"));
+    assert!(html.contains("https://app.example.com/callback"));
+}
+
+#[tokio::test]
 async fn logout_rejects_unregistered_redirect_uri() {
     let (app, state) = setup().await;
     let body =
@@ -671,14 +786,12 @@ async fn discovery_metadata_advertises_mtls_auth_only_when_enabled() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.mtls.enabled = true;
     let (app, state) = setup_with_config(config).await;
-    let response = get_uri(
+    let metadata = get_json(
         app,
         state.paths.well_known_oauth_authorization_server.clone(),
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let metadata = json_body(response).await;
     let methods = metadata["token_endpoint_auth_methods_supported"]
         .as_array()
         .unwrap();
@@ -711,19 +824,17 @@ async fn discovery_metadata_advertises_configured_protected_resources() {
     ];
     let (app, state) = setup_with_config(config).await;
 
-    let as_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         &state.paths.well_known_oauth_authorization_server,
         None,
     )
     .await;
-    assert_eq!(as_response.status(), StatusCode::OK);
-    let metadata = json_body(as_response).await;
     let protected_resources = metadata["protected_resources"].as_array().unwrap();
     assert!(protected_resources.contains(&serde_json::json!("api://payments")));
     assert!(protected_resources.contains(&serde_json::json!("https://api.example.com/payments")));
 
-    let pr_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         format!(
             "{}?resource={}",
@@ -733,8 +844,6 @@ async fn discovery_metadata_advertises_configured_protected_resources() {
         None,
     )
     .await;
-    assert_eq!(pr_response.status(), StatusCode::OK);
-    let metadata = json_body(pr_response).await;
     assert_eq!(metadata["resource"], "https://api.example.com/payments");
     assert_eq!(metadata["audience"], "api://payments");
     assert_eq!(
@@ -748,7 +857,7 @@ async fn discovery_metadata_advertises_configured_protected_resources() {
     );
     assert_eq!(metadata["mtls_endpoint_aliases_supported"], true);
 
-    let audience_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         format!(
             "{}?audience={}",
@@ -758,8 +867,6 @@ async fn discovery_metadata_advertises_configured_protected_resources() {
         None,
     )
     .await;
-    assert_eq!(audience_response.status(), StatusCode::OK);
-    let metadata = json_body(audience_response).await;
     assert_eq!(metadata["resource"], "https://api.example.com/profile");
     assert_eq!(metadata["sender_constrained_access_tokens"], false);
 
@@ -782,24 +889,20 @@ async fn path_issuer_single_realm_requires_scoped_discovery_metadata() {
         get_uri(app.clone(), "/.well-known/oauth-authorization-server", None).await;
     assert_eq!(global_oauth_response.status(), StatusCode::BAD_REQUEST);
 
-    let scoped_oidc_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         "/realms/test/.well-known/openid-configuration",
         None,
     )
     .await;
-    assert_eq!(scoped_oidc_response.status(), StatusCode::OK);
-    let metadata = json_body(scoped_oidc_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/test");
 
-    let scoped_oauth_response = get_uri(
+    let metadata = get_json(
         app,
         "/.well-known/oauth-authorization-server/realms/test",
         None,
     )
     .await;
-    assert_eq!(scoped_oauth_response.status(), StatusCode::OK);
-    let metadata = json_body(scoped_oauth_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/test");
 }
 
@@ -818,28 +921,24 @@ async fn realm_scoped_discovery_metadata_supports_multi_realm() {
     let global_response = get_uri(app.clone(), "/.well-known/openid-configuration", None).await;
     assert_eq!(global_response.status(), StatusCode::BAD_REQUEST);
 
-    let scoped_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         "/realms/realm-b/.well-known/openid-configuration",
         None,
     )
     .await;
-    assert_eq!(scoped_response.status(), StatusCode::OK);
-    let metadata = json_body(scoped_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/realm-b");
     assert_eq!(
         metadata["check_session_iframe"],
         "https://id.example.com/realms/realm-b/session/check"
     );
 
-    let oauth_metadata_response = get_uri(
+    let oauth_metadata = get_json(
         app.clone(),
         "/.well-known/oauth-authorization-server/realms/realm-b",
         None,
     )
     .await;
-    assert_eq!(oauth_metadata_response.status(), StatusCode::OK);
-    let oauth_metadata = json_body(oauth_metadata_response).await;
     assert_eq!(
         oauth_metadata["issuer"],
         "https://id.example.com/realms/realm-b"
@@ -867,14 +966,12 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
     let global_response = get_uri(app.clone(), "/.well-known/ssf-configuration", None).await;
     assert_eq!(global_response.status(), StatusCode::BAD_REQUEST);
 
-    let scoped_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         "/realms/test/.well-known/ssf-configuration",
         None,
     )
     .await;
-    assert_eq!(scoped_response.status(), StatusCode::OK);
-    let metadata = json_body(scoped_response).await;
     assert_eq!(metadata["issuer"], "https://id.example.com/realms/test");
     assert_eq!(
         metadata["delivery_methods_supported"][0]["url"],
@@ -1099,7 +1196,7 @@ async fn authorize_consumes_par_request_uri_once_after_successful_login() {
     )
     .await;
 
-    let get_response = get_uri(
+    let challenge = get_json(
         app.clone(),
         format!(
             "{}?request_uri={}",
@@ -1109,8 +1206,6 @@ async fn authorize_consumes_par_request_uri_once_after_successful_login() {
         None,
     )
     .await;
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let challenge = json_body(get_response).await;
     assert_eq!(challenge["client_id"], "par-client");
     assert_eq!(challenge["state"], "state-from-par");
 
@@ -1374,7 +1469,7 @@ async fn protected_resource_path_inserted_and_401_pointer() {
     assert_eq!(metadata["audience"], "api://mcp");
 
     // Query identifiers on the path-inserted URL are ignored: exact wins.
-    let precedence_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         format!(
             "{}/mcp?resource={}",
@@ -1384,8 +1479,6 @@ async fn protected_resource_path_inserted_and_401_pointer() {
         None,
     )
     .await;
-    assert_eq!(precedence_response.status(), StatusCode::OK);
-    let metadata = json_body(precedence_response).await;
     assert_eq!(metadata["resource"], "https://id.example.com/mcp");
 
     // Bare trailing-segment fallback is gone: `/userinfo` does not select
@@ -1401,7 +1494,7 @@ async fn protected_resource_path_inserted_and_401_pointer() {
     .await;
     assert_eq!(trailing_response.status(), StatusCode::BAD_REQUEST);
 
-    let full_response = get_uri(
+    let metadata = get_json(
         app.clone(),
         format!(
             "{}/oidc/userinfo",
@@ -1410,8 +1503,6 @@ async fn protected_resource_path_inserted_and_401_pointer() {
         None,
     )
     .await;
-    assert_eq!(full_response.status(), StatusCode::OK);
-    let metadata = json_body(full_response).await;
     assert_eq!(metadata["resource"], userinfo_url);
 
     // Bare base without an identifier is ambiguous with two servers.
@@ -1454,9 +1545,7 @@ async fn protected_resource_path_inserted_and_401_pointer() {
         challenge.contains(&format!("resource_metadata=\"{expected_pointer}\"")),
         "unexpected challenge: {challenge}"
     );
-    let pointer_response = get_uri(app, &expected_pointer, None).await;
-    assert_eq!(pointer_response.status(), StatusCode::OK);
-    let metadata = json_body(pointer_response).await;
+    let metadata = get_json(app, &expected_pointer, None).await;
     assert_eq!(metadata["resource"], userinfo_url);
 }
 

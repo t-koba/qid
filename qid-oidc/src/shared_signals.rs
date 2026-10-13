@@ -13,8 +13,10 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+use crate::{bad_request, internal_error, not_found, unauthorized};
 use qid_core::{
-    error::{QidError, QidResult},
+    error::QidResult,
     event::{Event, EventBus, EventKind, GLOBAL_EVENT_BUS},
     jwt::{Audience, JwtClaims},
     state::SharedState,
@@ -134,9 +136,7 @@ async fn publish_scim_set_event<R: Repository>(
         .realms
         .iter()
         .find(|realm| realm.id == realm_id)
-        .ok_or_else(|| QidError::BadRequest {
-            message: "SCIM SET realm is not configured".to_string(),
-        })?;
+        .ok_or_else(|| bad_request("SCIM SET realm is not configured"))?;
     let subscriptions = state
         .repo
         .list_scim_event_subscriptions(&qid_core::tenant::RealmId(realm_id.clone()))
@@ -184,25 +184,19 @@ async fn publish_scim_set_event<R: Repository>(
                 },
                 "secevent+jwt",
             )
-            .map_err(|error| QidError::Internal {
-                message: format!("failed to sign SCIM SET: {error}"),
-            })?;
+            .map_err(|error| internal_error(format!("failed to sign SCIM SET: {error}")))?;
         let response = client
             .post(&subscription.callback_url)
             .header(reqwest::header::CONTENT_TYPE, "application/secevent+jwt")
             .body(token)
             .send()
             .await
-            .map_err(|error| QidError::Internal {
-                message: format!("SCIM SET delivery failed: {error}"),
-            })?;
+            .map_err(|error| internal_error(format!("SCIM SET delivery failed: {error}")))?;
         if !response.status().is_success() {
-            return Err(QidError::Internal {
-                message: format!(
-                    "SCIM SET receiver returned non-success status {}",
-                    response.status()
-                ),
-            });
+            return Err(internal_error(format!(
+                "SCIM SET receiver returned non-success status {}",
+                response.status()
+            )));
         }
     }
     Ok(())
@@ -305,26 +299,22 @@ fn ssf_realm<'a, R: Repository>(
             .realms
             .iter()
             .find(|realm| realm.id == realm_id)
-            .ok_or_else(|| QidError::NotFound {
-                resource: format!("realm {realm_id}"),
-            });
+            .ok_or_else(|| not_found(format!("realm {realm_id}")));
     }
     let mut realms = state.config.realms.iter();
     let Some(first) = realms.next() else {
-        return Err(QidError::BadRequest {
-            message: "no realm is configured".to_string(),
-        });
+        return Err(bad_request("no realm is configured"));
     };
     if realms.next().is_some() {
-        return Err(QidError::BadRequest {
-            message: "global SSF metadata is ambiguous for multiple realms; use realm-scoped SSF endpoints".to_string(),
-        });
+        return Err(bad_request(
+            "global SSF metadata is ambiguous for multiple realms; use realm-scoped SSF endpoints",
+        ));
     }
     let global_issuer = state.plan.public_base_url.trim_end_matches('/');
     if first.issuer.trim_end_matches('/') != global_issuer {
-        return Err(QidError::BadRequest {
-            message: "global SSF metadata is only available when the realm issuer matches server.public_base_url; use realm-scoped SSF endpoints".to_string(),
-        });
+        return Err(bad_request(
+            "global SSF metadata is only available when the realm issuer matches server.public_base_url; use realm-scoped SSF endpoints",
+        ));
     }
     Ok(first)
 }
@@ -425,31 +415,29 @@ async fn create_stream_response<R: Repository>(
     payload: SsfCreateStreamRequest,
 ) -> axum::response::Response {
     if payload.events_requested.is_empty() {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "SSF stream events_requested must not be empty".to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "SSF stream events_requested must not be empty",
+        ));
     }
     for event_type in &payload.events_requested {
         if !is_known_event_type(event_type) {
-            return qid_http::error_response(QidError::BadRequest {
-                message: format!("unknown SSF event type requested: {event_type}"),
-            });
+            return qid_http::error_response(bad_request(format!(
+                "unknown SSF event type requested: {event_type}"
+            )));
         }
     }
     if payload.transmitter_issuer.trim().is_empty() {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "SSF stream transmitter_issuer must not be empty".to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "SSF stream transmitter_issuer must not be empty",
+        ));
     }
     if payload.transmitter_jwks.keys.is_empty() {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "SSF stream transmitter_jwks must contain at least one key".to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "SSF stream transmitter_jwks must contain at least one key",
+        ));
     }
     if payload.audience.trim().is_empty() {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "SSF stream audience must not be empty".to_string(),
-        });
+        return qid_http::error_response(bad_request("SSF stream audience must not be empty"));
     }
     let now = util::now_seconds();
     let stream = SsfStream {
@@ -503,16 +491,12 @@ fn stream_to_record(stream: &SsfStream, now: u64) -> QidResult<SsfStreamRecord> 
         realm_id: stream.realm_id.clone(),
         stream_id: stream.stream_id.clone(),
         delivery_json: serde_json::to_value(&stream.delivery).map_err(|error| {
-            QidError::Internal {
-                message: format!("failed to serialize SSF stream delivery: {error}"),
-            }
+            internal_error(format!("failed to serialize SSF stream delivery: {error}"))
         })?,
         events_requested: stream.events_requested.clone(),
         transmitter_issuer: stream.transmitter_issuer.clone(),
         transmitter_jwks_json: serde_json::to_value(&stream.transmitter_jwks).map_err(|error| {
-            QidError::Internal {
-                message: format!("failed to serialize SSF stream JWKS: {error}"),
-            }
+            internal_error(format!("failed to serialize SSF stream JWKS: {error}"))
         })?,
         transmitter_alg: stream.transmitter_alg.clone(),
         audience: stream.audience.clone(),
@@ -544,16 +528,15 @@ async fn require_ssf_stream_admin<R: Repository>(
     path: &str,
 ) -> QidResult<()> {
     let token = qid_oauth::endpoints::extract_bearer_token(headers)?;
-    let decoded_access =
-        decode_access_token(state, token)
-            .await
-            .map_err(|error| QidError::Unauthorized {
-                message: format!("invalid SSF stream management access token: {error}"),
-            })?;
+    let decoded_access = decode_access_token(state, token).await.map_err(|error| {
+        unauthorized(format!(
+            "invalid SSF stream management access token: {error}"
+        ))
+    })?;
     if decoded_access.realm_id != realm.id {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management token realm does not match request".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management token realm does not match request",
+        ));
     }
     let htu = format!(
         "{}{}",
@@ -569,30 +552,32 @@ async fn require_ssf_stream_admin<R: Repository>(
         &decoded_access,
     )?;
     if !decoded_access.aud.iter().any(|aud| aud == "qid-ssf-admin") {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management token audience is not allowed".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management token audience is not allowed",
+        ));
     }
     if !decoded_access
         .scope
         .split_whitespace()
         .any(|scope| matches!(scope, "ssf.manage" | "ssf.admin"))
     {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management token requires ssf.manage scope".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management token requires ssf.manage scope",
+        ));
     }
     let claims = state
         .signer
         .decode_signature_only(token)
-        .map_err(|error| QidError::Unauthorized {
-            message: format!("invalid SSF stream management token claims: {error}"),
+        .map_err(|error| {
+            unauthorized(format!(
+                "invalid SSF stream management token claims: {error}"
+            ))
         })?
         .claims;
     if claims.iss.as_deref() != Some(realm.issuer.as_str()) {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management token issuer does not match realm".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management token issuer does not match realm",
+        ));
     }
     if let Some(realm_id) = claims
         .extra
@@ -600,83 +585,71 @@ async fn require_ssf_stream_admin<R: Repository>(
         .and_then(|value| value.as_str())
         && realm_id != realm.id
     {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management token realm does not match request".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management token realm does not match request",
+        ));
     }
     if claims
         .sub
         .as_deref()
         .is_none_or(|subject| subject.trim().is_empty())
     {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management token subject is required".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management token subject is required",
+        ));
     }
     let admin_id = &decoded_access.user_id;
     if claims.sub.as_deref() != Some(admin_id.as_str()) {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management token subject does not match token record".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management token subject does not match token record",
+        ));
     }
-    let admin =
-        state
-            .repo
-            .get_admin_by_id(admin_id)
-            .await?
-            .ok_or_else(|| QidError::Unauthorized {
-                message: "SSF stream management admin was not found".to_string(),
-            })?;
+    let admin = state
+        .repo
+        .get_admin_by_id(admin_id)
+        .await?
+        .ok_or_else(|| unauthorized("SSF stream management admin was not found"))?;
     let elevation_id = headers
         .get(ADMIN_SESSION_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "SSF stream management requires admin elevation session".to_string(),
-        })?;
+        .ok_or_else(|| unauthorized("SSF stream management requires admin elevation session"))?;
     let elevation = state
         .repo
         .get_admin_elevation(elevation_id)
         .await?
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "SSF stream management elevation was not found".to_string(),
-        })?;
+        .ok_or_else(|| unauthorized("SSF stream management elevation was not found"))?;
     if elevation.admin_id != admin.id {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management elevation belongs to a different admin".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management elevation belongs to a different admin",
+        ));
     }
     if elevation.tenant_id != admin.tenant_id {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management elevation belongs to a different tenant".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management elevation belongs to a different tenant",
+        ));
     }
     let realm_tenant = state
         .repo
         .get_realm_tenant(&qid_core::tenant::RealmId(realm.id.clone()))
         .await?
         .or_else(|| realm.tenant_id.clone())
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "SSF stream management realm tenant binding was not found".to_string(),
-        })?;
+        .ok_or_else(|| unauthorized("SSF stream management realm tenant binding was not found"))?;
     if realm_tenant != admin.tenant_id {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management admin tenant does not match realm tenant".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management admin tenant does not match realm tenant",
+        ));
     }
     let security = &state.config.admin.security;
     let now = util::now_seconds();
     if elevation.elevation_expires_at <= now {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management elevation has expired".to_string(),
-        });
+        return Err(unauthorized("SSF stream management elevation has expired"));
     }
     if elevation.elevation_expires_at.saturating_sub(now) > security.max_elevation_seconds {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management elevation lifetime exceeds configured maximum"
-                .to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management elevation lifetime exceeds configured maximum",
+        ));
     }
     if security.require_step_up {
         let acr_ok = elevation.acr.as_deref() == Some(security.required_acr.as_str());
@@ -687,9 +660,7 @@ async fn require_ssf_stream_admin<R: Repository>(
                 .any(|required| required == method)
         });
         if !acr_ok || !amr_ok {
-            return Err(QidError::Unauthorized {
-                message: "SSF stream management requires admin step-up".to_string(),
-            });
+            return Err(unauthorized("SSF stream management requires admin step-up"));
         }
     }
     if !admin.roles.iter().any(|role| {
@@ -698,9 +669,9 @@ async fn require_ssf_stream_admin<R: Repository>(
             "security.admin" | "platform.admin" | "platform.security.admin"
         )
     }) {
-        return Err(QidError::Unauthorized {
-            message: "SSF stream management requires a security admin role".to_string(),
-        });
+        return Err(unauthorized(
+            "SSF stream management requires a security admin role",
+        ));
     }
     Ok(())
 }
@@ -722,13 +693,9 @@ async fn get_stream(
     match state.repo.get_ssf_stream(&realm.id, &stream_id).await {
         Ok(Some(record)) => match record_to_stream(record) {
             Some(stream) => Json(stream).into_response(),
-            None => qid_http::error_response(QidError::Internal {
-                message: "stored SSF stream is malformed".to_string(),
-            }),
+            None => qid_http::error_response(internal_error("stored SSF stream is malformed")),
         },
-        Ok(None) => qid_http::error_response(qid_core::error::QidError::NotFound {
-            resource: format!("SSF stream {stream_id}"),
-        }),
+        Ok(None) => qid_http::error_response(not_found(format!("SSF stream {stream_id}"))),
         Err(error) => qid_http::error_response(error),
     }
 }
@@ -750,13 +717,9 @@ async fn get_stream_for_realm(
     match state.repo.get_ssf_stream(&realm_id, &stream_id).await {
         Ok(Some(record)) => match record_to_stream(record) {
             Some(stream) => Json(stream).into_response(),
-            None => qid_http::error_response(QidError::Internal {
-                message: "stored SSF stream is malformed".to_string(),
-            }),
+            None => qid_http::error_response(internal_error("stored SSF stream is malformed")),
         },
-        Ok(None) => qid_http::error_response(qid_core::error::QidError::NotFound {
-            resource: format!("SSF stream {stream_id}"),
-        }),
+        Ok(None) => qid_http::error_response(not_found(format!("SSF stream {stream_id}"))),
         Err(error) => qid_http::error_response(error),
     }
 }
@@ -778,9 +741,7 @@ async fn delete_stream(
     }
     match state.repo.delete_ssf_stream(&realm.id, &stream_id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => qid_http::error_response(qid_core::error::QidError::NotFound {
-            resource: format!("SSF stream {stream_id}"),
-        }),
+        Ok(false) => qid_http::error_response(not_found(format!("SSF stream {stream_id}"))),
         Err(error) => qid_http::error_response(error),
     }
 }
@@ -802,9 +763,7 @@ async fn delete_stream_for_realm(
     }
     match state.repo.delete_ssf_stream(&realm_id, &stream_id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => qid_http::error_response(qid_core::error::QidError::NotFound {
-            resource: format!("SSF stream {stream_id}"),
-        }),
+        Ok(false) => qid_http::error_response(not_found(format!("SSF stream {stream_id}"))),
         Err(error) => qid_http::error_response(error),
     }
 }
@@ -856,56 +815,46 @@ async fn receive_event_response<R: Repository>(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
     else {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "SSF events require Content-Type application/secevent+jwt".to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "SSF events require Content-Type application/secevent+jwt",
+        ));
     };
     if !content_type.split(';').next().is_some_and(|value| {
         value
             .trim()
             .eq_ignore_ascii_case("application/secevent+jwt")
     }) {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "SSF events require Content-Type application/secevent+jwt".to_string(),
-        });
+        return qid_http::error_response(bad_request(
+            "SSF events require Content-Type application/secevent+jwt",
+        ));
     }
     let token = body.trim();
     let header = match jsonwebtoken::decode_header(token) {
         Ok(header) => header,
         Err(error) => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: format!("invalid SET header: {error}"),
-            });
+            return qid_http::error_response(unauthorized(format!("invalid SET header: {error}")));
         }
     };
     if header.typ.as_deref() != Some("secevent+jwt") {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "SSF events require typ=secevent+jwt".to_string(),
-        });
+        return qid_http::error_response(unauthorized("SSF events require typ=secevent+jwt"));
     }
     let Some(stream_id) = unverified_set_stream_id(token) else {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "SET stream_id is required".to_string(),
-        });
+        return qid_http::error_response(unauthorized("SET stream_id is required"));
     };
     let stream = match state.repo.get_ssf_stream(&realm.id, &stream_id).await {
         Ok(Some(record)) => match record_to_stream(record) {
             Some(stream) if stream.status == "active" => stream,
             Some(_) => {
-                return qid_http::error_response(QidError::Unauthorized {
-                    message: "SET stream is not active".to_string(),
-                });
+                return qid_http::error_response(unauthorized("SET stream is not active"));
             }
             None => {
-                return qid_http::error_response(QidError::Internal {
-                    message: "stored SSF stream is malformed".to_string(),
-                });
+                return qid_http::error_response(internal_error("stored SSF stream is malformed"));
             }
         },
         Ok(None) => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "SET stream is not registered for realm".to_string(),
-            });
+            return qid_http::error_response(unauthorized(
+                "SET stream is not registered for realm",
+            ));
         }
         Err(error) => return qid_http::error_response(error),
     };
@@ -914,15 +863,11 @@ async fn receive_event_response<R: Repository>(
         Err(error) => return qid_http::error_response(error),
     };
     let Some(exp) = set.exp else {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "SET exp is required".to_string(),
-        });
+        return qid_http::error_response(unauthorized("SET exp is required"));
     };
     let now = util::now_seconds();
     if exp <= now {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "SET has expired".to_string(),
-        });
+        return qid_http::error_response(unauthorized("SET has expired"));
     }
     match state
         .repo
@@ -938,31 +883,29 @@ async fn receive_event_response<R: Repository>(
     {
         Ok(true) => {}
         Ok(false) => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "SET jti has already been received for this issuer and stream".to_string(),
-            });
+            return qid_http::error_response(unauthorized(
+                "SET jti has already been received for this issuer and stream",
+            ));
         }
         Err(error) => return qid_http::error_response(error),
     }
     if set.events.is_empty() {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "SET must contain at least one event".to_string(),
-        });
+        return qid_http::error_response(bad_request("SET must contain at least one event"));
     }
     for (event_type, payload) in &set.events {
         if !is_known_event_type(event_type) {
-            return qid_http::error_response(QidError::BadRequest {
-                message: format!("unknown SET event type: {event_type}"),
-            });
+            return qid_http::error_response(bad_request(format!(
+                "unknown SET event type: {event_type}"
+            )));
         }
         if !stream
             .events_requested
             .iter()
             .any(|allowed| allowed == event_type)
         {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: format!("SET event type is not enabled for stream: {event_type}"),
-            });
+            return qid_http::error_response(unauthorized(format!(
+                "SET event type is not enabled for stream: {event_type}"
+            )));
         }
         tracing::info!(
             iss = %set.iss,
@@ -986,9 +929,8 @@ fn verify_security_event_token_for_stream(
     token: &str,
     stream: &SsfStream,
 ) -> QidResult<SecurityEventToken> {
-    let header = jsonwebtoken::decode_header(token).map_err(|error| QidError::Unauthorized {
-        message: format!("invalid SET header: {error}"),
-    })?;
+    let header = jsonwebtoken::decode_header(token)
+        .map_err(|error| unauthorized(format!("invalid SET header: {error}")))?;
     let jwk = set_verification_jwk(&stream.transmitter_jwks, header.kid.as_deref())?;
     let data = verify_jwt_signature_with_claims(
         token,
@@ -997,24 +939,16 @@ fn verify_security_event_token_for_stream(
         &stream.audience,
         &stream.transmitter_issuer,
     )
-    .map_err(|error| QidError::Unauthorized {
-        message: format!("invalid SET: {}", error.message()),
-    })?;
+    .map_err(|error| unauthorized(format!("invalid SET: {}", error.message())))?;
     let claims = data.claims;
     let Some(jti) = claims.jti.filter(|value| !value.trim().is_empty()) else {
-        return Err(QidError::Unauthorized {
-            message: "SET jti is required".to_string(),
-        });
+        return Err(unauthorized("SET jti is required"));
     };
     let Some(iat) = claims.iat else {
-        return Err(QidError::Unauthorized {
-            message: "SET iat is required".to_string(),
-        });
+        return Err(unauthorized("SET iat is required"));
     };
     if claims.exp.is_none() {
-        return Err(QidError::Unauthorized {
-            message: "SET exp is required".to_string(),
-        });
+        return Err(unauthorized("SET exp is required"));
     }
     let stream_id = claims
         .extra
@@ -1022,9 +956,9 @@ fn verify_security_event_token_for_stream(
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned);
     if stream_id.as_deref() != Some(stream.stream_id.as_str()) {
-        return Err(QidError::Unauthorized {
-            message: "SET stream_id does not match registered stream".to_string(),
-        });
+        return Err(unauthorized(
+            "SET stream_id does not match registered stream",
+        ));
     }
     let events = claims
         .extra
@@ -1053,16 +987,14 @@ fn set_verification_jwk<'a>(jwks: &'a JwkSet, kid: Option<&str>) -> QidResult<&'
             .keys
             .iter()
             .find(|key| key.kid == kid)
-            .ok_or_else(|| QidError::Unauthorized {
-                message: "SET kid is not registered for stream".to_string(),
-            });
+            .ok_or_else(|| unauthorized("SET kid is not registered for stream"));
     }
     if jwks.keys.len() == 1 {
         return Ok(&jwks.keys[0]);
     }
-    Err(QidError::Unauthorized {
-        message: "SET kid is required when stream has multiple keys".to_string(),
-    })
+    Err(unauthorized(
+        "SET kid is required when stream has multiple keys",
+    ))
 }
 
 fn unverified_set_stream_id(token: &str) -> Option<String> {
@@ -1157,15 +1089,10 @@ pub fn encode_security_event_token(
             serde_json::Value::String(stream_id.clone()),
         );
     }
-    let events_value =
-        serde_json::to_value(&set.events).map_err(|e| qid_core::error::QidError::Internal {
-            message: format!("failed to serialize SET events: {e}"),
-        })?;
+    let events_value = serde_json::to_value(&set.events)
+        .map_err(|e| internal_error(format!("failed to serialize SET events: {e}")))?;
     payload.insert("events".to_string(), events_value);
     let payload_value = serde_json::Value::Object(payload);
-    sign_es256_jwt_with_jwk_header(private_pem, public_jwk, "secevent+jwt", &payload_value).map_err(
-        |e| qid_core::error::QidError::Internal {
-            message: format!("failed to sign SET: {e}"),
-        },
-    )
+    sign_es256_jwt_with_jwk_header(private_pem, public_jwk, "secevent+jwt", &payload_value)
+        .map_err(|e| internal_error(format!("failed to sign SET: {e}")))
 }

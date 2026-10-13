@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -338,6 +339,21 @@ impl Expression {
     }
 }
 
+/// Order two JSON numbers without lossy coercion: exact unsigned
+/// comparison first (the shape of every numeric context field), then exact
+/// signed comparison, then floating point only when a fractional operand is
+/// actually involved. Returns `None` when the operands cannot be ordered.
+fn numeric_compare(a: &serde_json::Number, b: &serde_json::Number) -> Option<Ordering> {
+    if let (Some(x), Some(y)) = (a.as_u64(), b.as_u64()) {
+        return Some(x.cmp(&y));
+    }
+    if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+        return Some(x.cmp(&y));
+    }
+    let (x, y) = (a.as_f64()?, b.as_f64()?);
+    x.partial_cmp(&y)
+}
+
 /// Whether a condition holds: `Some(true/false)` on present evidence,
 /// `None` when the referenced field is absent. Absent evidence never
 /// satisfies a rule on its own — not even under negation.
@@ -361,25 +377,25 @@ pub(crate) fn condition_matches(condition: &Condition, ctx: &PolicyContext) -> O
         },
         "lt" | "<" => match (value.first(), &condition.value) {
             (Some(Value::Number(a)), Value::Number(b)) => {
-                a.as_u64().unwrap_or(0) < b.as_u64().unwrap_or(0)
+                numeric_compare(a, b).is_some_and(|ord| ord == Ordering::Less)
             }
             _ => false,
         },
         "gt" | ">" => match (value.first(), &condition.value) {
             (Some(Value::Number(a)), Value::Number(b)) => {
-                a.as_u64().unwrap_or(0) > b.as_u64().unwrap_or(0)
+                numeric_compare(a, b).is_some_and(|ord| ord == Ordering::Greater)
             }
             _ => false,
         },
         "gte" | ">=" => match (value.first(), &condition.value) {
             (Some(Value::Number(a)), Value::Number(b)) => {
-                a.as_u64().unwrap_or(0) >= b.as_u64().unwrap_or(0)
+                numeric_compare(a, b).is_some_and(|ord| ord != Ordering::Less)
             }
             _ => false,
         },
         "lte" | "<=" => match (value.first(), &condition.value) {
             (Some(Value::Number(a)), Value::Number(b)) => {
-                a.as_u64().unwrap_or(0) <= b.as_u64().unwrap_or(0)
+                numeric_compare(a, b).is_some_and(|ord| ord != Ordering::Greater)
             }
             _ => false,
         },

@@ -441,6 +441,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_condition_numeric_thresholds_compare_faithfully() {
+        fn condition(op: &str, threshold: Value) -> Condition {
+            Condition {
+                field: "risk_score".to_string(),
+                op: op.to_string(),
+                value: threshold,
+            }
+        }
+        fn ctx_with_score(score: u64) -> PolicyContext {
+            PolicyContext {
+                risk_score: Some(score),
+                ..PolicyContext::default()
+            }
+        }
+        let frac = |f: f64| Value::Number(serde_json::Number::from_f64(f).unwrap());
+        let int = |u: u64| Value::Number(serde_json::Number::from(u));
+
+        // Fractional thresholds must not coerce to zero: 0 gte 0.5 is false,
+        // 10 lt 10.5 is true, 10 gt 10.5 is false.
+        assert_eq!(
+            condition_matches(&condition("gte", frac(0.5)), &ctx_with_score(0)),
+            Some(false)
+        );
+        assert_eq!(
+            condition_matches(&condition("lt", frac(10.5)), &ctx_with_score(10)),
+            Some(true)
+        );
+        assert_eq!(
+            condition_matches(&condition("gt", frac(10.5)), &ctx_with_score(10)),
+            Some(false)
+        );
+        assert_eq!(
+            condition_matches(&condition("gt", frac(10.5)), &ctx_with_score(11)),
+            Some(true)
+        );
+        // Negative thresholds compare faithfully against unsigned scores.
+        let neg = Value::Number(serde_json::Number::from(-1i64));
+        assert_eq!(
+            condition_matches(&condition("gt", neg.clone()), &ctx_with_score(10)),
+            Some(true)
+        );
+        assert_eq!(
+            condition_matches(&condition("lt", neg), &ctx_with_score(10)),
+            Some(false)
+        );
+        // Large integers stay exact: u64 precision must survive comparison.
+        // (A float-only comparison would round both sides to the same f64.)
+        assert_eq!(
+            condition_matches(
+                &condition("gt", int(u64::MAX - 1)),
+                &ctx_with_score(u64::MAX)
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            condition_matches(&condition("gte", int(u64::MAX)), &ctx_with_score(u64::MAX)),
+            Some(true)
+        );
+        // Non-numeric thresholds never match a numeric comparison.
+        assert_eq!(
+            condition_matches(
+                &condition("gt", Value::String("80".to_string())),
+                &ctx_with_score(90)
+            ),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_forbid_rule_with_fractional_threshold() {
+        let mut engine = NativePolicyEngine::new();
+        let bundle = PolicyBundle {
+            version: "1".to_string(),
+            rules: vec![
+                Rule {
+                    name: "fractional-risk".to_string(),
+                    rule_type: RuleType::Forbid,
+                    action: "*".to_string(),
+                    resource_host: None,
+                    conditions: vec![Condition {
+                        field: "risk_score".to_string(),
+                        op: "gt".to_string(),
+                        value: Value::Number(serde_json::Number::from_f64(10.5).unwrap()),
+                    }],
+                    expression: None,
+                    rate_limit_profile: None,
+                    inject_headers: None,
+                    pep: PepPolicyActions::default(),
+                },
+                make_allow_rule("allow-all"),
+            ],
+            default_decision: Decision::Deny,
+        };
+        engine.load(bundle, "test".to_string());
+        let below = PolicyContext {
+            risk_score: Some(10),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&below).await.decision, Decision::Allow);
+        let above = PolicyContext {
+            risk_score: Some(11),
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&above).await.decision, Decision::Deny);
+    }
+
+    #[tokio::test]
     async fn test_condition_numeric_operators() {
         let mut engine = NativePolicyEngine::new();
         let bundle = PolicyBundle {

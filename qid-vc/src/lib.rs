@@ -47,8 +47,8 @@ pub use oid4vp::{
     build_oid4vp_presentation_submission, decode_oid4vp_request_uri, encode_oid4vp_request_uri,
 };
 pub use status::{
-    CredentialRevocationRequest, CredentialStatus, CredentialStatusResponse, revoke_credential,
-    revoke_credential_from_bearer,
+    CredentialRevocationRequest, CredentialStatus, CredentialStatusPublic,
+    CredentialStatusResponse, revoke_credential, revoke_credential_from_bearer,
 };
 pub use verifier::{
     PresentationProof, PresentationVerification, PresentationVerificationRequest,

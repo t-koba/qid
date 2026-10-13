@@ -275,7 +275,7 @@ Workload and SPIFFE routes are only merged in the `workload` profile.
 | `POST` | `/realms/:realm/ssf/events` | Realm SSF event. |
 | `GET` | `/.well-known/openid-credential-issuer` | OID4VCI metadata. |
 | `POST` | `/vc/v1/credential` | Credential endpoint. |
-| `GET` | `/vc/v1/status/:credential_id` | Credential status. |
+| `GET` | `/vc/v1/status/:credential_id` | Public credential status: revocation and expiry only, no subject or revocation details. |
 | `POST` | `/vc/v1/status/:credential_id/revoke` | Revoke credential status. |
 | `POST` | `/vc/v1/presentation/verify` | Verify presentation. |
 

@@ -209,8 +209,12 @@ async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
         .to_bytes();
     let status_body: serde_json::Value = serde_json::from_slice(&status_bytes).unwrap();
     assert_eq!(status_body["credential_id"], credential_id);
-    assert_eq!(status_body["subject"], "vc-user");
     assert_eq!(status_body["revoked"], false);
+    assert!(status_body["expires_at"].as_u64().is_some());
+    // The public lookup carries no subject identity or revocation details.
+    assert!(status_body.get("subject").is_none());
+    assert!(status_body.get("revocation_reason").is_none());
+    assert!(status_body.get("revoked_at").is_none());
 
     let issued_at = vc["issued_at"].as_u64().unwrap();
     let proof = sign_es256_jwt_with_jwk_header(

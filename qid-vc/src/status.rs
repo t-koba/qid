@@ -61,6 +61,26 @@ impl From<VcCredentialStatusRecord> for CredentialStatusResponse {
     }
 }
 
+/// Deliberately public status lookup: revocation and validity only. Subject
+/// identity and revocation details stay in explicitly authorized management
+/// responses (such as the owner-authenticated revoke response).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialStatusPublic {
+    pub credential_id: String,
+    pub revoked: bool,
+    pub expires_at: u64,
+}
+
+impl From<VcCredentialStatusRecord> for CredentialStatusPublic {
+    fn from(status: VcCredentialStatusRecord) -> Self {
+        Self {
+            credential_id: status.credential_id,
+            revoked: status.revoked,
+            expires_at: status.expires_at,
+        }
+    }
+}
+
 pub fn revoke_credential(
     mut status_registry: HashMap<String, CredentialStatus>,
     credential_id: &str,
@@ -161,7 +181,7 @@ pub(crate) async fn credential_status<R: Repository>(
     Path(credential_id): Path<String>,
 ) -> Response {
     match state.repo.get_vc_credential_status(&credential_id).await {
-        Ok(Some(status)) => Json(CredentialStatusResponse::from(status)).into_response(),
+        Ok(Some(status)) => Json(CredentialStatusPublic::from(status)).into_response(),
         Ok(None) => error_response(QidError::NotFound {
             resource: "VC credential status".to_string(),
         }),

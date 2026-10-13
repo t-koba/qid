@@ -284,6 +284,60 @@ async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
 }
 
 #[tokio::test]
+async fn access_package_request_rejects_conflicting_members_in_any_order() {
+    for entitlement_ids in [
+        vec!["app:erp:admin", "app:erp:audit"],
+        vec!["app:erp:audit", "app:erp:admin"],
+    ] {
+        let (app, _repo, session_id) = setup_with_repo().await;
+        let package = serde_json::json!({
+            "id": "pkg-conflicting",
+            "display_name": "Conflicting package",
+            "owner": "security-admin",
+            "entitlement_ids": entitlement_ids,
+            "max_duration_seconds": 1800,
+            "active": true
+        });
+        let create_response = app
+            .clone()
+            .oneshot(request_with_headers(
+                Method::POST,
+                "/iga/v1/access-packages",
+                package,
+                &session_id,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::OK);
+
+        let request = serde_json::json!({
+            "subject": "user-1",
+            "access_package_id": "pkg-conflicting",
+            "reason": "conflicting package request"
+        });
+        let response = app
+            .oneshot(request_with_headers(
+                Method::POST,
+                "/iga/v1/access-requests",
+                request,
+                &session_id,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json(response).await;
+        assert_eq!(body["status"], "rejected", "order: {entitlement_ids:?}");
+        let violations = body["violations"].as_array().unwrap();
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.as_str().unwrap_or_default().contains("sod_conflict")),
+            "conflicting package must surface an SoD violation, got {violations:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn access_package_route_persists_lists_and_deletes_packages() {
     let (app, repo, session_id) = setup_with_repo().await;
     let entitlement = serde_json::json!({

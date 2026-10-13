@@ -167,16 +167,21 @@ pub(super) async fn access_package_request<R: Repository>(
             Err(response) => return *response,
         };
     let request_id = ulid::Ulid::new().to_string();
+    // Each member is evaluated against the current grants plus the earlier
+    // package members, so mutually conflicting package contents trip the
+    // same SoD policy as sequential single requests, regardless of order.
+    let mut effective_entitlements = current_entitlements.clone();
     let mut evaluations = Vec::new();
     for entitlement_id in &package.entitlement_ids {
         let mut evaluation = evaluate_access_request(
             &req.subject,
             entitlement_id,
-            &current_entitlements,
+            &effective_entitlements,
             requested_duration,
             &catalog,
         );
         evaluation.request_id = request_id.clone();
+        effective_entitlements.push(entitlement_id.clone());
         evaluations.push(evaluation);
     }
     let package_evaluation =

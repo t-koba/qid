@@ -85,21 +85,13 @@ async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
         "max_duration_seconds": 600,
         "active": true
     });
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/entitlements")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(entitlement.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create_response.status(), StatusCode::OK);
-    let create_body = json(create_response).await;
+    let create_body = post_json(
+        app.clone(),
+        "/iga/v1/entitlements",
+        entitlement,
+        &session_id,
+    )
+    .await;
     assert_eq!(create_body["tenant_id"], "test");
     assert_eq!(create_body["entitlement"]["id"], "app:custom:admin");
     assert_eq!(create_body["entitlement"]["owner"], "security-admin");
@@ -330,6 +322,93 @@ async fn empty_or_fully_deactivated_catalog_rejects_as_unknown() {
 }
 
 #[tokio::test]
+async fn revoke_certification_removes_packaged_member_access() {
+    let (app, repo, session_id) = setup_with_repo().await;
+    seed_conflicting_erp_pair(&app, &session_id).await;
+    let body = create_package_and_request(
+        &app,
+        &session_id,
+        serde_json::json!({
+            "id": "pkg-admin-only",
+            "display_name": "Admin only",
+            "owner": "security-admin",
+            "entitlement_ids": ["app:erp:admin"],
+            "max_duration_seconds": 1800,
+            "active": true
+        }),
+        "user-1",
+    )
+    .await;
+    let request_id = body["id"].as_str().unwrap().to_string();
+    let now = qid_core::util::now_seconds();
+    let approvals: Vec<serde_json::Value> = ["cert-approval-owner", "cert-approval-security"]
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "request_id": request_id,
+                "approver": "security-admin",
+                "decision": "approved",
+                "approved_at_epoch_seconds": now,
+                "expires_at_epoch_seconds": now + 300
+            })
+        })
+        .collect();
+    let validation_body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        serde_json::json!({"issue_grant": true, "approvals": approvals}),
+        &session_id,
+    )
+    .await;
+    assert_eq!(validation_body["validation"]["valid"], true);
+    let grant_id = validation_body["grants"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Revoking the member via certification revokes the packaged grant.
+    let cert_body = post_json(
+        app.clone(),
+        "/iga/v1/certifications",
+        serde_json::json!({
+            "certification_type": "manager",
+            "campaign_id": "review-1",
+            "subject": "user-1",
+            "entitlement": "app:erp:admin",
+            "decision": "revoke",
+            "reason": "no longer required"
+        }),
+        &session_id,
+    )
+    .await;
+    let revoked = cert_body["revoked_grants"].as_array().unwrap();
+    assert!(revoked.contains(&serde_json::json!(grant_id)));
+    let grant = repo
+        .list_iga_access_grants("test", Some("user-1"))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|grant| grant.id == grant_id)
+        .unwrap();
+    assert!(grant.revoked);
+
+    // Effective access is gone: the conflicting audit request is no longer blocked.
+    let conflict_body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests",
+        serde_json::json!({
+            "subject": "user-1",
+            "entitlement": "app:erp:audit",
+            "requested_duration_seconds": 3600
+        }),
+        &session_id,
+    )
+    .await;
+    assert_ne!(conflict_body["status"], "rejected");
+}
+
+#[tokio::test]
 async fn package_issuance_refuses_drifted_package_definition() {
     let (app, repo, session_id) = setup_with_repo().await;
     for (id, owner) in [("app:custom:a", "owner-a"), ("app:custom:b", "owner-b")] {
@@ -537,21 +616,7 @@ async fn access_package_route_persists_lists_and_deletes_packages() {
         "max_duration_seconds": 1800,
         "active": true
     });
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-packages")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(package.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create_response.status(), StatusCode::OK);
-    let create_body = json(create_response).await;
+    let create_body = post_json(app.clone(), "/iga/v1/access-packages", package, &session_id).await;
     assert_eq!(create_body["tenant_id"], "test");
     assert_eq!(
         create_body["access_package"]["entitlement_ids"][0],
@@ -1102,21 +1167,13 @@ async fn certification_routes_record_attestations_and_export_iga_evidence() {
         "reason": "User still needs access",
         "evidence_json": {"manager_chain": ["manager-1"]}
     });
-    let manager_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/certifications")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(manager_certification.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(manager_response.status(), StatusCode::OK);
-    let manager_body = json(manager_response).await;
+    let manager_body = post_json(
+        app.clone(),
+        "/iga/v1/certifications",
+        manager_certification,
+        &session_id,
+    )
+    .await;
     assert_eq!(
         manager_body["certification"]["certification_type"],
         "manager"
@@ -1276,21 +1333,7 @@ async fn finding_routes_detect_resolve_and_export_sod_conflicts_from_grants() {
         .expect("store finding source grant failed");
     }
     let payload = serde_json::json!({});
-    let detect_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/findings/detect")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(payload.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(detect_response.status(), StatusCode::OK);
-    let detect_body = json(detect_response).await;
+    let detect_body = post_json(app.clone(), "/iga/v1/findings/detect", payload, &session_id).await;
     assert_eq!(detect_body["findings"].as_array().unwrap().len(), 2);
     let finding_id = detect_body["findings"]
         .as_array()
@@ -1459,21 +1502,7 @@ async fn access_review_route_builds_persists_lists_and_closes_campaign() {
         "due_in_seconds": 86400
     });
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-reviews")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(payload.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let body = post_json(app.clone(), "/iga/v1/access-reviews", payload, &session_id).await;
     let campaign_id = body["id"].as_str().unwrap();
     assert_eq!(body["tenant_id"], "test");
     assert_eq!(body["reviewer"], "security-admin");

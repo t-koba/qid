@@ -626,6 +626,7 @@ fn validate_not_on_or_after(
 }
 
 fn parse_saml_timestamp(value: &str) -> Result<u64, QidError> {
+    // Retain unsigned Unix epoch seconds as a separate accepted representation.
     if let Ok(epoch) = value.parse::<u64>() {
         return Ok(epoch);
     }
@@ -635,44 +636,46 @@ fn parse_saml_timestamp(value: &str) -> Result<u64, QidError> {
 }
 
 fn parse_rfc3339_utc(value: &str) -> Option<u64> {
-    let value = value.strip_suffix('Z')?;
-    let (date, time) = value.split_once('T')?;
-    let mut date_parts = date.split('-');
-    let year = date_parts.next()?.parse::<i32>().ok()?;
-    let month = date_parts.next()?.parse::<u32>().ok()?;
-    let day = date_parts.next()?.parse::<u32>().ok()?;
-    let time = time.split_once('.').map(|(head, _)| head).unwrap_or(time);
-    let mut time_parts = time.split(':');
-    let hour = time_parts.next()?.parse::<u32>().ok()?;
-    let minute = time_parts.next()?.parse::<u32>().ok()?;
-    let second = time_parts.next()?.parse::<u32>().ok()?;
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
+    // SAML timestamps here are UTC-only; require the existing `Z` form, then
+    // let the RFC3339 parser validate the complete calendar and time fields.
+    if !value.ends_with('Z') {
         return None;
     }
-    let days = days_from_civil(year, month, day)?;
-    Some(days * 86_400 + u64::from(hour) * 3_600 + u64::from(minute) * 60 + u64::from(second))
-}
-
-fn days_from_civil(year: i32, month: u32, day: u32) -> Option<u64> {
-    let year = year - i32::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let yoe = year - era * 400;
-    let month = month as i32;
-    let day = day as i32;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    (days >= 0).then_some(days as u64)
+    let timestamp =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()?;
+    u64::try_from(timestamp.unix_timestamp()).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saml_timestamp_parser_keeps_epoch_seconds_and_validates_rfc3339() {
+        assert!(matches!(
+            parse_saml_timestamp("1700000000"),
+            Ok(1_700_000_000)
+        ));
+        assert!(matches!(
+            parse_saml_timestamp("2024-02-29T23:59:59.123Z"),
+            Ok(1_709_251_199)
+        ));
+
+        for invalid in [
+            "2026-02-30T00:00:00Z",
+            "2026-01-01-extraT00:00:00Z",
+            "2026-01-01T00:00:00:garbageZ",
+            "2026-01-01T00:00:00.not-a-fractionZ",
+            "2147483647-12-31T00:00:00Z",
+            "1969-12-31T23:59:59Z",
+            "2026-03-02T00:00:00+00:00",
+        ] {
+            assert!(
+                parse_saml_timestamp(invalid).is_err(),
+                "invalid timestamp must be rejected: {invalid}"
+            );
+        }
+    }
 
     const TEST_CERT: &str = include_str!("../../../qid-saml/tests/data/test-sp.crt");
     const TEST_KEY: &str = include_str!("../../../qid-saml/tests/data/test-sp.key");

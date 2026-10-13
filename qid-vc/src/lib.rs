@@ -25,7 +25,7 @@ pub mod verifier;
 
 pub use bitstring_status_list::{
     BitstringStatusListCredential, decode_bitstring_status_entry, encode_bitstring_status_list,
-    next_bitstring_index, set_bitstring_status_entry,
+    set_bitstring_status_entry,
 };
 pub use haip::{
     HaipReaderRegistration, HaipTransactionData, build_haip_reader_registration,

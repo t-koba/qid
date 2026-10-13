@@ -144,25 +144,6 @@ pub fn set_bitstring_status_entry(
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed_out))
 }
 
-/// Compute the index that should be assigned to a new credential in a
-/// pre-allocated Bitstring Status List. The size of the list is
-/// derived from the encoded base64url length.
-pub fn next_bitstring_index(encoded_list: &str) -> QidResult<usize> {
-    let compressed = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(encoded_list)
-        .map_err(|e| QidError::Internal {
-            message: format!("Bitstring Status List base64 decode failed: {e}"),
-        })?;
-    let mut decoder = GzDecoder::new(&compressed[..]);
-    let mut bytes = Vec::new();
-    decoder
-        .read_to_end(&mut bytes)
-        .map_err(|e| QidError::Internal {
-            message: format!("Bitstring Status List GZIP decompress failed: {e}"),
-        })?;
-    Ok(bytes.len() * 8)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

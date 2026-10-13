@@ -110,6 +110,7 @@ pub async fn authorization_code_grant<R: Repository>(
             authorization_code: Some(code),
             access_token: None,
             access_expires_at: None,
+            session_id: auth_code.session_id.as_deref(),
         },
     )
     .await?;
@@ -171,6 +172,7 @@ pub async fn authorization_code_grant<R: Repository>(
                 authorization_code: Some(code),
                 access_token: Some(&pair.access_token),
                 access_expires_at: None,
+                session_id: None,
             },
             sub_override.as_deref(),
         )?),
@@ -195,7 +197,7 @@ pub async fn client_credentials_grant<R: Repository>(
             })?
     };
 
-    let client = find_client_across_realms(state, client_id).await?;
+    let client = super::find_client_across_realms(state, client_id).await?;
     let realm_id = client.realm_id.clone();
     let realm_cfg = state
         .config
@@ -286,6 +288,7 @@ pub async fn client_credentials_grant<R: Repository>(
             authorization_code: None,
             access_token: None,
             access_expires_at: None,
+            session_id: None,
         },
     )
     .await?;
@@ -397,6 +400,25 @@ pub async fn refresh_token_grant<R: Repository>(
     if now >= refresh_deadline {
         return Err(QidError::Unauthorized {
             message: "refresh token family expired".to_string(),
+        });
+    }
+
+    // Logout linkage: a family authorized in a browser session dies with
+    // it. Families without a known session are unaffected; a missing,
+    // revoked, or expired session fails closed without consuming the token.
+    if let Some(session_id) = &family.session_id
+        && !state
+            .repo
+            .get_session(session_id)
+            .await?
+            .is_some_and(|session| {
+                session.realm_id == family.realm_id
+                    && !session.revoked
+                    && now < session.absolute_expires_at
+            })
+    {
+        return Err(QidError::Unauthorized {
+            message: "refresh token family session ended".to_string(),
         });
     }
 
@@ -592,6 +614,7 @@ pub async fn refresh_token_grant<R: Repository>(
             authorization_code: None,
             access_token: None,
             access_expires_at: Some(refresh_deadline),
+            session_id: None,
         },
     )?;
     let refresh = sign_refresh_token(
@@ -609,35 +632,13 @@ pub async fn refresh_token_grant<R: Repository>(
     Ok(TokenResponse {
         access_token: access,
         token_type: access_token_type_for_cnf(response_cnf).to_string(),
-        expires_in: token_ttl(state, &family.realm_id).access_token_ttl_seconds,
+        expires_in: refresh_deadline
+            .saturating_sub(now)
+            .min(token_ttl(state, &family.realm_id).access_token_ttl_seconds),
         refresh_token: Some(refresh),
         id_token: None,
         scope: Some(scopes.join(" ")),
         issued_token_type: None,
-    })
-}
-
-async fn find_client_across_realms<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<Client> {
-    let mut found = None;
-    for realm_config in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "client realm is ambiguous".to_string(),
-                });
-            }
-            found = Some(client);
-        }
-    }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
     })
 }
 
@@ -650,7 +651,7 @@ mod tests {
         error::{QidError, QidResult},
         models::{
             AuthorizationCode, BackchannelAuthenticationGrant, Client, ClientType,
-            DeviceAuthorizationGrant, ParRequest, TokenFamily, User,
+            DeviceAuthorizationGrant, ParRequest, Session, TokenFamily, User,
         },
         state::SharedState,
         tenant::{RealmId, TenantId},
@@ -660,7 +661,10 @@ mod tests {
     use qid_storage::FileRepository;
     use qid_storage::prelude::*;
 
-    use super::{TokenRequest, TokenResponse, client_credentials_grant, refresh_token_grant};
+    use super::{
+        TokenRequest, TokenResponse, authorization_code_grant, client_credentials_grant,
+        refresh_token_grant,
+    };
 
     async fn setup_state() -> (Arc<SharedState<FileRepository>>, Arc<FileRepository>) {
         let config = test_helpers::test_config();
@@ -777,14 +781,48 @@ mod tests {
             sender_constraint: None,
             issued_at,
             refresh_expires_at: deadline,
+            session_id: None,
             revoked: false,
         }
+    }
+
+    async fn seed_linked_session(
+        repo: &std::sync::Arc<FileRepository>,
+        tag: &str,
+        user_id: &str,
+        absolute: u64,
+    ) {
+        let now = util::now_seconds();
+        repo.create_session(&Session {
+            id: format!("{tag}-session"),
+            realm_id: "test".to_string(),
+            user_id: user_id.to_string(),
+            auth_time: now,
+            acr: None,
+            amr: Vec::new(),
+            idle_expires_at: absolute,
+            absolute_expires_at: absolute,
+            revoked: false,
+            created_at: now,
+            cnf: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn get_family(repo: &std::sync::Arc<FileRepository>, id: &str) -> TokenFamily {
+        repo.get_token_family(id).await.unwrap().unwrap()
+    }
+
+    async fn family_hash(repo: &std::sync::Arc<FileRepository>, id: &str) -> String {
+        get_family(repo, id).await.current_refresh_hash
     }
 
     async fn setup_refresh_case(
         tag: &str,
         issued_at: u64,
         deadline: Option<u64>,
+        session_absolute: Option<u64>,
     ) -> (
         std::sync::Arc<SharedState<FileRepository>>,
         std::sync::Arc<FileRepository>,
@@ -799,7 +837,13 @@ mod tests {
         repo.create_client(&client).await.unwrap();
         let user = refresh_test_user(&format!("{tag}-user"));
         repo.create_user(&user).await.unwrap();
-        let family = refresh_test_family(
+        let session_id = if let Some(absolute) = session_absolute {
+            seed_linked_session(&repo, tag, &user.id, absolute).await;
+            Some(format!("{tag}-session"))
+        } else {
+            None
+        };
+        let mut family = refresh_test_family(
             &format!("{tag}-family"),
             &user.id,
             &client_id,
@@ -808,6 +852,7 @@ mod tests {
             issued_at,
             deadline,
         );
+        family.session_id = session_id;
         repo.create_token_family(&family).await.unwrap();
         let token = signed_refresh(&state, &family, &format!("{tag}-jti-1")).await;
         (state, repo, client, family, token)
@@ -837,25 +882,8 @@ mod tests {
         TokenRequest {
             grant_type: "refresh_token".to_string(),
             refresh_token: Some(token),
-            code: None,
-            redirect_uri: None,
-            code_verifier: None,
-            client_id: None,
-            client_secret: None,
             scope,
-            client_assertion: None,
-            client_assertion_type: None,
-            device_code: None,
-            auth_req_id: None,
-            assertion: None,
-            subject_token: None,
-            subject_token_type: None,
-            actor_token: None,
-            actor_token_type: None,
-            requested_token_type: None,
-            audience: None,
-            resource: None,
-            authorization_details: None,
+            ..Default::default()
         }
     }
 
@@ -883,6 +911,7 @@ mod tests {
             expires_at: now + 3600,
             used: false,
             created_at: now,
+            session_id: None,
         };
         repo.create_authorization_code(&auth_code).await.unwrap();
 
@@ -1025,7 +1054,7 @@ mod tests {
         let result = grant_refresh(&state, bad_refresh, &client, None, None).await;
         assert!(result.is_err(), "reuse should be rejected");
 
-        let updated = repo.get_token_family(&family.id).await.unwrap().unwrap();
+        let updated = get_family(&repo, &family.id).await;
         assert!(
             updated.revoked,
             "token family must be revoked after reuse detection"
@@ -1162,12 +1191,7 @@ mod tests {
         assert_eq!(restored.scope.as_deref(), Some("read profile"));
         let token_4 = restored.refresh_token.clone().unwrap();
 
-        let before = repo
-            .get_token_family(&family.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .current_refresh_hash;
+        let before = family_hash(&repo, &family.id).await;
         let err = grant_refresh(
             &state,
             token_4.clone(),
@@ -1181,12 +1205,7 @@ mod tests {
             matches!(err, QidError::BadRequest { .. }),
             "exceeding scope must be invalid_scope, got {err:?}"
         );
-        let after = repo
-            .get_token_family(&family.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .current_refresh_hash;
+        let after = family_hash(&repo, &family.id).await;
         assert_eq!(before, after, "failed scope check must not consume refresh");
         let retry = grant_refresh(&state, token_4, &client, None, None)
             .await
@@ -1319,12 +1338,7 @@ mod tests {
         repo.create_token_family(&family).await.unwrap();
 
         let stolen = signed_refresh(&state, &family, "owner-jti-1").await;
-        let before = repo
-            .get_token_family(&family.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .current_refresh_hash;
+        let before = family_hash(&repo, &family.id).await;
         let err = grant_refresh(&state, stolen.clone(), &foreign, None, None)
             .await
             .unwrap_err();
@@ -1332,12 +1346,7 @@ mod tests {
             matches!(err, QidError::Unauthorized { .. }),
             "foreign caller must be rejected, got {err:?}"
         );
-        let after = repo
-            .get_token_family(&family.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .current_refresh_hash;
+        let after = family_hash(&repo, &family.id).await;
         assert_eq!(before, after, "foreign attempt must not consume refresh");
         let ok = grant_refresh(&state, stolen, &owner, None, None).await;
         assert!(ok.is_ok(), "owner must still succeed: {ok:?}");
@@ -1394,24 +1403,7 @@ mod tests {
             grant_type: "client_credentials".to_string(),
             client_id: Some("client-in-realm-b".to_string()),
             scope: Some("api".to_string()),
-            code: None,
-            redirect_uri: None,
-            code_verifier: None,
-            client_secret: None,
-            refresh_token: None,
-            client_assertion: None,
-            client_assertion_type: None,
-            device_code: None,
-            auth_req_id: None,
-            assertion: None,
-            subject_token: None,
-            subject_token_type: None,
-            actor_token: None,
-            actor_token_type: None,
-            requested_token_type: None,
-            audience: None,
-            resource: None,
-            authorization_details: None,
+            ..Default::default()
         };
 
         let result = client_credentials_grant(&state, &req, "client-in-realm-b", None).await;
@@ -1522,13 +1514,14 @@ mod tests {
         let now = util::now_seconds();
         let deadline = now + 2600;
         let (state, _, client, _, token_1) =
-            setup_refresh_case("deadline", now - 1000, Some(deadline)).await;
+            setup_refresh_case("deadline", now - 1000, Some(deadline), None).await;
         let rotated = grant_refresh(&state, token_1, &client, None, None)
             .await
             .unwrap();
         let refresh_token = rotated.refresh_token.as_ref().unwrap();
         assert_eq!(decode_exp(&state, refresh_token), deadline as usize);
         assert_eq!(decode_exp(&state, &rotated.access_token), deadline as usize);
+        assert_eq!(rotated.expires_in, deadline.saturating_sub(now));
     }
 
     #[tokio::test]
@@ -1537,7 +1530,7 @@ mod tests {
         // rotating the hash, and expiry alone revokes nothing.
         let now = util::now_seconds();
         let (state, repo, client, family, token) =
-            setup_refresh_case("expired", now - 90000, Some(now - 10)).await;
+            setup_refresh_case("expired", now - 90000, Some(now - 10), None).await;
         let before = family.current_refresh_hash.clone();
         let err = grant_refresh(&state, token, &client, None, None)
             .await
@@ -1546,12 +1539,250 @@ mod tests {
             matches!(err, QidError::Unauthorized { .. }),
             "expired family must be rejected, got {err:?}"
         );
-        let after = repo.get_token_family(&family.id).await.unwrap().unwrap();
+        let after = get_family(&repo, &family.id).await;
         assert_eq!(
             after.current_refresh_hash, before,
             "expired redemption must not rotate"
         );
         assert!(!after.revoked, "expiry alone revokes nothing");
+    }
+
+    #[tokio::test]
+    async fn refresh_follows_linked_session_lifetime() {
+        // A live linked session rotates normally; an expired one fails
+        // closed without rotating.
+        let now = util::now_seconds();
+        let (state, repo, client, family, token) =
+            setup_refresh_case("live", now, Some(now + 86_400), Some(now + 3600)).await;
+        grant_refresh(&state, token, &client, None, None)
+            .await
+            .unwrap();
+        let rotated = family_hash(&repo, &family.id).await;
+        assert_ne!(rotated, family.current_refresh_hash);
+
+        let (state, repo, client, family, token) =
+            setup_refresh_case("spent", now, Some(now + 86_400), Some(now - 10)).await;
+        let before = family.current_refresh_hash.clone();
+        let err = grant_refresh(&state, token, &client, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QidError::Unauthorized { .. }),
+            "expired session must end refresh, got {err:?}"
+        );
+        assert_eq!(
+            family_hash(&repo, &family.id).await,
+            before,
+            "dead session must not rotate"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_dies_with_revoked_session_but_spares_other_family() {
+        // Logout ends the refresh lineage: revoking S1 (the same
+        // revoke_session call the logout path makes) rejects its refresh
+        // without rotating, while a distinct S2 family still rotates.
+        let (state, repo) = setup_state().await;
+        let now = util::now_seconds();
+        let client = refresh_test_client("s2-id", "s2-client", ClientType::Public, "none");
+        repo.create_client(&client).await.unwrap();
+        let user = refresh_test_user("s2-user");
+        repo.create_user(&user).await.unwrap();
+        seed_linked_session(&repo, "s1", &user.id, now + 3600).await;
+        seed_linked_session(&repo, "s2", &user.id, now + 3600).await;
+        let mut first = refresh_test_family(
+            "s1-family",
+            &user.id,
+            "s2-client",
+            "s1-jti",
+            &["api"],
+            now,
+            Some(now + 86_400),
+        );
+        first.session_id = Some("s1-session".to_string());
+        repo.create_token_family(&first).await.unwrap();
+        let mut second = refresh_test_family(
+            "s2-family",
+            &user.id,
+            "s2-client",
+            "s2-jti",
+            &["api"],
+            now,
+            Some(now + 86_400),
+        );
+        second.session_id = Some("s2-session".to_string());
+        repo.create_token_family(&second).await.unwrap();
+        let token_1 = signed_refresh(&state, &first, "s1-jti").await;
+        let token_2 = signed_refresh(&state, &second, "s2-jti").await;
+
+        repo.revoke_session("s1-session").await.unwrap();
+        let err = grant_refresh(&state, token_1, &client, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QidError::Unauthorized { .. }),
+            "revoked session must end refresh, got {err:?}"
+        );
+        assert_eq!(
+            family_hash(&repo, &first.id).await,
+            first.current_refresh_hash,
+            "dead session must not rotate"
+        );
+        grant_refresh(&state, token_2, &client, None, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn authorization_code_carries_session_into_family() {
+        // Provenance: a code issued to a browser session links the minted
+        // family, so logout reaches it.
+        let (state, repo) = setup_state().await;
+        let now = util::now_seconds();
+        let client = refresh_test_client(
+            "code-sess-id",
+            "code-sess-client",
+            ClientType::Public,
+            "none",
+        );
+        repo.create_client(&client).await.unwrap();
+        let user = refresh_test_user("code-sess-user");
+        repo.create_user(&user).await.unwrap();
+        seed_linked_session(&repo, "code-sess", &user.id, now + 3600).await;
+        let code = "code-sess-code-1";
+        repo.create_authorization_code(&AuthorizationCode {
+            code_hash: util::sha256_base64url(code),
+            client_id: "code-sess-client".to_string(),
+            user_id: user.id.clone(),
+            realm_id: "test".to_string(),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            state: None,
+            nonce: None,
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
+            code_challenge: None,
+            code_challenge_method: None,
+            scopes: vec!["openid".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            expires_at: now + 300,
+            used: false,
+            created_at: now,
+            session_id: Some("code-sess-session".to_string()),
+        })
+        .await
+        .unwrap();
+        let req = TokenRequest {
+            grant_type: "authorization_code".to_string(),
+            code: Some(code.to_string()),
+            redirect_uri: Some("https://app.example.com/callback".to_string()),
+            ..Default::default()
+        };
+        let issued = authorization_code_grant(&state, &req, &client, None)
+            .await
+            .unwrap();
+        let family_id = state
+            .signer
+            .decode_signature_only(issued.refresh_token.as_ref().unwrap())
+            .unwrap()
+            .claims
+            .extra["family_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            get_family(&repo, &family_id).await.session_id,
+            Some("code-sess-session".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_issuance_caps_access_at_family_deadline() {
+        // Access TTL longer than refresh TTL must not let the first access
+        // token outlive the family deadline: record, JWT and expires_in all
+        // end at issued plus refresh TTL.
+        let mut config = test_helpers::test_config();
+        config.realms[0]
+            .protocols
+            .oauth
+            .tokens
+            .access_token_ttl_seconds = 100_000;
+        config.realms[0]
+            .protocols
+            .oauth
+            .tokens
+            .refresh_token_ttl_seconds = 3600;
+        let tmp = std::env::temp_dir().join(format!("qid_oauth_unit_{}.json", ulid::Ulid::new()));
+        let repo = Arc::new(FileRepository::new(tmp.to_str().unwrap()).await.unwrap());
+        repo.migrate().await.unwrap();
+        qid_storage::RealmRepository::create_realm(
+            repo.as_ref(),
+            &TenantId::from("tenant-1"),
+            &RealmId::from("test"),
+            "https://id.example.com",
+            Some("Test Realm"),
+        )
+        .await
+        .unwrap();
+        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
+        let state = Arc::new(
+            SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap(),
+        );
+        let now = util::now_seconds();
+        let client = refresh_test_client("cap-id", "cap-client", ClientType::Public, "none");
+        repo.create_client(&client).await.unwrap();
+        let user = refresh_test_user("cap-user");
+        repo.create_user(&user).await.unwrap();
+        let code = "cap-code-1";
+        repo.create_authorization_code(&AuthorizationCode {
+            code_hash: util::sha256_base64url(code),
+            client_id: "cap-client".to_string(),
+            user_id: user.id.clone(),
+            realm_id: "test".to_string(),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            state: None,
+            nonce: None,
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
+            code_challenge: None,
+            code_challenge_method: None,
+            scopes: vec!["openid".to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            expires_at: now + 300,
+            used: false,
+            created_at: now,
+            session_id: None,
+        })
+        .await
+        .unwrap();
+        let req = TokenRequest {
+            grant_type: "authorization_code".to_string(),
+            code: Some(code.to_string()),
+            redirect_uri: Some("https://app.example.com/callback".to_string()),
+            ..Default::default()
+        };
+        let issued = authorization_code_grant(&state, &req, &client, None)
+            .await
+            .unwrap();
+        let deadline = now + 3600;
+        assert_eq!(decode_exp(&state, &issued.access_token), deadline as usize);
+        assert_eq!(issued.expires_in, 3600);
+        let stored = get_family(
+            &repo,
+            state
+                .signer
+                .decode_signature_only(issued.refresh_token.as_ref().unwrap())
+                .unwrap()
+                .claims
+                .extra["family_id"]
+                .as_str()
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(stored.refresh_expires_at, Some(deadline));
     }
 
     #[tokio::test]
@@ -1562,11 +1793,11 @@ mod tests {
         let now = util::now_seconds();
         let issued_at = now - 100;
         let (state, repo, client, family, token_1) =
-            setup_refresh_case("legacy-pin", issued_at, None).await;
+            setup_refresh_case("legacy-pin", issued_at, None, None).await;
         grant_refresh(&state, token_1, &client, None, None)
             .await
             .unwrap();
-        let pinned = repo.get_token_family(&family.id).await.unwrap().unwrap();
+        let pinned = get_family(&repo, &family.id).await;
         assert_eq!(pinned.refresh_expires_at, Some(issued_at + 86_400));
     }
 }

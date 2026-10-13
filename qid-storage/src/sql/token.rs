@@ -6,7 +6,7 @@ use super::*;
 impl TokenRepository for SqlRepository {
     async fn create_authorization_code(&self, code: &AuthorizationCode) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO authorization_codes (code_hash, client_id, user_id, realm_id, redirect_uri, state, nonce, auth_time, acr, amr, code_challenge, code_challenge_method, scopes, resource, authorization_details, expires_at, used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO authorization_codes (code_hash, client_id, user_id, realm_id, redirect_uri, state, nonce, auth_time, acr, amr, code_challenge, code_challenge_method, scopes, resource, authorization_details, expires_at, used, created_at, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&code.code_hash)
         .bind(&code.client_id)
@@ -26,6 +26,7 @@ impl TokenRepository for SqlRepository {
         .bind(code.expires_at as i64)
         .bind(code.used as i64)
         .bind(code.created_at as i64)
+        .bind(&code.session_id)
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
@@ -69,7 +70,7 @@ impl TokenRepository for SqlRepository {
 
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, scopes, auth_time, acr, amr, audience, resource, authorization_details, sender_constraint, issued_at, refresh_expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, scopes, auth_time, acr, amr, audience, resource, authorization_details, sender_constraint, issued_at, refresh_expires_at, session_id, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&family.id)
         .bind(&family.user_id)
@@ -91,6 +92,7 @@ impl TokenRepository for SqlRepository {
         .bind(family.sender_constraint.as_ref().map(|value| value.to_string()))
         .bind(family.issued_at as i64)
         .bind(family.refresh_expires_at.map(|value| value as i64))
+        .bind(&family.session_id)
         .bind(family.revoked as i64)
         .execute(&self.pool)
         .await

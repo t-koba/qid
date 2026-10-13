@@ -5,6 +5,9 @@ use axum::{
     routing::{get, post},
 };
 use qid_core::config::{OAuthProtocolConfig, TokenTtlConfig};
+use qid_core::error::{QidError, QidResult};
+use qid_core::models::Client;
+use qid_core::tenant::RealmId;
 use qid_core::{config::ServerPaths, state::SharedState};
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -53,7 +56,7 @@ pub fn unsigned_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedS
         .route("/oauth2/challenge", post(challenge::<R>))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct TokenRequest {
     pub grant_type: String,
     pub code: Option<String>,
@@ -142,6 +145,30 @@ pub struct RevokeRequest {
     pub token_type_hint: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+}
+
+pub(crate) async fn find_client_across_realms<R: Repository>(
+    state: &SharedState<R>,
+    client_id: &str,
+) -> QidResult<Client> {
+    let mut found = None;
+    for realm_config in &state.config.realms {
+        if let Some(client) = state
+            .repo
+            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
+            .await?
+        {
+            if found.is_some() {
+                return Err(QidError::Unauthorized {
+                    message: "client realm is ambiguous".to_string(),
+                });
+            }
+            found = Some(client);
+        }
+    }
+    found.ok_or_else(|| QidError::Unauthorized {
+        message: "unknown client".to_string(),
+    })
 }
 
 pub(crate) fn token_ttl<R: Repository>(state: &SharedState<R>, realm_id: &str) -> TokenTtlConfig {

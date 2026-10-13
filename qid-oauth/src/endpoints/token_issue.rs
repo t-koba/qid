@@ -34,6 +34,9 @@ pub struct TokenIssueClaims<'a> {
     /// deadline). Rotation passes the family deadline; other flows leave it
     /// absent and use the realm access TTL.
     pub access_expires_at: Option<u64>,
+    /// Originating browser session, when the issuance was authorized in one.
+    /// Persisted with the family; refresh fails closed once it ends.
+    pub session_id: Option<&'a str>,
 }
 
 pub async fn issue_token_pair<R: Repository>(
@@ -53,6 +56,13 @@ pub async fn issue_token_pair<R: Repository>(
     // expiration; later TTL changes must not extend existing grants.
     let refresh_expires_at =
         now.saturating_add(token_ttl(state, realm_id).refresh_token_ttl_seconds);
+    let access_expires_at = now
+        .saturating_add(token_ttl(state, realm_id).access_token_ttl_seconds)
+        .min(refresh_expires_at);
+    let access_claims = TokenIssueClaims {
+        access_expires_at: Some(refresh_expires_at),
+        ..claims
+    };
 
     let family = TokenFamily {
         id: family_id.clone(),
@@ -70,6 +80,7 @@ pub async fn issue_token_pair<R: Repository>(
         sender_constraint: claims.cnf.cloned(),
         issued_at: now,
         refresh_expires_at: Some(refresh_expires_at),
+        session_id: claims.session_id.map(ToOwned::to_owned),
         revoked: false,
     };
     state.repo.create_token_family(&family).await?;
@@ -91,7 +102,7 @@ pub async fn issue_token_pair<R: Repository>(
         nonce: claims.nonce.map(ToOwned::to_owned),
         sender_constraint: claims.cnf.cloned(),
         token_format: token_ttl(state, realm_id).access_token_format,
-        expires_at: now + token_ttl(state, realm_id).access_token_ttl_seconds,
+        expires_at: access_expires_at,
         revoked: false,
         issued_at: now,
     };
@@ -105,7 +116,7 @@ pub async fn issue_token_pair<R: Repository>(
         client_id,
         realm_id,
         scopes,
-        claims,
+        access_claims,
     )?;
     let refresh = sign_refresh_token(
         state,
@@ -123,7 +134,7 @@ pub async fn issue_token_pair<R: Repository>(
         refresh_token: refresh,
         access_jti,
         refresh_jti,
-        expires_in: token_ttl(state, realm_id).access_token_ttl_seconds,
+        expires_in: access_expires_at.saturating_sub(now),
     })
 }
 

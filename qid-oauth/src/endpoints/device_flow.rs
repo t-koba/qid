@@ -337,6 +337,7 @@ pub(crate) async fn device_code_grant<R: Repository>(
             authorization_code: None,
             access_token: None,
             access_expires_at: None,
+            session_id: None,
         },
     )
     .await?;

@@ -75,6 +75,7 @@ async fn file_authorization_code_single_use() {
         expires_at: now + 3600,
         used: false,
         created_at: now,
+        session_id: None,
     };
     repo.create_authorization_code(&code).await.unwrap();
     let loaded = repo
@@ -107,6 +108,7 @@ fn test_family(id: &str, hash: &str, issued_at: u64, deadline: Option<u64>) -> T
         sender_constraint: None,
         issued_at,
         refresh_expires_at: deadline,
+        session_id: None,
         revoked: false,
     }
 }

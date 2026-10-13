@@ -403,6 +403,7 @@ pub(crate) async fn ciba_grant<R: Repository>(
             authorization_code: None,
             access_token: None,
             access_expires_at: None,
+            session_id: None,
         },
     )
     .await?;
@@ -448,6 +449,7 @@ pub(crate) async fn ciba_grant<R: Repository>(
                 authorization_code: None,
                 access_token: None,
                 access_expires_at: None,
+                session_id: None,
             },
             sub_override.as_deref(),
         )?),

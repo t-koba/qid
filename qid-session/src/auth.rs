@@ -19,6 +19,9 @@ pub struct AuthResult {
     pub user: User,
     pub acr: String,
     pub amr: Vec<String>,
+    /// Browser session the authentication happened in, if any. Carried into
+    /// authorization codes and refresh families for logout linkage.
+    pub session_id: Option<String>,
 }
 
 /// Authenticator performs credential verification.
@@ -169,6 +172,7 @@ impl<R: Repository> Authenticator<R> {
             user,
             acr: "urn:qid:acr:password".to_string(),
             amr: vec!["pwd".to_string()],
+            session_id: None,
         })
     }
 
@@ -178,6 +182,7 @@ impl<R: Repository> Authenticator<R> {
             user: user.clone(),
             acr: "urn:qid:acr:email_magic_link".to_string(),
             amr: vec!["email_magic_link".to_string()],
+            session_id: None,
         })
     }
 
@@ -200,6 +205,7 @@ impl<R: Repository> Authenticator<R> {
             user: user.clone(),
             acr: "urn:qid:acr:phishing-resistant".to_string(),
             amr: vec!["client_certificate".to_string()],
+            session_id: None,
         })
     }
 

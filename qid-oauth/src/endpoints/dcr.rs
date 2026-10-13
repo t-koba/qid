@@ -630,7 +630,7 @@ pub async fn dynamic_client_registration_get<R: Repository>(
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    let (realm_id, issuer) = match find_client_across_realms(&state, &client_id).await {
+    let (realm_id, issuer) = match super::find_client_across_realms(&state, &client_id).await {
         Ok(c) => {
             let realm = state.realm(&c.realm_id).ok_or_else(|| QidError::NotFound {
                 resource: format!("realm {}", c.realm_id),
@@ -716,7 +716,7 @@ pub async fn dynamic_client_registration_update<R: Repository>(
         Ok(metadata) => metadata,
         Err(e) => return qid_http::error_response(e),
     };
-    let (realm_id, issuer) = match find_client_across_realms(&state, &client_id).await {
+    let (realm_id, issuer) = match super::find_client_across_realms(&state, &client_id).await {
         Ok(c) => {
             let realm = state.realm(&c.realm_id).ok_or_else(|| QidError::NotFound {
                 resource: format!("realm {}", c.realm_id),
@@ -840,7 +840,7 @@ pub async fn dynamic_client_registration_delete<R: Repository>(
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    let realm_id = match find_client_across_realms(&state, &client_id).await {
+    let realm_id = match super::find_client_across_realms(&state, &client_id).await {
         Ok(c) => c.realm_id,
         Err(_) => {
             return qid_http::error_response(QidError::NotFound {
@@ -877,30 +877,6 @@ pub async fn dynamic_client_registration_delete<R: Repository>(
         Ok(()) => axum::http::StatusCode::NO_CONTENT.into_response(),
         Err(e) => qid_http::error_response(e),
     }
-}
-
-async fn find_client_across_realms<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<Client> {
-    let mut found = None;
-    for realm_config in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "client realm is ambiguous".to_string(),
-                });
-            }
-            found = Some(client);
-        }
-    }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
-    })
 }
 
 #[cfg(test)]

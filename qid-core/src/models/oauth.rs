@@ -45,6 +45,10 @@ pub struct AuthorizationCode {
     pub expires_at: u64,
     pub used: bool,
     pub created_at: u64,
+    /// Originating browser session, when the code was issued to one. Carried
+    /// into the refresh family so logout ends its refresh lineage.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// A refresh token family.
@@ -77,6 +81,11 @@ pub struct TokenFamily {
     /// pinned to issued_at plus the realm TTL on first refresh.
     #[serde(default)]
     pub refresh_expires_at: Option<u64>,
+    /// Originating browser session, when one is known. Refresh fails closed
+    /// once it is revoked, expired, or gone; families without one (service
+    /// clients, offline grants) are unaffected.
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub revoked: bool,
 }
 

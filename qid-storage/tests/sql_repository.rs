@@ -960,6 +960,7 @@ async fn test_authorization_code_crud() {
         expires_at: 2000,
         used: false,
         created_at: 1000,
+        session_id: None,
     };
     repo.create_authorization_code(&code)
         .await
@@ -1221,6 +1222,7 @@ fn test_family(
         sender_constraint: None,
         issued_at,
         refresh_expires_at: deadline,
+        session_id: None,
         revoked: false,
     }
 }
@@ -1252,6 +1254,7 @@ async fn test_token_family_crud() {
     .await
     .unwrap();
     let mut family = test_family("tf-1", "user-tf", "realm-tf", "hash1", 1000, Some(4600));
+    family.session_id = Some("sess-1".to_string());
     family.scopes = vec!["read".to_string(), "write".to_string()];
     family.auth_time = Some(1234);
     family.acr = Some("urn:qid:acr:password".to_string());
@@ -1277,6 +1280,7 @@ async fn test_token_family_crud() {
     );
     assert_eq!(fetched.auth_time, Some(1234));
     assert_eq!(fetched.refresh_expires_at, Some(4600));
+    assert_eq!(fetched.session_id, Some("sess-1".to_string()));
     assert_eq!(fetched.acr, Some("urn:qid:acr:password".to_string()));
     assert_eq!(fetched.amr, vec!["pwd".to_string()]);
     assert_eq!(fetched.audience, vec!["api://orders"]);

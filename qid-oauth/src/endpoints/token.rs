@@ -9,7 +9,6 @@ use qid_core::{
     error::{QidError, QidResult},
     models::{Client, ClientType, User},
     state::SharedState,
-    tenant::RealmId,
 };
 use qid_crypto::{Jwk, jwt::verify_jwt_signature_with_jwk};
 use qid_storage::prelude::*;
@@ -123,7 +122,7 @@ async fn handle_token<R: Repository>(
             message: "unsupported grant_type".to_string(),
         });
     }
-    let client = find_client_across_realms(state, effective_client_id).await?;
+    let client = super::find_client_across_realms(state, effective_client_id).await?;
     let realm_config = oauth_realm_config(state, &client.realm_id)?;
     let dpop_jkt = if let Some(ref dpop) = dpop_header {
         if !realm_config.protocols.oauth.dpop.enabled {
@@ -527,6 +526,7 @@ async fn advanced_subject_grant<R: Repository>(
             authorization_code: None,
             access_token: None,
             access_expires_at: None,
+            session_id: None,
         },
     )
     .await?;
@@ -1035,28 +1035,4 @@ async fn infer_authorization_code_client_id<R: Repository>(
         .get_authorization_code(&code_hash)
         .await?
         .map(|code| code.client_id))
-}
-
-async fn find_client_across_realms<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<Client> {
-    let mut found = None;
-    for realm_config in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "client realm is ambiguous".to_string(),
-                });
-            }
-            found = Some(client);
-        }
-    }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
-    })
 }

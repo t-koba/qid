@@ -154,6 +154,7 @@ pub(in crate::sql) struct AuthCodeRow {
     expires_at: i64,
     used: i64,
     created_at: i64,
+    session_id: Option<String>,
 }
 
 impl From<AuthCodeRow> for AuthorizationCode {
@@ -185,6 +186,7 @@ impl From<AuthCodeRow> for AuthorizationCode {
             expires_at: row.expires_at as u64,
             used: row.used != 0,
             created_at: row.created_at as u64,
+            session_id: row.session_id,
         }
     }
 }
@@ -212,6 +214,7 @@ pub(in crate::sql) struct TokenFamilyRow {
     sender_constraint: Option<String>,
     issued_at: i64,
     refresh_expires_at: Option<i64>,
+    session_id: Option<String>,
     revoked: i64,
 }
 
@@ -237,6 +240,7 @@ impl From<TokenFamilyRow> for TokenFamily {
                 .and_then(|value| serde_json::from_str(&value).ok()),
             issued_at: row.issued_at as u64,
             refresh_expires_at: row.refresh_expires_at.map(|value| value as u64),
+            session_id: row.session_id,
             revoked: row.revoked != 0,
         }
     }

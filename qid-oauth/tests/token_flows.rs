@@ -53,14 +53,22 @@ async fn json_body(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> String {
+async fn post_form(
+    app: Router,
+    uri: &str,
+    form_body: impl Into<String>,
+) -> axum::response::Response {
     let request = Request::builder()
         .method(Method::POST)
-        .uri(token_path)
+        .uri(uri)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(form_body.to_string()))
+        .body(Body::from(form_body.into()))
         .unwrap();
-    let response = app.oneshot(request).await.unwrap();
+    app.oneshot(request).await.unwrap()
+}
+
+async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> String {
+    let response = post_form(app, token_path, form_body.to_string()).await;
     assert_eq!(response.status(), StatusCode::OK);
     json_body(response).await["access_token"]
         .as_str()
@@ -73,13 +81,7 @@ fn decode_claims(state: &Arc<SharedState<SqlRepository>>, token: &str) -> JwtCla
 }
 
 async fn post_token_json(app: Router, token_path: &str, form_body: String) -> serde_json::Value {
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(form_body))
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, token_path, form_body).await;
     assert_eq!(response.status(), StatusCode::OK);
     json_body(response).await
 }
@@ -117,13 +119,7 @@ async fn post_introspect(
 }
 
 async fn post_token_status(app: Router, token_path: &str, form_body: String) -> StatusCode {
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(form_body))
-        .unwrap();
-    app.oneshot(request).await.unwrap().status()
+    post_form(app, token_path, form_body).await.status()
 }
 
 fn dpop_private_pem_and_jwk() -> (String, Jwk) {
@@ -274,6 +270,7 @@ async fn create_user_with_code(
             expires_at: util::now_seconds() + 300,
             used: false,
             created_at: util::now_seconds(),
+            session_id: None,
         })
         .await
         .unwrap();
@@ -547,14 +544,7 @@ async fn client_credentials_grant_succeeds() {
 
     let body =
         "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api";
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let json = json_body(response).await;
@@ -580,14 +570,7 @@ async fn client_credentials_grant_rejects_wrong_client_secret_post() {
 
     let body =
         "grant_type=client_credentials&client_id=service-client&client_secret=wrong&scope=api";
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -620,14 +603,7 @@ async fn client_credentials_grant_accepts_private_key_jwt() {
     let body = format!(
         "grant_type=client_credentials&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}&scope=api"
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::OK);
 }
 
@@ -656,14 +632,7 @@ async fn client_credentials_grant_rejects_tampered_private_key_jwt() {
     let body = format!(
         "grant_type=client_credentials&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={tampered}&scope=api"
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -674,14 +643,7 @@ async fn client_credentials_grant_rejects_private_key_jwt_when_disabled() {
     let body = format!(
         "grant_type=client_credentials&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}&scope=api"
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -711,14 +673,7 @@ async fn client_credentials_grant_auto_creates_service_account() {
 
     let body =
         "grant_type=client_credentials&client_id=auto-create-test&client_secret=secret&scope=api";
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let sa = state
@@ -818,13 +773,7 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         urlencoding::encode(subject_token),
         urlencoding::encode(actor_token)
     );
-    let exchange_request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(exchange_body))
-        .unwrap();
-    let exchange_response = app.clone().oneshot(exchange_request).await.unwrap();
+    let exchange_response = post_form(app.clone(), &token_path, exchange_body).await;
     assert_eq!(exchange_response.status(), StatusCode::OK);
     let exchange_json = json_body(exchange_response).await;
     assert_eq!(
@@ -1130,14 +1079,7 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
         "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&client_id=jwt-bearer-client&client_secret=secret&assertion={}&audience=api://workload&scope=workload",
         urlencoding::encode(&assertion)
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(
@@ -1172,14 +1114,7 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
         "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}&audience=api://saml&scope=saml",
         urlencoding::encode(&assertion)
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(
@@ -1211,14 +1146,7 @@ async fn saml_bearer_grant_rejects_wrong_audience() {
         "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}",
         urlencoding::encode(&assertion)
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -1246,14 +1174,7 @@ async fn jwt_bearer_grant_rejects_wrong_audience() {
         "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&client_id=jwt-bearer-client&client_secret=secret&assertion={}",
         urlencoding::encode(&assertion)
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -1730,13 +1651,7 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
         "token={}&client_id=introspection-client&client_secret=secret&response_format=jwt",
         urlencoding::encode(&access_token)
     );
-    let jwt_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(jwt_body))
-        .unwrap();
-    let jwt_response = app.oneshot(jwt_request).await.unwrap();
+    let jwt_response = post_form(app, &state.paths.introspect, jwt_body).await;
     assert_eq!(jwt_response.status(), StatusCode::OK);
     let jwt_introspection = json_body(jwt_response).await;
     assert_eq!(jwt_introspection["active"], true);
@@ -2246,13 +2161,12 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
         "token={}&client_id=introspection-client&client_secret=secret",
         urlencoding::encode(access_token)
     );
-    let introspect_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(introspect_body.clone()))
-        .unwrap();
-    let introspect_response = app.clone().oneshot(introspect_request).await.unwrap();
+    let introspect_response = post_form(
+        app.clone(),
+        &state.paths.introspect,
+        introspect_body.clone(),
+    )
+    .await;
     assert_eq!(introspect_response.status(), StatusCode::OK);
     let introspection = json_body(introspect_response).await;
     assert_eq!(introspection["active"], true);
@@ -2263,13 +2177,7 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
         "token={}&client_id=opaque-client&client_secret=secret",
         urlencoding::encode(access_token)
     );
-    let revoke_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.revoke)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(revoke_body))
-        .unwrap();
-    let revoke_response = app.clone().oneshot(revoke_request).await.unwrap();
+    let revoke_response = post_form(app.clone(), &state.paths.revoke, revoke_body).await;
     assert_eq!(revoke_response.status(), StatusCode::OK);
 
     let introspect_request = Request::builder()
@@ -2415,6 +2323,7 @@ async fn revocation_can_revoke_refresh_token_family() {
         expires_at: util::now_seconds() + 300,
         used: false,
         created_at: util::now_seconds(),
+        session_id: None,
     };
     state
         .repo
@@ -2560,26 +2469,15 @@ async fn introspection_enforces_resource_server_policy() {
     let access_token = token_json["access_token"].as_str().unwrap();
 
     let unauthenticated_body = format!("token={}", urlencoding::encode(access_token));
-    let unauthenticated_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(unauthenticated_body))
-        .unwrap();
-    let unauthenticated_response = app.clone().oneshot(unauthenticated_request).await.unwrap();
+    let unauthenticated_response =
+        post_form(app.clone(), &state.paths.introspect, unauthenticated_body).await;
     assert_eq!(unauthenticated_response.status(), StatusCode::UNAUTHORIZED);
 
     let allowed_body = format!(
         "token={}&client_id=introspection-client&client_secret=secret&resource=https%3A%2F%2Fapi.example.com%2Fprofile&response_format=jwt",
         urlencoding::encode(access_token)
     );
-    let allowed_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(allowed_body))
-        .unwrap();
-    let allowed_response = app.clone().oneshot(allowed_request).await.unwrap();
+    let allowed_response = post_form(app.clone(), &state.paths.introspect, allowed_body).await;
     assert_eq!(allowed_response.status(), StatusCode::OK);
     let introspection = json_body(allowed_response).await;
     assert_eq!(introspection["active"], true);
@@ -2603,13 +2501,8 @@ async fn introspection_enforces_resource_server_policy() {
         "token={}&client_id=introspection-client&client_secret=secret&resource=https%3A%2F%2Fapi.example.com%2Fpayments",
         urlencoding::encode(access_token)
     );
-    let wrong_resource_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(wrong_resource_body))
-        .unwrap();
-    let wrong_resource_response = app.oneshot(wrong_resource_request).await.unwrap();
+    let wrong_resource_response =
+        post_form(app, &state.paths.introspect, wrong_resource_body).await;
     assert_eq!(wrong_resource_response.status(), StatusCode::OK);
     let wrong_resource = json_body(wrong_resource_response).await;
     assert_eq!(wrong_resource["active"], false);
@@ -2663,6 +2556,7 @@ async fn authorization_code_grant_succeeds() {
         expires_at: util::now_seconds() + 3600,
         used: false,
         created_at: util::now_seconds(),
+        session_id: None,
     };
     state
         .repo
@@ -2675,14 +2569,7 @@ async fn authorization_code_grant_succeeds() {
         "grant_type=authorization_code&code={}&redirect_uri=https://app.example.com/callback&code_verifier={}",
         code, code_verifier
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.clone().oneshot(request).await.unwrap();
+    let response = post_form(app.clone(), &token_path, body).await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = json_body(response).await;
     let access_token = json["access_token"].as_str().unwrap();
@@ -2789,6 +2676,7 @@ async fn authorization_code_grant_wrong_verifier_fails() {
         expires_at: util::now_seconds() + 3600,
         used: false,
         created_at: util::now_seconds(),
+        session_id: None,
     };
     state
         .repo
@@ -2801,14 +2689,7 @@ async fn authorization_code_grant_wrong_verifier_fails() {
         "grant_type=authorization_code&code={}&redirect_uri=https://app.example.com/callback&code_verifier=wrong-verifier",
         code
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -2817,14 +2698,7 @@ async fn client_credentials_grant_missing_client_id_fails() {
     let (app, token_path, _) = setup().await;
 
     let body = "grant_type=client_credentials&scope=api";
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -2833,14 +2707,7 @@ async fn unsupported_grant_type_fails() {
     let (app, token_path, _) = setup().await;
 
     let body = "grant_type=password&username=test&password=test";
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -3173,14 +3040,12 @@ async fn device_authorization_returns_codes_for_known_client() {
         .await
         .unwrap();
 
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.device_authorization)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from("client_id=device-client&scope=api"))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(
+        app,
+        &state.paths.device_authorization,
+        "client_id=device-client&scope=api",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = json_body(response).await;
     assert!(json["device_code"].as_str().unwrap().starts_with("dc_"));
@@ -3224,14 +3089,12 @@ async fn device_authorization_is_disabled_by_default() {
         .await
         .unwrap();
 
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.device_authorization)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from("client_id=device-disabled-client&scope=api"))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(
+        app,
+        &state.paths.device_authorization,
+        "client_id=device-disabled-client&scope=api",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -3289,13 +3152,12 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
         .await
         .unwrap();
 
-    let authorize_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.device_authorization)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from("client_id=device-client-flow&scope=api"))
-        .unwrap();
-    let authorize_response = app.clone().oneshot(authorize_request).await.unwrap();
+    let authorize_response = post_form(
+        app.clone(),
+        &state.paths.device_authorization,
+        "client_id=device-client-flow&scope=api",
+    )
+    .await;
     assert_eq!(authorize_response.status(), StatusCode::OK);
     let json = json_body(authorize_response).await;
     let device_code = json["device_code"].as_str().unwrap();
@@ -3304,13 +3166,7 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
     let pending_body = format!(
         "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=device-client-flow&device_code={device_code}"
     );
-    let pending_request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(pending_body.clone()))
-        .unwrap();
-    let pending_response = app.clone().oneshot(pending_request).await.unwrap();
+    let pending_response = post_form(app.clone(), &token_path, pending_body.clone()).await;
     assert_eq!(pending_response.status(), StatusCode::UNAUTHORIZED);
     let first_poll_grant = state
         .repo
@@ -3321,13 +3177,7 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
     assert_eq!(first_poll_grant.poll_interval_seconds, 5);
     assert!(first_poll_grant.last_poll_at.is_some());
 
-    let slow_down_request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(pending_body.clone()))
-        .unwrap();
-    let slow_down_response = app.clone().oneshot(slow_down_request).await.unwrap();
+    let slow_down_response = post_form(app.clone(), &token_path, pending_body.clone()).await;
     assert_eq!(slow_down_response.status(), StatusCode::UNAUTHORIZED);
     let throttled_grant = state
         .repo
@@ -3378,13 +3228,7 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
     let token_json = json_body(token_response).await;
     assert_eq!(token_json["token_type"], "DPoP");
 
-    let replay_request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(pending_body))
-        .unwrap();
-    let replay_response = app.oneshot(replay_request).await.unwrap();
+    let replay_response = post_form(app, &token_path, pending_body).await;
     assert_eq!(replay_response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -3422,13 +3266,7 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
     let pending_body = format!(
         "grant_type=urn:openid:params:grant-type:ciba&client_id=ciba-client&client_secret=secret&auth_req_id={auth_req_id}"
     );
-    let pending_request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(pending_body.clone()))
-        .unwrap();
-    let pending_response = app.clone().oneshot(pending_request).await.unwrap();
+    let pending_response = post_form(app.clone(), &token_path, pending_body.clone()).await;
     assert_eq!(pending_response.status(), StatusCode::UNAUTHORIZED);
     let first_poll_grant = state
         .repo
@@ -3439,13 +3277,7 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
     assert_eq!(first_poll_grant.poll_interval_seconds, 5);
     assert!(first_poll_grant.last_poll_at.is_some());
 
-    let slow_down_request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(pending_body.clone()))
-        .unwrap();
-    let slow_down_response = app.clone().oneshot(slow_down_request).await.unwrap();
+    let slow_down_response = post_form(app.clone(), &token_path, pending_body.clone()).await;
     assert_eq!(slow_down_response.status(), StatusCode::UNAUTHORIZED);
     let throttled_grant = state
         .repo
@@ -3505,13 +3337,7 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
     assert_eq!(token_json["token_type"], "DPoP");
     assert!(token_json["id_token"].as_str().unwrap().len() > 10);
 
-    let replay_request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(pending_body))
-        .unwrap();
-    let replay_response = app.oneshot(replay_request).await.unwrap();
+    let replay_response = post_form(app, &token_path, pending_body).await;
     assert_eq!(replay_response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -3555,6 +3381,7 @@ async fn authorization_code_used_twice_fails() {
         expires_at: util::now_seconds() + 3600,
         used: false,
         created_at: util::now_seconds(),
+        session_id: None,
     };
     state
         .repo
@@ -3567,23 +3394,11 @@ async fn authorization_code_used_twice_fails() {
         "grant_type=authorization_code&code={}&redirect_uri=https://app.example.com/callback&code_verifier={}",
         code, verifier
     );
-    let req1 = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body.clone()))
-        .unwrap();
-    let resp1 = app.clone().oneshot(req1).await.unwrap();
+    let resp1 = post_form(app.clone(), &token_path, body.clone()).await;
     assert_eq!(resp1.status(), StatusCode::OK);
 
     // Second use with same code - should fail
-    let req2 = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-    let resp2 = app.oneshot(req2).await.unwrap();
+    let resp2 = post_form(app, &token_path, body).await;
     assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -3627,6 +3442,7 @@ async fn authorization_code_expired_fails() {
         expires_at: util::now_seconds() - 10,
         used: false,
         created_at: util::now_seconds() - 3600,
+        session_id: None,
     };
     state
         .repo
@@ -3638,14 +3454,7 @@ async fn authorization_code_expired_fails() {
         "grant_type=authorization_code&code={}&redirect_uri=https://app.example.com/callback&code_verifier={}",
         code, verifier
     );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&token_path)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(body))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -3684,13 +3493,8 @@ async fn introspection_fails_closed_without_resource_servers() {
         "token={}&client_id=service-client&client_secret=secret",
         urlencoding::encode(&access_token)
     );
-    let authenticated_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(authenticated_body))
-        .unwrap();
-    let authenticated_response = app.clone().oneshot(authenticated_request).await.unwrap();
+    let authenticated_response =
+        post_form(app.clone(), &state.paths.introspect, authenticated_body).await;
     assert_eq!(authenticated_response.status(), StatusCode::UNAUTHORIZED);
 
     let invalid_authenticated_request = Request::builder()
@@ -3714,13 +3518,7 @@ async fn introspection_rejects_unauthenticated_invalid_token_with_resource_serve
         vec![test_server("api://default", &[], "introspection-client")];
     let (app, _, state) = setup_with_config(config).await;
 
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from("token=invalid-token-value"))
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
+    let response = post_form(app, &state.paths.introspect, "token=invalid-token-value").await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 

@@ -169,6 +169,7 @@ async fn authorize_with_browser_session<R: Repository>(
         } else {
             session.amr.clone()
         },
+        session_id: Some(session_id.clone()),
     };
     let code =
         issue_authorization_code(state, client, &auth_result, session.auth_time, resolved).await?;
@@ -1111,7 +1112,7 @@ async fn issue_authorization_code<R: Repository>(
     auth_time: u64,
     req: &AuthorizeParameters,
 ) -> QidResult<String> {
-    let code = generate_code();
+    let code = format!("ac_{}", ulid::Ulid::new());
     let code_hash = qid_core::util::sha256_base64url(&code);
 
     let ttl = state
@@ -1148,14 +1149,11 @@ async fn issue_authorization_code<R: Repository>(
         expires_at: qid_core::util::now_seconds() + ttl,
         used: false,
         created_at: qid_core::util::now_seconds(),
+        session_id: auth_result.session_id.clone(),
     };
 
     state.repo.create_authorization_code(&auth_code).await?;
     Ok(code)
-}
-
-fn generate_code() -> String {
-    format!("ac_{}", ulid::Ulid::new())
 }
 
 fn form_post_response(redirect_uri: &str, params: &[(&str, &str)]) -> Response {

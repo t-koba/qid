@@ -754,6 +754,41 @@ async fn logout_redirect_with_frontchannel_renders_completion_page() {
 }
 
 #[tokio::test]
+async fn logout_completion_iframes_escape_malicious_cookie_sid() {
+    let (app, state) = setup().await;
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.id = "notify-xss-id".to_string();
+    client.client_id = "notify-xss".to_string();
+    client.frontchannel_logout_uri = Some("https://rp.example.com/frontchannel".to_string());
+    state.repo.create_client(&client).await.unwrap();
+    // No session is created: the cookie value is unvalidated input straight
+    // into the iframe `src` construction.
+    let response = post_logout(
+        app,
+        state.paths.logout.clone(),
+        r#"__Host-qid="></script><script>alert(1)</script>"#,
+        "client_id=notify-xss&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(
+        !html.contains("</script><script>"),
+        "raw cookie reflected: {html}"
+    );
+    assert!(
+        html.contains("%3C%2Fscript%3E"),
+        "sid not URL-encoded: {html}"
+    );
+}
+
+#[tokio::test]
 async fn logout_rejects_unregistered_redirect_uri() {
     let (app, state) = setup().await;
     let body =

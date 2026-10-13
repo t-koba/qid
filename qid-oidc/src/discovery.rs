@@ -984,13 +984,21 @@ async fn logout<R: Repository>(
     if let Some(issuer) = logout_issuer.as_deref() {
         for client in &clients_with_logout_uris {
             if let Some(uri) = &client.frontchannel_logout_uri {
+                // `sid` is an unvalidated request cookie: URL-encode the query
+                // components and HTML-escape the full `src` so a crafted value
+                // cannot break out of the attribute.
                 let iframe_src = match sid {
-                    Some(sid) => format!("{}?iss={}&sid={}", uri, issuer, sid),
-                    None => format!("{}?iss={}", uri, issuer),
+                    Some(sid) => format!(
+                        "{}?iss={}&sid={}",
+                        uri,
+                        urlencoding::encode(issuer),
+                        urlencoding::encode(sid)
+                    ),
+                    None => format!("{}?iss={}", uri, urlencoding::encode(issuer)),
                 };
                 iframes.push_str(&format!(
                     r#"<iframe src="{}" style="display:none;"></iframe>"#,
-                    iframe_src
+                    escape_html_attr(&iframe_src)
                 ));
             }
         }

@@ -1244,9 +1244,7 @@ async fn finding_routes_detect_resolve_and_export_sod_conflicts_from_grants() {
         .await
         .expect("store finding source grant failed");
     }
-    let payload = serde_json::json!({
-        "dormant_threshold_seconds": 100
-    });
+    let payload = serde_json::json!({});
     let detect_response = app
         .clone()
         .oneshot(

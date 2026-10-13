@@ -600,10 +600,6 @@ pub(crate) fn default_certification_evidence() -> serde_json::Value {
     serde_json::json!({})
 }
 
-pub(crate) fn default_dormant_threshold_seconds() -> u64 {
-    90 * 24 * 60 * 60
-}
-
 pub(crate) fn resolve_tenant_id<R>(
     explicit: Option<&str>,
     state: &SharedState<R>,

@@ -41,10 +41,10 @@ pub(super) async fn list_findings<R: Repository>(
 pub(super) struct FindingDetectionRequest {
     #[serde(default)]
     tenant_id: Option<String>,
-    #[serde(default = "default_dormant_threshold_seconds")]
-    dormant_threshold_seconds: u64,
 }
 
+/// Detect separation-of-duties findings from active access grants. Dormant
+/// subjects are not derived here; reviewers supply them to access reviews.
 pub(super) async fn detect_findings<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
@@ -58,9 +58,6 @@ pub(super) async fn detect_findings<R: Repository>(
         Ok(tenant_id) => tenant_id,
         Err(e) => return *e,
     };
-    if req.dormant_threshold_seconds == 0 {
-        return bad_request_response("dormant_threshold_required");
-    }
     let now = now_seconds();
     let mut findings = Vec::new();
     let catalog = match catalog_for_tenant(&state, &tenant_id).await {

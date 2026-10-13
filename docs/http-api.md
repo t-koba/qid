@@ -249,7 +249,7 @@ Workload and SPIFFE routes are only merged in the `workload` profile.
 | `GET, POST` | `/iga/v1/access-reviews/:id/decisions` | List/create review decisions. |
 | `GET, POST` | `/iga/v1/certifications` | List/create certifications. |
 | `GET` | `/iga/v1/findings` | List findings. |
-| `POST` | `/iga/v1/findings/detect` | Detect findings. |
+| `POST` | `/iga/v1/findings/detect` | Detect SoD-conflict findings from active grants. |
 | `POST` | `/iga/v1/findings/:id/resolve` | Resolve finding. |
 | `GET` | `/iga/v1/evidence` | Export IGA evidence. |
 | `POST` | `/iga/v1/rebac/check` | ReBAC check. |

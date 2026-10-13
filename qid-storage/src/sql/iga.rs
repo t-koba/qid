@@ -88,7 +88,7 @@ impl IgaRepository for SqlRepository {
     async fn store_iga_access_request(&self, request: &IgaAccessRequestRecord) -> QidResult<()> {
         request.validate()?;
         sqlx::query(
-            "INSERT INTO iga_access_requests (id, tenant_id, subject, entitlement, reason, status, approval_steps_json, violations_json, expires_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO iga_access_requests (id, tenant_id, subject, entitlement, reason, status, approval_steps_json, violations_json, package_entitlement_ids_json, expires_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&request.id)
         .bind(&request.tenant_id)
@@ -98,6 +98,7 @@ impl IgaRepository for SqlRepository {
         .bind(&request.status)
         .bind(request.approval_steps_json.to_string())
         .bind(request.violations_json.to_string())
+        .bind(request.package_entitlement_ids_json.to_string())
         .bind(request.expires_at_epoch_seconds.map(|value| value as i64))
         .bind(request.created_at_epoch_seconds as i64)
         .execute(&self.pool)

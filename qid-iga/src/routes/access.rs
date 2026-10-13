@@ -107,6 +107,7 @@ pub(super) async fn access_request<R: Repository>(
         subject: evaluation.subject.clone(),
         entitlement: evaluation.entitlement.clone(),
         reason: req.reason.clone(),
+        package_entitlement_ids_json: serde_json::json!([]),
         status: access_request_status_as_str(&evaluation.status).to_string(),
         approval_steps_json: serde_json::to_value(&evaluation.approval_steps)
             .unwrap_or_else(|_| serde_json::json!([])),
@@ -185,6 +186,8 @@ pub(super) async fn access_package_request<R: Repository>(
         subject: package_evaluation.subject.clone(),
         entitlement: format!("access_package:{}", package.id),
         reason: req.reason.clone(),
+        package_entitlement_ids_json: serde_json::to_value(&package.entitlement_ids)
+            .unwrap_or_else(|_| serde_json::json!([])),
         status: access_request_status_as_str(&package_evaluation.status).to_string(),
         approval_steps_json: serde_json::to_value(&package_evaluation.approval_steps)
             .unwrap_or_else(|_| serde_json::json!([])),
@@ -408,8 +411,14 @@ pub(super) async fn validate_approvals<R: Repository>(
         if let Some(package_id) = stored.entitlement.strip_prefix("access_package:") {
             // Package approvals materialize one grant per approved member so
             // later SoD checks and access reviews resolve real entitlements
-            // instead of an opaque marker. Membership is resolved at issuance;
-            // later package edits cannot change already-issued grants.
+            // instead of an opaque marker. Members come from the request-time
+            // snapshot; a drifted package definition refuses issuance.
+            let snapshot: Vec<String> =
+                serde_json::from_value(stored.package_entitlement_ids_json.clone())
+                    .unwrap_or_default();
+            if snapshot.is_empty() {
+                return bad_request_response("access_package_snapshot_missing");
+            }
             let packages = match state.repo.list_iga_access_packages(&tenant_id).await {
                 Ok(packages) => packages,
                 Err(error) => return storage_error_response("list_iga_access_packages", error),
@@ -420,12 +429,14 @@ pub(super) async fn validate_approvals<R: Repository>(
             else {
                 return bad_request_response("access_package_unknown");
             };
-            match issue_package_member_grants(
-                &evaluation,
-                &package.entitlement_ids,
-                &approvals,
-                now,
-            ) {
+            let mut current = package.entitlement_ids.clone();
+            current.sort();
+            let mut approved = snapshot.clone();
+            approved.sort();
+            if current != approved {
+                return bad_request_response("access_package_changed");
+            }
+            match issue_package_member_grants(&evaluation, &snapshot, &approvals, now) {
                 Ok(grants) => grants,
                 Err(error) => return storage_error_response("issue_package_member_grants", error),
             }

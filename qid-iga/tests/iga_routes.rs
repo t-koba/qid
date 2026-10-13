@@ -250,6 +250,83 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
 }
 
 #[tokio::test]
+async fn package_issuance_refuses_drifted_package_definition() {
+    let (app, repo, session_id) = setup_with_repo().await;
+    for (id, owner) in [("app:custom:a", "owner-a"), ("app:custom:b", "owner-b")] {
+        post_json(
+            app.clone(),
+            "/iga/v1/entitlements",
+            serde_json::json!({
+                "id": id,
+                "display_name": id,
+                "owner": owner,
+                "risk_level": "medium",
+                "conflicting_entitlements": [],
+                "max_duration_seconds": 3600,
+                "active": true
+            }),
+            &session_id,
+        )
+        .await;
+    }
+    let package = |members: Vec<&str>| {
+        serde_json::json!({
+            "id": "pkg-drift",
+            "display_name": "Drifting package",
+            "owner": "security-admin",
+            "entitlement_ids": members,
+            "max_duration_seconds": 1800,
+            "active": true
+        })
+    };
+    let body =
+        create_package_and_request(&app, &session_id, package(vec!["app:custom:a"]), "user-1")
+            .await;
+    let request_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["status"], "approval_required");
+
+    // Edit the package after the request: the added member was never evaluated.
+    post_json(
+        app.clone(),
+        "/iga/v1/access-packages",
+        package(vec!["app:custom:a", "app:custom:b"]),
+        &session_id,
+    )
+    .await;
+    let now = qid_core::util::now_seconds();
+    let response = app
+        .oneshot(request_with_headers(
+            Method::POST,
+            "/iga/v1/access-requests/approvals/validate",
+            serde_json::json!({
+                "request_id": request_id,
+                "issue_grant": true,
+                "approvals": [
+                    {
+                        "id": "drift-approval",
+                        "request_id": request_id,
+                        "approver": "security-admin",
+                        "decision": "approved",
+                        "approved_at_epoch_seconds": now,
+                        "expires_at_epoch_seconds": now + 300
+                    }
+                ]
+            }),
+            &session_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json(response).await;
+    assert_eq!(body["error"], "access_package_changed");
+    let grants = repo
+        .list_iga_access_grants("test", Some("user-1"))
+        .await
+        .unwrap();
+    assert!(grants.is_empty(), "drifted package must issue no grants");
+}
+
+#[tokio::test]
 async fn package_member_grant_feeds_later_sod_checks_and_review() {
     let (app, repo, session_id) = setup_with_repo().await;
     // No custom entitlements: the tenant falls back to the default catalog
@@ -852,6 +929,7 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
             {"approver":"security-admin","reason":"owner_approval_required"}
         ]),
         violations_json: serde_json::json!([]),
+        package_entitlement_ids_json: serde_json::json!([]),
         expires_at_epoch_seconds: Some(now + 3600),
         created_at_epoch_seconds: now,
     })

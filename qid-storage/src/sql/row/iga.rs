@@ -66,6 +66,7 @@ pub(in crate::sql) struct IgaAccessRequestRow {
     status: String,
     approval_steps_json: String,
     violations_json: String,
+    package_entitlement_ids_json: Option<String>,
     expires_at_epoch_seconds: Option<i64>,
     created_at_epoch_seconds: i64,
 }
@@ -83,6 +84,11 @@ impl From<IgaAccessRequestRow> for IgaAccessRequestRecord {
                 .unwrap_or_else(|_| serde_json::json!([])),
             violations_json: serde_json::from_str(&row.violations_json)
                 .unwrap_or_else(|_| serde_json::json!([])),
+            package_entitlement_ids_json: row
+                .package_entitlement_ids_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_else(|| serde_json::json!([])),
             expires_at_epoch_seconds: row.expires_at_epoch_seconds.map(|value| value as u64),
             created_at_epoch_seconds: row.created_at_epoch_seconds as u64,
         }

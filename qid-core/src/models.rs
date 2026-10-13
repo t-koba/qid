@@ -65,6 +65,7 @@ mod iga_record_tests {
             status: "pending".to_string(),
             approval_steps_json: serde_json::json!([{"approver":"manager"}]),
             violations_json: serde_json::json!([]),
+            package_entitlement_ids_json: serde_json::json!([]),
             expires_at_epoch_seconds: Some(1_700_086_400),
             created_at_epoch_seconds: 1_700_000_000,
         };

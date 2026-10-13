@@ -13,6 +13,8 @@ pub struct IgaAccessRequestRecord {
     pub status: String,
     pub approval_steps_json: serde_json::Value,
     pub violations_json: serde_json::Value,
+    #[serde(default)]
+    pub package_entitlement_ids_json: serde_json::Value,
     pub expires_at_epoch_seconds: Option<u64>,
     pub created_at_epoch_seconds: u64,
 }
@@ -29,6 +31,10 @@ impl IgaAccessRequestRecord {
             &self.approval_steps_json,
         )?;
         require_json_array("IGA access request violations_json", &self.violations_json)?;
+        require_json_array(
+            "IGA access request package_entitlement_ids_json",
+            &self.package_entitlement_ids_json,
+        )?;
         if self.created_at_epoch_seconds == 0 {
             return Err(QidError::BadRequest {
                 message: "IGA access request created_at_epoch_seconds must be set".to_string(),

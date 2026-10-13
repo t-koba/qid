@@ -1983,6 +1983,7 @@ fn sample_iga_access_request(id: &str, created_at: u64) -> IgaAccessRequestRecor
             {"approver":"security-1","decision":"pending"}
         ]),
         violations_json: serde_json::json!([]),
+        package_entitlement_ids_json: serde_json::json!([]),
         expires_at_epoch_seconds: Some(created_at + 86_400),
         created_at_epoch_seconds: created_at,
     }

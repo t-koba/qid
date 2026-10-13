@@ -636,9 +636,14 @@ fn parse_saml_timestamp(value: &str) -> Result<u64, QidError> {
 }
 
 fn parse_rfc3339_utc(value: &str) -> Option<u64> {
-    // SAML timestamps here are UTC-only; require the existing `Z` form, then
-    // let the RFC3339 parser validate the complete calendar and time fields.
+    // SAML timestamps here are UTC-only; require the existing `Z` form.
     if !value.ends_with('Z') {
+        return None;
+    }
+    // Unix-second conversion cannot preserve leap-second instants, so reject
+    // second 60 before the RFC3339 parser can normalize it.
+    let seconds = value.as_bytes().get(17..19)?;
+    if !seconds.iter().all(u8::is_ascii_digit) || seconds[0] > b'5' {
         return None;
     }
     let timestamp =
@@ -660,6 +665,18 @@ mod tests {
             parse_saml_timestamp("2024-02-29T23:59:59.123Z"),
             Ok(1_709_251_199)
         ));
+        assert!(matches!(
+            parse_saml_timestamp("2016-12-31T23:59:59Z"),
+            Ok(1_483_228_799)
+        ));
+        assert!(matches!(
+            parse_saml_timestamp("2017-01-01T00:00:00Z"),
+            Ok(1_483_228_800)
+        ));
+        assert!(matches!(
+            parse_saml_timestamp("2016-12-31T23:59:59.999999999Z"),
+            Ok(1_483_228_799)
+        ));
 
         for invalid in [
             "2026-02-30T00:00:00Z",
@@ -669,6 +686,10 @@ mod tests {
             "2147483647-12-31T00:00:00Z",
             "1969-12-31T23:59:59Z",
             "2026-03-02T00:00:00+00:00",
+            "2024-02-29T23:59:60Z",
+            "2016-12-31T23:59:60Z",
+            "2016-12-31T23:59:60.1Z",
+            "2016-12-31T23:59:60.999999999Z",
         ] {
             assert!(
                 parse_saml_timestamp(invalid).is_err(),

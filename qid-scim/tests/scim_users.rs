@@ -571,11 +571,11 @@ async fn scim_bulk_stops_after_server_error_at_threshold() {
     let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let id = created["id"].as_str().unwrap().to_string();
 
-    // Inject a repository failure: replace the store directory with a file
-    // so the next persisted write fails with a server error.
-    let parent = store_path.parent().unwrap().to_path_buf();
-    std::fs::remove_dir_all(&parent).unwrap();
-    std::fs::File::create(&parent).unwrap();
+    // Inject a repository failure: replace the store file with a directory so
+    // the atomic temp-to-store rename on the next persisted write fails with
+    // a server error on every platform.
+    std::fs::remove_file(&store_path).unwrap();
+    std::fs::create_dir(&store_path).unwrap();
 
     let bulk_request = Request::builder()
         .method(Method::POST)
@@ -599,7 +599,8 @@ async fn scim_bulk_stops_after_server_error_at_threshold() {
     // must not run.
     assert_eq!(bulk["Operations"].as_array().unwrap().len(), 1);
 
-    std::fs::remove_file(&parent).unwrap();
+    std::fs::remove_dir(&store_path).unwrap();
+    let _ = std::fs::remove_file(store_path.with_extension("tmp"));
 }
 
 #[tokio::test]

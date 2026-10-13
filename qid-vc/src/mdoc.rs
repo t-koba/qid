@@ -110,8 +110,16 @@ pub fn build_mdoc_document(
     }
 }
 
-/// Encode an mdoc document to CBOR bytes following ISO 18013-5 §8.3.2.
+/// Encode the unsigned namespace representation of an mdoc document to CBOR.
+/// Issuer-signed material has no representation in this format: documents
+/// carrying MSO bytes or a signature chain are refused rather than
+/// serialized lossily.
 pub fn encode_mdoc_document(document: &MdocDocument) -> QidResult<Vec<u8>> {
+    if document.issuer_signed != MdocIssuerSigned::default() {
+        return Err(QidError::BadRequest {
+            message: "mdoc issuer-signed material is not supported by this encoding".to_string(),
+        });
+    }
     let mut doc_cbor = Vec::new();
     doc_cbor.push((encode_text("docType"), encode_text(&document.doc_type)));
 
@@ -134,7 +142,9 @@ pub fn encode_mdoc_document(document: &MdocDocument) -> QidResult<Vec<u8>> {
     Ok(buf)
 }
 
-/// Decode a CBOR-encoded mdoc document.
+/// Decode the unsigned namespace representation produced by
+/// [`encode_mdoc_document`]. Issuer-signed material is not parsed; use the
+/// dedicated mdoc decoder crate for signed documents.
 pub fn decode_mdoc_document(bytes: &[u8]) -> QidResult<MdocDocument> {
     let value: CborValue = ciborium::de::from_reader(bytes).map_err(|e| QidError::BadRequest {
         message: format!("mdoc CBOR decode failed: {e}"),
@@ -250,6 +260,46 @@ mod tests {
         );
         let family = require_mdoc_element(&document, "org.iso.18013.5.1", "family_name").unwrap();
         assert_eq!(family.value.as_text(), Some("Doe"));
+    }
+
+    #[test]
+    fn mdoc_unsigned_document_round_trips_through_cbor() {
+        let mut ns = MdocNamespace::new();
+        ns.insert(MdocDataElement {
+            identifier: "family_name".to_string(),
+            value: MdocDataElementValue::Text("Doe".to_string()),
+        });
+        let mut namespaces = BTreeMap::new();
+        namespaces.insert("org.iso.18013.5.1".to_string(), ns);
+        let document = build_mdoc_document(
+            "org.iso.18013.5.1.mDL",
+            namespaces,
+            MdocIssuerSigned::default(),
+        );
+        let bytes = encode_mdoc_document(&document).unwrap();
+        let decoded = decode_mdoc_document(&bytes).unwrap();
+        assert_eq!(decoded, document);
+    }
+
+    #[test]
+    fn mdoc_encode_refuses_issuer_signed_material() {
+        let signed = build_mdoc_document(
+            "org.iso.18013.5.1.mDL",
+            BTreeMap::new(),
+            MdocIssuerSigned {
+                mso_bytes: vec![1, 2, 3],
+                signature_chain: vec![MdocCertificate {
+                    usage: MdocCertificateUsage::Issuer,
+                    certificate_der: vec![4, 5, 6],
+                }],
+            },
+        );
+        let err = encode_mdoc_document(&signed).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("issuer-signed material is not supported"),
+            "signed documents must fail closed instead of serializing lossily, got {err:?}"
+        );
     }
 
     #[test]

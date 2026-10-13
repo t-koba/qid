@@ -597,6 +597,7 @@ fn server_paths_default_values() {
     assert_eq!(p.authorize, "/oauth2/authorize");
     assert_eq!(p.par, "/oauth2/par");
     assert_eq!(p.device_authorization, "/oauth2/device_authorization");
+    assert_eq!(p.device_verification, "/oauth2/device");
     assert_eq!(
         p.backchannel_authentication,
         "/oauth2/backchannel-authentication"

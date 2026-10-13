@@ -582,6 +582,8 @@ pub struct ServerPaths {
     pub par: String,
     #[serde(default = "default_device_authorization_path")]
     pub device_authorization: String,
+    #[serde(default = "default_device_verification_path")]
+    pub device_verification: String,
     #[serde(default = "default_backchannel_authentication_path")]
     pub backchannel_authentication: String,
     #[serde(default = "default_dynamic_client_registration_path")]
@@ -644,6 +646,7 @@ impl Default for ServerPaths {
             authorize: default_authorize_path(),
             par: default_par_path(),
             device_authorization: default_device_authorization_path(),
+            device_verification: default_device_verification_path(),
             backchannel_authentication: default_backchannel_authentication_path(),
             dynamic_client_registration: default_dynamic_client_registration_path(),
             dynamic_client_registration_management:
@@ -686,6 +689,7 @@ impl ServerPaths {
             &self.authorize,
             &self.par,
             &self.device_authorization,
+            &self.device_verification,
             &self.backchannel_authentication,
             &self.dynamic_client_registration,
             &self.dynamic_client_registration_management,
@@ -758,6 +762,10 @@ fn default_par_path() -> String {
 }
 fn default_device_authorization_path() -> String {
     "/oauth2/device_authorization".to_string()
+}
+
+fn default_device_verification_path() -> String {
+    "/oauth2/device".to_string()
 }
 fn default_backchannel_authentication_path() -> String {
     "/oauth2/backchannel-authentication".to_string()

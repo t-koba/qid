@@ -45,6 +45,7 @@ pub fn unsigned_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedS
     Router::new()
         .route(&paths.device_authorization, post(device_authorization))
         .route(&device_approval_path, post(device_authorization_approve))
+        .route(&paths.device_verification, get(device_verification_page))
         .route(
             &paths.backchannel_authentication,
             post(backchannel_authentication),
@@ -209,7 +210,9 @@ pub use dcr::{
     dynamic_client_registration_get, dynamic_client_registration_update,
 };
 pub(crate) use device_flow::device_code_grant;
-pub use device_flow::{device_authorization, device_authorization_approve};
+pub use device_flow::{
+    device_authorization, device_authorization_approve, device_verification_page,
+};
 pub use introspect::{
     decode_access_token, enforce_sender_constrained_access_token, extract_bearer_token, introspect,
 };

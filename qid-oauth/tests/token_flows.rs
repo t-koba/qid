@@ -8,8 +8,8 @@ use axum::{
 use base64::Engine;
 use http_body_util::BodyExt;
 use qid_core::{
-    config::{OAuthResourceServerConfig, PepRegistrationConfig, QidConfig},
-    models::{AuthorizationCode, Client, ClientType, Session, TokenFormat, User},
+    config::{OAuthProtocolConfig, OAuthResourceServerConfig, PepRegistrationConfig, QidConfig},
+    models::{AuthorizationCode, Client, ClientType, TokenFormat, User},
     state::SharedState,
     tenant::RealmId,
     test_helpers, util,
@@ -17,6 +17,7 @@ use qid_core::{
 use qid_crypto::{
     Audience, Jwk, JwtClaims, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header,
 };
+use qid_session::browser::SessionManager;
 use qid_storage::{SqlRepository, prelude::*};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,6 +66,12 @@ async fn post_form(
         .body(Body::from(form_body.into()))
         .unwrap();
     app.oneshot(request).await.unwrap()
+}
+
+async fn get_response(app: Router, uri: &str) -> axum::response::Response {
+    app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
 }
 
 async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> String {
@@ -223,6 +230,14 @@ async fn setup_with_config(config: QidConfig) -> (Router, String, Arc<SharedStat
     (app, token_path, state)
 }
 
+async fn setup_with_oauth(
+    tweak: impl FnOnce(&mut OAuthProtocolConfig),
+) -> (Router, String, Arc<SharedState<SqlRepository>>) {
+    let mut config = test_helpers::test_config();
+    tweak(&mut config.realms[0].protocols.oauth);
+    setup_with_config(config).await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_user_with_code(
     state: &Arc<SharedState<SqlRepository>>,
@@ -277,34 +292,18 @@ async fn create_user_with_code(
 }
 
 async fn seed_token_flow_clients(state: &Arc<SharedState<SqlRepository>>) {
+    let mut test_client = base_test_client(
+        "test-client",
+        ClientType::Public,
+        "none",
+        vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ],
+    );
+    test_client.redirect_uris = vec!["https://app.example.com/callback".to_string()];
     let clients = [
-        Client {
-            id: "client-test-client".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "test-client".to_string(),
-            client_type: ClientType::Public,
-            token_endpoint_auth_method: "none".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: qid_core::models::default_client_jwks(),
-            redirect_uris: vec!["https://app.example.com/callback".to_string()],
-            grant_types: vec![
-                "authorization_code".to_string(),
-                "refresh_token".to_string(),
-            ],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        },
+        test_client,
         client_credentials_client("service-client", "client_secret_post"),
         client_credentials_client("auto-create-test", "client_secret_post"),
         client_credentials_client("dpop-client", "client_secret_post"),
@@ -324,18 +323,23 @@ async fn seed_token_flow_clients(state: &Arc<SharedState<SqlRepository>>) {
     }
 }
 
-fn private_key_jwt_client(client_id: &str) -> Client {
+fn base_test_client(
+    client_id: &str,
+    client_type: ClientType,
+    auth_method: &str,
+    grant_types: Vec<String>,
+) -> Client {
     Client {
         id: format!("client-{client_id}"),
         realm_id: "test".to_string(),
         client_id: client_id.to_string(),
-        client_type: ClientType::Confidential,
-        token_endpoint_auth_method: "private_key_jwt".to_string(),
+        client_type,
+        token_endpoint_auth_method: auth_method.to_string(),
         client_secret_hash: None,
         mtls_certificate_thumbprints: Vec::new(),
-        jwks: private_key_jwt_jwks(),
+        jwks: qid_core::models::default_client_jwks(),
         redirect_uris: Vec::new(),
-        grant_types: vec!["client_credentials".to_string()],
+        grant_types,
         client_name: None,
         client_uri: None,
         logo_uri: None,
@@ -349,146 +353,79 @@ fn private_key_jwt_client(client_id: &str) -> Client {
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
     }
+}
+
+fn private_key_jwt_client(client_id: &str) -> Client {
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        "private_key_jwt",
+        vec!["client_credentials".to_string()],
+    );
+    client.jwks = private_key_jwt_jwks();
+    client
 }
 
 fn ciba_client(client_id: &str) -> Client {
-    Client {
-        id: format!("client-{client_id}"),
-        realm_id: "test".to_string(),
-        client_id: client_id.to_string(),
-        client_type: ClientType::Confidential,
-        token_endpoint_auth_method: "client_secret_post".to_string(),
-        client_secret_hash: Some(qid_core::util::client_secret_hash("secret")),
-        mtls_certificate_thumbprints: Vec::new(),
-        jwks: qid_core::models::default_client_jwks(),
-        redirect_uris: Vec::new(),
-        grant_types: vec!["urn:openid:params:grant-type:ciba".to_string()],
-        client_name: None,
-        client_uri: None,
-        logo_uri: None,
-        contacts: Vec::new(),
-        post_logout_redirect_uris: Vec::new(),
-        default_max_age: None,
-        require_auth_time: false,
-        sector_identifier_uri: None,
-        subject_type: None,
-        backchannel_logout_uri: None,
-        frontchannel_logout_uri: None,
-        backchannel_client_notification_endpoint: None,
-    }
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        "client_secret_post",
+        vec!["urn:openid:params:grant-type:ciba".to_string()],
+    );
+    client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    client
 }
 
 fn client_credentials_client(client_id: &str, auth_method: &str) -> Client {
-    Client {
-        id: format!("client-{client_id}"),
-        realm_id: "test".to_string(),
-        client_id: client_id.to_string(),
-        client_type: ClientType::Confidential,
-        token_endpoint_auth_method: auth_method.to_string(),
-        client_secret_hash: matches!(auth_method, "client_secret_basic" | "client_secret_post")
-            .then(|| qid_core::util::client_secret_hash("secret")),
-        mtls_certificate_thumbprints: if auth_method == "tls_client_auth" {
-            vec!["AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8".to_string()]
-        } else {
-            Vec::new()
-        },
-        jwks: qid_core::models::default_client_jwks(),
-        redirect_uris: Vec::new(),
-        grant_types: vec!["client_credentials".to_string()],
-        client_name: None,
-        client_uri: None,
-        logo_uri: None,
-        contacts: Vec::new(),
-        post_logout_redirect_uris: Vec::new(),
-        default_max_age: None,
-        require_auth_time: false,
-        sector_identifier_uri: None,
-        subject_type: None,
-        backchannel_logout_uri: None,
-        frontchannel_logout_uri: None,
-        backchannel_client_notification_endpoint: None,
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        auth_method,
+        vec!["client_credentials".to_string()],
+    );
+    client.client_secret_hash = matches!(auth_method, "client_secret_basic" | "client_secret_post")
+        .then(|| qid_core::util::client_secret_hash("secret"));
+    if auth_method == "tls_client_auth" {
+        client.mtls_certificate_thumbprints =
+            vec!["AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8".to_string()];
     }
+    client
 }
 
 fn token_exchange_client(client_id: &str) -> Client {
-    Client {
-        id: format!("client-{client_id}"),
-        realm_id: "test".to_string(),
-        client_id: client_id.to_string(),
-        client_type: ClientType::Confidential,
-        token_endpoint_auth_method: "client_secret_post".to_string(),
-        client_secret_hash: Some(qid_core::util::client_secret_hash("secret")),
-        mtls_certificate_thumbprints: Vec::new(),
-        jwks: private_key_jwt_jwks(),
-        redirect_uris: Vec::new(),
-        grant_types: vec!["urn:ietf:params:oauth:grant-type:token-exchange".to_string()],
-        client_name: None,
-        client_uri: None,
-        logo_uri: None,
-        contacts: Vec::new(),
-        post_logout_redirect_uris: Vec::new(),
-        default_max_age: None,
-        require_auth_time: false,
-        sector_identifier_uri: None,
-        subject_type: None,
-        backchannel_logout_uri: None,
-        frontchannel_logout_uri: None,
-        backchannel_client_notification_endpoint: None,
-    }
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        "client_secret_post",
+        vec!["urn:ietf:params:oauth:grant-type:token-exchange".to_string()],
+    );
+    client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    client.jwks = private_key_jwt_jwks();
+    client
 }
 
 fn jwt_bearer_client(client_id: &str) -> Client {
-    Client {
-        id: format!("client-{client_id}"),
-        realm_id: "test".to_string(),
-        client_id: client_id.to_string(),
-        client_type: ClientType::Confidential,
-        token_endpoint_auth_method: "client_secret_post".to_string(),
-        client_secret_hash: Some(qid_core::util::client_secret_hash("secret")),
-        mtls_certificate_thumbprints: Vec::new(),
-        jwks: private_key_jwt_jwks(),
-        redirect_uris: Vec::new(),
-        grant_types: vec!["urn:ietf:params:oauth:grant-type:jwt-bearer".to_string()],
-        client_name: None,
-        client_uri: None,
-        logo_uri: None,
-        contacts: Vec::new(),
-        post_logout_redirect_uris: Vec::new(),
-        default_max_age: None,
-        require_auth_time: false,
-        sector_identifier_uri: None,
-        subject_type: None,
-        backchannel_logout_uri: None,
-        frontchannel_logout_uri: None,
-        backchannel_client_notification_endpoint: None,
-    }
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        "client_secret_post",
+        vec!["urn:ietf:params:oauth:grant-type:jwt-bearer".to_string()],
+    );
+    client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    client.jwks = private_key_jwt_jwks();
+    client
 }
 
 fn saml_bearer_client(client_id: &str) -> Client {
-    Client {
-        id: format!("client-{client_id}"),
-        realm_id: "test".to_string(),
-        client_id: client_id.to_string(),
-        client_type: ClientType::Confidential,
-        token_endpoint_auth_method: "client_secret_post".to_string(),
-        client_secret_hash: Some(qid_core::util::client_secret_hash("secret")),
-        mtls_certificate_thumbprints: Vec::new(),
-        jwks: qid_core::models::default_client_jwks(),
-        redirect_uris: Vec::new(),
-        grant_types: vec!["urn:ietf:params:oauth:grant-type:saml2-bearer".to_string()],
-        client_name: None,
-        client_uri: None,
-        logo_uri: None,
-        contacts: Vec::new(),
-        post_logout_redirect_uris: Vec::new(),
-        default_max_age: None,
-        require_auth_time: false,
-        sector_identifier_uri: None,
-        subject_type: None,
-        backchannel_logout_uri: None,
-        frontchannel_logout_uri: None,
-        backchannel_client_notification_endpoint: None,
-    }
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        "client_secret_post",
+        vec!["urn:ietf:params:oauth:grant-type:saml2-bearer".to_string()],
+    );
+    client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    client
 }
 
 fn build_saml_bearer_assertion(subject: &str, audience: &str, expires_at: u64) -> String {
@@ -596,9 +533,7 @@ async fn client_credentials_grant_accepts_client_secret_basic() {
 
 #[tokio::test]
 async fn client_credentials_grant_accepts_private_key_jwt() {
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.private_key_jwt.enabled = true;
-    let (app, token_path, _) = setup_with_config(config).await;
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.private_key_jwt.enabled = true).await;
     let assertion = build_client_assertion("pkjwt-client", "pkjwt-success-1");
     let body = format!(
         "grant_type=client_credentials&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}&scope=api"
@@ -609,9 +544,7 @@ async fn client_credentials_grant_accepts_private_key_jwt() {
 
 #[tokio::test]
 async fn client_credentials_grant_rejects_tampered_private_key_jwt() {
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.private_key_jwt.enabled = true;
-    let (app, token_path, _) = setup_with_config(config).await;
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.private_key_jwt.enabled = true).await;
     let assertion = build_client_assertion("pkjwt-client", "pkjwt-tampered-1");
     let (header_and_payload, signature) = assertion
         .rsplit_once('.')
@@ -689,9 +622,7 @@ async fn client_credentials_grant_auto_creates_service_account() {
 
 #[tokio::test]
 async fn token_exchange_requires_active_access_token_subject() {
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.dpop.enabled = true;
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state) = setup_with_oauth(|oauth| oauth.dpop.enabled = true).await;
 
     let subject_request = Request::builder()
         .method(Method::POST)
@@ -912,26 +843,27 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
 async fn client_credentials_rejects_scope_outside_any_target_ceiling() {
     // RFC 8707 section 2.2: each target's scope list is its own ceiling, so
     // adding a permissive target must not widen a restrictive one.
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers = vec![
-        OAuthResourceServerConfig {
-            audience: "api://reader".to_string(),
-            resources: Vec::new(),
-            scopes: vec!["read".to_string()],
-            introspection_client_ids: Vec::new(),
-            require_sender_constraint: false,
-            high_risk: false,
-        },
-        OAuthResourceServerConfig {
-            audience: "api://admin".to_string(),
-            resources: Vec::new(),
-            scopes: vec!["admin".to_string()],
-            introspection_client_ids: Vec::new(),
-            require_sender_constraint: false,
-            high_risk: false,
-        },
-    ];
-    let (app, token_path, _) = setup_with_config(config).await;
+    let (app, token_path, _) = setup_with_oauth(|oauth| {
+        oauth.resource_servers = vec![
+            OAuthResourceServerConfig {
+                audience: "api://reader".to_string(),
+                resources: Vec::new(),
+                scopes: vec!["read".to_string()],
+                introspection_client_ids: Vec::new(),
+                require_sender_constraint: false,
+                high_risk: false,
+            },
+            OAuthResourceServerConfig {
+                audience: "api://admin".to_string(),
+                resources: Vec::new(),
+                scopes: vec!["admin".to_string()],
+                introspection_client_ids: Vec::new(),
+                require_sender_constraint: false,
+                high_risk: false,
+            },
+        ]
+    })
+    .await;
     let status = post_token_status(
         app.clone(),
         &token_path,
@@ -1492,9 +1424,7 @@ async fn dpop_nonce_challenge_requires_nonce_retry() {
 
 #[tokio::test]
 async fn mtls_client_credentials_rejects_certificate_headers() {
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.mtls.enabled = true;
-    let (app, token_path, _) = setup_with_config(config).await;
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.mtls.enabled = true).await;
     let thumbprint_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
     let request = Request::builder()
@@ -1513,9 +1443,7 @@ async fn mtls_client_credentials_rejects_certificate_headers() {
 
 #[tokio::test]
 async fn mtls_client_credentials_rejects_unregistered_thumbprint() {
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.mtls.enabled = true;
-    let (app, token_path, _) = setup_with_config(config).await;
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.mtls.enabled = true).await;
     let wrong_thumbprint_hex = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
     let request = Request::builder()
@@ -1675,9 +1603,8 @@ async fn refresh_preserves_original_scope_ceiling() {
     // RFC 6749 section 6: omitted scope means the original grant, explicit
     // scope must be a subset, and the replacement refresh token keeps the
     // original ceiling. The realm default must never widen a grant.
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.default_scope = "write".to_string();
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state) =
+        setup_with_oauth(|oauth| oauth.default_scope = "write".to_string()).await;
     let code = "scope-ceiling-code-1";
     let code_verifier = "e1f2a3b4c5d60718293a4b5c6d7e8f9012345678";
     create_user_with_code(
@@ -2257,9 +2184,7 @@ async fn revocation_requires_client_auth_and_preserves_other_client_tokens() {
 
 #[tokio::test]
 async fn revocation_rejects_when_disabled() {
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.revocation.enabled = false;
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state) = setup_with_oauth(|oauth| oauth.revocation.enabled = false).await;
 
     let token_request = Request::builder()
         .method(Method::POST)
@@ -3002,31 +2927,15 @@ async fn dynamic_client_registration_management_requires_client_auth() {
     assert_eq!(unauthenticated_response.status(), StatusCode::UNAUTHORIZED);
 }
 
-fn device_test_client(id: &str, client_id: &str) -> qid_core::models::Client {
-    qid_core::models::Client {
-        id: id.to_string(),
-        realm_id: "test".to_string(),
-        client_id: client_id.to_string(),
-        client_type: qid_core::models::ClientType::Public,
-        token_endpoint_auth_method: "none".to_string(),
-        client_secret_hash: None,
-        mtls_certificate_thumbprints: Vec::new(),
-        jwks: qid_core::models::default_client_jwks(),
-        redirect_uris: vec![],
-        grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
-        client_name: None,
-        client_uri: None,
-        logo_uri: None,
-        contacts: Vec::new(),
-        post_logout_redirect_uris: Vec::new(),
-        default_max_age: None,
-        require_auth_time: false,
-        sector_identifier_uri: None,
-        subject_type: None,
-        backchannel_logout_uri: None,
-        frontchannel_logout_uri: None,
-        backchannel_client_notification_endpoint: None,
-    }
+fn device_test_client(id: &str, client_id: &str) -> Client {
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Public,
+        "none",
+        vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+    );
+    client.id = id.to_string();
+    client
 }
 
 #[tokio::test]
@@ -3062,7 +2971,7 @@ async fn device_authorization_returns_codes_for_known_client() {
         json["verification_uri"]
             .as_str()
             .unwrap()
-            .contains("/oauth2/device_authorization")
+            .ends_with("/oauth2/device")
     );
 
     // A second issuance draws fresh randomness: nothing repeats and neither
@@ -3083,6 +2992,60 @@ async fn device_authorization_returns_codes_for_known_client() {
     let fragment_2 = user_2.strip_prefix("QID-").unwrap();
     assert!(!device_2.contains(user_fragment));
     assert!(!device_code.contains(fragment_2));
+}
+
+#[tokio::test]
+async fn device_verification_uri_reaches_interaction_page() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&device_test_client("device-verify-id", "device-verify"))
+        .await
+        .unwrap();
+
+    let json = post_token_json(
+        app.clone(),
+        &state.paths.device_authorization,
+        "client_id=device-verify&scope=api".to_string(),
+    )
+    .await;
+    let user_code = json["user_code"].as_str().unwrap();
+    let verification_uri = json["verification_uri"].as_str().unwrap();
+    let complete_uri = json["verification_uri_complete"].as_str().unwrap();
+    assert!(complete_uri.contains(user_code));
+
+    // The bare URI serves code entry, not grant creation.
+    let entry = get_response(app.clone(), verification_uri).await;
+    assert_eq!(entry.status(), StatusCode::OK);
+    assert_eq!(entry.headers()["content-type"], "text/html; charset=utf-8");
+
+    // The complete URI reaches the approval interaction for the grant.
+    let page = get_response(app.clone(), complete_uri).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = String::from_utf8(
+        page.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains(user_code));
+    assert!(html.contains("device-verify"));
+    assert!(html.contains("approve"));
+
+    // Unknown codes fail closed; the interaction path accepts no POSTs.
+    let missing = get_response(app.clone(), "/oauth2/device?user_code=QID-UNKNOWN").await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let post_to_page = post_form(app, verification_uri, "user_code=whatever").await;
+    assert_eq!(post_to_page.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
 #[tokio::test]
@@ -3175,21 +3138,11 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
         .expect("device grant should exist after slow_down");
     assert_eq!(throttled_grant.poll_interval_seconds, 10);
 
-    let now = util::now_seconds();
-    let session = Session {
-        id: "sid_device_approve_session".to_string(),
-        realm_id: "test".to_string(),
-        user_id: "device-user".to_string(),
-        auth_time: now,
-        acr: Some("password".to_string()),
-        amr: vec!["password".to_string()],
-        idle_expires_at: now + 3600,
-        absolute_expires_at: now + 86400,
-        revoked: false,
-        created_at: now,
-        cnf: None,
-    };
-    state.repo.create_session(&session).await.unwrap();
+    let sessions = SessionManager::new(state.repo.clone(), 60, 24);
+    let session = sessions
+        .create("test", "device-user", "password", &["password".to_string()])
+        .await
+        .unwrap();
 
     let approve_path = format!("{}/approve", state.paths.device_authorization);
     let approve_request = Request::builder()
@@ -3277,23 +3230,12 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
 
     // Create a session so the CIBA approval can verify the user's identity.
     let cookie_name = &state.config.realms[0].sessions.browser.cookie_name.clone();
-    let session_id = "ciba-session-id";
-    let now = qid_core::util::now_seconds();
-    let session = qid_core::models::Session {
-        id: session_id.to_string(),
-        realm_id: "test".to_string(),
-        user_id: "ciba-user".to_string(),
-        auth_time: now,
-        acr: None,
-        amr: Vec::new(),
-        absolute_expires_at: now + 3600,
-        idle_expires_at: now + 900,
-        revoked: false,
-        created_at: now,
-        cnf: None,
-    };
-    state.repo.create_session(&session).await.unwrap();
-    let cookie_value = format!("{}={}", cookie_name, session_id);
+    let sessions = SessionManager::new(state.repo.clone(), 15, 1);
+    let session = sessions
+        .create("test", "ciba-user", "password", &[])
+        .await
+        .unwrap();
+    let cookie_value = format!("{}={}", cookie_name, session.id);
 
     let approve_path = format!("{}/approve", state.paths.backchannel_authentication);
     let approve_request = Request::builder()
@@ -3623,12 +3565,13 @@ async fn jwt_introspection_signing_failure_fails_closed_without_disclosure() {
 
 #[tokio::test]
 async fn multi_audience_issuance_names_every_resource_server() {
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers = vec![
-        test_server("api://profile", &[], "introspection-client"),
-        test_server("api://payments", &[], "introspection-client"),
-    ];
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state) = setup_with_oauth(|oauth| {
+        oauth.resource_servers = vec![
+            test_server("api://profile", &[], "introspection-client"),
+            test_server("api://payments", &[], "introspection-client"),
+        ]
+    })
+    .await;
 
     let token = mint_access_token(
         app.clone(),

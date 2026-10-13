@@ -1,14 +1,13 @@
 use axum::{
     Form, Json,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
 use qid_core::{
     error::{QidError, QidResult},
-    models::{Client, DeviceAuthorizationGrant},
+    models::DeviceAuthorizationGrant,
     state::SharedState,
-    tenant::RealmId,
 };
 use qid_storage::prelude::*;
 use rand::RngCore;
@@ -51,7 +50,7 @@ pub async fn device_authorization<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Form(req): Form<DeviceAuthorizationRequest>,
 ) -> Response {
-    let client = match find_device_authorization_client(&state, &req.client_id).await {
+    let client = match super::find_client_across_realms(&state, &req.client_id).await {
         Ok(client) => client,
         Err(e) => return qid_http::error_response(e),
     };
@@ -82,7 +81,7 @@ pub async fn device_authorization<R: Repository>(
     let device_code = new_device_code();
     let user_code = new_user_code();
     let base = state.plan.public_base_url.trim_end_matches('/');
-    let verification_uri = format!("{base}{}", state.paths.device_authorization);
+    let verification_uri = format!("{base}{}", state.paths.device_verification);
     let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
     let scope = req
         .scope
@@ -143,28 +142,77 @@ fn new_user_code() -> String {
     format!("QID-{code}")
 }
 
-async fn find_device_authorization_client<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<Client> {
-    let mut found = None;
-    for realm in &state.config.realms {
-        if let Some(client) = state
+#[derive(Debug, Deserialize)]
+pub struct DeviceVerificationQuery {
+    pub user_code: Option<String>,
+}
+
+/// Browser verification surface for device authorization (RFC 8628 §3.2).
+/// This is deliberately separate from the POST-only device authorization
+/// endpoint: following the returned verification URI must reach a user
+/// interaction, never grant creation.
+pub async fn device_verification_page<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    Query(query): Query<DeviceVerificationQuery>,
+) -> Response {
+    let grant = match query.user_code.as_deref() {
+        None => None,
+        Some(code) => match state
             .repo
-            .get_client_by_client_id(&RealmId::from(realm.id.clone()), client_id)
-            .await?
+            .get_device_authorization_grant_by_user_code(code)
+            .await
         {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "device authorization client realm is ambiguous".to_string(),
+            Ok(Some(grant)) if grant.expires_at > qid_core::util::now_seconds() => Some(grant),
+            Ok(_) => {
+                return qid_http::error_response(QidError::NotFound {
+                    resource: "device authorization grant".to_string(),
                 });
             }
-            found = Some(client);
-        }
-    }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
-    })
+            Err(e) => return qid_http::error_response(e),
+        },
+    };
+    let page = match grant {
+        Some(grant) => verification_page_for_grant(
+            &format!("{}/approve", state.paths.device_authorization),
+            &grant.client_id,
+            &grant.scopes,
+            &grant.user_code,
+        ),
+        None => verification_code_entry_page(&state.paths.device_verification),
+    };
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn verification_code_entry_page(verification_path: &str) -> String {
+    format!(
+        "<!doctype html><html><body><h1>Authorize a device</h1><form method=\"GET\" action=\"{}\"><input name=\"user_code\"/><button>Continue</button></form></body></html>",
+        html_escape(verification_path),
+    )
+}
+
+fn verification_page_for_grant(
+    approval_path: &str,
+    client_id: &str,
+    scopes: &[String],
+    user_code: &str,
+) -> String {
+    let approval_body = serde_json::json!({"user_code": user_code}).to_string();
+    format!(
+        "<!doctype html><html><body><h1>Authorize device?</h1><p>Client <b>{}</b> requests access with scopes: {}.</p><p>Confirm the code on your device matches: <b>{}</b></p><button id=\"approve\">Approve</button> <span id=\"result\"></span><script>const approve=document.getElementById(\"approve\"),result=document.getElementById(\"result\");approve.onclick=async()=>{{const r=await fetch(\"{}\",{{method:\"POST\",headers:{{\"Content-Type\":\"application/json\"}},body:{},credentials:\"same-origin\"}});result.textContent=r.ok?\"Approved. You may close this page.\":\"Approval failed: \"+r.status;}};</script></body></html>",
+        html_escape(client_id),
+        html_escape(&scopes.join(" ")),
+        html_escape(user_code),
+        html_escape(approval_path),
+        approval_body,
+    )
 }
 
 pub async fn device_authorization_approve<R: Repository>(

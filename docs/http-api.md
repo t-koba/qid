@@ -51,6 +51,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `GET, PUT, DELETE` | configurable `dynamic_client_registration_management`, default `/oauth2/register/:client_id` | DCR management. |
 | `POST` | configurable `device_authorization`, default `/oauth2/device_authorization` | Device authorization. |
 | `POST` | `<device_authorization>/approve` | Device flow approval. |
+| `GET` | configurable `device_verification`, default `/oauth2/device` | Device verification interaction page. |
 | `POST` | configurable `backchannel_authentication`, default `/oauth2/backchannel-authentication` | CIBA back-channel authentication. |
 | `POST` | `<backchannel_authentication>/approve` | CIBA approval. |
 | `POST` | `/oauth2/challenge` | OAuth challenge helper. |

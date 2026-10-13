@@ -49,7 +49,7 @@ impl qid_core::jwt::Signer for TestSigner {
     }
 }
 
-async fn setup() -> anyhow::Result<(Router, String)> {
+async fn setup() -> anyhow::Result<(Router, String, Arc<FileRepository>)> {
     let path = std::env::temp_dir().join(format!("totp-flows-{}.json", ulid::Ulid::new()));
     let repo =
         Arc::new(FileRepository::new(path.to_str().context("store path must be UTF-8")?).await?);
@@ -82,7 +82,7 @@ async fn setup() -> anyhow::Result<(Router, String)> {
     let cookie = format!("{cookie_name}={}", session.id);
     let paths = qid_core::config::ServerPaths::default();
     let app = totp_routes(&paths).with_state(state);
-    Ok((app, cookie))
+    Ok((app, cookie, repo))
 }
 
 async fn post(
@@ -108,7 +108,7 @@ async fn post(
 
 #[tokio::test]
 async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyhow::Result<()> {
-    let (app, cookie) = setup().await?;
+    let (app, cookie, repo) = setup().await?;
     let (status, body) = post(
         app.clone(),
         "/api/v1/test/auth/totp/enroll",
@@ -157,7 +157,18 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["session_id"].as_str().is_some());
+    // TOTP-only sessions carry their own non-phishing-resistant ACR with an
+    // accurate method claim; exact-match essential-ACR enforcement elsewhere
+    // then refuses phishing-resistant requests for them.
+    let session_id = body["session_id"]
+        .as_str()
+        .context("authenticate must return session")?;
+    let session = repo
+        .get_session(session_id)
+        .await?
+        .context("session missing")?;
+    assert_eq!(session.acr.as_deref(), Some("urn:qid:acr:totp"));
+    assert_eq!(session.amr, vec!["totp".to_string()]);
 
     let (status, _) = post(
         app,
@@ -173,7 +184,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
 #[tokio::test]
 async fn totp_pending_credential_rejects_authentication_and_bad_confirmation() -> anyhow::Result<()>
 {
-    let (app, cookie) = setup().await?;
+    let (app, cookie, _repo) = setup().await?;
     let (status, body) = post(
         app.clone(),
         "/api/v1/test/auth/totp/enroll",

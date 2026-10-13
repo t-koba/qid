@@ -264,6 +264,14 @@ pub async fn webauthn_auth_start<R: Repository>(
     }
 }
 
+/// AMR a WebAuthn ceremony establishes. Attestation is not evaluated, so no
+/// credential carries trusted hardware classification: never claim `hwk`
+/// (RFC 8176 §2). Absence of hardware evidence is not evidence of
+/// software-only keys, so never claim `swk` either.
+fn webauthn_session_amr() -> Vec<String> {
+    vec!["phr".to_string()]
+}
+
 pub async fn webauthn_auth_finish<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
@@ -363,8 +371,8 @@ pub async fn webauthn_auth_finish<R: Repository>(
         .create_with_regeneration(
             &realm,
             &user.id,
-            "phr",                                   // ACR = phishing-resistant
-            &["phr".to_string(), "hwk".to_string()], // AMR
+            "phr", // ACR = phishing-resistant
+            &webauthn_session_amr(),
             old_session_id.as_deref(),
         )
         .await
@@ -551,7 +559,7 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
             &realm,
             &user.id,
             "phr",
-            &["phr".to_string(), "hwk".to_string()],
+            &webauthn_session_amr(),
             old_session_id.as_deref(),
         )
         .await
@@ -585,4 +593,21 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
     });
 
     (resp_headers, body).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::webauthn_session_amr;
+
+    #[test]
+    fn webauthn_session_amr_claims_no_hardware_key() {
+        // The provider copies session AMR into ID token claims, so this is a
+        // public assurance assertion: attestation-none credentials must not
+        // acquire `hwk` (or `swk`) on their way to tokens.
+        let amr = webauthn_session_amr();
+        assert!(
+            !amr.iter().any(|method| method == "hwk" || method == "swk"),
+            "unclassified credential claims hardware assurance: {amr:?}"
+        );
+    }
 }

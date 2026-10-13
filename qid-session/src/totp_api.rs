@@ -335,7 +335,9 @@ async fn totp_authenticate<R: Repository>(
         .create_with_regeneration(
             &realm,
             &user.id,
-            "phr",
+            // TOTP is not phishing-resistant (NIST SP 800-63B-4): TOTP-only
+            // sessions get their own ACR, never the WebAuthn `phr` label.
+            "urn:qid:acr:totp",
             &["totp".to_string()],
             old_session_id.as_deref(),
         )

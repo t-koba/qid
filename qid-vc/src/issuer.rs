@@ -83,6 +83,10 @@ pub struct CredentialResponse {
     pub format: CredentialFormat,
     /// Issuer-signed JWT containing the credential payload in the `vc` claim.
     pub credential: String,
+    /// Hidden claims with their disclosure salts, delivered only to the
+    /// holder. The credential itself carries commitments alone.
+    #[serde(default)]
+    pub disclosures: Vec<CredentialDisclosure>,
 }
 
 pub async fn issue_credential_from_bearer<R: Repository>(
@@ -178,7 +182,7 @@ pub async fn issue_credential_from_bearer<R: Repository>(
     let status_list_uri = request
         .status_list_uri
         .unwrap_or_else(|| state.plan.public_base_url.trim_end_matches('/').to_string());
-    let mut credential = issue_sd_jwt_credential(
+    let (mut credential, holder_disclosures) = issue_sd_jwt_credential(
         &state.plan.public_base_url,
         &decoded.user_id,
         claims,
@@ -219,6 +223,7 @@ pub async fn issue_credential_from_bearer<R: Repository>(
     Ok(CredentialResponse {
         format,
         credential: jwt,
+        disclosures: holder_disclosures,
     })
 }
 
@@ -277,6 +282,35 @@ pub fn credential_claims_for_user(
     Ok(claims)
 }
 
+/// Commitment for one selectively disclosed claim. The per-disclosure random
+/// salt keeps low-entropy values out of offline reach: verifiers learn it only
+/// from the holder at presentation time, never from the credential itself.
+pub fn sd_jwt_disclosure_hash(
+    salt: &str,
+    claim_name: &str,
+    claim_value: &Value,
+) -> QidResult<String> {
+    let disclosure = serde_json::json!([salt, claim_name, claim_value]);
+    let encoded = serde_json::to_vec(&disclosure)
+        .map_err(|err| internal_error(format!("Failed to encode SD-JWT disclosure: {err}")))?;
+    Ok(qid_core::util::sha256_base64url(encoded))
+}
+
+/// One hidden claim as delivered to the holder at issuance. The holder stores
+/// these alongside the credential and reveals them per claim at presentation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialDisclosure {
+    pub claim_name: String,
+    pub claim_value: Value,
+    pub salt: String,
+}
+
+fn new_disclosure_salt() -> String {
+    let mut salt_bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut salt_bytes);
+    qid_core::util::base64_url_encode(&salt_bytes)
+}
+
 pub fn issue_sd_jwt_credential(
     issuer: &str,
     subject: &str,
@@ -284,7 +318,7 @@ pub fn issue_sd_jwt_credential(
     selectively_disclosed_claims: &[String],
     lifetime_seconds: u64,
     status_list_uri: &str,
-) -> QidResult<SdJwtCredential> {
+) -> QidResult<(SdJwtCredential, Vec<CredentialDisclosure>)> {
     if lifetime_seconds == 0 {
         return Err(bad_request("Credential lifetime must be greater than zero"));
     }
@@ -295,21 +329,26 @@ pub fn issue_sd_jwt_credential(
         .collect();
     let mut visible_claims = BTreeMap::new();
     let mut disclosures = Vec::new();
+    let mut holder_disclosures = Vec::new();
     for (claim_name, claim_value) in claims {
         if disclosure_set.contains(claim_name.as_str()) {
-            let disclosure = serde_json::json!([claim_name, claim_value]);
-            let encoded = serde_json::to_vec(&disclosure).map_err(|err| {
-                internal_error(format!("Failed to encode SD-JWT disclosure: {err}"))
-            })?;
+            let salt = new_disclosure_salt();
+            let claim_value_hash = sd_jwt_disclosure_hash(&salt, &claim_name, &claim_value)?;
+            holder_disclosures.push(CredentialDisclosure {
+                claim_name: claim_name.clone(),
+                claim_value: claim_value.clone(),
+                salt,
+            });
             disclosures.push(SdJwtDisclosure {
                 claim_name,
-                claim_value_hash: qid_core::util::sha256_base64url(encoded),
+                claim_value_hash,
             });
         } else {
             visible_claims.insert(claim_name, claim_value);
         }
     }
     disclosures.sort_by(|a, b| a.claim_name.cmp(&b.claim_name));
+    holder_disclosures.sort_by(|a, b| a.claim_name.cmp(&b.claim_name));
 
     let issued_at = qid_core::util::now_seconds();
     // Physical bounds only: checked addition plus storage (i64)
@@ -324,7 +363,7 @@ pub fn issue_sd_jwt_credential(
     let mut id_bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut id_bytes);
     let credential_id = qid_core::util::base64_url_encode(&id_bytes);
-    Ok(SdJwtCredential {
+    let credential = SdJwtCredential {
         issuer: issuer.trim_end_matches('/').to_string(),
         subject: subject.to_string(),
         issued_at,
@@ -338,7 +377,8 @@ pub fn issue_sd_jwt_credential(
             revocation_reason: None,
         },
         holder_binding: None,
-    })
+    };
+    Ok((credential, holder_disclosures))
 }
 
 pub fn holder_binding_from_jwk(jwk: &Jwk) -> QidResult<CredentialHolderBinding> {
@@ -549,7 +589,7 @@ mod tests {
     fn issuance_identifiers_are_unique_per_issuance() {
         // Same subject, same second, different holders and lifetimes: the old
         // derived formula collided; independent randomness must not.
-        let first = issue_sd_jwt_credential(
+        let (first, _) = issue_sd_jwt_credential(
             "https://id.example.com",
             "user-1",
             test_claims(),
@@ -558,7 +598,7 @@ mod tests {
             "https://id.example.com",
         )
         .unwrap();
-        let second = issue_sd_jwt_credential(
+        let (second, _) = issue_sd_jwt_credential(
             "https://id.example.com",
             "user-1",
             test_claims(),
@@ -611,7 +651,7 @@ mod tests {
             )
             .is_err()
         );
-        let largest = issue_sd_jwt_credential(
+        let (largest, _) = issue_sd_jwt_credential(
             "https://id.example.com",
             "user-1",
             test_claims(),
@@ -621,5 +661,44 @@ mod tests {
         )
         .unwrap();
         assert!(largest.expires_at <= i64::MAX as u64);
+    }
+
+    #[test]
+    fn disclosure_commitments_are_salted_per_issuance() {
+        // Identical hidden values must produce independent commitments, and
+        // the holder disclosure must open its own commitment deterministically.
+        let (first, first_holder) = issue_sd_jwt_credential(
+            "https://id.example.com",
+            "user-1",
+            test_claims(),
+            &["email".to_string()],
+            900,
+            "https://id.example.com",
+        )
+        .unwrap();
+        let (second, second_holder) = issue_sd_jwt_credential(
+            "https://id.example.com",
+            "user-1",
+            test_claims(),
+            &["email".to_string()],
+            900,
+            "https://id.example.com",
+        )
+        .unwrap();
+        assert_ne!(first_holder[0].salt, second_holder[0].salt);
+        assert_ne!(
+            first.disclosures[0].claim_value_hash, second.disclosures[0].claim_value_hash,
+            "identical hidden values must commit independently"
+        );
+        let reopened = super::sd_jwt_disclosure_hash(
+            &second_holder[0].salt,
+            &second_holder[0].claim_name,
+            &second_holder[0].claim_value,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened, second.disclosures[0].claim_value_hash,
+            "holder disclosure must open its own commitment"
+        );
     }
 }

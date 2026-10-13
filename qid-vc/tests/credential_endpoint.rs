@@ -228,10 +228,11 @@ async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
         }),
     )
     .unwrap();
+    let email_salt = body["disclosures"][0]["salt"].as_str().unwrap();
     let verify_body = serde_json::json!({
         "credential": body["credential"].clone(),
         "disclosed_claims": {
-            "email": "vc@example.com"
+            "email": { "value": "vc@example.com", "salt": email_salt }
         },
         "required_claims": ["sub", "email"],
         "now_epoch_seconds": issued_at,
@@ -457,7 +458,7 @@ async fn credential_second_issuance_revokes_independently() {
         holder: &qid_crypto::jwk::GeneratedKeyPair,
         nonce: &str,
         lifetime_seconds: u64,
-    ) -> String {
+    ) -> (String, String) {
         let proof = credential_proof(&holder.private_pem, &holder.public_jwk, nonce);
         let request = Request::builder()
             .method(Method::POST)
@@ -481,7 +482,10 @@ async fn credential_second_issuance_revokes_independently() {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        body["credential"].as_str().unwrap().to_string()
+        (
+            body["credential"].as_str().unwrap().to_string(),
+            body["disclosures"][0]["salt"].as_str().unwrap().to_string(),
+        )
     }
 
     fn credential_id_of(state: &Arc<SharedState<SqlRepository>>, credential_jwt: &str) -> String {
@@ -496,7 +500,7 @@ async fn credential_second_issuance_revokes_independently() {
     let access_token = issue_identity_access_token(&state, &user).await;
     let first_holder = generate_es256("holder-first").unwrap();
     let second_holder = generate_es256("holder-second").unwrap();
-    let first_jwt = issue_credential(
+    let (first_jwt, _) = issue_credential(
         app.clone(),
         &access_token,
         &first_holder,
@@ -504,7 +508,7 @@ async fn credential_second_issuance_revokes_independently() {
         900,
     )
     .await;
-    let second_jwt = issue_credential(
+    let (second_jwt, second_salt) = issue_credential(
         app.clone(),
         &access_token,
         &second_holder,
@@ -557,7 +561,7 @@ async fn credential_second_issuance_revokes_independently() {
         .body(Body::from(
             serde_json::json!({
                 "credential": second_jwt,
-                "disclosed_claims": { "email": "vc@example.com" },
+                "disclosed_claims": { "email": { "value": "vc@example.com", "salt": second_salt } },
                 "required_claims": ["sub", "email"],
                 "presentation_proof": { "jwt": proof },
                 "expected_audience": "https://verifier.example",

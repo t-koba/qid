@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::issuer::{CredentialHolderBinding, SdJwtCredential, jwk_thumbprint};
-use crate::{bad_request, decode_base64url_json, error_response, internal_error};
+use crate::{bad_request, decode_base64url_json, error_response};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PresentationVerification {
@@ -93,15 +93,33 @@ pub fn verify_presentation(
             visible_claim_names.push(required.clone());
             continue;
         }
-        let Some(disclosed) = disclosed_claims.get(required) else {
+        let Some(presented) = disclosed_claims.get(required) else {
             return Err(bad_request(format!(
                 "Required claim is missing: {required}"
             )));
         };
-        let disclosure = serde_json::json!([required, disclosed]);
-        let encoded = serde_json::to_vec(&disclosure)
-            .map_err(|err| internal_error(format!("Failed to encode SD-JWT disclosure: {err}")))?;
-        let disclosed_hash = qid_core::util::sha256_base64url(encoded);
+        // Presentations carry value and salt together; a bare value can never
+        // satisfy a salted commitment, so guessing alone does not verify.
+        let presented_value = presented.get("value").ok_or_else(|| {
+            bad_request(format!(
+                "Required claim disclosure does not match credential: {required}"
+            ))
+        })?;
+        let presented_salt = presented
+            .get("salt")
+            .and_then(|salt| salt.as_str())
+            .ok_or_else(|| {
+                bad_request(format!(
+                    "Required claim disclosure does not match credential: {required}"
+                ))
+            })?;
+        let disclosed_hash =
+            crate::issuer::sd_jwt_disclosure_hash(presented_salt, required, presented_value)
+                .map_err(|_| {
+                    bad_request(format!(
+                        "Required claim disclosure does not match credential: {required}"
+                    ))
+                })?;
         let matches_disclosure = credential.disclosures.iter().any(|disclosure| {
             disclosure.claim_name == *required && disclosure.claim_value_hash == disclosed_hash
         });
@@ -110,7 +128,7 @@ pub fn verify_presentation(
                 "Required claim disclosure does not match credential: {required}"
             )));
         }
-        verified_claims.insert(required.clone(), disclosed.clone());
+        verified_claims.insert(required.clone(), presented_value.clone());
         disclosed_claim_names.push(required.clone());
     }
 

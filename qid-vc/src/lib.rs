@@ -32,9 +32,10 @@ pub use haip::{
     validate_haip_transaction_data,
 };
 pub use issuer::{
-    CredentialHolderBinding, CredentialRequest, CredentialResponse, SdJwtCredential,
-    SdJwtDisclosure, credential_claims_for_user, credential_status_record, holder_binding_from_jwk,
-    issue_credential_from_bearer, issue_sd_jwt_credential,
+    CredentialDisclosure, CredentialHolderBinding, CredentialRequest, CredentialResponse,
+    SdJwtCredential, SdJwtDisclosure, credential_claims_for_user, credential_status_record,
+    holder_binding_from_jwk, issue_credential_from_bearer, issue_sd_jwt_credential,
+    sd_jwt_disclosure_hash,
 };
 pub use mdoc::{
     DataElementIdentifier, MdocCertificate, MdocCertificateUsage, MdocDataElement,
@@ -307,7 +308,7 @@ mod tests {
             ("email".to_string(), json!("user@example.com")),
             ("groups".to_string(), json!(["engineering"])),
         ]);
-        let credential = issue_sd_jwt_credential(
+        let (credential, holder_disclosures) = issue_sd_jwt_credential(
             "https://issuer.example",
             "user-1",
             claims,
@@ -321,7 +322,38 @@ mod tests {
         assert!(!credential.visible_claims.contains_key("email"));
         assert_eq!(credential.disclosures.len(), 1);
 
-        let disclosed = BTreeMap::from([("email".to_string(), json!("user@example.com"))]);
+        // Guessing the value alone (or with the wrong salt) never verifies.
+        let guessed = BTreeMap::from([("email".to_string(), json!("user@example.com"))]);
+        assert!(
+            verify_presentation(
+                &credential,
+                &guessed,
+                &["sub".to_string(), "email".to_string()],
+                credential.issued_at,
+            )
+            .is_err()
+        );
+        let wrong_salt = BTreeMap::from([(
+            "email".to_string(),
+            json!({"value": "user@example.com", "salt": "AAAAAAAAAAAAAAAAAAAAAA"}),
+        )]);
+        assert!(
+            verify_presentation(
+                &credential,
+                &wrong_salt,
+                &["sub".to_string(), "email".to_string()],
+                credential.issued_at,
+            )
+            .is_err()
+        );
+
+        let disclosed = BTreeMap::from([(
+            "email".to_string(),
+            json!({
+                "value": holder_disclosures[0].claim_value,
+                "salt": holder_disclosures[0].salt,
+            }),
+        )]);
         let verification = verify_presentation(
             &credential,
             &disclosed,
@@ -355,7 +387,7 @@ mod tests {
     #[test]
     fn revoked_credential_rejects_presentation() {
         let claims = BTreeMap::from([("sub".to_string(), json!("user-1"))]);
-        let mut credential = issue_sd_jwt_credential(
+        let (mut credential, _) = issue_sd_jwt_credential(
             "https://issuer.example",
             "user-1",
             claims,
@@ -385,7 +417,7 @@ mod tests {
         let key = generate_es256("holder").unwrap();
         let binding = holder_binding_from_jwk(&key.public_jwk).unwrap();
         let claims = BTreeMap::from([("sub".to_string(), json!("user-1"))]);
-        let mut credential = issue_sd_jwt_credential(
+        let (mut credential, _) = issue_sd_jwt_credential(
             "https://issuer.example",
             "user-1",
             claims,

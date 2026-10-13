@@ -312,6 +312,13 @@ pub fn issue_sd_jwt_credential(
     disclosures.sort_by(|a, b| a.claim_name.cmp(&b.claim_name));
 
     let issued_at = qid_core::util::now_seconds();
+    // Physical bounds only: checked addition plus storage (i64)
+    // representability. No policy ceiling is hardcoded here; the default
+    // lifetime stays 3600 at the issuance call site.
+    let expires_at = issued_at
+        .checked_add(lifetime_seconds)
+        .filter(|expires_at| *expires_at <= i64::MAX as u64)
+        .ok_or_else(|| bad_request("Credential lifetime is out of range"))?;
     // Independent unique identifier: never derived from claims or time, so
     // separate issuances (and retries) never collide or alias revocation.
     let mut id_bytes = [0u8; 16];
@@ -321,7 +328,7 @@ pub fn issue_sd_jwt_credential(
         issuer: issuer.trim_end_matches('/').to_string(),
         subject: subject.to_string(),
         issued_at,
-        expires_at: issued_at + lifetime_seconds,
+        expires_at,
         visible_claims,
         disclosures,
         status: CredentialStatus {
@@ -409,7 +416,9 @@ fn verify_credential_issuance_proof(
             message: "Credential proof cnf does not match holder binding".to_string(),
         });
     }
-    if claims.iat > now_epoch_seconds + 60 || claims.iat + 300 < now_epoch_seconds {
+    if claims.iat > now_epoch_seconds.saturating_add(60)
+        || claims.iat < now_epoch_seconds.saturating_sub(300)
+    {
         return Err(QidError::BadRequest {
             message: "Credential proof is outside the accepted time window".to_string(),
         });
@@ -563,5 +572,54 @@ mod tests {
             "separate issuances must not share an identifier"
         );
         assert_eq!(second.expires_at - second.issued_at, 3600);
+    }
+
+    #[test]
+    fn issuance_rejects_unrepresentable_lifetimes() {
+        // Zero is rejected; normal lifetimes pass; u64::MAX overflows checked
+        // addition; lifetimes pushing expiry past i64::MAX are not storable.
+        assert!(
+            issue_sd_jwt_credential(
+                "https://id.example.com",
+                "user-1",
+                test_claims(),
+                &[],
+                0,
+                "https://id.example.com",
+            )
+            .is_err()
+        );
+        assert!(
+            issue_sd_jwt_credential(
+                "https://id.example.com",
+                "user-1",
+                test_claims(),
+                &[],
+                u64::MAX,
+                "https://id.example.com",
+            )
+            .is_err()
+        );
+        assert!(
+            issue_sd_jwt_credential(
+                "https://id.example.com",
+                "user-1",
+                test_claims(),
+                &[],
+                i64::MAX as u64,
+                "https://id.example.com",
+            )
+            .is_err()
+        );
+        let largest = issue_sd_jwt_credential(
+            "https://id.example.com",
+            "user-1",
+            test_claims(),
+            &[],
+            i64::MAX as u64 - qid_core::util::now_seconds() - 3600,
+            "https://id.example.com",
+        )
+        .unwrap();
+        assert!(largest.expires_at <= i64::MAX as u64);
     }
 }

@@ -275,7 +275,9 @@ pub fn verify_presentation_proof(
             message: "Presentation proof jti is required".to_string(),
         });
     }
-    if claims.iat > now_epoch_seconds + 60 || claims.iat + 300 < now_epoch_seconds {
+    if claims.iat > now_epoch_seconds.saturating_add(60)
+        || claims.iat < now_epoch_seconds.saturating_sub(300)
+    {
         return Err(QidError::BadRequest {
             message: "Presentation proof is outside the accepted time window".to_string(),
         });

@@ -569,3 +569,30 @@ async fn credential_second_issuance_revokes_independently() {
     let verify_response = app.clone().oneshot(verify_request).await.unwrap();
     assert_eq!(verify_response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn credential_issuance_rejects_overflowing_lifetime() {
+    let (app, state, user) = setup().await;
+    let access_token = issue_identity_access_token(&state, &user).await;
+    let holder = generate_es256("holder-overflow").unwrap();
+    let proof = credential_proof(&holder.private_pem, &holder.public_jwk, "nonce-overflow");
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/vc/v1/credential")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "credential_configuration_id": "qid_identity_sd_jwt",
+                "claims": ["sub"],
+                "lifetime_seconds": u64::MAX,
+                "holder_jwk": holder.public_jwk,
+                "proof": { "jwt": proof },
+                "nonce": "nonce-overflow"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

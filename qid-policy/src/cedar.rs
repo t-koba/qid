@@ -66,7 +66,14 @@ impl PolicyEngine for CedarPolicyEngine {
         );
         let mut request = client.post(&url).json(&input);
         request = request.header(QID_CEDAR_VERSION_HEADER, CEDAR_LANGUAGE_VERSION);
-        match request.send().await {
+        // A failed upstream response is not an authorization decision: reject
+        // non-success statuses before trusting the body, so an error payload
+        // carrying an allow shape can never become an allow.
+        let outcome = match request.send().await {
+            Ok(resp) => resp.error_for_status(),
+            Err(e) => Err(e),
+        };
+        match outcome {
             Ok(resp) => {
                 let agent_version = resp
                     .headers()
@@ -108,6 +115,7 @@ impl PolicyEngine for CedarPolicyEngine {
             Err(e) => DecisionDetails {
                 decision: Decision::Deny,
                 policy_id: "cedar-error".to_string(),
+                policy_tags: vec!["qid:cedar:error".to_string()],
                 trace: vec![format!("Cedar adapter error: {e}")],
                 ..DecisionDetails::default()
             },

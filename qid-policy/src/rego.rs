@@ -67,7 +67,14 @@ impl PolicyEngine for RegoPolicyEngine {
         );
         let mut request = client.post(&url).json(&input);
         request = request.header(QID_REGO_VERSION_HEADER, REGO_LANGUAGE_VERSION);
-        match request.send().await {
+        // A failed upstream response is not an authorization decision: reject
+        // non-success statuses before trusting the body, so an error payload
+        // carrying an allow shape can never become an allow.
+        let outcome = match request.send().await {
+            Ok(resp) => resp.error_for_status(),
+            Err(e) => Err(e),
+        };
+        match outcome {
             Ok(resp) => {
                 let agent_version = resp
                     .headers()

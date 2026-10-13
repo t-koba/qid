@@ -1,15 +1,12 @@
 use super::*;
 
 #[derive(Debug, Deserialize)]
+/// Review evidence comes from stored grants and findings only. Assignments
+/// and dormant/orphan subjects are repository-derived; caller-supplied
+/// values are not accepted here and unknown body fields are ignored.
 pub(super) struct AccessReviewRequest {
     #[serde(default)]
     tenant_id: Option<String>,
-    #[serde(default)]
-    assignments: HashMap<String, Vec<String>>,
-    #[serde(default)]
-    dormant_subjects: Vec<String>,
-    #[serde(default)]
-    orphan_subjects: Vec<String>,
     #[serde(default)]
     due_in_seconds: Option<u64>,
 }
@@ -37,11 +34,6 @@ pub(super) async fn create_access_review<R: Repository>(
             Ok(subjects) => subjects,
             Err(error) => return storage_error_response("list_iga_findings", error),
         };
-    let _ = (
-        &req.assignments,
-        &req.dormant_subjects,
-        &req.orphan_subjects,
-    );
     let campaign = build_access_review_campaign(
         ulid::Ulid::new().to_string(),
         admin.subject.clone(),

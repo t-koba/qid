@@ -244,7 +244,7 @@ Workload and SPIFFE routes are only merged in the `workload` profile.
 | `POST` | `/iga/v1/access-grants/:id/revoke` | Revoke grant. |
 | `GET, POST` | `/iga/v1/jit-privileges` | List/issue JIT privilege. |
 | `POST` | `/iga/v1/jit-privileges/:id/revoke` | Revoke JIT privilege. |
-| `GET, POST` | `/iga/v1/access-reviews` | List/create access review. |
+| `GET, POST` | `/iga/v1/access-reviews` | Create access review from stored grants and findings; caller evidence fields are ignored. |
 | `POST` | `/iga/v1/access-reviews/:id/close` | Close access review. |
 | `GET, POST` | `/iga/v1/access-reviews/:id/decisions` | List/create review decisions. |
 | `GET, POST` | `/iga/v1/certifications` | List/create certifications. |

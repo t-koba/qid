@@ -1491,14 +1491,15 @@ async fn access_review_route_builds_persists_lists_and_closes_campaign() {
     })
     .await
     .expect("store review campaign source finding failed");
+    // Spoofed evidence must not leak into the campaign: assignments and
+    // dormant/orphan subjects are repository-derived, unknown fields ignored.
     let payload = serde_json::json!({
         "reviewer": "auditor-1",
         "assignments": {
-            "user-1": ["app:erp:admin", "app:erp:audit"],
-            "user-2": ["app:erp:read"]
+            "ghost-user": ["app:erp:admin"]
         },
-        "dormant_subjects": ["user-2"],
-        "orphan_subjects": ["user-1"],
+        "dormant_subjects": ["ghost-user"],
+        "orphan_subjects": ["ghost-user"],
         "due_in_seconds": 86400
     });
 
@@ -1510,6 +1511,14 @@ async fn access_review_route_builds_persists_lists_and_closes_campaign() {
     assert_eq!(body["subjects"].as_array().unwrap().len(), 2);
     assert_eq!(body["subjects"][0]["subject"], "user-1");
     assert_eq!(body["subjects"][0]["recommendation"], "revoke");
+    assert!(
+        body["subjects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|subject| subject["subject"] != "ghost-user"),
+        "spoofed assignments must not create campaign subjects"
+    );
 
     let stored = repo
         .get_iga_access_review_campaign("test", campaign_id)

@@ -337,7 +337,8 @@ pub async fn refresh_token_grant<R: Repository>(
     // so foreign attempts cannot consume or revoke the owner's family.
     let refresh_aud = claims
         .aud
-        .as_deref()
+        .as_ref()
+        .and_then(qid_core::jwt::Audience::primary)
         .ok_or_else(|| QidError::Unauthorized {
             message: "refresh token missing aud claim".to_string(),
         })?;
@@ -633,7 +634,7 @@ mod tests {
         tenant::{RealmId, TenantId},
         test_helpers, util,
     };
-    use qid_crypto::{JwtClaims, LocalSigner};
+    use qid_crypto::{Audience, JwtClaims, LocalSigner};
     use qid_storage::FileRepository;
     use qid_storage::prelude::*;
 
@@ -708,7 +709,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("https://id.example.com".to_string()),
             sub: Some(user_id.to_string()),
-            aud: Some(client_id.to_string()),
+            aud: Some(Audience::single(client_id.to_string())),
             exp: Some((now + 3600) as usize),
             nbf: Some(now as usize),
             iat: Some(now as usize),
@@ -932,7 +933,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("https://id.example.com".to_string()),
             sub: Some(user.id.clone()),
-            aud: Some("reuse-client".to_string()),
+            aud: Some(Audience::single("reuse-client".to_string())),
             exp: Some((now + 3600) as usize),
             nbf: Some(now as usize),
             iat: Some(now as usize),

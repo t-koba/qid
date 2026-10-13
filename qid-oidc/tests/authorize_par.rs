@@ -8,7 +8,7 @@ use axum::{
 use http_body_util::BodyExt;
 use qid_core::{
     config::{OAuthResourceServerConfig, QidConfig},
-    jwt::JwtClaims,
+    jwt::{Audience, JwtClaims},
     models::{
         AccessToken, Admin, AdminElevation, Client, ClientType, ParRequest, PasswordCredential,
         Session, TokenFormat, User,
@@ -971,7 +971,7 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
         .sign(&JwtClaims {
             iss: Some("https://id.example.com/realms/test".to_string()),
             sub: Some("ssf-admin".to_string()),
-            aud: Some("qid-ssf-admin".to_string()),
+            aud: Some(Audience::single("qid-ssf-admin")),
             exp: Some((admin_now + 300) as usize),
             nbf: None,
             iat: Some(admin_now as usize),
@@ -1324,7 +1324,7 @@ async fn authorize_can_return_signed_jarm_response() {
         .decode_signature_only(&response)
         .unwrap()
         .claims;
-    assert_eq!(response_claims.aud, Some("par-client".to_string()));
+    assert_eq!(response_claims.aud, Some(Audience::single("par-client")));
     assert_eq!(response_claims.extra["state"], "state-from-jarm");
     let code = response_claims.extra["code"].as_str().unwrap();
     assert!(code.starts_with("ac_"));

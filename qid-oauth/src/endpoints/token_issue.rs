@@ -6,7 +6,7 @@ use qid_core::{
     models::{AccessToken, TokenFamily, TokenFormat, User},
     state::SharedState,
 };
-use qid_crypto::{JwtClaims, TokenPair};
+use qid_crypto::{Audience, JwtClaims, TokenPair};
 use qid_storage::prelude::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -181,15 +181,16 @@ pub fn sign_access_token<R: Repository>(
         extra.insert("act".to_string(), act.clone());
     }
 
-    let audience = claims
+    // Sign every resolved audience: array form when several, so each named
+    // resource server can validate the token locally.
+    let audiences = claims
         .audience
-        .and_then(|value| value.first())
-        .cloned()
-        .unwrap_or_else(|| client_id.to_string());
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| vec![client_id.to_string()]);
     let claims = JwtClaims {
         iss: Some(issuer.to_string()),
         sub: Some(user.id.clone()),
-        aud: Some(audience),
+        aud: Audience::from_values(audiences),
         exp: Some((now + token_ttl(state, realm_id).access_token_ttl_seconds) as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),
@@ -312,7 +313,7 @@ pub fn sign_refresh_token<R: Repository>(
     let claims = JwtClaims {
         iss: Some(issuer.to_string()),
         sub: Some(user.id.clone()),
-        aud: Some(client_id.to_string()),
+        aud: Some(Audience::single(client_id.to_string())),
         exp: Some((now + token_ttl(state, realm_id).refresh_token_ttl_seconds) as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),
@@ -380,7 +381,7 @@ pub fn issue_id_token<R: Repository>(
     let claims = JwtClaims {
         iss: Some(issuer.to_string()),
         sub: Some(sub.to_string()),
-        aud: Some(client_id.to_string()),
+        aud: Some(Audience::single(client_id.to_string())),
         exp: Some((now + token_ttl(state, realm_id).id_token_ttl_seconds) as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),

@@ -4,7 +4,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use qid_core::{
-    jwt::{JwtClaims, Signer},
+    jwt::{Audience, JwtClaims, Signer},
     models::{WorkloadCertificate, WorkloadIdentity},
     state::SharedState,
     test_helpers,
@@ -72,7 +72,7 @@ async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>, String) {
         .sign(&JwtClaims {
             iss: Some("https://id.example.com".to_string()),
             sub: Some(WORKLOAD_SPIFFE_ID.to_string()),
-            aud: Some("qid-workload-api".to_string()),
+            aud: Some(Audience::single("qid-workload-api".to_string())),
             exp: Some((now + 3600) as usize),
             nbf: Some((now - 10) as usize),
             iat: Some(now as usize),
@@ -135,7 +135,7 @@ async fn setup_with_workload_ca() -> (axum::Router, Arc<SharedState<SqlRepositor
         .sign(&JwtClaims {
             iss: Some("https://id.example.com".to_string()),
             sub: Some(WORKLOAD_SPIFFE_ID.to_string()),
-            aud: Some("qid-workload-api".to_string()),
+            aud: Some(Audience::single("qid-workload-api".to_string())),
             exp: Some((now + 3600) as usize),
             nbf: Some((now - 10) as usize),
             iat: Some(now as usize),
@@ -185,7 +185,7 @@ fn provisioning_token(
         .sign(&JwtClaims {
             iss: Some("https://id.example.com".to_string()),
             sub: Some(spiffe_id.to_string()),
-            aud: Some("qid-workload-provisioning".to_string()),
+            aud: Some(Audience::single("qid-workload-provisioning".to_string())),
             exp: Some((now + 3600) as usize),
             nbf: Some((now - 10) as usize),
             iat: Some(now as usize),

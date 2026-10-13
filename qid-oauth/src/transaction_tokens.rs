@@ -54,7 +54,7 @@ impl TransactionToken {
         let claims = qid_core::jwt::JwtClaims {
             iss: Some(self.iss.clone()),
             sub: Some(self.sub.clone()),
-            aud: Some(self.aud.clone()),
+            aud: Some(qid_core::jwt::Audience::single(self.aud.clone())),
             exp: Some(self.exp as usize),
             nbf: Some(self.iat as usize),
             iat: Some(self.iat as usize),

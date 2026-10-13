@@ -142,7 +142,7 @@ async fn fedcm_token_is_signed_for_approved_client() {
         .expect("FedCM token should verify")
         .claims;
     assert_eq!(claims.sub.as_deref(), Some("acct-1"));
-    assert_eq!(claims.aud.as_deref(), Some("rp-client"));
+    assert_eq!(claims.aud_primary(), Some("rp-client"));
     assert_eq!(claims.extra["email"], "user@example.com");
     assert_eq!(claims.extra["typ"], "fedcm");
 }

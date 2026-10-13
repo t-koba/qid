@@ -7,7 +7,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use qid_core::{
     error::{QidError, QidResult},
-    jwt::JwtClaims,
+    jwt::{Audience, JwtClaims},
     models::{Client, ClientType},
     state::SharedState,
     tenant::RealmId,
@@ -144,7 +144,7 @@ pub async fn dynamic_client_registration<R: Repository>(
                 state.paths.dynamic_client_registration
             );
             if let Some(aud) = &data.claims.aud {
-                if *aud != dcr_url {
+                if !aud.contains(&dcr_url) {
                     return qid_http::error_response(QidError::Unauthorized {
                         message: "initial access token audience mismatch".to_string(),
                     });
@@ -364,7 +364,7 @@ fn sign_dcr_registration_access_token<R: Repository>(
     let claims = JwtClaims {
         iss: Some(issuer.to_string()),
         sub: Some(client_id.to_string()),
-        aud: Some(registration_client_uri.to_string()),
+        aud: Some(Audience::single(registration_client_uri.to_string())),
         exp: Some((now + 3600) as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),
@@ -606,7 +606,7 @@ fn validate_dcr_registration_access_token<R: Repository>(
         });
     }
     let expected_audience = dcr_registration_client_uri(state, client_id);
-    if claims.aud.as_deref() != Some(expected_audience.as_str()) {
+    if !claims.aud_contains(&expected_audience) {
         return Err(QidError::Unauthorized {
             message: "registration access token audience mismatch".to_string(),
         });

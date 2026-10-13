@@ -577,6 +577,7 @@ mod tests {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::ecdsa::{Signature as Es256Signature, SigningKey as Es256SigningKey};
     use p256::pkcs8::DecodePrivateKey;
+    use qid_core::jwt::Audience;
     use std::sync::Mutex;
 
     struct JwtRecordingRemoteSigner {
@@ -666,7 +667,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("issuer".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(0),
             iat: Some(0),
@@ -681,6 +682,70 @@ mod tests {
             .decode_signature_only(&token)
             .expect("decoding failed");
         assert_eq!(decoded.claims.sub, Some("subject".to_string()));
+    }
+
+    #[test]
+    fn multi_audience_tokens_validate_for_every_named_audience() {
+        use qid_core::jwt::Signer;
+        let key = generate_es256("multi-aud").expect("key generation failed");
+        let signer = LocalSigner::from_ec_pem("multi-aud", key.private_pem.as_bytes()).unwrap();
+        let claims = JwtClaims {
+            iss: Some("https://issuer.example.com".to_string()),
+            sub: Some("subject".to_string()),
+            aud: Audience::from_values(vec!["api://one".to_string(), "api://two".to_string()]),
+            exp: Some(2_000_000_000),
+            nbf: Some(1_000_000_000),
+            iat: Some(1_000_000_000),
+            jti: Some("jti".to_string()),
+            extra: HashMap::new(),
+        };
+        let token = signer.sign(&claims).expect("signing failed");
+
+        // Array form on the wire, typed form after decoding.
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(parts[1])
+                .expect("payload must decode"),
+        )
+        .expect("payload must be JSON");
+        assert_eq!(
+            payload["aud"],
+            serde_json::json!(["api://one", "api://two"])
+        );
+        let decoded = signer
+            .decode_signature_only(&token)
+            .expect("decoding failed");
+        assert_eq!(
+            decoded.claims.aud,
+            Audience::from_values(vec!["api://one".to_string(), "api://two".to_string()])
+        );
+        assert_eq!(decoded.claims.audiences(), vec!["api://one", "api://two"]);
+
+        // Either named resource server validates locally; others do not.
+        assert!(signer.decode_with_aud(&token, "api://one").is_ok());
+        assert!(signer.decode_with_aud(&token, "api://two").is_ok());
+        assert!(signer.decode_with_aud(&token, "api://other").is_err());
+    }
+
+    #[test]
+    fn audience_helpers_cover_single_multiple_and_empty() {
+        assert_eq!(Audience::from_values(vec![]), None);
+        assert_eq!(
+            Audience::from_values(vec!["a".to_string()]),
+            Some(Audience::Single("a".to_string()))
+        );
+        let multi = Audience::from_values(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            multi,
+            Some(Audience::Multiple(vec!["a".to_string(), "b".to_string()]))
+        );
+        let multi = multi.unwrap();
+        assert!(multi.contains("b"));
+        assert!(!multi.contains("c"));
+        assert_eq!(multi.primary(), Some("a"));
+        assert!(Audience::single("a").contains("a"));
     }
 
     #[test]
@@ -755,7 +820,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("issuer".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(0),
             iat: Some(0),
@@ -779,7 +844,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("issuer".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(0),
             iat: Some(0),
@@ -799,7 +864,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("https://issuer.example.com".to_string()),
             sub: Some("user-123".to_string()),
-            aud: Some("client-app".to_string()),
+            aud: Some(Audience::single("client-app".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(1_000_000_000),
             iat: Some(1_000_000_000),
@@ -828,7 +893,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("https://issuer.example.com".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(1_000_000_000),
             iat: Some(1_000_000_000),
@@ -900,7 +965,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("https://issuer.example.com".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(1_000_000_000),
             iat: Some(1_000_000_000),
@@ -928,7 +993,7 @@ mod tests {
         let base = JwtClaims {
             iss: Some("https://issuer.example.com".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(1_000_000_000),
             iat: Some(1_000_000_000),
@@ -961,7 +1026,7 @@ mod tests {
         assert!(signer.decode_signature_only(&nbf_token).is_ok());
 
         let other_aud = JwtClaims {
-            aud: Some("other-audience".to_string()),
+            aud: Some(Audience::single("other-audience".to_string())),
             ..base.clone()
         };
         let aud_token = signer.sign(&other_aud).expect("signing failed");
@@ -981,7 +1046,7 @@ mod tests {
         let base = JwtClaims {
             iss: Some("https://issuer.example.com".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(1_000_000_000),
             iat: Some(1_000_000_000),
@@ -1014,7 +1079,7 @@ mod tests {
         assert!(signer.decode_signature_only(&nbf_token).is_ok());
 
         let other_aud = JwtClaims {
-            aud: Some("other-audience".to_string()),
+            aud: Some(Audience::single("other-audience".to_string())),
             ..base.clone()
         };
         let aud_token = signer.sign(&other_aud).expect("signing failed");
@@ -1090,7 +1155,7 @@ y5ikf4X4Fzgi7litiqbK6BLJMdHl8WSvi5OVAasiPBrb9kccT/Iy6HHG2WXD/VQ6
         let claims = JwtClaims {
             iss: Some("issuer".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: Some(0),
             iat: Some(0),

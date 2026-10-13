@@ -4,6 +4,59 @@ pub use jsonwebtoken::TokenData;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// JWT audience in either compact form: a single string for one audience
+/// (RFC 7519 §4.1.3 `StringOrURI`), or an array for several. Array form is
+/// required whenever a token names more than one audience — truncating to the
+/// first would leave the other resource servers unable to validate it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Audience {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl Audience {
+    /// A single audience value.
+    pub fn single(value: impl Into<String>) -> Self {
+        Audience::Single(value.into())
+    }
+
+    /// Build from resolved audiences: empty omits the claim, one stays a
+    /// string, several serialize as an array.
+    pub fn from_values(values: Vec<String>) -> Option<Self> {
+        match values.len() {
+            0 => None,
+            1 => Some(Audience::Single(
+                values.into_iter().next().unwrap_or_default(),
+            )),
+            _ => Some(Audience::Multiple(values)),
+        }
+    }
+
+    /// Whether `audience` is among the named audiences.
+    pub fn contains(&self, audience: &str) -> bool {
+        match self {
+            Audience::Single(value) => value == audience,
+            Audience::Multiple(values) => values.iter().any(|value| value == audience),
+        }
+    }
+
+    /// The first (primary) audience, if any.
+    pub fn primary(&self) -> Option<&str> {
+        match self {
+            Audience::Single(value) => Some(value),
+            Audience::Multiple(values) => values.first().map(String::as_str),
+        }
+    }
+
+    /// Consume an audience claim into its primary value. Struct literals that
+    /// move the claim alongside sibling fields use this instead of borrowing
+    /// the whole claims value.
+    pub fn primary_string(aud: Option<Self>) -> Option<String> {
+        aud.and_then(|aud| aud.primary().map(str::to_string))
+    }
+}
+
 /// Claims used for qid-issued JWTs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtClaims {
@@ -12,7 +65,7 @@ pub struct JwtClaims {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub aud: Option<String>,
+    pub aud: Option<Audience>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exp: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -23,6 +76,28 @@ pub struct JwtClaims {
     pub jti: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl JwtClaims {
+    /// All audiences named by the token, empty when absent.
+    pub fn audiences(&self) -> Vec<&str> {
+        match &self.aud {
+            None => Vec::new(),
+            Some(Audience::Single(value)) => vec![value],
+            Some(Audience::Multiple(values)) => values.iter().map(String::as_str).collect(),
+        }
+    }
+
+    /// Whether `audience` is among the token audiences.
+    pub fn aud_contains(&self, audience: &str) -> bool {
+        self.aud.as_ref().is_some_and(|aud| aud.contains(audience))
+    }
+
+    /// The first (primary) audience, if any. Single-audience tokens round
+    /// through here unchanged.
+    pub fn aud_primary(&self) -> Option<&str> {
+        self.aud.as_ref().and_then(Audience::primary)
+    }
 }
 
 /// Token signer abstraction.

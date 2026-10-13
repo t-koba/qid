@@ -6,7 +6,11 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use qid_core::{jwt::JwtClaims, state::SharedState, tenant::RealmId};
+use qid_core::{
+    jwt::{Audience, JwtClaims},
+    state::SharedState,
+    tenant::RealmId,
+};
 use qid_storage::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -154,7 +158,7 @@ pub async fn generate_fedcm_token<R: Repository>(
     let claims = JwtClaims {
         iss: Some(issuer),
         sub: Some(identity.account_id.clone()),
-        aud: Some(req.client_id.clone()),
+        aud: Some(Audience::single(req.client_id.clone())),
         exp: Some((now + 3600) as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),

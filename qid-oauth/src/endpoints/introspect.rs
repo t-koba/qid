@@ -9,7 +9,7 @@ use axum::{
 use qid_core::{
     config::{OAuthResourceServerConfig, RealmConfig},
     error::{QidError, QidResult},
-    jwt::JwtClaims,
+    jwt::{Audience, JwtClaims},
     models::{Client, ClientType, TokenFormat},
     state::SharedState,
     tenant::RealmId,
@@ -504,7 +504,9 @@ fn sign_introspection_response<R: Repository>(
     let claims = JwtClaims {
         iss: Some(issuer),
         sub: Some(decoded.user_id.clone()),
-        aud: Some(audience.unwrap_or(&decoded.client_id).to_string()),
+        aud: Some(Audience::single(
+            audience.unwrap_or(&decoded.client_id).to_string(),
+        )),
         exp: Some(decoded.exp as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),

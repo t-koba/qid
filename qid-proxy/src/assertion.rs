@@ -223,7 +223,7 @@ async fn do_issue_assertion<R: Repository>(
     let claims = JwtClaims {
         iss: Some(realm.issuer.clone()),
         sub: Some(user.id.clone()),
-        aud: Some(audience),
+        aud: Some(qid_core::jwt::Audience::single(audience)),
         exp: Some(exp as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),

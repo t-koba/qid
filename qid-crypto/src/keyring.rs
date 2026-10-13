@@ -542,7 +542,7 @@ fn config_error(message: impl Into<String>) -> QidError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qid_core::jwt::{JwtClaims, Signer};
+    use qid_core::jwt::{Audience, JwtClaims, Signer};
     use std::collections::HashMap;
 
     struct RecordingRemoteSigner {
@@ -643,7 +643,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("issuer".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: None,
             iat: None,
@@ -695,7 +695,7 @@ mod tests {
         let claims = JwtClaims {
             iss: Some("issuer".to_string()),
             sub: Some("subject".to_string()),
-            aud: Some("audience".to_string()),
+            aud: Some(Audience::single("audience".to_string())),
             exp: Some(2_000_000_000),
             nbf: None,
             iat: None,

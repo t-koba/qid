@@ -39,5 +39,5 @@ pub use password::{
     encode_pbkdf2_sha256_hash, hash_password, hash_password_with_pepper,
     plan_password_import_migration, verify_password, verify_password_credential,
 };
-pub use qid_core::jwt::{JwtClaims, Signer, TokenData};
+pub use qid_core::jwt::{Audience, JwtClaims, Signer, TokenData};
 pub use totp::TotpVerifier;

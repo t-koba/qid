@@ -10,7 +10,7 @@ use axum::{
 };
 use qid_core::{
     error::{QidError, QidResult},
-    jwt::JwtClaims,
+    jwt::{Audience, JwtClaims},
     models::{AuthorizationCode, Client},
     state::SharedState,
     tenant::RealmId,
@@ -1249,7 +1249,7 @@ fn sign_jarm_response<R: Repository>(
         .sign(&JwtClaims {
             iss: Some(issuer.clone()),
             sub: None,
-            aud: Some(req.client_id.clone()),
+            aud: Some(Audience::single(req.client_id.clone())),
             exp: Some((now + 60) as usize),
             nbf: Some(now as usize),
             iat: Some(now as usize),

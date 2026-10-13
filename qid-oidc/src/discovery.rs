@@ -11,7 +11,7 @@ use axum::{
 use qid_core::{
     config::{OAuthProtocolConfig, OAuthResourceServerConfig, OidcProtocolConfig, ServerPaths},
     error::{QidError, QidResult},
-    jwt::JwtClaims,
+    jwt::{Audience, JwtClaims},
     models::Client,
     state::SharedState,
     tenant::RealmId,
@@ -39,7 +39,7 @@ async fn build_logout_token<R: Repository>(
     let claims = JwtClaims {
         iss: Some(issuer.to_string()),
         sub: user.as_ref().map(|u| u.id.clone()),
-        aud: Some(client.client_id.clone()),
+        aud: Some(Audience::single(client.client_id.clone())),
         exp: Some(now + 300), // 5 minutes
         nbf: Some(now),
         iat: Some(now),
@@ -867,7 +867,7 @@ async fn logout<R: Repository>(
                 }
                 // Validate aud if client_id is provided
                 if let Some(ref client_id) = form.client_id
-                    && claims.aud.as_deref() != Some(client_id)
+                    && !claims.aud_contains(client_id)
                 {
                     return qid_http::error_response(QidError::BadRequest {
                         message: "id_token_hint aud does not match client_id".to_string(),
@@ -1132,14 +1132,15 @@ async fn backchannel_logout<R: Repository>(
 
     // The logout_token's `aud` MUST identify a registered client of this OP.
     let mut aud_known = false;
-    if let Some(aud) = claims.aud.as_deref() {
-        aud_known = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(logout_realm.id.clone()), aud)
-            .await
-            .ok()
-            .flatten()
-            .is_some();
+    for aud in claims.audiences() {
+        aud_known = aud_known
+            || state
+                .repo
+                .get_client_by_client_id(&RealmId::from(logout_realm.id.clone()), aud)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
     }
     if !aud_known {
         return qid_http::oauth_error_response_with_description(

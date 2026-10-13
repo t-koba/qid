@@ -16,7 +16,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use qid_core::{
     error::{QidError, QidResult},
     event::{Event, EventBus, EventKind, GLOBAL_EVENT_BUS},
-    jwt::JwtClaims,
+    jwt::{Audience, JwtClaims},
     state::SharedState,
     util,
 };
@@ -175,7 +175,7 @@ async fn publish_scim_set_event<R: Repository>(
                 &JwtClaims {
                     iss: Some(realm.issuer.clone()),
                     sub: Some("qid-scim".to_string()),
-                    aud: Some(subscription.callback_url.clone()),
+                    aud: Some(Audience::single(subscription.callback_url.clone())),
                     exp: Some((now + 300) as usize),
                     nbf: Some(now as usize),
                     iat: Some(now as usize),
@@ -1040,7 +1040,7 @@ fn verify_security_event_token_for_stream(
         iss: claims.iss.unwrap_or_default(),
         jti,
         iat: iat as u64,
-        aud: claims.aud,
+        aud: Audience::primary_string(claims.aud),
         exp: claims.exp.map(|value| value as u64),
         stream_id,
         events,
@@ -1099,7 +1099,7 @@ pub fn verify_security_event_token(
         iss: data.claims.iss.unwrap_or_default(),
         jti: data.claims.jti.unwrap_or_default(),
         iat: data.claims.iat.unwrap_or(0) as u64,
-        aud: data.claims.aud,
+        aud: Audience::primary_string(data.claims.aud),
         exp: data.claims.exp.map(|v| v as u64),
         stream_id: data
             .claims

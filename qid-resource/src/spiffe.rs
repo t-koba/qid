@@ -141,7 +141,7 @@ async fn issue_jwt_svid<R: Repository>(
     let claims = qid_core::jwt::JwtClaims {
         iss: Some(issuer),
         sub: Some(query.spiffe_id.clone()),
-        aud: Some(query.audience.clone()),
+        aud: Some(qid_core::jwt::Audience::single(query.audience.clone())),
         exp: Some((now + ttl) as usize),
         nbf: Some(now as usize),
         iat: Some(now as usize),

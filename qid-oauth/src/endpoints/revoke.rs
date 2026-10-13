@@ -212,7 +212,7 @@ async fn revoke_refresh_token_family_if_owned<R: Repository>(
     claims: &JwtClaims,
     client: &Client,
 ) -> QidResult<bool> {
-    if claims.aud.as_deref() != Some(client.client_id.as_str()) {
+    if !claims.aud_contains(&client.client_id) {
         return Ok(false);
     }
     let Some(family_id) = claims

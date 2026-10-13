@@ -15,7 +15,7 @@ use qid_core::{
     test_helpers, util,
 };
 use qid_crypto::{
-    Jwk, JwtClaims, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header,
+    Audience, Jwk, JwtClaims, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header,
 };
 use qid_storage::{SqlRepository, prelude::*};
 use std::collections::HashMap;
@@ -76,6 +76,38 @@ async fn post_token_json(app: Router, token_path: &str, form_body: String) -> se
     let request = Request::builder()
         .method(Method::POST)
         .uri(token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(Body::from(form_body))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await
+}
+
+fn test_server(
+    audience: &str,
+    scopes: &[&str],
+    introspection_client: &str,
+) -> OAuthResourceServerConfig {
+    let name = audience.strip_prefix("api://").unwrap_or(audience);
+    OAuthResourceServerConfig {
+        audience: audience.to_string(),
+        resources: vec![format!("https://api.example.com/{name}")],
+        scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+        introspection_client_ids: vec![introspection_client.to_string()],
+        require_sender_constraint: false,
+        high_risk: false,
+    }
+}
+
+async fn post_introspect(
+    app: Router,
+    introspect_path: &str,
+    form_body: String,
+) -> serde_json::Value {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(introspect_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(form_body))
         .unwrap();
@@ -156,7 +188,7 @@ fn build_adapter_auth_token(
         .sign(&JwtClaims {
             iss: Some("https://id.example.com".to_string()),
             sub: Some(adapter_name.to_string()),
-            aud: Some(audience.to_string()),
+            aud: Some(Audience::single(audience.to_string())),
             exp: Some((now + 60) as usize),
             nbf: Some((now - 5) as usize),
             iat: Some(now as usize),
@@ -726,7 +758,7 @@ async fn token_exchange_requires_active_access_token_subject() {
     let exchanged_token = exchange_json["access_token"].as_str().unwrap();
     let claims = decode_claims(&state, exchanged_token);
     assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
-    assert_eq!(claims.aud.as_deref(), Some("api://payments"));
+    assert_eq!(claims.aud_primary(), Some("api://payments"));
     assert_eq!(claims.extra["client_id"], "exchange-client");
     assert_eq!(claims.extra["scope"], "payments");
     assert_eq!(
@@ -740,14 +772,8 @@ async fn token_exchange_requires_active_access_token_subject() {
 #[tokio::test]
 async fn token_exchange_with_actor_token_emits_actor_claim() {
     let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://delegated".to_string(),
-        resources: vec!["https://api.example.com/delegated".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://delegated", &[], "introspection-client")];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let subject_request = Request::builder()
@@ -801,19 +827,15 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
     assert_eq!(claims.extra["act"]["client_id"], "introspection-client");
     assert_eq!(claims.extra["act"]["scope"], "actor");
 
-    let introspect_body = format!(
-        "token={}&client_id=introspection-client&client_secret=secret",
-        urlencoding::encode(exchanged_token)
-    );
-    let introspect_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(introspect_body))
-        .unwrap();
-    let introspect_response = app.oneshot(introspect_request).await.unwrap();
-    assert_eq!(introspect_response.status(), StatusCode::OK);
-    let introspection = json_body(introspect_response).await;
+    let introspection = post_introspect(
+        app,
+        &state.paths.introspect,
+        format!(
+            "token={}&client_id=introspection-client&client_secret=secret",
+            urlencoding::encode(exchanged_token)
+        ),
+    )
+    .await;
     assert_eq!(introspection["act"]["sub"], "service:introspection-client");
     assert_eq!(introspection["act"]["client_id"], "introspection-client");
     assert_eq!(introspection["act"]["scope"], "actor");
@@ -1117,7 +1139,7 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
     let access_token = json["access_token"].as_str().unwrap();
     let claims = decode_claims(&state, access_token);
     assert_eq!(claims.sub.as_deref(), Some("workload-123"));
-    assert_eq!(claims.aud.as_deref(), Some("api://workload"));
+    assert_eq!(claims.aud_primary(), Some("api://workload"));
     assert_eq!(claims.extra["client_id"], "jwt-bearer-client");
     assert_eq!(claims.extra["scope"], "workload");
     assert_eq!(claims.extra["acr"], "urn:qid:acr:workload");
@@ -1159,7 +1181,7 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
     let access_token = json["access_token"].as_str().unwrap();
     let claims = decode_claims(&state, access_token);
     assert_eq!(claims.sub.as_deref(), Some("saml-subject-123"));
-    assert_eq!(claims.aud.as_deref(), Some("api://saml"));
+    assert_eq!(claims.aud_primary(), Some("api://saml"));
     assert_eq!(claims.extra["client_id"], "saml-bearer-client");
     assert_eq!(claims.extra["scope"], "saml");
     assert_eq!(claims.extra["amr"], serde_json::json!(["saml"]));
@@ -1198,7 +1220,9 @@ async fn jwt_bearer_grant_rejects_wrong_audience() {
         .sign(&JwtClaims {
             iss: Some("https://issuer.example.com".to_string()),
             sub: Some("workload-123".to_string()),
-            aud: Some("https://id.example.com/not-token".to_string()),
+            aud: Some(Audience::single(
+                "https://id.example.com/not-token".to_string(),
+            )),
             exp: Some((now + 300) as usize),
             nbf: Some(now as usize),
             iat: Some(now as usize),
@@ -1243,23 +1267,11 @@ async fn client_credentials_grant_rejects_wrong_client_auth_method() {
 async fn client_credentials_enforces_registered_resource_server_policy() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.dpop.enabled = true;
+    let mut payments = test_server("api://payments", &["payments"], "introspection-client");
+    payments.high_risk = true;
     config.realms[0].protocols.oauth.resource_servers = vec![
-        OAuthResourceServerConfig {
-            audience: "api://profile".to_string(),
-            resources: vec!["https://api.example.com/profile".to_string()],
-            scopes: vec!["api".to_string()],
-            introspection_client_ids: vec!["introspection-client".to_string()],
-            require_sender_constraint: false,
-            high_risk: false,
-        },
-        OAuthResourceServerConfig {
-            audience: "api://payments".to_string(),
-            resources: vec!["https://api.example.com/payments".to_string()],
-            scopes: vec!["payments".to_string()],
-            introspection_client_ids: vec!["introspection-client".to_string()],
-            require_sender_constraint: false,
-            high_risk: true,
-        },
+        test_server("api://profile", &["api"], "introspection-client"),
+        payments,
     ];
     let (app, token_path, state) = setup_with_config(config).await;
 
@@ -1275,7 +1287,7 @@ async fn client_credentials_enforces_registered_resource_server_policy() {
     assert_eq!(profile_response.status(), StatusCode::OK);
     let json = json_body(profile_response).await;
     let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
-    assert_eq!(claims.aud.as_deref(), Some("api://profile"));
+    assert_eq!(claims.aud_primary(), Some("api://profile"));
     assert_eq!(
         claims.extra["resource"],
         serde_json::json!(["https://api.example.com/profile"])
@@ -1339,7 +1351,7 @@ async fn client_credentials_enforces_registered_resource_server_policy() {
     );
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
-    assert_eq!(claims.aud.as_deref(), Some("api://payments"));
+    assert_eq!(claims.aud_primary(), Some("api://payments"));
     assert!(claims.extra["cnf"]["jkt"].is_string());
 }
 
@@ -1364,14 +1376,8 @@ async fn public_client_credentials_grant_is_rejected() {
 async fn dpop_client_credentials_binds_access_token_cnf() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.dpop.enabled = true;
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://default", &[], "introspection-client")];
     let (app, token_path, state) = setup_with_config(config).await;
     let proof = build_dpop_proof("dpop-proof-token-flow");
     let expected_jkt = qid_oauth::dpop::dpop_jkt_from_proof(&proof).unwrap();
@@ -1397,19 +1403,15 @@ async fn dpop_client_credentials_binds_access_token_cnf() {
         serde_json::json!({"jkt": expected_jkt})
     );
 
-    let introspect_body = format!(
-        "token={}&client_id=introspection-client&client_secret=secret",
-        urlencoding::encode(access_token)
-    );
-    let introspect_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(introspect_body))
-        .unwrap();
-    let introspect_response = app.oneshot(introspect_request).await.unwrap();
-    assert_eq!(introspect_response.status(), StatusCode::OK);
-    let introspection = json_body(introspect_response).await;
+    let introspection = post_introspect(
+        app,
+        &state.paths.introspect,
+        format!(
+            "token={}&client_id=introspection-client&client_secret=secret",
+            urlencoding::encode(access_token)
+        ),
+    )
+    .await;
     assert_eq!(
         introspection["cnf"],
         serde_json::json!({"jkt": expected_jkt})
@@ -1658,14 +1660,8 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
         decision: Default::default(),
         auth: Default::default(),
     }];
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://default", &[], "introspection-client")];
     let (app, token_path, state) = setup_with_config(config).await;
     let registered_thumbprint = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
     let adapter_auth = build_adapter_auth_token(
@@ -1703,19 +1699,15 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
     // resource server and receives cnf.x5t#S256 as metadata. The inspected
     // token's certificate is not presented on this call; comparison happens
     // at the protected resource.
-    let introspect_body = format!(
-        "token={}&client_id=introspection-client&client_secret=secret",
-        urlencoding::encode(&access_token)
-    );
-    let introspect_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(introspect_body))
-        .unwrap();
-    let introspect_response = app.clone().oneshot(introspect_request).await.unwrap();
-    assert_eq!(introspect_response.status(), StatusCode::OK);
-    let introspection = json_body(introspect_response).await;
+    let introspection = post_introspect(
+        app.clone(),
+        &state.paths.introspect,
+        format!(
+            "token={}&client_id=introspection-client&client_secret=secret",
+            urlencoding::encode(&access_token)
+        ),
+    )
+    .await;
     assert_eq!(introspection["active"], true);
     assert_eq!(introspection["client_id"], "mtls-client");
     assert_eq!(
@@ -1745,7 +1737,7 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
         .as_str()
         .expect("JWT introspection response should be present");
     let claims = decode_claims(&state, token_introspection);
-    assert_eq!(claims.aud.as_deref(), Some("introspection-client"));
+    assert_eq!(claims.aud_primary(), Some("introspection-client"));
     assert_eq!(
         claims.extra["cnf"]["x5t#S256"],
         serde_json::Value::String(registered_thumbprint.to_string())
@@ -2042,14 +2034,8 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
     // auth_time/acr/amr across refresh with advancing issuance.
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.tokens.access_token_format = TokenFormat::Opaque;
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://default", &[], "introspection-client")];
     let (app, token_path, state) = setup_with_config(config).await;
     let original_auth_time = util::now_seconds() - 3600;
     let code = "auth-opaque-code-1";
@@ -2118,19 +2104,15 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
     assert_eq!(second_stored.amr, vec!["pwd".to_string()]);
     assert!(second_stored.issued_at >= first_stored.issued_at);
 
-    let introspect_body = format!(
-        "token={}&client_id=introspection-client&client_secret=secret",
-        urlencoding::encode(&second_opaque)
-    );
-    let introspect_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.introspect)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(introspect_body))
-        .unwrap();
-    let introspect_response = app.oneshot(introspect_request).await.unwrap();
-    assert_eq!(introspect_response.status(), StatusCode::OK);
-    let introspection = json_body(introspect_response).await;
+    let introspection = post_introspect(
+        app,
+        &state.paths.introspect,
+        format!(
+            "token={}&client_id=introspection-client&client_secret=secret",
+            urlencoding::encode(&second_opaque)
+        ),
+    )
+    .await;
     assert_eq!(introspection["active"], true);
     assert_eq!(
         introspection["auth_time"],
@@ -2226,14 +2208,8 @@ async fn refresh_rejects_cross_client_caller_without_consuming() {
 async fn opaque_client_credentials_token_introspects_and_revokes() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.tokens.access_token_format = TokenFormat::Opaque;
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://default", &[], "introspection-client")];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let request = Request::builder()
@@ -2303,14 +2279,8 @@ async fn opaque_client_credentials_token_introspects_and_revokes() {
 #[tokio::test]
 async fn revocation_requires_client_auth_and_preserves_other_client_tokens() {
     let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://default", &[], "introspection-client")];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let token_request = Request::builder()
@@ -2515,14 +2485,11 @@ async fn jwt_introspection_response_requires_config_flag() {
 async fn jwt_introspection_response_returns_signed_response_when_enabled() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.introspection.jwt_response = true;
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-jwt-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://default",
+        &[],
+        "introspection-jwt-client",
+    )];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let request = Request::builder()
@@ -2563,22 +2530,8 @@ async fn introspection_enforces_resource_server_policy() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.introspection.jwt_response = true;
     config.realms[0].protocols.oauth.resource_servers = vec![
-        OAuthResourceServerConfig {
-            audience: "api://profile".to_string(),
-            resources: vec!["https://api.example.com/profile".to_string()],
-            scopes: vec!["api".to_string()],
-            introspection_client_ids: vec!["introspection-client".to_string()],
-            require_sender_constraint: false,
-            high_risk: false,
-        },
-        OAuthResourceServerConfig {
-            audience: "api://payments".to_string(),
-            resources: vec!["https://api.example.com/payments".to_string()],
-            scopes: vec!["payments".to_string()],
-            introspection_client_ids: vec!["introspection-client".to_string()],
-            require_sender_constraint: false,
-            high_risk: false,
-        },
+        test_server("api://profile", &["api"], "introspection-client"),
+        test_server("api://payments", &["payments"], "introspection-client"),
     ];
     let (app, token_path, state) = setup_with_config(config).await;
 
@@ -2628,7 +2581,7 @@ async fn introspection_enforces_resource_server_policy() {
     );
     let token_introspection = introspection["token_introspection"].as_str().unwrap();
     let claims = decode_claims(&state, token_introspection);
-    assert_eq!(claims.aud.as_deref(), Some("introspection-client"));
+    assert_eq!(claims.aud_primary(), Some("introspection-client"));
     assert_eq!(claims.extra["client_id"], "service-client");
     assert_eq!(
         claims.extra["resource"],
@@ -3746,14 +3699,8 @@ async fn introspection_fails_closed_without_resource_servers() {
 #[tokio::test]
 async fn introspection_rejects_unauthenticated_invalid_token_with_resource_servers() {
     let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://default", &[], "introspection-client")];
     let (app, _, state) = setup_with_config(config).await;
 
     let request = Request::builder()
@@ -3799,14 +3746,11 @@ impl qid_core::jwt::Signer for FailingIntrospectionSigner {
 async fn jwt_introspection_signing_failure_fails_closed_without_disclosure() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.introspection.jwt_response = true;
-    config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
-        audience: "api://default".to_string(),
-        resources: vec!["https://api.example.com/default".to_string()],
-        scopes: Vec::new(),
-        introspection_client_ids: vec!["introspection-jwt-client".to_string()],
-        require_sender_constraint: false,
-        high_risk: false,
-    }];
+    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://default",
+        &[],
+        "introspection-jwt-client",
+    )];
     let (app, token_path, state) = setup_with_config(config.clone()).await;
 
     let token_request = Request::builder()
@@ -3878,4 +3822,61 @@ async fn jwt_introspection_signing_failure_fails_closed_without_disclosure() {
     let json = json_body(json_response).await;
     assert_eq!(json["active"], true);
     assert!(json.get("token_introspection").is_none());
+}
+
+#[tokio::test]
+async fn multi_audience_issuance_names_every_resource_server() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        test_server("api://profile", &[], "introspection-client"),
+        test_server("api://payments", &[], "introspection-client"),
+    ];
+    let (app, token_path, state) = setup_with_config(config).await;
+
+    let token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&audience=api%3A%2F%2Fprofile%20api%3A%2F%2Fpayments",
+    )
+    .await;
+
+    // The signed JWT names both audiences in array form — previously only
+    // the first was signed, leaving the second RS unable to validate it.
+    let claims = decode_claims(&state, &token);
+    assert_eq!(claims.audiences(), ["api://payments", "api://profile"]);
+    // Either named resource server validates the token locally.
+    for audience in ["api://profile", "api://payments"] {
+        assert!(state.signer.decode_with_aud(&token, audience).is_ok());
+    }
+    assert!(state.signer.decode_with_aud(&token, "api://other").is_err());
+
+    // Introspection serves the stored audience set per resource server: the
+    // caller disambiguates a multi-target token via `audience`, and the
+    // response is filtered to that server.
+    for audience in ["api://profile", "api://payments"] {
+        let introspection = post_introspect(
+            app.clone(),
+            &state.paths.introspect,
+            format!(
+                "token={}&client_id=introspection-client&client_secret=secret&audience={}",
+                urlencoding::encode(&token),
+                urlencoding::encode(audience)
+            ),
+        )
+        .await;
+        assert_eq!(introspection["active"], true);
+        assert_eq!(introspection["aud"], serde_json::json!([audience]));
+    }
+    // Without disambiguation a multi-target token stays inactive rather
+    // than leaking another server's view.
+    let ambiguous = post_introspect(
+        app,
+        &state.paths.introspect,
+        format!(
+            "token={}&client_id=introspection-client&client_secret=secret",
+            urlencoding::encode(&token)
+        ),
+    )
+    .await;
+    assert_eq!(ambiguous["active"], serde_json::Value::Bool(false));
 }

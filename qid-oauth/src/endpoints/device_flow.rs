@@ -11,6 +11,7 @@ use qid_core::{
     tenant::RealmId,
 };
 use qid_storage::prelude::*;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -78,8 +79,8 @@ pub async fn device_authorization<R: Repository>(
             message: "device grant not allowed for client".to_string(),
         });
     }
-    let code = ulid::Ulid::new().to_string();
-    let user_code = format!("QID-{}", &code[10..23]);
+    let device_code = new_device_code();
+    let user_code = new_user_code();
     let base = state.plan.public_base_url.trim_end_matches('/');
     let verification_uri = format!("{base}{}", state.paths.device_authorization);
     let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
@@ -88,7 +89,6 @@ pub async fn device_authorization<R: Repository>(
         .as_deref()
         .map(|s| s.split(' ').map(String::from).collect::<Vec<_>>())
         .unwrap_or_else(|| vec![realm.oauth_default_scope.clone()]);
-    let device_code = format!("dc_{code}");
     let now = qid_core::util::now_seconds();
     let ttl_seconds = state
         .realm(&client.realm_id)
@@ -120,6 +120,27 @@ pub async fn device_authorization<R: Repository>(
         interval: 5,
     })
     .into_response()
+}
+
+/// Opaque device secret with 128 independent random bits. It shares nothing
+/// with the user code, so disclosing the user-facing code reveals nothing
+/// about the device secret (RFC 8628 §5.2).
+fn new_device_code() -> String {
+    let mut secret = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut secret);
+    format!("dc_{}", qid_core::util::base64_url_encode(&secret))
+}
+
+/// Separately drawn user code in the Crockford alphabet (no I, L, O, U).
+fn new_user_code() -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let mut raw = [0u8; 8];
+    rand::rngs::OsRng.fill_bytes(&mut raw);
+    let code: String = raw
+        .iter()
+        .map(|byte| ALPHABET[(byte % 32) as usize] as char)
+        .collect();
+    format!("QID-{code}")
 }
 
 async fn find_device_authorization_client<R: Repository>(

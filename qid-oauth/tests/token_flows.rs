@@ -3002,6 +3002,33 @@ async fn dynamic_client_registration_management_requires_client_auth() {
     assert_eq!(unauthenticated_response.status(), StatusCode::UNAUTHORIZED);
 }
 
+fn device_test_client(id: &str, client_id: &str) -> qid_core::models::Client {
+    qid_core::models::Client {
+        id: id.to_string(),
+        realm_id: "test".to_string(),
+        client_id: client_id.to_string(),
+        client_type: qid_core::models::ClientType::Public,
+        token_endpoint_auth_method: "none".to_string(),
+        client_secret_hash: None,
+        mtls_certificate_thumbprints: Vec::new(),
+        jwks: qid_core::models::default_client_jwks(),
+        redirect_uris: vec![],
+        grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+        client_name: None,
+        client_uri: None,
+        logo_uri: None,
+        contacts: Vec::new(),
+        post_logout_redirect_uris: Vec::new(),
+        default_max_age: None,
+        require_auth_time: false,
+        sector_identifier_uri: None,
+        subject_type: None,
+        backchannel_logout_uri: None,
+        frontchannel_logout_uri: None,
+        backchannel_client_notification_endpoint: None,
+    }
+}
+
 #[tokio::test]
 async fn device_authorization_returns_codes_for_known_client() {
     let mut config = test_helpers::test_config();
@@ -3013,48 +3040,49 @@ async fn device_authorization_returns_codes_for_known_client() {
     let (app, _, state) = setup_with_config(config).await;
     state
         .repo
-        .create_client(&qid_core::models::Client {
-            id: "device-client-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "device-client".to_string(),
-            client_type: qid_core::models::ClientType::Public,
-            token_endpoint_auth_method: "none".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: qid_core::models::default_client_jwks(),
-            redirect_uris: vec![],
-            grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        })
+        .create_client(&device_test_client("device-client-id", "device-client"))
         .await
         .unwrap();
 
     let response = post_form(
-        app,
+        app.clone(),
         &state.paths.device_authorization,
         "client_id=device-client&scope=api",
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = json_body(response).await;
-    assert!(json["device_code"].as_str().unwrap().starts_with("dc_"));
+    let device_code = json["device_code"].as_str().unwrap();
+    let user_code = json["user_code"].as_str().unwrap();
+    assert!(device_code.starts_with("dc_"));
+    // 128-bit device secret (`dc_` + 22 base64url chars), independent of the user code.
+    assert_eq!(device_code.len(), 3 + 22);
+    let user_fragment = user_code.strip_prefix("QID-").unwrap();
     assert!(
         json["verification_uri"]
             .as_str()
             .unwrap()
             .contains("/oauth2/device_authorization")
     );
+
+    // A second issuance draws fresh randomness: nothing repeats and neither
+    // user code shares a fragment with either device secret.
+    let second = json_body(
+        post_form(
+            app,
+            &state.paths.device_authorization,
+            "client_id=device-client&scope=api",
+        )
+        .await,
+    )
+    .await;
+    let device_2 = second["device_code"].as_str().unwrap();
+    let user_2 = second["user_code"].as_str().unwrap();
+    assert_ne!(device_2, device_code);
+    assert_ne!(user_2, user_code);
+    let fragment_2 = user_2.strip_prefix("QID-").unwrap();
+    assert!(!device_2.contains(user_fragment));
+    assert!(!device_code.contains(fragment_2));
 }
 
 #[tokio::test]
@@ -3062,30 +3090,10 @@ async fn device_authorization_is_disabled_by_default() {
     let (app, _, state) = setup().await;
     state
         .repo
-        .create_client(&qid_core::models::Client {
-            id: "device-disabled-client-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "device-disabled-client".to_string(),
-            client_type: qid_core::models::ClientType::Public,
-            token_endpoint_auth_method: "none".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: qid_core::models::default_client_jwks(),
-            redirect_uris: vec![],
-            grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        })
+        .create_client(&device_test_client(
+            "device-disabled-client-id",
+            "device-disabled-client",
+        ))
         .await
         .unwrap();
 
@@ -3111,30 +3119,10 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
     let (app, token_path, state) = setup_with_config(config).await;
     state
         .repo
-        .create_client(&qid_core::models::Client {
-            id: "device-client-flow-id".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "device-client-flow".to_string(),
-            client_type: qid_core::models::ClientType::Public,
-            token_endpoint_auth_method: "none".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: qid_core::models::default_client_jwks(),
-            redirect_uris: vec![],
-            grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        })
+        .create_client(&device_test_client(
+            "device-client-flow-id",
+            "device-client-flow",
+        ))
         .await
         .unwrap();
     state

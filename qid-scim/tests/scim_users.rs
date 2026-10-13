@@ -7,9 +7,11 @@ use axum::{
     },
 };
 use http_body_util::BodyExt;
+use qid_core::models::{AccessToken, Session, User};
 use qid_core::{state::SharedState, test_helpers};
 use qid_crypto::LocalSigner;
 use qid_storage::FileRepository;
+use qid_storage::prelude::*;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -19,7 +21,7 @@ async fn setup() -> Router {
     setup_with_store().await.0
 }
 
-async fn setup_with_store() -> (Router, std::path::PathBuf) {
+async fn setup_with_store() -> (Router, Arc<FileRepository>, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("qid-scim-{}", ulid::Ulid::new()));
     let path = dir.join("store.json");
     let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
@@ -29,8 +31,9 @@ async fn setup_with_store() -> (Router, std::path::PathBuf) {
     config.realms[0].protocols.scim.cursor_secret =
         Some("0123456789abcdef0123456789abcdef".to_string());
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
-    let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
-    (qid_scim::scim_routes().with_state(state), path)
+    let state =
+        Arc::new(SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap());
+    (qid_scim::scim_routes().with_state(state), repo, path)
 }
 
 #[tokio::test]
@@ -548,7 +551,7 @@ async fn scim_bulk_dispatches_create_and_delete_operations() {
 
 #[tokio::test]
 async fn scim_bulk_stops_after_server_error_at_threshold() {
-    let (app, store_path) = setup_with_store().await;
+    let (app, _repo, store_path) = setup_with_store().await;
     let create_request = Request::builder()
         .method(Method::POST)
         .uri("/scim/v2/Groups")
@@ -597,6 +600,113 @@ async fn scim_bulk_stops_after_server_error_at_threshold() {
     assert_eq!(bulk["Operations"].as_array().unwrap().len(), 1);
 
     std::fs::remove_file(&parent).unwrap();
+}
+
+#[tokio::test]
+async fn scim_lifecycle_mutations_do_not_touch_login_records() {
+    let (app, repo, _store_path) = setup_with_store().await;
+    // A SCIM-provisioned user and a login identity sharing the same name.
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"leaver@example.com"}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let bytes = create_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let scim_id = created["id"].as_str().unwrap().to_string();
+
+    repo.create_user(&User {
+        id: "login-user-1".to_string(),
+        realm_id: "corp".to_string(),
+        email: Some("leaver@example.com".to_string()),
+        email_verified: true,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    repo.create_session(&Session {
+        id: "session-1".to_string(),
+        realm_id: "corp".to_string(),
+        user_id: "login-user-1".to_string(),
+        auth_time: 1_700_000_000,
+        acr: None,
+        amr: vec![],
+        idle_expires_at: 1_800_000_000,
+        absolute_expires_at: 1_800_000_000,
+        revoked: false,
+        created_at: 1_700_000_000,
+        cnf: None,
+    })
+    .await
+    .unwrap();
+    repo.create_access_token(&AccessToken {
+        jti: "token-1".to_string(),
+        family_id: None,
+        user_id: "login-user-1".to_string(),
+        client_id: "client-1".to_string(),
+        realm_id: "corp".to_string(),
+        scopes: vec!["openid".to_string()],
+        audience: vec![],
+        resource: vec![],
+        authorization_details: None,
+        cnf: None,
+        auth_time: None,
+        acr: None,
+        amr: vec![],
+        nonce: None,
+        sender_constraint: None,
+        token_format: Default::default(),
+        expires_at: 1_800_000_000,
+        revoked: false,
+        issued_at: 1_700_000_000,
+    })
+    .await
+    .unwrap();
+
+    // Deactivate via SCIM PATCH, then delete the SCIM user.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{scim_id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"replace","path":"active","value":false}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let delete_request = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/scim/v2/Users/{scim_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let delete_response = app.clone().oneshot(delete_request).await.unwrap();
+    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+    // The SCIM registry reflects the lifecycle change (DELETE is a soft
+    // delete that deactivates but retains the record) ...
+    let scim_user = repo.get_scim_user(&scim_id).await.unwrap().unwrap();
+    assert!(!scim_user.active);
+    // ... while the login identity, session, and token are untouched:
+    // inbound SCIM is an isolated provisioning registry with no login
+    // binding, not an implicit session/token revocation authority.
+    assert!(repo.get_user_by_id("login-user-1").await.unwrap().is_some());
+    let session = repo.get_session("session-1").await.unwrap().unwrap();
+    assert!(!session.revoked);
+    let token = repo.get_access_token("token-1").await.unwrap().unwrap();
+    assert!(!token.revoked);
 }
 
 #[tokio::test]

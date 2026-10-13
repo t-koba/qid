@@ -168,6 +168,8 @@ SCIM base path defaults to `/scim/v2` and can be configured per realm.
 
 SCIM routes are protected by bearer token checks. Accepted scopes are `scim`, `scim.read`, and `scim.write`; write methods require `scim` or `scim.write`.
 
+Inbound SCIM is an isolated provisioning registry: setting `active` to false or deleting a user affects only the SCIM record (plain DELETE is a soft delete that deactivates but retains the record; hard delete needs `hard_delete=true`). There is no binding from a SCIM user to a login identity, so SCIM mutations do not revoke sessions or tokens — suspension policy must define that binding explicitly before it can act on login state.
+
 ## SAML
 
 Installed when any realm enables SAML.

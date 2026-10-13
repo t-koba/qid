@@ -7,7 +7,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use qid_core::{
-    models::{Admin, AdminElevation, IgaApprovalRecord},
+    models::{Admin, AdminElevation, IgaApprovalRecord, IgaEntitlementRecord},
     state::SharedState,
     test_helpers,
 };
@@ -109,6 +109,32 @@ pub async fn setup_app(
 
 fn admin_tenant(tenant_id: Option<&str>) -> String {
     tenant_id.unwrap_or("admin").to_string()
+}
+
+/// Seed the sample ERP catalog as explicit tenant configuration, derived
+/// from the engine's sample fixture. Production resolution never substitutes
+/// it implicitly.
+pub async fn seed_default_erp_catalog(repo: &FileRepository, tenant_id: &str) {
+    for template in qid_iga::default_entitlement_catalog() {
+        let risk_level = match template.risk_level {
+            qid_iga::EntitlementRiskLevel::Low => "low",
+            qid_iga::EntitlementRiskLevel::Medium => "medium",
+            qid_iga::EntitlementRiskLevel::High => "high",
+            qid_iga::EntitlementRiskLevel::Critical => "critical",
+        };
+        repo.store_iga_entitlement(&IgaEntitlementRecord {
+            id: template.id,
+            tenant_id: tenant_id.to_string(),
+            display_name: template.display_name,
+            owner: template.owner,
+            risk_level: risk_level.to_string(),
+            conflicting_entitlements: template.conflicting_entitlements,
+            max_duration_seconds: template.max_duration_seconds,
+            active: true,
+        })
+        .await
+        .unwrap();
+    }
 }
 
 pub async fn store_iga_approval(

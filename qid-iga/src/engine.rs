@@ -512,21 +512,19 @@ pub(crate) fn now_seconds() -> u64 {
     qid_core::util::now_seconds()
 }
 
+/// Tenant catalog with only active persisted entitlements. An empty tenant
+/// or a fully deactivated catalog yields an empty catalog so unknown
+/// entitlements fail closed; the sample ERP catalog is a test fixture only.
 pub(crate) async fn catalog_for_tenant<R: Repository>(
     state: &SharedState<R>,
     tenant_id: &str,
 ) -> qid_core::error::QidResult<Vec<Entitlement>> {
     let stored = state.repo.list_iga_entitlements(tenant_id).await?;
-    let active: Vec<_> = stored
+    Ok(stored
         .into_iter()
         .filter(|entitlement| entitlement.active)
         .map(entitlement_from_record)
-        .collect();
-    if active.is_empty() {
-        Ok(default_entitlement_catalog())
-    } else {
-        Ok(active)
-    }
+        .collect())
 }
 
 pub(crate) async fn revoke_active_grants_for_subject_entitlements<R: Repository>(

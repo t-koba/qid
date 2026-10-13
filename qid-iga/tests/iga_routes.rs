@@ -6,7 +6,8 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use common::{
-    ADMIN_SESSION_ID_HEADER, json, post_json, request_with_headers, setup_app, store_iga_approval,
+    ADMIN_SESSION_ID_HEADER, json, post_json, post_raw, request_with_headers,
+    seed_default_erp_catalog, setup_app, store_iga_approval,
 };
 use qid_core::models::{IgaAccessGrantRecord, IgaAccessRequestRecord, IgaFindingRecord};
 use qid_storage::{FileRepository, prelude::*};
@@ -20,28 +21,20 @@ async fn setup_with_repo() -> (Router, Arc<FileRepository>, String) {
 #[tokio::test]
 async fn access_request_route_evaluates_catalog_duration_and_approval_steps() {
     let (app, repo, session_id) = setup_with_repo().await;
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    seed_default_erp_catalog(&repo, "test").await;
+    let body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:erp:admin",
                         "current_entitlements":[],
                         "requested_duration_seconds":3600,
                         "reason":"temporary admin"
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+        &session_id,
+    )
+    .await;
     let request_id = body["id"].as_str().unwrap();
     assert_eq!(body["tenant_id"], "test");
     assert_eq!(body["subject"], "user-1");
@@ -66,25 +59,16 @@ async fn access_request_route_evaluates_catalog_duration_and_approval_steps() {
 #[tokio::test]
 async fn access_request_route_rejects_unknown_entitlement() {
     let (app, _repo, session_id) = setup_with_repo().await;
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:unknown"
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+        &session_id,
+    )
+    .await;
     assert_eq!(body["status"], "rejected");
     assert_eq!(body["violations"][0], "unknown_entitlement");
 }
@@ -145,27 +129,17 @@ async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
     assert_eq!(list_body["entitlements"].as_array().unwrap().len(), 1);
     assert_eq!(list_body["entitlements"][0]["id"], "app:custom:admin");
 
-    let evaluation_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let evaluation = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:custom:admin",
                         "requested_duration_seconds":3600
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(evaluation_response.status(), StatusCode::OK);
-    let evaluation = json(evaluation_response).await;
+        &session_id,
+    )
+    .await;
     assert_eq!(evaluation["status"], "approval_required");
     assert_eq!(
         evaluation["approval_steps"][0]["approver"],
@@ -196,6 +170,29 @@ async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
     );
 }
 
+async fn seed_conflicting_erp_pair(app: &Router, session_id: &str) {
+    for (id, conflicts) in [
+        ("app:erp:admin", vec!["app:erp:audit"]),
+        ("app:erp:audit", vec!["app:erp:admin"]),
+    ] {
+        post_json(
+            app.clone(),
+            "/iga/v1/entitlements",
+            serde_json::json!({
+                "id": id,
+                "display_name": id,
+                "owner": "security-admin",
+                "risk_level": "high",
+                "conflicting_entitlements": conflicts,
+                "max_duration_seconds": 30 * 24 * 60 * 60,
+                "active": true
+            }),
+            session_id,
+        )
+        .await;
+    }
+}
+
 async fn create_package_and_request(
     app: &Router,
     session_id: &str,
@@ -224,6 +221,7 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
         vec!["app:erp:audit", "app:erp:admin"],
     ] {
         let (app, _repo, session_id) = setup_with_repo().await;
+        seed_conflicting_erp_pair(&app, &session_id).await;
         let body = create_package_and_request(
             &app,
             &session_id,
@@ -247,6 +245,88 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
             "conflicting package must surface an SoD violation, got {violations:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn empty_or_fully_deactivated_catalog_rejects_as_unknown() {
+    let (app, _repo, session_id) = setup_with_repo().await;
+    let request = |entitlement: &str| {
+        serde_json::json!({
+            "subject": "user-1",
+            "entitlement": entitlement,
+            "requested_duration_seconds": 3600,
+            "reason": "catalog authority probe"
+        })
+    };
+    // No configured entitlements: nothing is known, nothing is granted.
+    let body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests",
+        request("app:erp:admin"),
+        &session_id,
+    )
+    .await;
+    assert_eq!(body["status"], "rejected");
+    assert!(
+        body["violations"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("unknown_entitlement"))
+    );
+
+    // A configured entitlement authorizes evaluation.
+    post_json(
+        app.clone(),
+        "/iga/v1/entitlements",
+        serde_json::json!({
+            "id": "app:custom:ops",
+            "display_name": "Operations",
+            "owner": "security-admin",
+            "risk_level": "low",
+            "max_duration_seconds": 3600,
+            "active": true
+        }),
+        &session_id,
+    )
+    .await;
+    let body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests",
+        request("app:custom:ops"),
+        &session_id,
+    )
+    .await;
+    assert_eq!(body["status"], "auto_approved");
+
+    // Deactivating the final entitlement restores fail-closed unknown.
+    post_json(
+        app.clone(),
+        "/iga/v1/entitlements",
+        serde_json::json!({
+            "id": "app:custom:ops",
+            "display_name": "Operations",
+            "owner": "security-admin",
+            "risk_level": "low",
+            "max_duration_seconds": 3600,
+            "active": false
+        }),
+        &session_id,
+    )
+    .await;
+    let body = post_json(
+        app,
+        "/iga/v1/access-requests",
+        request("app:custom:ops"),
+        &session_id,
+    )
+    .await;
+    assert_eq!(body["status"], "rejected");
+    assert!(
+        body["violations"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("unknown_entitlement"))
+    );
 }
 
 #[tokio::test]
@@ -328,9 +408,8 @@ async fn package_issuance_refuses_drifted_package_definition() {
 
 #[tokio::test]
 async fn package_member_grant_feeds_later_sod_checks_and_review() {
-    let (app, repo, session_id) = setup_with_repo().await;
-    // No custom entitlements: the tenant falls back to the default catalog
-    // where app:erp:admin and app:erp:audit conflict.
+    let (app, _repo, session_id) = setup_with_repo().await;
+    seed_conflicting_erp_pair(&app, &session_id).await;
     let body = create_package_and_request(
         &app,
         &session_id,
@@ -347,26 +426,26 @@ async fn package_member_grant_feeds_later_sod_checks_and_review() {
     .await;
     let request_id = body["id"].as_str().unwrap().to_string();
 
-    // Default audit needs owner (internal-audit) plus security-admin approval.
-    store_iga_approval(&repo, "test", &request_id, "internal-audit", "approved").await;
+    // High-risk audit needs owner plus security approval; entitlement owners
+    // pin to the creating admin, so both steps name security-admin.
     let now = qid_core::util::now_seconds();
+    let approvals: Vec<serde_json::Value> = ["package-approval-owner", "package-approval-security"]
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "request_id": request_id,
+                "approver": "security-admin",
+                "decision": "approved",
+                "approved_at_epoch_seconds": now,
+                "expires_at_epoch_seconds": now + 300
+            })
+        })
+        .collect();
     let validation_body = post_json(
         app.clone(),
         "/iga/v1/access-requests/approvals/validate",
-        serde_json::json!({
-            "issue_grant": true,
-            "approvals": [
-                {
-                    "id": "package-approval-security",
-                    "request_id": request_id,
-                    "approver": "security-admin",
-                    "decision": "approved",
-                    "approved_at_epoch_seconds": now,
-                    "expires_at_epoch_seconds": now + 300,
-                    "reason": "security approved"
-                }
-            ]
-        }),
+        serde_json::json!({"issue_grant": true, "approvals": approvals}),
         &session_id,
     )
     .await;
@@ -555,27 +634,18 @@ async fn access_package_route_persists_lists_and_deletes_packages() {
 #[tokio::test]
 async fn approval_validation_route_issues_time_bound_grant_when_complete() {
     let (app, repo, session_id) = setup_with_repo().await;
-    let evaluation_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    seed_default_erp_catalog(&repo, "test").await;
+    let evaluation = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:erp:admin",
                         "requested_duration_seconds":3600
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(evaluation_response.status(), StatusCode::OK);
-    let evaluation = json(evaluation_response).await;
+        &session_id,
+    )
+    .await;
     let request_id = evaluation["id"].as_str().unwrap();
     store_iga_approval(&repo, "test", request_id, "finance-ops", "approved").await;
     let now = qid_core::util::now_seconds();
@@ -603,18 +673,13 @@ async fn approval_validation_route_issues_time_bound_grant_when_complete() {
         ]
     });
 
-    let validation_response = app
-        .clone()
-        .oneshot(request_with_headers(
-            Method::POST,
-            "/iga/v1/access-requests/approvals/validate",
-            payload,
-            &session_id,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(validation_response.status(), StatusCode::OK);
-    let body = json(validation_response).await;
+    let body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        payload,
+        &session_id,
+    )
+    .await;
     assert_eq!(body["validation"]["valid"], true);
     assert_eq!(body["grant"]["subject"], "user-1");
     assert_eq!(body["grant"]["entitlement"], "app:erp:admin");
@@ -778,28 +843,18 @@ async fn access_package_request_can_issue_grants_for_each_entitlement() {
         .unwrap();
     assert_eq!(package_response.status(), StatusCode::OK);
 
-    let request_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let request_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "access_package_id":"pkg-custom-ops",
                         "requested_duration_seconds":3600,
                         "reason":"temporary operations"
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(request_response.status(), StatusCode::OK);
-    let request_body = json(request_response).await;
+        &session_id,
+    )
+    .await;
     let request_id = request_body["id"].as_str().unwrap();
     assert_eq!(request_body["access_package_id"], "pkg-custom-ops");
     assert_eq!(request_body["entitlement"], "access_package:pkg-custom-ops");
@@ -849,18 +904,13 @@ async fn access_package_request_can_issue_grants_for_each_entitlement() {
             }
         ]
     });
-    let validation_response = app
-        .clone()
-        .oneshot(request_with_headers(
-            Method::POST,
-            "/iga/v1/access-requests/approvals/validate",
-            validation_payload,
-            &session_id,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(validation_response.status(), StatusCode::OK);
-    let validation_body = json(validation_response).await;
+    let validation_body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        validation_payload,
+        &session_id,
+    )
+    .await;
     assert_eq!(validation_body["validation"]["valid"], true);
     let grants_json = validation_body["grants"].as_array().unwrap();
     assert_eq!(grants_json.len(), 2);
@@ -937,16 +987,10 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
     .expect("store JIT source access request failed");
     store_iga_approval(&repo, "test", "jit-request-1", "security-admin", "approved").await;
 
-    let issue_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/jit-privileges")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let issue_body = post_raw(
+        app.clone(),
+        "/iga/v1/jit-privileges",
+        r#"{
                         "request_id":"jit-request-1",
                         "subject":"user-1",
                         "entitlement":"app:custom:admin",
@@ -954,13 +998,9 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
                         "duration_seconds":300,
                         "constraints_json":{"ticket":"INC-1"}
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(issue_response.status(), StatusCode::OK);
-    let issue_body = json(issue_response).await;
+        &session_id,
+    )
+    .await;
     let grant_id = issue_body["jit_privilege"]["id"].as_str().unwrap();
     assert_eq!(issue_body["tenant_id"], "test");
     assert_eq!(issue_body["jit_privilege"]["subject"], "user-1");
@@ -1083,29 +1123,19 @@ async fn certification_routes_record_attestations_and_export_iga_evidence() {
     );
     assert_eq!(manager_body["certification"]["decision"], "certify");
 
-    let wrong_owner_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/certifications")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let wrong_owner_body = post_raw(
+        app.clone(),
+        "/iga/v1/certifications",
+        r#"{
                         "certification_type":"application_owner",
                         "subject":"user-1",
                         "entitlement":"app:custom:admin",
                         "certifier":"not-owner",
                         "decision":"certify"
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(wrong_owner_response.status(), StatusCode::OK);
-    let wrong_owner_body = json(wrong_owner_response).await;
+        &session_id,
+    )
+    .await;
     assert_eq!(
         wrong_owner_body["certification"]["certifier"],
         "security-admin"
@@ -1225,6 +1255,7 @@ async fn certification_routes_record_attestations_and_export_iga_evidence() {
 #[tokio::test]
 async fn finding_routes_detect_resolve_and_export_sod_conflicts_from_grants() {
     let (app, repo, session_id) = setup_with_repo().await;
+    seed_default_erp_catalog(&repo, "test").await;
     let now = qid_core::util::now_seconds();
     for (id, entitlement) in [
         ("finding-grant-admin", "app:erp:admin"),
@@ -1336,28 +1367,19 @@ async fn finding_routes_detect_resolve_and_export_sod_conflicts_from_grants() {
 
 #[tokio::test]
 async fn approval_validation_route_reports_missing_and_rejected_approvals() {
-    let (app, _, session_id) = setup_with_repo().await;
-    let eval_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let (app, repo, session_id) = setup_with_repo().await;
+    seed_default_erp_catalog(&repo, "test").await;
+    let eval_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:erp:admin",
                         "requested_duration_seconds":3600
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(eval_response.status(), StatusCode::OK);
-    let eval_body = json(eval_response).await;
+        &session_id,
+    )
+    .await;
     let request_id = eval_body["id"].as_str().unwrap();
     let now = qid_core::util::now_seconds();
     let payload = serde_json::json!({
@@ -1375,18 +1397,13 @@ async fn approval_validation_route_reports_missing_and_rejected_approvals() {
         ]
     });
 
-    let response = app
-        .clone()
-        .oneshot(request_with_headers(
-            Method::POST,
-            "/iga/v1/access-requests/approvals/validate",
-            payload,
-            &session_id,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        payload,
+        &session_id,
+    )
+    .await;
     assert_eq!(body["validation"]["valid"], false);
     assert_eq!(body["validation"]["missing_approvers"][0], "finance-ops");
     assert_eq!(
@@ -1626,28 +1643,19 @@ async fn access_review_route_builds_persists_lists_and_closes_campaign() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_forged_evaluation_in_body() {
-    let (app, _, session_id) = setup_with_repo().await;
-    let eval_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let (app, repo, session_id) = setup_with_repo().await;
+    seed_default_erp_catalog(&repo, "test").await;
+    let eval_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:erp:admin",
                         "requested_duration_seconds":3600
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(eval_response.status(), StatusCode::OK);
-    let eval_body = json(eval_response).await;
+        &session_id,
+    )
+    .await;
     let request_id = eval_body["id"].as_str().unwrap();
     let now = qid_core::util::now_seconds();
     let forged_payload = serde_json::json!({
@@ -1675,18 +1683,13 @@ async fn validate_approvals_rejects_forged_evaluation_in_body() {
         ]
     });
 
-    let response = app
-        .clone()
-        .oneshot(request_with_headers(
-            Method::POST,
-            "/iga/v1/access-requests/approvals/validate",
-            forged_payload,
-            &session_id,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        forged_payload,
+        &session_id,
+    )
+    .await;
     assert_eq!(body["validation"]["valid"], false);
     assert!(
         body["validation"]["missing_approvers"]
@@ -1701,28 +1704,19 @@ async fn validate_approvals_rejects_forged_evaluation_in_body() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_self_approval_sod_violation() {
-    let (app, _, session_id) = setup_with_repo().await;
-    let eval_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let (app, repo, session_id) = setup_with_repo().await;
+    seed_default_erp_catalog(&repo, "test").await;
+    let eval_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:erp:admin",
                         "requested_duration_seconds":3600
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(eval_response.status(), StatusCode::OK);
-    let eval_body = json(eval_response).await;
+        &session_id,
+    )
+    .await;
     let request_id = eval_body["id"].as_str().unwrap();
 
     let now = qid_core::util::now_seconds();
@@ -1759,18 +1753,13 @@ async fn validate_approvals_rejects_self_approval_sod_violation() {
         ]
     });
 
-    let response = app
-        .clone()
-        .oneshot(request_with_headers(
-            Method::POST,
-            "/iga/v1/access-requests/approvals/validate",
-            payload,
-            &session_id,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        payload,
+        &session_id,
+    )
+    .await;
     assert_eq!(body["validation"]["valid"], false);
     assert!(
         body["validation"]["missing_approvers"]
@@ -1784,24 +1773,15 @@ async fn validate_approvals_rejects_self_approval_sod_violation() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_request_not_in_approval_required_status() {
-    let (app, _, session_id) = setup_with_repo().await;
-    let eval_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{"subject":"user-1","entitlement":"app:erp:read"}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(eval_response.status(), StatusCode::OK);
-    let eval_body = json(eval_response).await;
+    let (app, repo, session_id) = setup_with_repo().await;
+    seed_default_erp_catalog(&repo, "test").await;
+    let eval_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{"subject":"user-1","entitlement":"app:erp:read"}"#,
+        &session_id,
+    )
+    .await;
     assert_eq!(eval_body["status"], "auto_approved");
     let request_id = eval_body["id"].as_str().unwrap();
 
@@ -1902,27 +1882,18 @@ async fn validate_approvals_rejects_insufficient_admin_role() {
 #[tokio::test]
 async fn validate_approvals_is_idempotent_and_prevents_double_issuance() {
     let (app, repo, session_id) = setup_with_repo().await;
-    let eval_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    seed_default_erp_catalog(&repo, "test").await;
+    let eval_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:erp:admin",
                         "requested_duration_seconds":3600
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(eval_response.status(), StatusCode::OK);
-    let eval_body = json(eval_response).await;
+        &session_id,
+    )
+    .await;
     let request_id = eval_body["id"].as_str().unwrap();
     store_iga_approval(&repo, "test", request_id, "finance-ops", "approved").await;
 
@@ -1967,18 +1938,13 @@ async fn validate_approvals_is_idempotent_and_prevents_double_issuance() {
         "first call should issue a grant"
     );
 
-    let second_response = app
-        .clone()
-        .oneshot(request_with_headers(
-            Method::POST,
-            "/iga/v1/access-requests/approvals/validate",
-            payload,
-            &session_id,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(second_response.status(), StatusCode::OK);
-    let second_body = json(second_response).await;
+    let second_body = post_json(
+        app.clone(),
+        "/iga/v1/access-requests/approvals/validate",
+        payload,
+        &session_id,
+    )
+    .await;
     assert_eq!(second_body["validation"]["valid"], true);
     assert!(
         second_body["grant"].is_null(),
@@ -2023,28 +1989,19 @@ async fn access_request_route_rejects_unrepresentable_duration() {
         .await
         .unwrap();
     assert_eq!(create_response.status(), StatusCode::OK);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests")
-                .header("Content-Type", "application/json")
-                .header(ADMIN_SESSION_ID_HEADER, &session_id)
-                .body(Body::from(
-                    r#"{
+    let body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
                         "subject":"user-1",
                         "entitlement":"app:test:overflow",
                         "current_entitlements":[],
                         "requested_duration_seconds":18446744073709551615,
                         "reason":"unbounded grant"
                     }"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+        &session_id,
+    )
+    .await;
     assert_eq!(body["status"], "rejected");
     assert!(
         body["violations"]

@@ -8,6 +8,7 @@ use qid_core::{
     tenant::RealmId,
 };
 use qid_observability::audit::AuditEvent;
+use qid_session::browser::session_is_active;
 use qid_storage::prelude::*;
 use std::collections::HashMap;
 
@@ -412,9 +413,7 @@ pub async fn refresh_token_grant<R: Repository>(
             .get_session(session_id)
             .await?
             .is_some_and(|session| {
-                session.realm_id == family.realm_id
-                    && !session.revoked
-                    && now < session.absolute_expires_at
+                session.realm_id == family.realm_id && session_is_active(&session, now)
             })
     {
         return Err(QidError::Unauthorized {
@@ -666,24 +665,35 @@ mod tests {
         refresh_token_grant,
     };
 
-    async fn setup_state() -> (Arc<SharedState<FileRepository>>, Arc<FileRepository>) {
-        let config = test_helpers::test_config();
+    async fn state_with_config(
+        config: qid_core::config::QidConfig,
+    ) -> (Arc<SharedState<FileRepository>>, Arc<FileRepository>) {
         let tmp = std::env::temp_dir().join(format!("qid_oauth_unit_{}.json", ulid::Ulid::new()));
         let path = tmp.to_str().unwrap().to_string();
         let repo = Arc::new(FileRepository::new(&path).await.unwrap());
         repo.migrate().await.unwrap();
+        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
+        let state = Arc::new(
+            SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap(),
+        );
+        (state, repo)
+    }
+
+    async fn create_test_realm(repo: &FileRepository, realm: &str, issuer: &str) {
         qid_storage::RealmRepository::create_realm(
-            repo.as_ref(),
+            repo,
             &TenantId::from("tenant-1"),
-            &RealmId::from("test"),
-            "https://id.example.com",
-            Some("Test Realm"),
+            &RealmId::from(realm),
+            issuer,
+            None,
         )
         .await
         .unwrap();
-        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
-        let jwks = serde_json::json!({});
-        let state = Arc::new(SharedState::new(config, repo.clone(), signer, jwks).unwrap());
+    }
+
+    async fn setup_state() -> (Arc<SharedState<FileRepository>>, Arc<FileRepository>) {
+        let (state, repo) = state_with_config(test_helpers::test_config()).await;
+        create_test_realm(&repo, "test", "https://id.example.com").await;
         (state, repo)
     }
 
@@ -1362,28 +1372,9 @@ mod tests {
         realm_b.protocols.oauth.tokens.access_token_ttl_seconds = 123;
         config.realms.push(realm_b);
 
-        let tmp = std::env::temp_dir().join(format!("qid_oauth_unit_{}.json", ulid::Ulid::new()));
-        let path = tmp.to_str().unwrap().to_string();
-        let repo = Arc::new(FileRepository::new(&path).await.unwrap());
-        repo.migrate().await.unwrap();
-        qid_storage::RealmRepository::create_realm(
-            repo.as_ref(),
-            &TenantId::from("tenant-1"),
-            &RealmId::from("test"),
-            "https://id.example.com",
-            Some("Test Realm"),
-        )
-        .await
-        .unwrap();
-        qid_storage::RealmRepository::create_realm(
-            repo.as_ref(),
-            &TenantId::from("tenant-1"),
-            &RealmId::from("realm-b"),
-            "https://id.example.com/realms/realm-b",
-            Some("Realm B"),
-        )
-        .await
-        .unwrap();
+        let (state, repo) = state_with_config(config).await;
+        create_test_realm(&repo, "test", "https://id.example.com").await;
+        create_test_realm(&repo, "realm-b", "https://id.example.com/realms/realm-b").await;
 
         let mut client = refresh_test_client(
             "realm-b-client-id",
@@ -1394,10 +1385,6 @@ mod tests {
         client.realm_id = "realm-b".to_string();
         client.grant_types = vec!["client_credentials".to_string()];
         repo.create_client(&client).await.unwrap();
-
-        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
-        let jwks = serde_json::json!({});
-        let state = Arc::new(SharedState::new(config, repo.clone(), signer, jwks).unwrap());
 
         let req = TokenRequest {
             grant_type: "client_credentials".to_string(),
@@ -1549,7 +1536,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_follows_linked_session_lifetime() {
-        // A live linked session rotates normally; an expired one fails
+        // A live linked session rotates normally; expired or idle ones fail
         // closed without rotating.
         let now = util::now_seconds();
         let (state, repo, client, family, token) =
@@ -1574,6 +1561,25 @@ mod tests {
             family_hash(&repo, &family.id).await,
             before,
             "dead session must not rotate"
+        );
+
+        let (state, repo, client, family, token) =
+            setup_refresh_case("idle", now, Some(now + 86_400), Some(now + 3600)).await;
+        repo.update_session_idle_expiry("idle-session", now - 10)
+            .await
+            .unwrap();
+        let before = family.current_refresh_hash.clone();
+        let err = grant_refresh(&state, token, &client, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QidError::Unauthorized { .. }),
+            "idle session must end refresh"
+        );
+        assert_eq!(
+            family_hash(&repo, &family.id).await,
+            before,
+            "idle session must not rotate"
         );
     }
 
@@ -1713,22 +1719,8 @@ mod tests {
             .oauth
             .tokens
             .refresh_token_ttl_seconds = 3600;
-        let tmp = std::env::temp_dir().join(format!("qid_oauth_unit_{}.json", ulid::Ulid::new()));
-        let repo = Arc::new(FileRepository::new(tmp.to_str().unwrap()).await.unwrap());
-        repo.migrate().await.unwrap();
-        qid_storage::RealmRepository::create_realm(
-            repo.as_ref(),
-            &TenantId::from("tenant-1"),
-            &RealmId::from("test"),
-            "https://id.example.com",
-            Some("Test Realm"),
-        )
-        .await
-        .unwrap();
-        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
-        let state = Arc::new(
-            SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap(),
-        );
+        let (state, repo) = state_with_config(config).await;
+        create_test_realm(&repo, "test", "https://id.example.com").await;
         let now = util::now_seconds();
         let client = refresh_test_client("cap-id", "cap-client", ClientType::Public, "none");
         repo.create_client(&client).await.unwrap();

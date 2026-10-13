@@ -1,10 +1,11 @@
 //! OpenID for Verifiable Presentations (OID4VP) request helpers.
 //!
-//! Implements the URL encoding/decoding primitives for OID4VP
-//! `Authorization Request` (JAR) and the `presentation_definition`
-//! JSON object that an OID4VP wallet receives. The verifier in qid-vc
-//! signs its request objects and stores the matching
-//! `presentation_submission` in the response.
+//! Unsigned local JSON transport/build helpers for OID4VP request
+//! objects and the `presentation_definition` object that an OID4VP
+//! wallet receives. Nothing here signs requests (this is not JAR
+//! transport) and nothing stores state: request authentication,
+//! expected audience/nonce provenance, and single-use transaction
+//! handling belong to the consuming verifier integration.
 
 use base64::Engine;
 use qid_core::error::{QidError, QidResult};
@@ -89,8 +90,10 @@ pub struct Oid4VpDescriptorMapEntry {
     pub path_nested: Option<serde_json::Value>,
 }
 
-/// Encode an OID4VP request as a `request_uri` URL (the form
-/// `openid4vp://?request=...`).
+/// Encode an OID4VP request as unsigned JSON carried in a `request`
+/// query parameter (the form `openid4vp://?request=...`). Callers that
+/// need authenticated requests must sign the object themselves (JAR)
+/// or serve it over an authenticated `request_uri`.
 pub fn encode_oid4vp_request_uri(request: &Oid4VpRequest) -> QidResult<String> {
     let json = serde_json::to_vec(request).map_err(|e| QidError::Internal {
         message: format!("failed to serialize OID4VP request: {e}"),
@@ -124,8 +127,9 @@ pub fn decode_oid4vp_request_uri(uri: &str) -> QidResult<Oid4VpRequest> {
     })
 }
 
-/// Build the matching `presentation_submission` object that a wallet
-/// returns with its verifiable presentation.
+/// Build the in-memory `presentation_submission` object that a wallet
+/// returns with its verifiable presentation. The value is only
+/// constructed, never stored or matched against a request here.
 pub fn build_oid4vp_presentation_submission(
     request: &Oid4VpRequest,
 ) -> Option<Oid4VpPresentationSubmission> {

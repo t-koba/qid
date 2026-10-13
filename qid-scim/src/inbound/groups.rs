@@ -282,7 +282,16 @@ fn apply_group_patch(group: &mut ScimGroup, op: PatchOperation) -> Result<(), Qi
         ("add" | "replace", "displayName") => {
             group.display_name = string_value(op.value, "displayName")?;
         }
-        ("add" | "replace", "members") => {
+        ("add", "members") => {
+            let mut members = group.members_json.as_array().cloned().unwrap_or_default();
+            match op.value {
+                Some(serde_json::Value::Array(values)) => members.extend(values),
+                Some(value) => members.push(value),
+                None => {}
+            }
+            group.members_json = serde_json::Value::Array(members);
+        }
+        ("replace", "members") => {
             group.members_json = op.value.unwrap_or_else(|| serde_json::json!([]));
         }
         ("remove", "members") => {

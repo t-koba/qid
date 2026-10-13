@@ -419,6 +419,84 @@ async fn scim_group_can_be_created_patched_filtered_and_deleted() {
 }
 
 #[tokio::test]
+async fn scim_group_patch_add_members_appends_instead_of_replacing() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Groups")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","displayName":"append-group","members":[{"value":"user-1"}]}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let bytes = create_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let version = created["meta"]["version"].as_str().unwrap();
+
+    // Direct PATCH add must keep the existing member.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Groups/{id}"))
+        .header("Content-Type", "application/json")
+        .header(IF_MATCH, version)
+        .body(Body::from(
+            r#"{"Operations":[{"op":"add","path":"members","value":[{"value":"user-2"}]}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let bytes = patch_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let patched: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let members: Vec<&str> = patched["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(members, vec!["user-1", "user-2"]);
+
+    // Bulk PATCH shares the helper and must append as well.
+    let bulk_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"Operations":[{{"method":"PATCH","path":"/Groups/{id}","data":{{"Operations":[{{"op":"add","path":"members","value":[{{"value":"user-3"}}]}}]}}}}]}}"#
+        )))
+        .unwrap();
+    let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
+    assert_eq!(bulk_response.status(), StatusCode::OK);
+    let bytes = bulk_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let bulk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bulk["Operations"][0]["status"], "200");
+    let members: Vec<&str> = bulk["Operations"][0]["response"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(members, vec!["user-1", "user-2", "user-3"]);
+}
+
+#[tokio::test]
 async fn scim_bulk_dispatches_create_and_delete_operations() {
     let app = setup().await;
     let bulk_request = Request::builder()

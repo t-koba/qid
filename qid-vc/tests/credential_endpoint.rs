@@ -81,6 +81,7 @@ async fn issue_identity_access_token(state: &SharedState<SqlRepository>, user: &
         TokenIssueClaims {
             authorization_code: None,
             access_token: None,
+            access_expires_at: None,
             audience: None,
             resource: None,
             authorization_details: None,
@@ -134,6 +135,7 @@ async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
         TokenIssueClaims {
             authorization_code: None,
             access_token: None,
+            access_expires_at: None,
             audience: None,
             resource: None,
             authorization_details: None,
@@ -393,6 +395,7 @@ async fn credential_endpoint_rejects_missing_scope() {
         TokenIssueClaims {
             authorization_code: None,
             access_token: None,
+            access_expires_at: None,
             audience: None,
             resource: None,
             authorization_details: None,

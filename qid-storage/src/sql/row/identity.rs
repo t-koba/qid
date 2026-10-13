@@ -211,6 +211,7 @@ pub(in crate::sql) struct TokenFamilyRow {
     authorization_details: Option<String>,
     sender_constraint: Option<String>,
     issued_at: i64,
+    refresh_expires_at: Option<i64>,
     revoked: i64,
 }
 
@@ -235,6 +236,7 @@ impl From<TokenFamilyRow> for TokenFamily {
                 .sender_constraint
                 .and_then(|value| serde_json::from_str(&value).ok()),
             issued_at: row.issued_at as u64,
+            refresh_expires_at: row.refresh_expires_at.map(|value| value as u64),
             revoked: row.revoked != 0,
         }
     }

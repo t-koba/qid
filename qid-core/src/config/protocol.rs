@@ -998,6 +998,9 @@ pub struct DirectoryProviderState {
 pub struct TokenTtlConfig {
     #[serde(default = "default_access_token_ttl")]
     pub access_token_ttl_seconds: u64,
+    /// Refresh lifetime at issuance. Persisted with each token family as its
+    /// initial expiration; rotation never extends past it, and later TTL
+    /// changes do not extend existing grants.
     #[serde(default = "default_refresh_token_ttl")]
     pub refresh_token_ttl_seconds: u64,
     #[serde(default = "default_id_token_ttl")]

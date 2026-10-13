@@ -30,6 +30,10 @@ pub struct TokenIssueClaims<'a> {
     /// Access token issued alongside the id_token. When present, the id_token
     /// receives an `at_hash` claim per OIDC Core §3.1.3.7 / §3.3.2.11.
     pub access_token: Option<&'a str>,
+    /// Upper bound for the access token `exp` (RFC 10017 refresh family
+    /// deadline). Rotation passes the family deadline; other flows leave it
+    /// absent and use the realm access TTL.
+    pub access_expires_at: Option<u64>,
 }
 
 pub async fn issue_token_pair<R: Repository>(
@@ -45,6 +49,10 @@ pub async fn issue_token_pair<R: Repository>(
     let access_jti = generate_jti();
     let refresh_jti = generate_jti();
     let family_id = generate_jti();
+    // RFC 10017 section 6.3.2.3: the family carries its initial refresh
+    // expiration; later TTL changes must not extend existing grants.
+    let refresh_expires_at =
+        now.saturating_add(token_ttl(state, realm_id).refresh_token_ttl_seconds);
 
     let family = TokenFamily {
         id: family_id.clone(),
@@ -61,6 +69,7 @@ pub async fn issue_token_pair<R: Repository>(
         authorization_details: claims.authorization_details.cloned(),
         sender_constraint: claims.cnf.cloned(),
         issued_at: now,
+        refresh_expires_at: Some(refresh_expires_at),
         revoked: false,
     };
     state.repo.create_token_family(&family).await?;
@@ -106,6 +115,7 @@ pub async fn issue_token_pair<R: Repository>(
         client_id,
         realm_id,
         Some(&family_id),
+        refresh_expires_at,
     )?;
 
     Ok(TokenPair {
@@ -182,16 +192,17 @@ pub fn sign_access_token<R: Repository>(
     }
 
     // Sign every resolved audience: array form when several, so each named
-    // resource server can validate the token locally.
-    let audiences = claims
-        .audience
-        .map(<[String]>::to_vec)
-        .unwrap_or_else(|| vec![client_id.to_string()]);
+    // resource server can validate the token locally. Empty resolves to the
+    // client itself, matching the stored audience fallback.
+    let audiences = token_audience(client_id, claims);
     let claims = JwtClaims {
         iss: Some(issuer.to_string()),
         sub: Some(user.id.clone()),
         aud: Audience::from_values(audiences),
-        exp: Some((now + token_ttl(state, realm_id).access_token_ttl_seconds) as usize),
+        exp: Some(
+            now.saturating_add(token_ttl(state, realm_id).access_token_ttl_seconds)
+                .min(claims.access_expires_at.unwrap_or(u64::MAX)) as usize,
+        ),
         nbf: Some(now as usize),
         iat: Some(now as usize),
         jti: Some(jti.to_string()),
@@ -293,6 +304,10 @@ pub fn decode_opaque_access_token(token: &str) -> Option<&str> {
     token.strip_prefix("oat_")
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "refresh signing keeps protocol context explicit at call sites"
+)]
 pub fn sign_refresh_token<R: Repository>(
     state: &SharedState<R>,
     issuer: &str,
@@ -301,6 +316,7 @@ pub fn sign_refresh_token<R: Repository>(
     client_id: &str,
     realm_id: &str,
     family_id: Option<&str>,
+    refresh_expires_at: u64,
 ) -> QidResult<String> {
     let now = qid_core::util::now_seconds();
     let mut extra = HashMap::new();
@@ -314,7 +330,10 @@ pub fn sign_refresh_token<R: Repository>(
         iss: Some(issuer.to_string()),
         sub: Some(user.id.clone()),
         aud: Some(Audience::single(client_id.to_string())),
-        exp: Some((now + token_ttl(state, realm_id).refresh_token_ttl_seconds) as usize),
+        exp: Some(
+            now.saturating_add(token_ttl(state, realm_id).refresh_token_ttl_seconds)
+                .min(refresh_expires_at) as usize,
+        ),
         nbf: Some(now as usize),
         iat: Some(now as usize),
         jti: Some(jti.to_string()),

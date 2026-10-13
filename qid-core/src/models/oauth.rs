@@ -72,6 +72,11 @@ pub struct TokenFamily {
     #[serde(default)]
     pub sender_constraint: Option<serde_json::Value>,
     pub issued_at: u64,
+    /// Initial refresh expiration (RFC 10017 section 6.3.2.3): rotation must
+    /// never extend past this deadline. Absent for legacy families, which are
+    /// pinned to issued_at plus the realm TTL on first refresh.
+    #[serde(default)]
+    pub refresh_expires_at: Option<u64>,
     pub revoked: bool,
 }
 

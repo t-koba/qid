@@ -1197,6 +1197,34 @@ async fn test_backchannel_authentication_grant_crud() {
     assert!(consumed.consumed);
 }
 
+fn test_family(
+    id: &str,
+    user_id: &str,
+    realm_id: &str,
+    hash: &str,
+    issued_at: u64,
+    deadline: Option<u64>,
+) -> qid_core::models::TokenFamily {
+    qid_core::models::TokenFamily {
+        id: id.to_string(),
+        user_id: user_id.to_string(),
+        client_id: "client-1".to_string(),
+        realm_id: realm_id.to_string(),
+        current_refresh_hash: hash.to_string(),
+        scopes: Vec::new(),
+        auth_time: None,
+        acr: None,
+        amr: Vec::new(),
+        audience: Vec::new(),
+        resource: Vec::new(),
+        authorization_details: None,
+        sender_constraint: None,
+        issued_at,
+        refresh_expires_at: deadline,
+        revoked: false,
+    }
+}
+
 #[tokio::test]
 async fn test_token_family_crud() {
     let repo = SqlRepository::connect(&db_url())
@@ -1223,25 +1251,17 @@ async fn test_token_family_crud() {
     })
     .await
     .unwrap();
-    let family = qid_core::models::TokenFamily {
-        id: "tf-1".to_string(),
-        user_id: "user-tf".to_string(),
-        client_id: "client-1".to_string(),
-        realm_id: "realm-tf".to_string(),
-        current_refresh_hash: "hash1".to_string(),
-        scopes: vec!["read".to_string(), "write".to_string()],
-        auth_time: Some(1234),
-        acr: Some("urn:qid:acr:password".to_string()),
-        amr: vec!["pwd".to_string()],
-        audience: vec!["api://orders".to_string()],
-        resource: vec!["https://api.example.com/orders".to_string()],
-        authorization_details: Some(serde_json::json!([
-            {"type":"payment_initiation","actions":["read"]}
-        ])),
-        sender_constraint: Some(serde_json::json!({"jkt":"refresh-thumbprint"})),
-        issued_at: 1000,
-        revoked: false,
-    };
+    let mut family = test_family("tf-1", "user-tf", "realm-tf", "hash1", 1000, Some(4600));
+    family.scopes = vec!["read".to_string(), "write".to_string()];
+    family.auth_time = Some(1234);
+    family.acr = Some("urn:qid:acr:password".to_string());
+    family.amr = vec!["pwd".to_string()];
+    family.audience = vec!["api://orders".to_string()];
+    family.resource = vec!["https://api.example.com/orders".to_string()];
+    family.authorization_details = Some(serde_json::json!([
+        {"type":"payment_initiation","actions":["read"]}
+    ]));
+    family.sender_constraint = Some(serde_json::json!({"jkt":"refresh-thumbprint"}));
     repo.create_token_family(&family)
         .await
         .expect("create token family failed");
@@ -1256,6 +1276,7 @@ async fn test_token_family_crud() {
         vec!["read".to_string(), "write".to_string()]
     );
     assert_eq!(fetched.auth_time, Some(1234));
+    assert_eq!(fetched.refresh_expires_at, Some(4600));
     assert_eq!(fetched.acr, Some("urn:qid:acr:password".to_string()));
     assert_eq!(fetched.amr, vec!["pwd".to_string()]);
     assert_eq!(fetched.audience, vec!["api://orders"]);
@@ -1270,11 +1291,12 @@ async fn test_token_family_crud() {
         fetched.sender_constraint,
         Some(serde_json::json!({"jkt":"refresh-thumbprint"}))
     );
-    repo.update_token_family_refresh_hash("tf-1", "hash1", "hash2")
+    repo.update_token_family_refresh_hash("tf-1", "hash1", "hash2", 4600)
         .await
         .unwrap();
     let updated = repo.get_token_family("tf-1").await.unwrap().unwrap();
     assert_eq!(updated.current_refresh_hash, "hash2");
+    assert_eq!(updated.refresh_expires_at, Some(4600));
     repo.revoke_token_family("tf-1").await.unwrap();
     let revoked = repo.get_token_family("tf-1").await.unwrap().unwrap();
     assert!(revoked.revoked);
@@ -2501,27 +2523,11 @@ async fn sql_refresh_rotation_single_winner() {
     .await
     .unwrap();
     let now = qid_core::util::now_seconds();
-    let family = qid_core::models::TokenFamily {
-        id: "tf-race".to_string(),
-        user_id: "user-race".to_string(),
-        client_id: "client-1".to_string(),
-        realm_id: "realm-race".to_string(),
-        current_refresh_hash: "hash-v0".to_string(),
-        scopes: Vec::new(),
-        auth_time: None,
-        acr: None,
-        amr: Vec::new(),
-        audience: Vec::new(),
-        resource: Vec::new(),
-        authorization_details: None,
-        sender_constraint: None,
-        issued_at: now,
-        revoked: false,
-    };
+    let family = test_family("tf-race", "user-race", "realm-race", "hash-v0", now, None);
     repo.create_token_family(&family).await.unwrap();
     // Both requests read "hash-v0" before either update (barrier after read).
-    let r1 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v1");
-    let r2 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v2");
+    let r1 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v1", 7000);
+    let r2 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v2", 7000);
     let (r1, r2) = tokio::join!(r1, r2);
     assert!(
         r1.is_ok() ^ r2.is_ok(),
@@ -2529,9 +2535,15 @@ async fn sql_refresh_rotation_single_winner() {
     );
     // Stale expected hash must not rotate again.
     let stale = repo
-        .update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v3")
+        .update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v3", 7000)
         .await;
     assert!(stale.is_err(), "stale expected hash must be rejected");
+    let stored = repo.get_token_family("tf-race").await.unwrap().unwrap();
+    assert_eq!(
+        stored.refresh_expires_at,
+        Some(7000),
+        "rotation must pin the deadline"
+    );
 }
 
 #[tokio::test]
@@ -2561,29 +2573,13 @@ async fn sql_refresh_rotation_revoked_stays_revoked() {
     .await
     .unwrap();
     let now = qid_core::util::now_seconds();
-    let family = qid_core::models::TokenFamily {
-        id: "tf-revoked".to_string(),
-        user_id: "user-rev".to_string(),
-        client_id: "client-1".to_string(),
-        realm_id: "realm-rev".to_string(),
-        current_refresh_hash: "hash-v0".to_string(),
-        scopes: Vec::new(),
-        auth_time: None,
-        acr: None,
-        amr: Vec::new(),
-        audience: Vec::new(),
-        resource: Vec::new(),
-        authorization_details: None,
-        sender_constraint: None,
-        issued_at: now,
-        revoked: false,
-    };
+    let family = test_family("tf-revoked", "user-rev", "realm-rev", "hash-v0", now, None);
     repo.create_token_family(&family).await.unwrap();
     repo.revoke_token_family("tf-revoked").await.unwrap();
     // Revoking twice stays idempotent for concurrent reuse handling.
     repo.revoke_token_family("tf-revoked").await.unwrap();
     let result = repo
-        .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1")
+        .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1", 7000)
         .await;
     assert!(
         result.is_err(),

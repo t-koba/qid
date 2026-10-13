@@ -543,7 +543,7 @@ fn build_saml_bearer_assertion(subject: &str, audience: &str, expires_at: u64) -
 
 #[tokio::test]
 async fn client_credentials_grant_succeeds() {
-    let (app, token_path, _) = setup().await;
+    let (app, token_path, state) = setup().await;
 
     let body =
         "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api";
@@ -561,6 +561,17 @@ async fn client_credentials_grant_succeeds() {
     assert_eq!(json["token_type"], "Bearer");
     assert!(json["access_token"].as_str().unwrap().len() > 10);
     assert_eq!(json["scope"], "api");
+    // No audience requested and none configured: the JWT still names the
+    // client itself, matching the stored audience fallback.
+    let token = json["access_token"].as_str().unwrap().to_string();
+    let claims = decode_claims(&state, &token);
+    assert_eq!(claims.aud_primary(), Some("service-client"));
+    assert!(
+        state
+            .signer
+            .decode_with_aud(&token, "service-client")
+            .is_ok()
+    );
 }
 
 #[tokio::test]

@@ -526,6 +526,7 @@ async fn advanced_subject_grant<R: Repository>(
             act: actor_claim.as_ref(),
             authorization_code: None,
             access_token: None,
+            access_expires_at: None,
         },
     )
     .await?;

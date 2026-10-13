@@ -69,7 +69,7 @@ impl TokenRepository for SqlRepository {
 
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, scopes, auth_time, acr, amr, audience, resource, authorization_details, sender_constraint, issued_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, scopes, auth_time, acr, amr, audience, resource, authorization_details, sender_constraint, issued_at, refresh_expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&family.id)
         .bind(&family.user_id)
@@ -90,6 +90,7 @@ impl TokenRepository for SqlRepository {
         )
         .bind(family.sender_constraint.as_ref().map(|value| value.to_string()))
         .bind(family.issued_at as i64)
+        .bind(family.refresh_expires_at.map(|value| value as i64))
         .bind(family.revoked as i64)
         .execute(&self.pool)
         .await
@@ -112,6 +113,7 @@ impl TokenRepository for SqlRepository {
         id: &str,
         expected_refresh_hash: &str,
         refresh_hash: &str,
+        refresh_expires_at: u64,
     ) -> QidResult<()> {
         if expected_refresh_hash == refresh_hash {
             return Err(QidError::Conflict {
@@ -119,9 +121,10 @@ impl TokenRepository for SqlRepository {
             });
         }
         let result = sqlx::query(
-            "UPDATE token_families SET current_refresh_hash = ? WHERE id = ? AND current_refresh_hash = ? AND revoked = 0",
+            "UPDATE token_families SET current_refresh_hash = ?, refresh_expires_at = ? WHERE id = ? AND current_refresh_hash = ? AND revoked = 0",
         )
         .bind(refresh_hash)
+        .bind(refresh_expires_at as i64)
         .bind(id)
         .bind(expected_refresh_hash)
         .execute(&self.pool)

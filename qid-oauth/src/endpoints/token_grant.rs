@@ -109,6 +109,7 @@ pub async fn authorization_code_grant<R: Repository>(
             act: None,
             authorization_code: Some(code),
             access_token: None,
+            access_expires_at: None,
         },
     )
     .await?;
@@ -169,6 +170,7 @@ pub async fn authorization_code_grant<R: Repository>(
                 act: None,
                 authorization_code: Some(code),
                 access_token: Some(&pair.access_token),
+                access_expires_at: None,
             },
             sub_override.as_deref(),
         )?),
@@ -283,6 +285,7 @@ pub async fn client_credentials_grant<R: Repository>(
             act: None,
             authorization_code: None,
             access_token: None,
+            access_expires_at: None,
         },
     )
     .await?;
@@ -378,6 +381,22 @@ pub async fn refresh_token_grant<R: Repository>(
     if family.revoked {
         return Err(QidError::Unauthorized {
             message: "refresh token family revoked".to_string(),
+        });
+    }
+
+    // RFC 10017 section 6.3.2.3: rotation must not extend a token past the
+    // initial expiration. The deadline persists with the family so later TTL
+    // changes cannot extend existing grants; the rotation write pins legacy
+    // families without one to issued_at plus the realm TTL.
+    let now = qid_core::util::now_seconds();
+    let refresh_deadline = family.refresh_expires_at.unwrap_or_else(|| {
+        family
+            .issued_at
+            .saturating_add(token_ttl(state, &family.realm_id).refresh_token_ttl_seconds)
+    });
+    if now >= refresh_deadline {
+        return Err(QidError::Unauthorized {
+            message: "refresh token family expired".to_string(),
         });
     }
 
@@ -491,7 +510,6 @@ pub async fn refresh_token_grant<R: Repository>(
         }
     }
 
-    let now = qid_core::util::now_seconds();
     let new_access_jti = generate_jti();
     let new_refresh_jti = generate_jti();
     let new_hash = qid_core::util::sha256_base64url(&new_refresh_jti);
@@ -506,7 +524,7 @@ pub async fn refresh_token_grant<R: Repository>(
     // below and leaves no usable access token behind.
     if let Err(rotate_err) = state
         .repo
-        .update_token_family_refresh_hash(&family.id, &expected_hash, &new_hash)
+        .update_token_family_refresh_hash(&family.id, &expected_hash, &new_hash, refresh_deadline)
         .await
     {
         match rotate_err {
@@ -545,7 +563,9 @@ pub async fn refresh_token_grant<R: Repository>(
         nonce: None,
         sender_constraint: cnf.cloned().or(family.sender_constraint.clone()),
         token_format: token_ttl(state, &family.realm_id).access_token_format,
-        expires_at: now + token_ttl(state, &family.realm_id).access_token_ttl_seconds,
+        expires_at: now
+            .saturating_add(token_ttl(state, &family.realm_id).access_token_ttl_seconds)
+            .min(refresh_deadline),
         revoked: false,
         issued_at: now,
     };
@@ -571,6 +591,7 @@ pub async fn refresh_token_grant<R: Repository>(
             act: None,
             authorization_code: None,
             access_token: None,
+            access_expires_at: Some(refresh_deadline),
         },
     )?;
     let refresh = sign_refresh_token(
@@ -581,6 +602,7 @@ pub async fn refresh_token_grant<R: Repository>(
         &family.client_id,
         &family.realm_id,
         Some(&family.id),
+        refresh_deadline,
     )?;
 
     let response_cnf = cnf.or(family.sender_constraint.as_ref());
@@ -625,7 +647,7 @@ mod tests {
     use std::sync::Arc;
 
     use qid_core::{
-        error::QidError,
+        error::{QidError, QidResult},
         models::{
             AuthorizationCode, BackchannelAuthenticationGrant, Client, ClientType,
             DeviceAuthorizationGrant, ParRequest, TokenFamily, User,
@@ -638,7 +660,7 @@ mod tests {
     use qid_storage::FileRepository;
     use qid_storage::prelude::*;
 
-    use super::{TokenRequest, client_credentials_grant, refresh_token_grant};
+    use super::{TokenRequest, TokenResponse, client_credentials_grant, refresh_token_grant};
 
     async fn setup_state() -> (Arc<SharedState<FileRepository>>, Arc<FileRepository>) {
         let config = test_helpers::test_config();
@@ -695,21 +717,19 @@ mod tests {
 
     async fn signed_refresh(
         state: &std::sync::Arc<SharedState<FileRepository>>,
-        user_id: &str,
-        client_id: &str,
-        family_id: &str,
+        family: &TokenFamily,
         jti: &str,
     ) -> String {
         let now = util::now_seconds();
         let mut extra = HashMap::new();
         extra.insert(
             "family_id".to_string(),
-            serde_json::Value::String(family_id.to_string()),
+            serde_json::Value::String(family.id.clone()),
         );
         let claims = JwtClaims {
             iss: Some("https://id.example.com".to_string()),
-            sub: Some(user_id.to_string()),
-            aud: Some(Audience::single(client_id.to_string())),
+            sub: Some(family.user_id.clone()),
+            aud: Some(Audience::single(family.client_id.clone())),
             exp: Some((now + 3600) as usize),
             nbf: Some(now as usize),
             iat: Some(now as usize),
@@ -717,6 +737,100 @@ mod tests {
             extra,
         };
         state.signer.sign(&claims).unwrap()
+    }
+
+    fn refresh_test_user(id: &str) -> User {
+        User {
+            id: id.to_string(),
+            realm_id: "test".to_string(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        }
+    }
+
+    fn refresh_test_family(
+        id: &str,
+        user_id: &str,
+        client_id: &str,
+        refresh_jti: &str,
+        scopes: &[&str],
+        issued_at: u64,
+        deadline: Option<u64>,
+    ) -> TokenFamily {
+        TokenFamily {
+            id: id.to_string(),
+            user_id: user_id.to_string(),
+            client_id: client_id.to_string(),
+            realm_id: "test".to_string(),
+            current_refresh_hash: util::sha256_base64url(refresh_jti),
+            scopes: scopes.iter().map(ToString::to_string).collect(),
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
+            audience: vec![client_id.to_string()],
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: None,
+            issued_at,
+            refresh_expires_at: deadline,
+            revoked: false,
+        }
+    }
+
+    async fn setup_refresh_case(
+        tag: &str,
+        issued_at: u64,
+        deadline: Option<u64>,
+    ) -> (
+        std::sync::Arc<SharedState<FileRepository>>,
+        std::sync::Arc<FileRepository>,
+        Client,
+        TokenFamily,
+        String,
+    ) {
+        let (state, repo) = setup_state().await;
+        let client_id = format!("{tag}-client");
+        let client =
+            refresh_test_client(&format!("{tag}-id"), &client_id, ClientType::Public, "none");
+        repo.create_client(&client).await.unwrap();
+        let user = refresh_test_user(&format!("{tag}-user"));
+        repo.create_user(&user).await.unwrap();
+        let family = refresh_test_family(
+            &format!("{tag}-family"),
+            &user.id,
+            &client_id,
+            &format!("{tag}-jti-1"),
+            &["api"],
+            issued_at,
+            deadline,
+        );
+        repo.create_token_family(&family).await.unwrap();
+        let token = signed_refresh(&state, &family, &format!("{tag}-jti-1")).await;
+        (state, repo, client, family, token)
+    }
+
+    async fn grant_refresh(
+        state: &std::sync::Arc<SharedState<FileRepository>>,
+        token: String,
+        client: &Client,
+        scope: Option<String>,
+        cnf: Option<&serde_json::Value>,
+    ) -> QidResult<TokenResponse> {
+        refresh_token_grant(state, &refresh_req(token, scope), client, cnf).await
+    }
+
+    fn decode_exp(state: &std::sync::Arc<SharedState<FileRepository>>, token: &str) -> usize {
+        state
+            .signer
+            .decode_signature_only(token)
+            .unwrap()
+            .claims
+            .exp
+            .unwrap()
     }
 
     fn refresh_req(token: String, scope: Option<String>) -> TokenRequest {
@@ -891,82 +1005,24 @@ mod tests {
         );
         repo.create_client(&client).await.unwrap();
 
-        let user = User {
-            id: "refresh-reuse-user".to_string(),
-            realm_id: "test".to_string(),
-            email: None,
-            email_verified: false,
-            display_name: Some("test-user".to_string()),
-            failed_login_attempts: 0,
-            locked_until: None,
-            org: None,
-        };
+        let mut user = refresh_test_user("refresh-reuse-user");
+        user.display_name = Some("test-user".to_string());
         repo.create_user(&user).await.unwrap();
 
-        let good_jti = "original-jti";
-        let good_hash = util::sha256_base64url(good_jti);
-        let family = TokenFamily {
-            id: "reuse-test-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "reuse-client".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: good_hash,
-            scopes: vec!["api".to_string()],
-            auth_time: None,
-            acr: None,
-            amr: Vec::new(),
-            audience: vec!["reuse-client".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: None,
-            issued_at: now,
-            revoked: false,
-        };
+        let family = refresh_test_family(
+            "reuse-test-family",
+            &user.id.clone(),
+            "reuse-client",
+            "original-jti",
+            &["api"],
+            now,
+            Some(now + 86_400),
+        );
         repo.create_token_family(&family).await.unwrap();
 
-        let bad_jti = "reused-jti";
-        let mut extra = HashMap::new();
-        extra.insert(
-            "family_id".to_string(),
-            serde_json::Value::String(family.id.clone()),
-        );
-        let claims = JwtClaims {
-            iss: Some("https://id.example.com".to_string()),
-            sub: Some(user.id.clone()),
-            aud: Some(Audience::single("reuse-client".to_string())),
-            exp: Some((now + 3600) as usize),
-            nbf: Some(now as usize),
-            iat: Some(now as usize),
-            jti: Some(bad_jti.to_string()),
-            extra,
-        };
-        let bad_refresh = state.signer.sign(&claims).unwrap();
+        let bad_refresh = signed_refresh(&state, &family, "reused-jti").await;
 
-        let req = TokenRequest {
-            grant_type: "refresh_token".to_string(),
-            refresh_token: Some(bad_refresh),
-            code: None,
-            redirect_uri: None,
-            code_verifier: None,
-            client_id: None,
-            client_secret: None,
-            scope: None,
-            client_assertion: None,
-            client_assertion_type: None,
-            device_code: None,
-            auth_req_id: None,
-            assertion: None,
-            subject_token: None,
-            subject_token_type: None,
-            actor_token: None,
-            actor_token_type: None,
-            requested_token_type: None,
-            audience: None,
-            resource: None,
-            authorization_details: None,
-        };
-
-        let result = refresh_token_grant(&state, &req, &client, None).await;
+        let result = grant_refresh(&state, bad_refresh, &client, None, None).await;
         assert!(result.is_err(), "reuse should be rejected");
 
         let updated = repo.get_token_family(&family.id).await.unwrap().unwrap();
@@ -996,43 +1052,27 @@ mod tests {
         );
         repo.create_client(&confidential_client).await.unwrap();
 
-        let user = User {
-            id: "dpop-refresh-user".to_string(),
-            realm_id: "test".to_string(),
-            email: None,
-            email_verified: false,
-            display_name: Some("dpop-user".to_string()),
-            failed_login_attempts: 0,
-            locked_until: None,
-            org: None,
-        };
+        let mut user = refresh_test_user("dpop-refresh-user");
+        user.display_name = Some("dpop-user".to_string());
         repo.create_user(&user).await.unwrap();
 
         // Public DPoP-bound family.
         let bound_jkt = "test-jkt-public-key-a";
-        let family = TokenFamily {
-            id: "dpop-public-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "dpop-public".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: util::sha256_base64url("dpop-good-jti"),
-            scopes: vec!["api".to_string()],
-            auth_time: None,
-            acr: None,
-            amr: Vec::new(),
-            audience: vec!["dpop-public".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: Some(serde_json::json!({ "jkt": bound_jkt })),
-            issued_at: now,
-            revoked: false,
-        };
+        let mut family = refresh_test_family(
+            "dpop-public-family",
+            &user.id.clone(),
+            "dpop-public",
+            "dpop-good-jti",
+            &["api"],
+            now,
+            Some(now + 86_400),
+        );
+        family.sender_constraint = Some(serde_json::json!({ "jkt": bound_jkt }));
         repo.create_token_family(&family).await.unwrap();
 
         // No DPoP proof must fail closed.
-        let token =
-            signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
-        let err = refresh_token_grant(&state, &refresh_req(token, None), &public_client, None)
+        let token = signed_refresh(&state, &family, "dpop-good-jti").await;
+        let err = grant_refresh(&state, token, &public_client, None, None)
             .await
             .unwrap_err();
         assert!(
@@ -1042,16 +1082,10 @@ mod tests {
 
         // Wrong-key proof must fail closed.
         let wrong = serde_json::json!({ "jkt": "different-key" });
-        let token =
-            signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
-        let err = refresh_token_grant(
-            &state,
-            &refresh_req(token, None),
-            &public_client,
-            Some(&wrong),
-        )
-        .await
-        .unwrap_err();
+        let token = signed_refresh(&state, &family, "dpop-good-jti").await;
+        let err = grant_refresh(&state, token, &public_client, None, Some(&wrong))
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("DPoP binding required"),
             "wrong-key refresh must fail closed, got {err:?}"
@@ -1059,52 +1093,24 @@ mod tests {
 
         // Same-key proof must succeed and rotate.
         let same = serde_json::json!({ "jkt": bound_jkt });
-        let token =
-            signed_refresh(&state, &user.id, "dpop-public", &family.id, "dpop-good-jti").await;
-        let ok = refresh_token_grant(
-            &state,
-            &refresh_req(token, None),
-            &public_client,
-            Some(&same),
-        )
-        .await;
+        let token = signed_refresh(&state, &family, "dpop-good-jti").await;
+        let ok = grant_refresh(&state, token, &public_client, None, Some(&same)).await;
         assert!(ok.is_ok(), "same-key refresh must succeed: {ok:?}");
 
         // Confidential DPoP-bound family without fresh proof still succeeds
         // (bound via client authentication, per RFC 9449 section 5).
-        let conf_family = TokenFamily {
-            id: "dpop-conf-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "dpop-conf".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: util::sha256_base64url("dpop-conf-jti"),
-            scopes: vec!["api".to_string()],
-            auth_time: None,
-            acr: None,
-            amr: Vec::new(),
-            audience: vec!["dpop-conf".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: Some(serde_json::json!({ "jkt": "conf-key" })),
-            issued_at: now,
-            revoked: false,
-        };
-        repo.create_token_family(&conf_family).await.unwrap();
-        let token = signed_refresh(
-            &state,
-            &user.id,
+        let conf_family = refresh_test_family(
+            "dpop-conf-family",
+            &user.id.clone(),
             "dpop-conf",
-            &conf_family.id,
             "dpop-conf-jti",
-        )
-        .await;
-        let ok = refresh_token_grant(
-            &state,
-            &refresh_req(token, None),
-            &confidential_client,
-            None,
-        )
-        .await;
+            &["api"],
+            now,
+            Some(now + 86_400),
+        );
+        repo.create_token_family(&conf_family).await.unwrap();
+        let token = signed_refresh(&state, &conf_family, "dpop-conf-jti").await;
+        let ok = grant_refresh(&state, token, &confidential_client, None, None).await;
         assert!(ok.is_ok(), "confidential refresh must succeed: {ok:?}");
     }
 
@@ -1122,64 +1128,35 @@ mod tests {
             "none",
         );
         repo.create_client(&client).await.unwrap();
-        let user = User {
-            id: "scope-file-user".to_string(),
-            realm_id: "test".to_string(),
-            email: None,
-            email_verified: false,
-            display_name: None,
-            failed_login_attempts: 0,
-            locked_until: None,
-            org: None,
-        };
+        let user = refresh_test_user("scope-file-user");
         repo.create_user(&user).await.unwrap();
 
         let now = util::now_seconds();
-        let family = TokenFamily {
-            id: "scope-file-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "scope-file-client".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: util::sha256_base64url("scope-file-jti-1"),
-            scopes: vec!["read".to_string(), "profile".to_string()],
-            auth_time: None,
-            acr: None,
-            amr: Vec::new(),
-            audience: vec!["scope-file-client".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: None,
-            issued_at: now,
-            revoked: false,
-        };
+        let family = refresh_test_family(
+            "scope-file-family",
+            &user.id.clone(),
+            "scope-file-client",
+            "scope-file-jti-1",
+            &["read", "profile"],
+            now,
+            Some(now + 86_400),
+        );
         repo.create_token_family(&family).await.unwrap();
 
-        let token_1 = signed_refresh(
-            &state,
-            "scope-file-user",
-            "scope-file-client",
-            &family.id,
-            "scope-file-jti-1",
-        )
-        .await;
-        let first = refresh_token_grant(&state, &refresh_req(token_1, None), &client, None)
+        let token_1 = signed_refresh(&state, &family, "scope-file-jti-1").await;
+        let first = grant_refresh(&state, token_1, &client, None, None)
             .await
             .unwrap();
         assert_eq!(first.scope.as_deref(), Some("read profile"));
         let token_2 = first.refresh_token.clone().unwrap();
 
-        let narrowed = refresh_token_grant(
-            &state,
-            &refresh_req(token_2, Some("read".to_string())),
-            &client,
-            None,
-        )
-        .await
-        .unwrap();
+        let narrowed = grant_refresh(&state, token_2, &client, Some("read".to_string()), None)
+            .await
+            .unwrap();
         assert_eq!(narrowed.scope.as_deref(), Some("read"));
         let token_3 = narrowed.refresh_token.clone().unwrap();
 
-        let restored = refresh_token_grant(&state, &refresh_req(token_3, None), &client, None)
+        let restored = grant_refresh(&state, token_3, &client, None, None)
             .await
             .unwrap();
         assert_eq!(restored.scope.as_deref(), Some("read profile"));
@@ -1191,10 +1168,11 @@ mod tests {
             .unwrap()
             .unwrap()
             .current_refresh_hash;
-        let err = refresh_token_grant(
+        let err = grant_refresh(
             &state,
-            &refresh_req(token_4.clone(), Some("write".to_string())),
+            token_4.clone(),
             &client,
+            Some("write".to_string()),
             None,
         )
         .await
@@ -1210,38 +1188,23 @@ mod tests {
             .unwrap()
             .current_refresh_hash;
         assert_eq!(before, after, "failed scope check must not consume refresh");
-        let retry = refresh_token_grant(&state, &refresh_req(token_4, None), &client, None)
+        let retry = grant_refresh(&state, token_4, &client, None, None)
             .await
             .unwrap();
         assert_eq!(retry.scope.as_deref(), Some("read profile"));
 
-        let legacy = TokenFamily {
-            id: "scope-legacy-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "scope-file-client".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: util::sha256_base64url("scope-legacy-jti"),
-            scopes: Vec::new(),
-            auth_time: None,
-            acr: None,
-            amr: Vec::new(),
-            audience: vec!["scope-file-client".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: None,
-            issued_at: now,
-            revoked: false,
-        };
-        repo.create_token_family(&legacy).await.unwrap();
-        let legacy_token = signed_refresh(
-            &state,
-            "scope-file-user",
+        let legacy = refresh_test_family(
+            "scope-legacy-family",
+            &user.id.clone(),
             "scope-file-client",
-            &legacy.id,
             "scope-legacy-jti",
-        )
-        .await;
-        let err = refresh_token_grant(&state, &refresh_req(legacy_token, None), &client, None)
+            &[],
+            now,
+            None,
+        );
+        repo.create_token_family(&legacy).await.unwrap();
+        let legacy_token = signed_refresh(&state, &legacy, "scope-legacy-jti").await;
+        let err = grant_refresh(&state, legacy_token, &client, None, None)
             .await
             .unwrap_err();
         assert!(
@@ -1262,48 +1225,27 @@ mod tests {
             "none",
         );
         repo.create_client(&client).await.unwrap();
-        let user = User {
-            id: "auth-file-user".to_string(),
-            realm_id: "test".to_string(),
-            email: None,
-            email_verified: false,
-            display_name: None,
-            failed_login_attempts: 0,
-            locked_until: None,
-            org: None,
-        };
+        let user = refresh_test_user("auth-file-user");
         repo.create_user(&user).await.unwrap();
 
         let now = util::now_seconds();
         let original_auth_time = now - 3600;
-        let family = TokenFamily {
-            id: "auth-file-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "auth-file-client".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: util::sha256_base64url("auth-file-jti-1"),
-            scopes: vec!["openid".to_string()],
-            auth_time: Some(original_auth_time),
-            acr: Some("urn:qid:acr:password".to_string()),
-            amr: vec!["pwd".to_string()],
-            audience: vec!["auth-file-client".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: None,
-            issued_at: now - 3600,
-            revoked: false,
-        };
+        let mut family = refresh_test_family(
+            "auth-file-family",
+            &user.id.clone(),
+            "auth-file-client",
+            "auth-file-jti-1",
+            &["openid"],
+            now - 3600,
+            Some(now + 86_400),
+        );
+        family.auth_time = Some(original_auth_time);
+        family.acr = Some("urn:qid:acr:password".to_string());
+        family.amr = vec!["pwd".to_string()];
         repo.create_token_family(&family).await.unwrap();
 
-        let token_1 = signed_refresh(
-            &state,
-            "auth-file-user",
-            "auth-file-client",
-            &family.id,
-            "auth-file-jti-1",
-        )
-        .await;
-        let refreshed = refresh_token_grant(&state, &refresh_req(token_1, None), &client, None)
+        let token_1 = signed_refresh(&state, &family, "auth-file-jti-1").await;
+        let refreshed = grant_refresh(&state, token_1, &client, None, None)
             .await
             .unwrap();
         let access = refreshed.access_token.clone();
@@ -1327,36 +1269,20 @@ mod tests {
         assert_eq!(stored.acr.as_deref(), Some("urn:qid:acr:password"));
         assert_eq!(stored.amr, vec!["pwd".to_string()]);
 
-        let legacy = TokenFamily {
-            id: "auth-legacy-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "auth-file-client".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: util::sha256_base64url("auth-legacy-jti"),
-            scopes: vec!["openid".to_string()],
-            auth_time: None,
-            acr: None,
-            amr: Vec::new(),
-            audience: vec!["auth-file-client".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: None,
-            issued_at: now,
-            revoked: false,
-        };
-        repo.create_token_family(&legacy).await.unwrap();
-        let legacy_token = signed_refresh(
-            &state,
-            "auth-file-user",
+        let legacy = refresh_test_family(
+            "auth-legacy-family",
+            &user.id.clone(),
             "auth-file-client",
-            &legacy.id,
             "auth-legacy-jti",
-        )
-        .await;
-        let legacy_refreshed =
-            refresh_token_grant(&state, &refresh_req(legacy_token, None), &client, None)
-                .await
-                .unwrap();
+            &["openid"],
+            now,
+            None,
+        );
+        repo.create_token_family(&legacy).await.unwrap();
+        let legacy_token = signed_refresh(&state, &legacy, "auth-legacy-jti").await;
+        let legacy_refreshed = grant_refresh(&state, legacy_token, &client, None, None)
+            .await
+            .unwrap();
         let legacy_claims = state
             .signer
             .decode_signature_only(&legacy_refreshed.access_token)
@@ -1379,51 +1305,27 @@ mod tests {
             refresh_test_client("foreign-id", "foreign-client", ClientType::Public, "none");
         repo.create_client(&owner).await.unwrap();
         repo.create_client(&foreign).await.unwrap();
-        let user = User {
-            id: "owner-user".to_string(),
-            realm_id: "test".to_string(),
-            email: None,
-            email_verified: false,
-            display_name: None,
-            failed_login_attempts: 0,
-            locked_until: None,
-            org: None,
-        };
+        let user = refresh_test_user("owner-user");
         repo.create_user(&user).await.unwrap();
-        let family = TokenFamily {
-            id: "owner-family".to_string(),
-            user_id: user.id.clone(),
-            client_id: "owner-client".to_string(),
-            realm_id: "test".to_string(),
-            current_refresh_hash: util::sha256_base64url("owner-jti-1"),
-            scopes: vec!["openid".to_string()],
-            auth_time: None,
-            acr: None,
-            amr: Vec::new(),
-            audience: vec!["owner-client".to_string()],
-            resource: Vec::new(),
-            authorization_details: None,
-            sender_constraint: None,
-            issued_at: now,
-            revoked: false,
-        };
+        let family = refresh_test_family(
+            "owner-family",
+            &user.id.clone(),
+            "owner-client",
+            "owner-jti-1",
+            &["openid"],
+            now,
+            Some(now + 86_400),
+        );
         repo.create_token_family(&family).await.unwrap();
 
-        let stolen = signed_refresh(
-            &state,
-            "owner-user",
-            "owner-client",
-            &family.id,
-            "owner-jti-1",
-        )
-        .await;
+        let stolen = signed_refresh(&state, &family, "owner-jti-1").await;
         let before = repo
             .get_token_family(&family.id)
             .await
             .unwrap()
             .unwrap()
             .current_refresh_hash;
-        let err = refresh_token_grant(&state, &refresh_req(stolen.clone(), None), &foreign, None)
+        let err = grant_refresh(&state, stolen.clone(), &foreign, None, None)
             .await
             .unwrap_err();
         assert!(
@@ -1437,7 +1339,7 @@ mod tests {
             .unwrap()
             .current_refresh_hash;
         assert_eq!(before, after, "foreign attempt must not consume refresh");
-        let ok = refresh_token_grant(&state, &refresh_req(stolen, None), &owner, None).await;
+        let ok = grant_refresh(&state, stolen, &owner, None, None).await;
         assert!(ok.is_ok(), "owner must still succeed: {ok:?}");
     }
 
@@ -1474,30 +1376,14 @@ mod tests {
         .await
         .unwrap();
 
-        let client = Client {
-            id: "realm-b-client-id".to_string(),
-            realm_id: "realm-b".to_string(),
-            client_id: "client-in-realm-b".to_string(),
-            client_type: ClientType::Confidential,
-            token_endpoint_auth_method: "client_secret_basic".to_string(),
-            client_secret_hash: None,
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: serde_json::json!({ "keys": [] }),
-            redirect_uris: Vec::new(),
-            grant_types: vec!["client_credentials".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-        };
+        let mut client = refresh_test_client(
+            "realm-b-client-id",
+            "client-in-realm-b",
+            ClientType::Confidential,
+            "client_secret_basic",
+        );
+        client.realm_id = "realm-b".to_string();
+        client.grant_types = vec!["client_credentials".to_string()];
         repo.create_client(&client).await.unwrap();
 
         let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
@@ -1625,5 +1511,62 @@ mod tests {
             r1.is_err() || r2.is_err(),
             "duplicate session creation must be rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_rotation_never_extends_past_initial_deadline() {
+        // RFC 10017 section 6.3.2.3: rotation must not extend past the
+        // initial expiration. Issued 1000s ago under a 3600s lifetime while
+        // the realm TTL is 86400s: both replacements still end at the
+        // original deadline.
+        let now = util::now_seconds();
+        let deadline = now + 2600;
+        let (state, _, client, _, token_1) =
+            setup_refresh_case("deadline", now - 1000, Some(deadline)).await;
+        let rotated = grant_refresh(&state, token_1, &client, None, None)
+            .await
+            .unwrap();
+        let refresh_token = rotated.refresh_token.as_ref().unwrap();
+        assert_eq!(decode_exp(&state, refresh_token), deadline as usize);
+        assert_eq!(decode_exp(&state, &rotated.access_token), deadline as usize);
+    }
+
+    #[tokio::test]
+    async fn refresh_rejects_expired_family_without_rotating() {
+        // At the deadline redemption fails without creating tokens or
+        // rotating the hash, and expiry alone revokes nothing.
+        let now = util::now_seconds();
+        let (state, repo, client, family, token) =
+            setup_refresh_case("expired", now - 90000, Some(now - 10)).await;
+        let before = family.current_refresh_hash.clone();
+        let err = grant_refresh(&state, token, &client, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QidError::Unauthorized { .. }),
+            "expired family must be rejected, got {err:?}"
+        );
+        let after = repo.get_token_family(&family.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.current_refresh_hash, before,
+            "expired redemption must not rotate"
+        );
+        assert!(!after.revoked, "expiry alone revokes nothing");
+    }
+
+    #[tokio::test]
+    async fn refresh_pins_legacy_family_deadline_on_first_rotation() {
+        // Families predating the deadline persist none; the first rotation
+        // pins issued_at plus the realm TTL so later TTL changes cannot
+        // extend them.
+        let now = util::now_seconds();
+        let issued_at = now - 100;
+        let (state, repo, client, family, token_1) =
+            setup_refresh_case("legacy-pin", issued_at, None).await;
+        grant_refresh(&state, token_1, &client, None, None)
+            .await
+            .unwrap();
+        let pinned = repo.get_token_family(&family.id).await.unwrap().unwrap();
+        assert_eq!(pinned.refresh_expires_at, Some(issued_at + 86_400));
     }
 }

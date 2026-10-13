@@ -58,6 +58,7 @@ impl TokenRepository for FileRepository {
         id: &str,
         expected_refresh_hash: &str,
         refresh_hash: &str,
+        refresh_expires_at: u64,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
         let family = store
@@ -68,12 +69,15 @@ impl TokenRepository for FileRepository {
             })?;
         crate::domain::validate_token_family_rotation(family, expected_refresh_hash, refresh_hash)?;
         let previous_hash = family.current_refresh_hash.clone();
+        let previous_deadline = family.refresh_expires_at;
         family.current_refresh_hash = refresh_hash.to_string();
+        family.refresh_expires_at = Some(refresh_expires_at);
         drop(store);
         if let Err(save_err) = self.save().await {
             let mut store = self.store.write().await;
             if let Some(family) = store.token_families.get_mut(id) {
                 family.current_refresh_hash = previous_hash;
+                family.refresh_expires_at = previous_deadline;
             }
             return Err(save_err);
         }

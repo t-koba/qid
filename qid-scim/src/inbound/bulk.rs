@@ -52,10 +52,13 @@ pub(crate) async fn bulk<R: Repository>(
     let context_realm = context.as_ref().map(|ext| ext.realm_id.clone());
     for op in req.operations {
         let result = apply_bulk_operation(&state, context_realm.as_deref(), op).await;
-        if result["status"]
+        // Every failed operation counts toward failOnErrors, including server
+        // errors: a batch must stop after a repository failure, not just
+        // after client errors.
+        if !result["status"]
             .as_str()
             .unwrap_or_default()
-            .starts_with('4')
+            .starts_with('2')
         {
             failures += 1;
         }

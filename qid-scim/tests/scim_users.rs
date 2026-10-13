@@ -16,7 +16,12 @@ use tower::ServiceExt;
 const ENTERPRISE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
 
 async fn setup() -> Router {
-    let path = std::env::temp_dir().join(format!("qid-scim-{}.json", ulid::Ulid::new()));
+    setup_with_store().await.0
+}
+
+async fn setup_with_store() -> (Router, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("qid-scim-{}", ulid::Ulid::new()));
+    let path = dir.join("store.json");
     let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
     repo.migrate().await.unwrap();
     let mut config = test_helpers::test_config();
@@ -25,7 +30,7 @@ async fn setup() -> Router {
         Some("0123456789abcdef0123456789abcdef".to_string());
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
-    qid_scim::scim_routes().with_state(state)
+    (qid_scim::scim_routes().with_state(state), path)
 }
 
 #[tokio::test]
@@ -539,6 +544,59 @@ async fn scim_bulk_dispatches_create_and_delete_operations() {
         .to_bytes();
     let deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(deleted["Operations"][0]["status"], "204");
+}
+
+#[tokio::test]
+async fn scim_bulk_stops_after_server_error_at_threshold() {
+    let (app, store_path) = setup_with_store().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Groups")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","displayName":"fail-stop-group"}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let bytes = create_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Inject a repository failure: replace the store directory with a file
+    // so the next persisted write fails with a server error.
+    let parent = store_path.parent().unwrap().to_path_buf();
+    std::fs::remove_dir_all(&parent).unwrap();
+    std::fs::File::create(&parent).unwrap();
+
+    let bulk_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"failOnErrors":1,"Operations":[{{"method":"PATCH","path":"/Groups/{id}","data":{{"Operations":[{{"op":"replace","path":"displayName","value":"mutated"}}]}}}},{{"method":"POST","path":"/Groups","data":{{"realm":"corp","displayName":"must-not-run"}}}}]}}"#
+        )))
+        .unwrap();
+    let bulk_response = app.oneshot(bulk_request).await.unwrap();
+    assert_eq!(bulk_response.status(), StatusCode::OK);
+    let bytes = bulk_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let bulk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bulk["Operations"][0]["status"], "500");
+    // The server failure counts toward failOnErrors, so the later mutation
+    // must not run.
+    assert_eq!(bulk["Operations"].as_array().unwrap().len(), 1);
+
+    std::fs::remove_file(&parent).unwrap();
 }
 
 #[tokio::test]

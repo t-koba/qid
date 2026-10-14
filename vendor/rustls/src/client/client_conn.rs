@@ -227,7 +227,7 @@ pub struct ClientConfig {
     /// The default is false.
     pub enable_early_data: bool,
 
-    /// RFC 9258 imported PSK used with RFC 8773 certificate authentication.
+    /// RFC 9258 imported PSK used with RFC 9973 certificate authentication.
     pub(crate) imported_psk: Option<Arc<ClientImportedPsk>>,
 
     /// If set to `true`, requires the server to support the extended
@@ -417,7 +417,7 @@ impl ClientConfig {
         &self.provider
     }
 
-    /// Configures an RFC 9258 imported PSK for RFC 8773 certificate authentication.
+    /// Configures an RFC 9258 imported PSK for RFC 9973 certificate authentication.
     ///
     /// Connections made with this configuration require TLS 1.3, external-PSK
     /// DHE, and a client Raw Public Key. Session resumption and early data are

@@ -377,6 +377,17 @@ mod tests {
     }
 
     #[test]
+    fn imported_psk_requires_supported_groups_extension() {
+        assert_eq!(
+            process_imported_psk_client_hello(
+                imported_psk_client_hello_without_supported_groups(0)
+            )
+            .err(),
+            Some(PeerIncompatible::NoKxGroupsInCommon.into()),
+        );
+    }
+
+    #[test]
     fn imported_psk_ticket_age_is_still_covered_by_binder() {
         for age in [1, u32::MAX] {
             let mut hello = imported_psk_client_hello(age);
@@ -398,11 +409,27 @@ mod tests {
     }
 
     fn imported_psk_client_hello(age: u32) -> HandshakeMessagePayload<'static> {
+        imported_psk_client_hello_with_supported_groups(age, true)
+    }
+
+    fn imported_psk_client_hello_without_supported_groups(
+        age: u32,
+    ) -> HandshakeMessagePayload<'static> {
+        imported_psk_client_hello_with_supported_groups(age, false)
+    }
+
+    fn imported_psk_client_hello_with_supported_groups(
+        age: u32,
+        include_supported_groups: bool,
+    ) -> HandshakeMessagePayload<'static> {
         let suite = super::provider::cipher_suite::TLS13_AES_128_GCM_SHA256
             .tls13()
             .unwrap();
         let mut ch = minimal_client_hello();
         ch.extensions.client_certificate_types = Some(vec![CertificateType::RawPublicKey]);
+        if !include_supported_groups {
+            ch.extensions.named_groups.take();
+        }
         ch.extensions.tls_cert_with_extern_psk = Some(());
         ch.extensions.preshared_key_modes = Some(PskKeyExchangeModes {
             psk_dhe: true,

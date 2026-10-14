@@ -1,7 +1,7 @@
 //! RFC 9966 TLS Proof of Knowledge key and identity primitives.
 //!
 //! This module implements bootstrap-key validation, the RFC 9258 key importer,
-//! and an RFC 8773 TLS 1.3 server configuration that binds the selected external
+//! and an RFC 9973 TLS 1.3 server configuration that binds the selected external
 //! PSK to the client's RFC 7250 Raw Public Key in the same handshake.
 
 use hkdf::Hkdf;

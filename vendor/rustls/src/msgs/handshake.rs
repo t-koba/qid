@@ -1033,7 +1033,7 @@ extension_struct! {
         ExtensionType::CompressCertificate =>
             pub(crate) certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
 
-        /// Certificate authentication with external PSKs (RFC8773)
+        /// Certificate authentication with external PSKs (RFC 9973)
         ExtensionType::TlsCertWithExternPsk =>
             pub(crate) tls_cert_with_extern_psk: Option<()>,
 
@@ -1331,7 +1331,7 @@ extension_struct! {
         ExtensionType::PreSharedKey =>
             pub(crate) preshared_key: Option<u16>,
 
-        /// Certificate authentication with external PSKs (RFC8773)
+        /// Certificate authentication with external PSKs (RFC 9973)
         ExtensionType::TlsCertWithExternPsk =>
             pub(crate) tls_cert_with_extern_psk: Option<()>,
 

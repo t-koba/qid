@@ -345,7 +345,7 @@ pub struct ServerConfig {
     /// How to verify client certificates.
     pub(super) verifier: Arc<dyn verify::ClientCertVerifier>,
 
-    /// Resolves RFC 9258 imported PSKs for RFC 8773 certificate authentication.
+    /// Resolves RFC 9258 imported PSKs for RFC 9973 certificate authentication.
     pub(crate) imported_psk_resolver: Option<Arc<dyn ResolvesServerImportedPsk>>,
 
     /// How to output key material for debugging.  The default
@@ -571,7 +571,7 @@ impl ServerConfig {
         &self.provider
     }
 
-    /// Configures RFC 9258 imported PSKs for RFC 8773 certificate authentication.
+    /// Configures RFC 9258 imported PSKs for RFC 9973 certificate authentication.
     ///
     /// The configured client verifier must require RFC 7250 Raw Public Keys.
     /// TLS 1.3 session tickets and early data are disabled for this mode.

@@ -13,7 +13,7 @@ The upstream base source and test assets were copied from the exact GitHub tag b
 
 The fork adds two opt-in protocol surfaces:
 
-1. RFC 9258 imported external PSKs and RFC 8773 certificate authentication with an external PSK, used by RFC 9966 TLS-POK. This includes the `imp binder`, mandatory `psk_dhe_ke`, TLS 1.3 and Raw Public Key restrictions, constant-time identity/key matching, and fail-closed rejection of incompatible resumption, 0-RTT, ECH, and QUIC modes.
+1. RFC 9258 imported external PSKs and RFC 9973 (which obsoletes RFC 8773) certificate authentication with an external PSK, used by RFC 9966 TLS-POK. This includes the `imp binder`, required ClientHello `supported_groups`, mandatory `psk_dhe_ke`, TLS 1.3 and Raw Public Key restrictions, constant-time identity/key matching, and fail-closed rejection of incompatible resumption, 0-RTT, ECH, and QUIC modes. The inherited TLS 1.3 key schedule uses the RFC 9973-corrected `HKDF-Extract(0, external PSK)` order for the Early Secret.
 2. RFC 6961 `status_request_v2` and TLS 1.2 `ocsp_multi`, including ordered response lists, legacy RFC 6066 fallback, extension-conflict rejection, and an explicit client verifier capability and validation callback.
 
 Neither surface is enabled by an ordinary upstream rustls configuration. New behavior requires explicit use of the imported-PSK builder/resolver or the multi-OCSP builder/verifier methods.

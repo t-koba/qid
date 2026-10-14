@@ -130,7 +130,7 @@ impl fmt::Debug for ServerImportedPsk {
     }
 }
 
-/// Resolves RFC 9258 imported identities for RFC 8773 certificate authentication.
+/// Resolves RFC 9258 imported identities for RFC 9973 certificate authentication.
 pub trait ResolvesServerImportedPsk: fmt::Debug + Send + Sync {
     /// Resolves `identity` for the hash used by the selected TLS 1.3 suite.
     fn resolve(

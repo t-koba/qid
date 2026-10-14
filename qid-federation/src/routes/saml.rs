@@ -16,6 +16,10 @@ use crate::{
 
 use super::{SamlAcsForm, exec_broker_login_plan, load_broker_links, providers_from_config};
 
+const SAML_PROTOCOL_NS: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
+const SAML_ASSERTION_NS: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
+const XMLDSIG_NS: &str = "http://www.w3.org/2000/09/xmldsig#";
+
 pub async fn saml_inbound_acs<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
@@ -234,7 +238,7 @@ fn extract_saml_response_issuer(xml: &str) -> Result<String, QidError> {
         message: format!("SAMLResponse XML parse failed: {e}"),
     })?;
     let response = response_element(&doc)?;
-    direct_child_text(response, "Issuer").ok_or_else(|| QidError::BadRequest {
+    direct_child_text(response, SAML_ASSERTION_NS, "Issuer").ok_or_else(|| QidError::BadRequest {
         message: "SAML Response Issuer is required".to_string(),
     })
 }
@@ -252,9 +256,9 @@ fn validate_saml_acs_response(
         message: format!("SAMLResponse XML parse failed: {e}"),
     })?;
     let response = response_element(&doc)?;
-    let assertion = single_descendant(response, "Assertion")?;
-    let issuer = direct_child_text(response, "Issuer")
-        .or_else(|| direct_child_text(assertion, "Issuer"))
+    let assertion = single_descendant(response, SAML_ASSERTION_NS, "Assertion")?;
+    let issuer = direct_child_text(response, SAML_ASSERTION_NS, "Issuer")
+        .or_else(|| direct_child_text(assertion, SAML_ASSERTION_NS, "Issuer"))
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML Response or Assertion Issuer is required".to_string(),
         })?;
@@ -273,8 +277,10 @@ fn validate_saml_acs_response(
         clock_skew_seconds,
     )?;
 
-    let subject = descendant_text(assertion, "NameID").ok_or_else(|| QidError::BadRequest {
-        message: "SAML Assertion Subject NameID is required".to_string(),
+    let subject = descendant_text(assertion, SAML_ASSERTION_NS, "NameID").ok_or_else(|| {
+        QidError::BadRequest {
+            message: "SAML Assertion Subject NameID is required".to_string(),
+        }
     })?;
     let response_id = response
         .attribute("ID")
@@ -305,12 +311,12 @@ fn validate_saml_acs_response(
 
     for attribute in assertion
         .descendants()
-        .filter(|node| is_element(*node, "Attribute"))
+        .filter(|node| is_element(*node, SAML_ASSERTION_NS, "Attribute"))
     {
         if let Some(name) = attribute.attribute("Name") {
             let values = attribute
                 .children()
-                .filter(|node| is_element(*node, "AttributeValue"))
+                .filter(|node| is_element(*node, SAML_ASSERTION_NS, "AttributeValue"))
                 .filter_map(|node| node.text())
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
@@ -351,7 +357,7 @@ fn validate_saml_signature(
     }
     let signatures = response
         .descendants()
-        .filter(|node| is_element(*node, "Signature"))
+        .filter(|node| is_element(*node, XMLDSIG_NS, "Signature"))
         .collect::<Vec<_>>();
     if signatures.len() != 1 {
         return Err(QidError::BadRequest {
@@ -361,7 +367,7 @@ fn validate_saml_signature(
     let signature = signatures[0];
     let reference_uri = signature
         .descendants()
-        .find(|node| is_element(*node, "Reference"))
+        .find(|node| is_element(*node, XMLDSIG_NS, "Reference"))
         .and_then(|node| node.attribute("URI"))
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML Signature Reference URI is required".to_string(),
@@ -384,7 +390,7 @@ fn validate_saml_signature(
     }
     let signature_method = signature
         .descendants()
-        .find(|node| is_element(*node, "SignatureMethod"))
+        .find(|node| is_element(*node, XMLDSIG_NS, "SignatureMethod"))
         .and_then(|node| node.attribute("Algorithm"))
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML SignatureMethod Algorithm is required".to_string(),
@@ -429,7 +435,7 @@ fn validate_saml_response_protocol(
 ) -> Result<u64, QidError> {
     let status_code = response
         .descendants()
-        .find(|node| is_element(*node, "StatusCode"))
+        .find(|node| is_element(*node, SAML_PROTOCOL_NS, "StatusCode"))
         .and_then(|node| node.attribute("Value"))
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML Response StatusCode is required".to_string(),
@@ -457,17 +463,17 @@ fn validate_saml_response_protocol(
     // elements elsewhere never satisfy the check.
     let conditions = assertion
         .descendants()
-        .find(|node| is_element(*node, "Conditions"));
+        .find(|node| is_element(*node, SAML_ASSERTION_NS, "Conditions"));
     let mut restriction_count = 0;
     if let Some(conditions) = conditions {
         for restriction in conditions
             .children()
-            .filter(|node| is_element(*node, "AudienceRestriction"))
+            .filter(|node| is_element(*node, SAML_ASSERTION_NS, "AudienceRestriction"))
         {
             restriction_count += 1;
             let group = restriction
                 .children()
-                .filter(|node| is_element(*node, "Audience"))
+                .filter(|node| is_element(*node, SAML_ASSERTION_NS, "Audience"))
                 .filter_map(|node| node.text())
                 .map(str::trim)
                 .collect::<Vec<_>>();
@@ -485,7 +491,7 @@ fn validate_saml_response_protocol(
     }
     let confirmation = assertion
         .descendants()
-        .find(|node| is_element(*node, "SubjectConfirmation"))
+        .find(|node| is_element(*node, SAML_ASSERTION_NS, "SubjectConfirmation"))
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML Assertion SubjectConfirmation is required".to_string(),
         })?;
@@ -496,7 +502,7 @@ fn validate_saml_response_protocol(
     }
     let confirmation_data = confirmation
         .descendants()
-        .find(|node| is_element(*node, "SubjectConfirmationData"))
+        .find(|node| is_element(*node, SAML_ASSERTION_NS, "SubjectConfirmationData"))
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML Assertion SubjectConfirmationData is required".to_string(),
         })?;
@@ -533,7 +539,7 @@ fn validate_saml_response_protocol(
     )?;
     if let Some(conditions) = assertion
         .descendants()
-        .find(|node| is_element(*node, "Conditions"))
+        .find(|node| is_element(*node, SAML_ASSERTION_NS, "Conditions"))
     {
         if let Some(not_before) = conditions.attribute("NotBefore") {
             validate_not_before(not_before, now, clock_skew_seconds, "SAML Conditions")?;
@@ -557,7 +563,7 @@ fn reject_insecure_saml_response_xml(xml: &str) -> Result<(), QidError> {
 
 fn response_element<'a>(doc: &'a Document<'a>) -> Result<Node<'a, 'a>, QidError> {
     let response = doc.root_element();
-    if !is_element(response, "Response") {
+    if !is_element(response, SAML_PROTOCOL_NS, "Response") {
         return Err(QidError::BadRequest {
             message: "SAMLResponse root element must be Response".to_string(),
         });
@@ -565,10 +571,14 @@ fn response_element<'a>(doc: &'a Document<'a>) -> Result<Node<'a, 'a>, QidError>
     Ok(response)
 }
 
-fn single_descendant<'a>(root: Node<'a, 'a>, name: &str) -> Result<Node<'a, 'a>, QidError> {
+fn single_descendant<'a>(
+    root: Node<'a, 'a>,
+    namespace: &str,
+    name: &str,
+) -> Result<Node<'a, 'a>, QidError> {
     let mut matches = root
         .descendants()
-        .filter(|node| is_element(*node, name))
+        .filter(|node| is_element(*node, namespace, name))
         .collect::<Vec<_>>();
     if matches.len() != 1 {
         return Err(QidError::BadRequest {
@@ -578,26 +588,26 @@ fn single_descendant<'a>(root: Node<'a, 'a>, name: &str) -> Result<Node<'a, 'a>,
     Ok(matches.remove(0))
 }
 
-fn direct_child_text(node: Node<'_, '_>, name: &str) -> Option<String> {
+fn direct_child_text(node: Node<'_, '_>, namespace: &str, name: &str) -> Option<String> {
     node.children()
-        .find(|child| is_element(*child, name))
+        .find(|child| is_element(*child, namespace, name))
         .and_then(|child| child.text())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
 }
 
-fn descendant_text(node: Node<'_, '_>, name: &str) -> Option<String> {
+fn descendant_text(node: Node<'_, '_>, namespace: &str, name: &str) -> Option<String> {
     node.descendants()
-        .find(|child| is_element(*child, name))
+        .find(|child| is_element(*child, namespace, name))
         .and_then(|child| child.text())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
 }
 
-fn is_element(node: Node<'_, '_>, name: &str) -> bool {
-    node.is_element() && node.tag_name().name() == name
+fn is_element(node: Node<'_, '_>, namespace: &str, name: &str) -> bool {
+    node.has_tag_name((namespace, name))
 }
 
 fn validate_not_before(value: &str, now: u64, skew: u64, context: &str) -> Result<(), QidError> {
@@ -840,6 +850,196 @@ mod tests {
             validated.claims.claims["email"],
             serde_json::json!("subject@example.com")
         );
+    }
+
+    #[test]
+    fn element_matching_uses_expanded_names_not_prefixes() {
+        for (namespace, names) in [
+            (SAML_PROTOCOL_NS, &["Response", "StatusCode"][..]),
+            (
+                SAML_ASSERTION_NS,
+                &[
+                    "Assertion",
+                    "Issuer",
+                    "Conditions",
+                    "AudienceRestriction",
+                    "Audience",
+                    "SubjectConfirmation",
+                    "SubjectConfirmationData",
+                    "NameID",
+                    "Attribute",
+                    "AttributeValue",
+                ][..],
+            ),
+            (
+                XMLDSIG_NS,
+                &["Signature", "Reference", "SignatureMethod"][..],
+            ),
+        ] {
+            for name in names {
+                for xml in [
+                    format!(r#"<alternate:{name} xmlns:alternate="{namespace}"/>"#),
+                    format!(r#"<{name} xmlns="{namespace}"/>"#),
+                ] {
+                    let doc = Document::parse(&xml).unwrap();
+                    assert!(is_element(doc.root_element(), namespace, name));
+                }
+                for xml in [
+                    format!(r#"<alternate:{name} xmlns:alternate="urn:example:not-saml"/>"#),
+                    format!("<{name}/>"),
+                ] {
+                    let doc = Document::parse(&xml).unwrap();
+                    assert!(!is_element(doc.root_element(), namespace, name));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issuer_extraction_requires_saml_namespaces() {
+        let xml = unsigned_response("https://id.example.com/realms/corp");
+        for (namespace, expected_error) in [
+            (SAML_PROTOCOL_NS, "root element"),
+            (SAML_ASSERTION_NS, "Issuer is required"),
+        ] {
+            let foreign = xml.replace(namespace, "urn:example:not-saml");
+            let err = extract_saml_response_issuer(&foreign).unwrap_err();
+            assert!(err.message().contains(expected_error), "{err}");
+        }
+        let unqualified = xml.replace("samlp:", "").replace("saml:", "");
+        assert!(extract_saml_response_issuer(&unqualified).is_err());
+    }
+
+    #[test]
+    fn acs_validation_accepts_alternate_namespace_prefixes() {
+        let unsigned = unsigned_response("https://id.example.com/realms/corp")
+            .replace("samlp:", "protocol:")
+            .replace("xmlns:samlp=", "xmlns:protocol=")
+            .replace("saml:", "identity:")
+            .replace("xmlns:saml=", "xmlns:identity=");
+        let start = unsigned.find("<identity:Assertion").unwrap();
+        let end = unsigned.find("</identity:Assertion>").unwrap() + "</identity:Assertion>".len();
+        let signature = qid_saml::sign_saml_element_with_key(
+            &unsigned[start..end],
+            "assert-1",
+            qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
+            TEST_KEY.as_bytes(),
+        )
+        .unwrap();
+        let signed = unsigned.replace("<!--SIGNATURE-->", &signature);
+        assert_eq!(
+            extract_saml_response_issuer(&signed).unwrap(),
+            provider().issuer
+        );
+        let validated = validate_saml_acs_response(
+            &signed,
+            &provider(),
+            "https://id.example.com/realms/corp",
+            "https://id.example.com/federation/corp/saml/acs",
+            1_700_000_000,
+            60,
+        )
+        .expect("namespace URIs, not prefixes, identify SAML and XMLDSig elements");
+        assert_eq!(validated.claims.subject, "subject@example.com");
+        assert_eq!(
+            validated.claims.claims["email"],
+            serde_json::json!("subject@example.com")
+        );
+    }
+
+    #[test]
+    fn acs_validation_ignores_foreign_namespace_claims() {
+        let unsigned = unsigned_response("https://id.example.com/realms/corp")
+            .replace(
+                "<saml:NameID>",
+                r#"<foreign:NameID xmlns:foreign="urn:example:not-saml">foreign-subject</foreign:NameID><saml:NameID>"#,
+            )
+            .replace(
+                r#"<saml:Attribute Name="email">"#,
+                r#"<foreign:Attribute xmlns:foreign="urn:example:not-saml" Name="injected"><foreign:AttributeValue>foreign-claim</foreign:AttributeValue></foreign:Attribute><saml:Attribute Name="email"><foreign:AttributeValue xmlns:foreign="urn:example:not-saml">foreign-email</foreign:AttributeValue>"#,
+            );
+        let validated = validate_saml_acs_response(
+            &sign_response(&unsigned),
+            &provider(),
+            "https://id.example.com/realms/corp",
+            "https://id.example.com/federation/corp/saml/acs",
+            1_700_000_000,
+            60,
+        )
+        .expect("foreign claims must not shadow SAML assertion claims");
+        assert_eq!(validated.claims.subject, "subject@example.com");
+        assert_eq!(
+            validated.claims.claims["email"],
+            serde_json::json!("subject@example.com")
+        );
+        assert!(!validated.claims.claims.contains_key("injected"));
+    }
+
+    #[test]
+    fn acs_validation_requires_xmldsig_namespaces() {
+        let signed = signed_response("https://id.example.com/realms/corp");
+        for (name, expected_error) in [
+            ("Signature", "exactly one XML signature"),
+            ("Reference", "Reference URI is required"),
+            ("SignatureMethod", "SignatureMethod Algorithm is required"),
+        ] {
+            let foreign = signed.replacen(
+                &format!("<ds:{name} "),
+                &format!(r#"<ds:{name} xmlns:ds="urn:example:not-saml" "#),
+                1,
+            );
+            // Signature already declares ds, so replace that declaration
+            // rather than introducing a duplicate namespace attribute.
+            let foreign = foreign.replace(
+                r#"xmlns:ds="urn:example:not-saml" xmlns:ds="http://www.w3.org/2000/09/xmldsig#""#,
+                r#"xmlns:ds="urn:example:not-saml""#,
+            );
+            let err = validate_saml_acs_response(
+                &foreign,
+                &provider(),
+                "https://id.example.com/realms/corp",
+                "https://id.example.com/federation/corp/saml/acs",
+                1_700_000_000,
+                60,
+            )
+            .unwrap_err();
+            assert!(err.message().contains(expected_error), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn acs_validation_rejects_wrong_namespace_audience_elements() {
+        for (name, suffix) in [
+            ("Conditions", " "),
+            ("AudienceRestriction", ">"),
+            ("Audience", ">"),
+        ] {
+            // Rebinding Conditions also rebinds its AudienceRestriction and
+            // Audience descendants. The other cases exercise each boundary.
+            let unsigned = unsigned_response("https://id.example.com/realms/corp").replacen(
+                &format!("<saml:{name}{suffix}"),
+                &format!(r#"<saml:{name} xmlns:saml="urn:example:not-saml"{suffix}"#),
+                1,
+            );
+            let signed = sign_response(&unsigned);
+            let public_key = qid_saml::cert_pem_to_public_key_pem_from_pem(TEST_CERT).unwrap();
+            qid_saml::verify_saml_xml_signature(qid_saml::SamlSignatureInputs {
+                document: &signed,
+                public_key_pem: public_key.as_bytes(),
+                profile: qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
+            })
+            .expect("wrong-namespace fixture must have a valid signature");
+            let err = validate_saml_acs_response(
+                &signed,
+                &provider(),
+                "https://id.example.com/realms/corp",
+                "https://id.example.com/federation/corp/saml/acs",
+                1_700_000_000,
+                60,
+            )
+            .expect_err("foreign namespace must not satisfy the audience requirement");
+            assert!(err.message().contains("Audience"), "{name}: {err}");
+        }
     }
 
     #[test]

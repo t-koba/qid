@@ -223,10 +223,10 @@ pub fn validate_saml_bearer_assertion(
                 message: "SAML bearer Assertion signature must include an X509Certificate"
                     .to_string(),
             })?;
-    // Production-grade W3C XMLDSig verification: extract the public
-    // key from the X.509 certificate embedded in the SAML signature
-    // and verify the canonicalised SignedInfo. This is the symmetric
-    // counterpart of the IdP-side signature generation.
+    // Extract the public key from the embedded certificate and verify with
+    // qid's limited custom raw-string XMLDSig-shaped profile. This does not
+    // claim arbitrary-prefix or standards interoperability with IdP-side
+    // signing.
     let algorithm = profile
         .signature_method
         .as_deref()
@@ -800,9 +800,9 @@ pub fn validate_logout_request_for_sp(
             message: "SAML LogoutRequest signing certificate is not trusted".to_string(),
         });
     }
-    // Production-grade W3C XMLDSig verification. Same code path as
-    // the AuthnRequest / Assertion validators; provided for symmetry
-    // so the SLO endpoint is as strict as the SSO endpoint.
+    // Verify with qid's limited custom raw-string XMLDSig-shaped profile,
+    // as for AuthnRequest and Assertion. No arbitrary-prefix or standards
+    // interoperability is claimed.
     let algorithm = profile
         .signature_method
         .as_deref()

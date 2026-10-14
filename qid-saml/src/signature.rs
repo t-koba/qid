@@ -95,10 +95,10 @@ pub fn apply_saml_signatures(
     })
 }
 
-/// Build a `<ds:Signature>` element for a SAML Response or Assertion
-/// using W3C XMLDSig. The signature is produced with a PKCS#8 PEM
-/// private key so third-party SAML SPs can verify it with the
-/// corresponding public key or certificate.
+/// Build a `<ds:Signature>`-shaped element for a SAML Response or Assertion
+/// using qid's limited custom signing profile and a PKCS#8 PEM private key.
+/// This is not a general W3C XMLDSig signer and makes no claim that arbitrary
+/// third-party SAML implementations can verify the result.
 pub fn build_saml_element_signature_with_key(
     xml: &str,
     element_name: &str,
@@ -169,9 +169,8 @@ fn extract_rsa_exponent(public_key_pem: &[u8]) -> QidResult<String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(key.e().to_bytes_be()))
 }
 
-/// Uses a PKCS#8 PEM private key to produce W3C XMLDSig signatures
-/// so the resulting SAML documents can be verified by third-party
-/// SAML SPs.
+/// Uses a PKCS#8 PEM private key to produce signatures in qid's limited
+/// custom XMLDSig-shaped profile. No standards-interoperability claim is made.
 pub fn sign_saml_response_with_key(
     issued: &SamlIssuedResponse,
     sp: &SamlServiceProviderMetadata,
@@ -245,9 +244,8 @@ pub fn validate_authn_request_signature_profile(
     req: &crate::SamlAuthnRequest,
     sp: &SamlServiceProviderMetadata,
 ) -> QidResult<crate::SamlXmlSignatureProfile> {
-    // Production path: perform a real W3C XMLDSig verification. The
-    // algorithm is chosen by looking at the SP's first configured
-    // signing certificate.
+    // Verify with qid's limited custom raw-string XMLDSig-shaped profile.
+    // The trust key is selected from the SP's configured signing certificates.
     if sp.signing_certificates.is_empty() {
         return Err(QidError::BadRequest {
             message: "SAML SP metadata must include a signing key; none are configured".to_string(),
@@ -273,10 +271,10 @@ pub fn validate_authn_request_signature_profile(
             message: "SAML signing cert does not match any trusted certificate".to_string(),
         });
     }
-    // Extract the public key from the X.509 certificate embedded in
-    // the SAML signature and run the production-grade W3C XMLDSig
-    // verifier. This is the symmetric counterpart of the IdP-side
-    // signature generation in `sign_saml_response_with_key`.
+    // Extract the public key from the embedded certificate and run the
+    // limited custom raw-string verifier. The verifier's tag selection and
+    // canonicalization do not promise arbitrary-prefix or standards
+    // interoperability with the IdP-side custom signing path.
     let algorithm = profile
         .signature_method
         .as_deref()

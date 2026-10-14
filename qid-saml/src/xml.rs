@@ -113,9 +113,10 @@ pub(crate) fn inspect_xml_signature_profile(
 ) -> QidResult<SamlXmlSignatureProfile> {
     reject_insecure_saml_xml(xml)?;
 
-    // Prefer DOM-based parsing (eliminates parser-differential between
-    // signature verification and claim extraction).  Fall back to the
-    // hand-written string scanner when the XML is not well-formed
+    // Prefer DOM-based parsing for signature-profile metadata. The separate
+    // cryptographic verifier and claim extraction use raw-string processing,
+    // so this does not provide a shared-parser or parser-differential guarantee.
+    // Fall back to the hand-written scanner when XML is not well-formed
     // (e.g. legacy generators that embed raw '<' in attribute values).
     if let Ok(doc) = crate::saml_document::SamlDocument::parse(xml) {
         let profile = doc.inspect_signature_profile(signed_element)?;

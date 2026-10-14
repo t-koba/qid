@@ -1,24 +1,19 @@
-//! SAML 2.0 XML Signature (XMLDSig) verification and signing.
+//! Limited SAML XMLDSig-shaped signing and verification helpers.
 //!
-//! The verifier follows a three-stage process:
-//!   1. Canonicalize the `<SignedInfo>` element with XML C14N 1.0
-//!      semantics (whitespace normalization, attribute sorting, and
-//!      namespace rewriting for the supported prefixes).
-//!   2. Compute the digest of each `<ds:Reference>` target element and
-//!      compare it against the supplied `<ds:DigestValue>`.
-//!   3. Verify the `<ds:SignatureValue>` using the supplied public key
-//!      (RSA-SHA256 or ECDSA-SHA256).
+//! The verifier lexically selects signature elements from the raw XML string,
+//! then uses custom parsing and serialization to process references, digests,
+//! and signature values. This is a narrow profile, not a general XMLDSig
+//! implementation or a standards-interoperability claim. Selection does not
+//! resolve arbitrary namespace prefixes: the supported lexical spellings are
+//! limited, and equivalent XML using other prefixes is not promised to work.
+//! The separate `SamlDocument` DOM is used for metadata/profile inspection, not
+//! for cryptographic verification or claim extraction.
 //!
-//! The C14N implementation is intentionally limited: it covers
-//! Canonical XML 1.0 and Exclusive XML Canonicalization 1.0 without
-//! XPath filtering, as they appear in SAML 2.0 AuthnRequest, Response,
-//! LogoutRequest, and LogoutResponse documents. SignedInfo
-//! canonicalization follows the declared
-//! `<ds:CanonicalizationMethod Algorithm>` exactly; reference digests
-//! follow each reference's declared `<ds:Transform>` list exactly.
-//! Unknown canonicalization methods, unknown transforms, and XPath
-//! filters fail closed and must be offloaded to a full XMLDSig library
-//! in production.
+//! Only the algorithms and transform forms handled in this module are accepted;
+//! unsupported forms fail closed. The custom serialization does not implement
+//! W3C XML C14N or promise to follow the declared canonicalization and transform
+//! algorithms exactly. Use a full XMLDSig implementation when standards
+//! interoperability is required.
 
 use base64::Engine;
 use qid_core::error::{QidError, QidResult};
@@ -31,8 +26,7 @@ pub const ENVELOPED_SIGNATURE_URI: &str = "http://www.w3.org/2000/09/xmldsig#env
 pub const C14N10_URI: &str = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
 pub const EXC_C14N_URI: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
 
-/// Algorithms that this module can verify. The set is intentionally
-/// narrow and aligned with the SAML 2.0 Security Profile.
+/// Signature algorithms accepted by this module's limited profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SamlXmlSignatureAlgorithm {
     /// RSA with SHA-256 (`http://www.w3.org/2001/04/xmldsig-more#rsa-sha256`).
@@ -85,14 +79,14 @@ struct KeyInfo {
     ec_key_value: bool,
 }
 
-/// Verify a SAML XML Signature embedded in the document. Returns `Ok(())`
-/// if the signature is valid and the document has not been tampered with.
+/// Check a SAML signature using qid's limited XMLDSig-shaped profile.
+/// Returns `Ok(())` when the raw-string checks, reference digest comparison,
+/// and signature-value check pass; this is not a general statement that the
+/// document is unmodified under W3C XMLDSig semantics.
 ///
 /// The verifier expects a non-empty same-document `Reference URI` such as
-/// `#id`, rejects SHA-1/MD5 algorithms, validates each reference digest, and
-/// verifies the `SignatureValue` with the caller-supplied public key. It is not
-/// a general-purpose XMLDSig engine; unsupported transforms and canonicalization
-/// modes fail closed.
+/// `#id`, rejects SHA-1/MD5 algorithms, and uses the caller-supplied public key.
+/// Unsupported transforms and canonicalization-mode URIs fail closed.
 pub fn verify_saml_xml_signature(inputs: SamlSignatureInputs<'_>) -> QidResult<()> {
     let document = inputs.document;
     reject_insecure(document)?;
@@ -378,10 +372,9 @@ fn parse_references(signed_info: &str) -> QidResult<Vec<Reference>> {
     Ok(references)
 }
 
-/// Check if any reference uses Exclusive XML Canonicalization.
-/// Select SignedInfo canonicalization from its own declared method.
-/// Reference transforms describe reference digest processing, never
-/// SignedInfo canonicalization, so they must not influence this choice.
+/// Select qid's custom exclusive serialization mode when the declared
+/// SignedInfo method URI is the Exclusive XML Canonicalization URI. Reference
+/// transform URIs do not select this SignedInfo serialization mode.
 fn signed_info_uses_exclusive_c14n(signed_info: &str) -> QidResult<bool> {
     let method =
         extract_tag_attr(signed_info, "CanonicalizationMethod", "Algorithm").ok_or_else(|| {
@@ -642,15 +635,13 @@ fn ensure_key_in_document(
     Ok(())
 }
 
-/// Canonicalize a SAML element into a stable string suitable for
-/// digest or signature computation. The canonicalization applies the
-/// subset of XML C14N 1.0 required by SAML: whitespace normalization,
-/// attribute sorting, and removal of comments and insignificant
-/// declarations.
+/// Serialize an element using qid's custom, limited C14N-10-mode profile for
+/// digest or signature computation. This is not a W3C XML C14N implementation:
+/// it sorts attributes and drops comments/declarations, but also rewrites
+/// qualified element names to local names. It is not suitable for arbitrary
+/// XMLDSig documents or a claim of standards interoperability.
 ///
-/// This function is intentionally narrower than the Canonical XML
-/// specification. It should only be used on SAML protocol/assertion elements
-/// that have already passed the parser-level checks in this crate.
+/// Use only with the limited SAML profile handled by this module.
 pub fn canonicalize_saml_element(element: &str) -> QidResult<String> {
     let mut out = String::with_capacity(element.len());
     let trimmed = element.trim();
@@ -659,14 +650,13 @@ pub fn canonicalize_saml_element(element: &str) -> QidResult<String> {
     Ok(out)
 }
 
-/// Canonicalize using Exclusive XML Canonicalization (exc-c14n).
-/// Preserves element name prefixes and emits `xmlns:prefix` declarations
-/// only for those prefixes that actually appear in element names.
+/// Serialize using qid's custom exclusive-mode profile, not the W3C Exclusive
+/// XML Canonicalization algorithm. This mode preserves element-name prefixes
+/// and emits `xmlns:prefix` declarations for prefixes found in element names.
 ///
-/// `ns_prefixes` must contain the namespace bindings visible to the signed
-/// element. Missing bindings produce syntactically stable output but may fail
-/// reference digest or signature validation, which is the desired fail-closed
-/// behavior.
+/// `ns_prefixes` supplies namespace bindings for that serialization. This
+/// helper does not establish general XMLDSig or namespace-prefix
+/// interoperability.
 pub fn canonicalize_exclusive(
     element: &str,
     ns_prefixes: &[(String, String)],
@@ -1116,18 +1106,20 @@ fn find_open_tag_for_local(haystack: &str, local: &str) -> Option<(usize, usize)
     None
 }
 
-/// Canonicalization method for SAML XMLDSig signing.
+/// Serialization-mode label used by qid's limited SAML XMLDSig-shaped
+/// signing profile. These modes select custom serialization, not full W3C C14N.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigningCanonicalization {
-    /// Canonical XML 1.0 (REC-xml-c14n-20010315).
+    /// Custom serialization selected by the C14N 1.0 algorithm URI.
     C14N10,
-    /// Exclusive XML Canonicalization 1.0 (REC-xml-exc-c14n-20010315).
+    /// Custom serialization selected by the Exclusive C14N algorithm URI.
     Exclusive,
 }
 
-/// Build a complete `<ds:Signature>` document with a real W3C XMLDSig
-/// signature produced from a PKCS#8 PEM private key, using C14N 1.0.
-/// The signature is the symmetric counterpart of [`verify_saml_xml_signature`].
+/// Build a `<ds:Signature>`-shaped document using qid's limited custom profile
+/// and a PKCS#8 PEM private key. This is not a general W3C XMLDSig signer and
+/// makes no standards-interoperability claim. Verification uses the matching
+/// custom profile in [`verify_saml_xml_signature`].
 pub fn sign_saml_element_with_key(
     target_xml: &str,
     element_id: &str,
@@ -1143,8 +1135,8 @@ pub fn sign_saml_element_with_key(
     )
 }
 
-/// Build a `<ds:Signature>` document with a choice of canonicalization
-/// method.  See [`sign_saml_element_with_key`] for the C14N 1.0 default.
+/// Build a `<ds:Signature>`-shaped document with a choice of custom
+/// serialization mode. See [`sign_saml_element_with_key`] for the default.
 pub fn sign_saml_element_with_key_c14n(
     target_xml: &str,
     element_id: &str,
@@ -1231,10 +1223,10 @@ pub fn sign_saml_element_with_key_c14n(
     ))
 }
 
-/// Sign a canonicalized octet stream with a PKCS#8 PEM private key.
-/// This is the production path that bypasses the `Signer` trait
-/// abstraction for the few algorithms where the W3C XMLDSig verifier
-/// needs to operate on a raw byte buffer.
+/// Sign the supplied byte stream with a PKCS#8 PEM private key.
+///
+/// This cryptographic helper does not canonicalize XML or make its input a
+/// standards-conforming XMLDSig SignedInfo octet stream.
 pub fn sign_canonicalized_with_pem(
     canonical: &[u8],
     private_key_pem: &[u8],

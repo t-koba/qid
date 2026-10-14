@@ -2,12 +2,10 @@ use crate::SamlXmlSignatureProfile;
 use qid_core::error::{QidError, QidResult};
 use roxmltree::Document;
 
-/// A SAML XML document parsed into a DOM tree.
-///
-/// The document is parsed once with `roxmltree` and all subsequent
-/// lookups (signature metadata, attributes, text values) operate on
-/// the **same** in-memory tree, eliminating parser-differential
-/// between signature verification and claim extraction.
+/// A SAML XML document parsed into a DOM tree for metadata and signature-profile
+/// inspection. Cryptographic signature verification uses separate custom
+/// raw-string parsing/canonicalization, and claim extraction does not use this
+/// DOM; no shared-parser or parser-differential guarantee is provided.
 pub(crate) struct SamlDocument<'a> {
     doc: Document<'a>,
 }
@@ -21,11 +19,11 @@ impl<'a> SamlDocument<'a> {
         Ok(Self { doc })
     }
 
-    /// Inspect the XML signature profile for a signed element.
+    /// Inspect signature metadata for a signed element using this DOM.
     ///
-    /// This is the DOM equivalent of `xml::inspect_xml_signature_profile`.
-    /// It parses the XML once and extracts all signature metadata from the
-    /// same tree, eliminating parser-differential attacks.
+    /// This profile inspection is separate from the custom raw-string
+    /// cryptographic verifier and from claim extraction; it does not make those
+    /// paths share a parsed tree.
     pub(crate) fn inspect_signature_profile(
         &self,
         signed_element: &str,

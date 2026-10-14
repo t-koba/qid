@@ -55,6 +55,10 @@ RFC 9966 Appendix A.3 publishes the same 90-byte secp521r1 DER SPKI twice as a 1
 | --- | --- | --- |
 | SAML 2.0 OASIS (Core/Bindings) | Scoped IdP subset; no interop claimed | `qid-saml` IdP surface wired as `saml_routes` only when `protocols.saml.enabled` (fail-closed when disabled): `POST /saml/:realm/sso`, `POST /saml/:realm/slo`, `POST /saml/:realm/artifact` (SOAP), `POST /saml/:realm/attribute-query`, plus IdP metadata; metadata advertises HTTP-POST plus HTTP-Artifact SSO, POST SLO, and SOAP ArtifactResolution; AuthnRequest `ProtocolBinding` must be HTTP-POST or HTTP-Artifact. DOCTYPE is rejected, the enveloped-signature transform is required with a non-empty Reference URI matched to the element ID, and signature verification plus claim extraction share one `SamlDocument` DOM; sign/encrypt ordering and email/persistent NameID formats are as coded. Covered by `qid-saml` unit and reject tests; any generic-SP interop claim waits for a passing fixture recorded with pinned OASIS versions. |
 
+### Inbound SAML broker
+
+The proprietary ACS in `qid-federation` requires one direct assertion `Conditions` element and a matching `AudienceRestriction`; every restriction group must contain the realm issuer. It evaluates `Conditions@NotBefore` and `NotOnOrAfter` when present, accepts at most one empty `OneTimeUse` marker, and rejects `ProxyRestriction`, generic or extension `Condition` elements, and all other unrecognized condition children. `OneTimeUse` relies on the ACS's mandatory assertion-scoped replay guard, which records before broker effects and retains keys through the acceptance window. Multi-instance deployments must use the shared replay cache described in [Shared Cache](operations.md#shared-cache). This is a scoped broker profile, not a claim of full SAML interoperability.
+
 ## OpenID Federation 1.0
 
 | Standard | qid status | Boundary |

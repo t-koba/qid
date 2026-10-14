@@ -457,21 +457,38 @@ fn validate_saml_response_protocol(
                     .to_string(),
         });
     }
+    let mut conditions = assertion
+        .children()
+        .filter(|node| is_element(*node, SAML_ASSERTION_NS, "Conditions"));
+    let conditions = match (conditions.next(), conditions.next()) {
+        (Some(conditions), None) => conditions,
+        _ => {
+            return Err(QidError::BadRequest {
+                message: "SAML Assertion must contain exactly one direct Conditions element"
+                    .to_string(),
+            });
+        }
+    };
     // SAML AudienceRestriction groups combine with AND semantics: the realm
     // issuer must appear in every group. Only direct Audience children of a
     // direct AudienceRestriction group under Conditions count; stray Audience
     // elements elsewhere never satisfy the check.
-    let conditions = assertion
-        .descendants()
-        .find(|node| is_element(*node, SAML_ASSERTION_NS, "Conditions"));
     let mut restriction_count = 0;
-    if let Some(conditions) = conditions {
-        for restriction in conditions
-            .children()
-            .filter(|node| is_element(*node, SAML_ASSERTION_NS, "AudienceRestriction"))
-        {
+    let mut one_time_use_seen = false;
+    for condition in conditions.children().filter(|node| node.is_element()) {
+        if is_element(condition, SAML_ASSERTION_NS, "AudienceRestriction") {
             restriction_count += 1;
-            let group = restriction
+            if condition
+                .children()
+                .filter(|node| node.is_element())
+                .any(|node| !is_element(node, SAML_ASSERTION_NS, "Audience"))
+            {
+                return Err(QidError::BadRequest {
+                    message: "SAML AudienceRestriction contains an unsupported element child"
+                        .to_string(),
+                });
+            }
+            let group = condition
                 .children()
                 .filter(|node| is_element(*node, SAML_ASSERTION_NS, "Audience"))
                 .filter_map(|node| node.text())
@@ -482,6 +499,29 @@ fn validate_saml_response_protocol(
                     message: "SAML Assertion Audience does not match realm issuer".to_string(),
                 });
             }
+        } else if is_element(condition, SAML_ASSERTION_NS, "OneTimeUse") {
+            if one_time_use_seen
+                || condition.attributes().len() != 0
+                || condition.children().any(|node| {
+                    node.is_element()
+                        || (node.is_text() && !node.text().unwrap_or_default().trim().is_empty())
+                })
+            {
+                return Err(QidError::BadRequest {
+                    message: "SAML Conditions allows at most one empty OneTimeUse element"
+                        .to_string(),
+                });
+            }
+            // Every assertion is recorded for replay before any broker effects,
+            // so OneTimeUse needs no additional consumption mechanism.
+            one_time_use_seen = true;
+        } else {
+            return Err(QidError::BadRequest {
+                message: format!(
+                    "SAML Conditions contains an unsupported condition element: {}",
+                    condition.tag_name().name()
+                ),
+            });
         }
     }
     if restriction_count == 0 {
@@ -537,16 +577,11 @@ fn validate_saml_response_protocol(
         clock_skew_seconds,
         "SAML SubjectConfirmationData",
     )?;
-    if let Some(conditions) = assertion
-        .descendants()
-        .find(|node| is_element(*node, SAML_ASSERTION_NS, "Conditions"))
-    {
-        if let Some(not_before) = conditions.attribute("NotBefore") {
-            validate_not_before(not_before, now, clock_skew_seconds, "SAML Conditions")?;
-        }
-        if let Some(not_on_or_after) = conditions.attribute("NotOnOrAfter") {
-            validate_not_on_or_after(not_on_or_after, now, clock_skew_seconds, "SAML Conditions")?;
-        }
+    if let Some(not_before) = conditions.attribute("NotBefore") {
+        validate_not_before(not_before, now, clock_skew_seconds, "SAML Conditions")?;
+    }
+    if let Some(not_on_or_after) = conditions.attribute("NotOnOrAfter") {
+        validate_not_on_or_after(not_on_or_after, now, clock_skew_seconds, "SAML Conditions")?;
     }
     Ok(expires_at)
 }
@@ -817,6 +852,25 @@ mod tests {
         unsigned.replace("<!--SIGNATURE-->", &signature)
     }
 
+    fn signed_response_with_extra_condition(condition: &str) -> String {
+        let unsigned = unsigned_response("https://id.example.com/realms/corp").replace(
+            "</saml:Conditions>",
+            &format!("{condition}</saml:Conditions>"),
+        );
+        sign_response(&unsigned)
+    }
+
+    fn validate_test_response(xml: &str) -> Result<ValidatedSamlAcsResponse, QidError> {
+        validate_saml_acs_response(
+            xml,
+            &provider(),
+            "https://id.example.com/realms/corp",
+            "https://id.example.com/federation/corp/saml/acs",
+            1_700_000_000,
+            60,
+        )
+    }
+
     #[test]
     fn acs_validation_rejects_unsigned_saml_response() {
         let err = validate_saml_acs_response(
@@ -862,6 +916,7 @@ mod tests {
                     "Assertion",
                     "Issuer",
                     "Conditions",
+                    "OneTimeUse",
                     "AudienceRestriction",
                     "Audience",
                     "SubjectConfirmation",
@@ -1009,10 +1064,10 @@ mod tests {
 
     #[test]
     fn acs_validation_rejects_wrong_namespace_audience_elements() {
-        for (name, suffix) in [
-            ("Conditions", " "),
-            ("AudienceRestriction", ">"),
-            ("Audience", ">"),
+        for (name, suffix, expected_error) in [
+            ("Conditions", " ", "exactly one direct Conditions"),
+            ("AudienceRestriction", ">", "unsupported condition element"),
+            ("Audience", ">", "AudienceRestriction"),
         ] {
             // Rebinding Conditions also rebinds its AudienceRestriction and
             // Audience descendants. The other cases exercise each boundary.
@@ -1038,7 +1093,7 @@ mod tests {
                 60,
             )
             .expect_err("foreign namespace must not satisfy the audience requirement");
-            assert!(err.message().contains("Audience"), "{name}: {err}");
+            assert!(err.message().contains(expected_error), "{name}: {err}");
         }
     }
 
@@ -1116,6 +1171,186 @@ mod tests {
         )
         .expect("all audience groups match this realm");
         assert_eq!(validated.claims.subject, "subject@example.com");
+    }
+
+    #[test]
+    fn acs_validation_rejects_custom_generic_condition() {
+        let signed = signed_response_with_extra_condition(
+            r#"<saml:Condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:custom="urn:example:custom-condition" xsi:type="custom:ApprovalRequired"/>"#,
+        );
+        let err = validate_test_response(&signed).unwrap_err();
+        assert!(
+            err.message()
+                .contains("unsupported condition element: Condition"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn acs_validation_rejects_proxy_restriction() {
+        let signed = signed_response_with_extra_condition(
+            r#"<saml:ProxyRestriction Count="0"><saml:Audience>https://id.example.com/realms/corp</saml:Audience></saml:ProxyRestriction>"#,
+        );
+        let err = validate_test_response(&signed).unwrap_err();
+        assert!(
+            err.message()
+                .contains("unsupported condition element: ProxyRestriction"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn acs_validation_rejects_condition_namespace_lookalikes() {
+        for name in [
+            "AudienceRestriction",
+            "OneTimeUse",
+            "Condition",
+            "ProxyRestriction",
+        ] {
+            for child in [
+                format!(r#"<foreign:{name} xmlns:foreign="urn:example:not-saml"/>"#),
+                format!("<{name}/>"),
+            ] {
+                let err = validate_test_response(&signed_response_with_extra_condition(&child))
+                    .unwrap_err();
+                assert!(
+                    err.message().contains("unsupported condition element"),
+                    "{child}: {err}"
+                );
+            }
+        }
+        for child in [
+            "<saml:Audience/>",
+            "<saml:Conditions/>",
+            "<saml:UnknownCondition/>",
+        ] {
+            let err =
+                validate_test_response(&signed_response_with_extra_condition(child)).unwrap_err();
+            assert!(
+                err.message().contains("unsupported condition element"),
+                "{child}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn acs_validation_requires_exactly_one_direct_conditions() {
+        let conditions = r#"<saml:Conditions><saml:AudienceRestriction><saml:Audience>https://id.example.com/realms/corp</saml:Audience></saml:AudienceRestriction></saml:Conditions>"#;
+        for conditions_xml in [
+            String::new(),
+            format!("{conditions}{conditions}"),
+            format!("<saml:Advice>{conditions}</saml:Advice>"),
+        ] {
+            let unsigned = response_with_conditions(
+                &conditions_xml,
+                r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
+                "",
+            );
+            let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
+            assert!(
+                err.message().contains("exactly one direct Conditions"),
+                "{conditions_xml}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn acs_validation_ignores_nested_conditions_lookalikes() {
+        // A nested group and its expired time bound must not shadow the direct
+        // Conditions element that actually governs this assertion.
+        let unsigned = unsigned_response("https://id.example.com/realms/corp").replace(
+            "<saml:Conditions NotBefore=",
+            r#"<saml:Advice><saml:Conditions NotOnOrAfter="1"><saml:AudienceRestriction><saml:Audience>https://other.example.com/realms/corp</saml:Audience></saml:AudienceRestriction></saml:Conditions></saml:Advice><saml:Conditions NotBefore="#,
+        );
+        validate_test_response(&sign_response(&unsigned))
+            .expect("only direct Conditions determines audience and time bounds");
+    }
+
+    #[test]
+    fn acs_validation_rejects_non_audience_restriction_children() {
+        for child in [
+            r#"<foreign:Audience xmlns:foreign="urn:example:not-saml">https://id.example.com/realms/corp</foreign:Audience>"#,
+            "<Audience>https://id.example.com/realms/corp</Audience>",
+            "<saml:OneTimeUse/>",
+        ] {
+            let unsigned = unsigned_response("https://id.example.com/realms/corp").replace(
+                "</saml:AudienceRestriction>",
+                &format!("{child}</saml:AudienceRestriction>"),
+            );
+            let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
+            assert!(
+                err.message()
+                    .contains("AudienceRestriction contains an unsupported element child"),
+                "{child}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn acs_validation_rejects_nonempty_or_duplicate_one_time_use() {
+        for condition in [
+            r#"<saml:OneTimeUse Count="1"/>"#,
+            r#"<saml:OneTimeUse xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="saml:OneTimeUseType"/>"#,
+            "<saml:OneTimeUse><saml:Audience/></saml:OneTimeUse>",
+            "<saml:OneTimeUse>not empty</saml:OneTimeUse>",
+            "<saml:OneTimeUse> <!--comment-->not empty</saml:OneTimeUse>",
+            "<saml:OneTimeUse><![CDATA[not empty]]></saml:OneTimeUse>",
+            "<saml:OneTimeUse/><saml:OneTimeUse/>",
+        ] {
+            let err = validate_test_response(&signed_response_with_extra_condition(condition))
+                .unwrap_err();
+            assert!(
+                err.message().contains("at most one empty OneTimeUse"),
+                "{condition}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn acs_validation_accepts_one_time_use_and_recorder_rejects_replay() {
+        for condition in [
+            "<saml:OneTimeUse/>",
+            "<saml:OneTimeUse> \n\t </saml:OneTimeUse>",
+            r#"<once:OneTimeUse xmlns:once="urn:oasis:names:tc:SAML:2.0:assertion"/>"#,
+            r#"<OneTimeUse xmlns="urn:oasis:names:tc:SAML:2.0:assertion"/>"#,
+        ] {
+            let signed = signed_response_with_extra_condition(condition);
+            let first = validate_test_response(&signed)
+                .expect("AudienceRestriction with an empty OneTimeUse must validate");
+            let cache = qid_core::cache::DpopState::new();
+            record_saml_acs_replay(&cache, "corp", &provider().id, &first, 1_700_000_000, 60)
+                .expect("first presentation must record before broker effects");
+            let second = validate_test_response(&signed)
+                .expect("the signed response still meets protocol checks");
+            let err =
+                record_saml_acs_replay(&cache, "corp", &provider().id, &second, 1_700_000_000, 60)
+                    .unwrap_err();
+            assert!(
+                err.message().contains("already been used"),
+                "{condition}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn acs_validation_preserves_conditions_time_bounds() {
+        for (old, new, expected_error) in [
+            (
+                r#"NotBefore="1699999990""#,
+                r#"NotBefore="1700000061""#,
+                "SAML Conditions is not yet valid",
+            ),
+            (
+                r#"NotOnOrAfter="1700000300"><saml:AudienceRestriction>"#,
+                r#"NotOnOrAfter="1699999940"><saml:AudienceRestriction>"#,
+                "SAML Conditions has expired",
+            ),
+        ] {
+            let unsigned =
+                unsigned_response("https://id.example.com/realms/corp").replace(old, new);
+            let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
+            assert!(err.message().contains(expected_error), "{err}");
+        }
     }
 
     /// Test cache with a manually advanced clock for deterministic TTL probes.

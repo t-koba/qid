@@ -266,7 +266,6 @@ pub enum PeerMisbehaved {
     ImportedPskExtensionUnexpected,
     ImportedPskOfferedWithEarlyData,
     ImportedPskSelectedWithoutCertificateAuthentication,
-    ImportedPskTicketAgeNotZero,
     InvalidCertCompression,
     InvalidMaxEarlyDataSize,
     InvalidKeyShare,

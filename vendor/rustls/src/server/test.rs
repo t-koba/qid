@@ -68,10 +68,12 @@ mod tests {
 
     use super::super::*;
     use crate::common_state::KxState;
+    use crate::crypto::hash::HashAlgorithm;
     use crate::crypto::{
         ActiveKeyExchange, CryptoProvider, KeyExchangeAlgorithm, SupportedKxGroup,
     };
     use crate::enums::CertificateType;
+    use crate::imported_psk::{ResolvesServerImportedPsk, ServerImportedPsk};
     use crate::msgs::deframer::DeframerIter;
     use crate::msgs::deframer::buffers::Locator;
     use crate::msgs::deframer::handshake::HandshakeDeframer;
@@ -80,12 +82,15 @@ mod tests {
         PskKeyExchangeModes,
     };
     use crate::pki_types::pem::PemObject;
-    use crate::pki_types::{CertificateDer, PrivateKeyDer};
+    use crate::pki_types::{CertificateDer, PrivateKeyDer, UnixTime};
     use crate::server::{AlwaysResolvesServerRawPublicKeys, ServerConfig, ServerConnection};
     use crate::sign::CertifiedKey;
     use crate::sync::Arc;
+    use crate::tls13::key_schedule::KeyScheduleEarly;
+    use crate::verify::{ClientCertVerified, ClientCertVerifier, HandshakeSignatureValid};
     use crate::{
-        CipherSuiteCommon, SupportedCipherSuite, Tls12CipherSuite, Tls13CipherSuite, version,
+        version, CipherSuiteCommon, DigitallySignedStruct, DistinguishedName, SupportedCipherSuite,
+        Tls12CipherSuite, Tls13CipherSuite,
     };
 
     #[cfg(feature = "tls12")]
@@ -343,6 +348,173 @@ mod tests {
             conn.process_new_packets().unwrap_err(),
             PeerIncompatible::IncorrectCertificateTypeExtension.into(),
         );
+    }
+
+    #[test]
+    fn server_accepts_imported_psk_with_nonzero_ticket_age() {
+        for age in [1, u32::MAX] {
+            let mut conn =
+                process_imported_psk_client_hello(imported_psk_client_hello(age)).unwrap();
+            assert_eq!(
+                conn.imported_psk_identity(),
+                Some(&b"test imported identity"[..])
+            );
+            assert!(conn.is_handshaking());
+
+            let mut wire = Vec::new();
+            conn.write_tls(&mut wire).unwrap();
+            let first_record = DeframerIter::new(&mut wire).next().unwrap().unwrap();
+            let message = Message::try_from(first_record.into_plain_message()).unwrap();
+            let MessagePayload::Handshake {
+                parsed: HandshakeMessagePayload(HandshakePayload::ServerHello(hello)),
+                ..
+            } = message.payload
+            else {
+                panic!("expected ServerHello selecting the imported PSK");
+            };
+            assert_eq!(hello.extensions.preshared_key, Some(0));
+        }
+    }
+
+    #[test]
+    fn imported_psk_ticket_age_is_still_covered_by_binder() {
+        for age in [1, u32::MAX] {
+            let mut hello = imported_psk_client_hello(age);
+            let HandshakePayload::ClientHello(ch) = &mut hello.0 else {
+                unreachable!();
+            };
+            // Only the negative control changes the age after calculating the binder.
+            ch.extensions
+                .preshared_key_offer
+                .as_mut()
+                .unwrap()
+                .identities[0]
+                .obfuscated_ticket_age = 0;
+            assert_eq!(
+                process_imported_psk_client_hello(hello).unwrap_err(),
+                PeerMisbehaved::IncorrectBinder.into(),
+            );
+        }
+    }
+
+    fn imported_psk_client_hello(age: u32) -> HandshakeMessagePayload<'static> {
+        let suite = super::provider::cipher_suite::TLS13_AES_128_GCM_SHA256
+            .tls13()
+            .unwrap();
+        let mut ch = minimal_client_hello();
+        ch.extensions.client_certificate_types = Some(vec![CertificateType::RawPublicKey]);
+        ch.extensions.tls_cert_with_extern_psk = Some(());
+        ch.extensions.preshared_key_modes = Some(PskKeyExchangeModes {
+            psk_dhe: true,
+            psk: false,
+        });
+        ch.extensions.preshared_key_offer = Some(PresharedKeyOffer::new(
+            PresharedKeyIdentity::new(b"test imported identity".to_vec(), age),
+            vec![0u8; suite.common.hash_provider.output_len()],
+        ));
+        let mut hello = HandshakeMessagePayload(HandshakePayload::ClientHello(ch));
+        // Encode the actual age before computing the initial ClientHello's binder,
+        // and only then construct the message that will be committed to the transcript.
+        let hash = suite
+            .common
+            .hash_provider
+            .hash(&hello.encoding_for_binder_signing());
+        let binder = KeyScheduleEarly::new(suite, &[0x55; 32])
+            .imported_psk_binder_key_and_sign_verify_data(&hash);
+        let HandshakePayload::ClientHello(ch) = &mut hello.0 else {
+            unreachable!();
+        };
+        ch.extensions.preshared_key_offer.as_mut().unwrap().binders[0] =
+            binder.as_ref().to_vec().into();
+        hello
+    }
+
+    fn process_imported_psk_client_hello(
+        hello: HandshakeMessagePayload<'static>,
+    ) -> Result<ServerConnection, Error> {
+        let config =
+            ServerConfig::builder_with_provider(super::provider::default_provider().into())
+                .with_protocol_versions(&[&version::TLS13])
+                .unwrap()
+                .with_client_cert_verifier(Arc::new(ClientHelloOnlyImportedPsk))
+                .with_single_cert(server_cert(), server_key())
+                .unwrap()
+                .with_imported_psk_resolver(Arc::new(ClientHelloOnlyImportedPsk))
+                .unwrap();
+        let mut conn = ServerConnection::new(config.into()).unwrap();
+        let message = Message {
+            version: ProtocolVersion::TLSv1_2,
+            payload: MessagePayload::handshake(hello),
+        };
+        conn.read_tls(&mut message.into_wire_bytes().as_slice())
+            .unwrap();
+        conn.process_new_packets()?;
+        Ok(conn)
+    }
+
+    // The tests exercise parsing, resolver selection, binder verification and the
+    // server flight, but stop before client certificate authentication.
+    #[derive(Debug)]
+    struct ClientHelloOnlyImportedPsk;
+
+    impl ResolvesServerImportedPsk for ClientHelloOnlyImportedPsk {
+        fn resolve(&self, identity: &[u8], hash: HashAlgorithm) -> Option<ServerImportedPsk> {
+            if identity != b"test imported identity" || hash != HashAlgorithm::SHA256 {
+                return None;
+            }
+            Some(
+                ServerImportedPsk::new(
+                    vec![0x55; 32],
+                    server_certified_key()
+                        .key
+                        .public_key()
+                        .unwrap()
+                        .into_owned(),
+                )
+                .unwrap(),
+            )
+        }
+    }
+
+    impl ClientCertVerifier for ClientHelloOnlyImportedPsk {
+        fn root_hint_subjects(&self) -> &[DistinguishedName] {
+            &[]
+        }
+
+        fn verify_client_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _now: UnixTime,
+        ) -> Result<ClientCertVerified, Error> {
+            unreachable!("test stops after ClientHello")
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
+            unreachable!("test stops after ClientHello")
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
+            unreachable!("test stops after ClientHello")
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![SignatureScheme::RSA_PSS_SHA256]
+        }
+
+        fn requires_raw_public_keys(&self) -> bool {
+            true
+        }
     }
 
     #[test]

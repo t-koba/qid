@@ -339,13 +339,8 @@ mod client_hello {
 
                 if let Some(resolver) = &self.config.imported_psk_resolver {
                     for (i, psk_id) in psk_offer.identities.iter().enumerate() {
-                        if psk_id.obfuscated_ticket_age != 0 {
-                            return Err(cx.common.send_fatal_alert(
-                                AlertDescription::IllegalParameter,
-                                PeerMisbehaved::ImportedPskTicketAgeNotZero,
-                            ));
-                        }
-
+                        // RFC 9973 section 5.1: servers MUST ignore the ticket age
+                        // for external PSKs. The encoded age is still covered by the binder.
                         let Some(resolved) = resolver.resolve(
                             &psk_id.identity.0,
                             self.suite.common.hash_provider.algorithm(),

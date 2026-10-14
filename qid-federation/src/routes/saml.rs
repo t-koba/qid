@@ -857,29 +857,16 @@ mod tests {
 
     #[test]
     fn acs_validation_rejects_unsigned_saml_response() {
-        let err = validate_saml_acs_response(
-            &unsigned_response("https://id.example.com/realms/corp"),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .unwrap_err();
+        let err = validate_test_response(&unsigned_response("https://id.example.com/realms/corp"))
+            .unwrap_err();
         assert!(err.message().contains("XML signature"));
     }
 
     #[test]
     fn acs_validation_accepts_signed_saml_response() {
-        let validated = validate_saml_acs_response(
-            &signed_response("https://id.example.com/realms/corp"),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .expect("signed SAML response must validate");
+        let validated =
+            validate_test_response(&signed_response("https://id.example.com/realms/corp"))
+                .expect("signed SAML response must validate");
         assert_eq!(validated.claims.subject, "subject@example.com");
         assert_eq!(validated.response_id, "resp-1");
         assert_eq!(validated.assertion_id, "assert-1");
@@ -970,15 +957,8 @@ mod tests {
             extract_saml_response_issuer(&signed).unwrap(),
             provider().issuer
         );
-        let validated = validate_saml_acs_response(
-            &signed,
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .expect("namespace URIs, not prefixes, identify SAML and XMLDSig elements");
+        let validated = validate_test_response(&signed)
+            .expect("namespace URIs, not prefixes, identify SAML and XMLDSig elements");
         assert_eq!(validated.claims.subject, "subject@example.com");
         assert_eq!(
             validated.claims.claims["email"],
@@ -997,15 +977,8 @@ mod tests {
                 r#"<saml:Attribute Name="email">"#,
                 r#"<foreign:Attribute xmlns:foreign="urn:example:not-saml" Name="injected"><foreign:AttributeValue>foreign-claim</foreign:AttributeValue></foreign:Attribute><saml:Attribute Name="email"><foreign:AttributeValue xmlns:foreign="urn:example:not-saml">foreign-email</foreign:AttributeValue>"#,
             );
-        let validated = validate_saml_acs_response(
-            &sign_response(&unsigned),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .expect("foreign claims must not shadow SAML assertion claims");
+        let validated = validate_test_response(&sign_response(&unsigned))
+            .expect("foreign claims must not shadow SAML assertion claims");
         assert_eq!(validated.claims.subject, "subject@example.com");
         assert_eq!(
             validated.claims.claims["email"],
@@ -1033,15 +1006,7 @@ mod tests {
                 r#"xmlns:ds="urn:example:not-saml" xmlns:ds="http://www.w3.org/2000/09/xmldsig#""#,
                 r#"xmlns:ds="urn:example:not-saml""#,
             );
-            let err = validate_saml_acs_response(
-                &foreign,
-                &provider(),
-                "https://id.example.com/realms/corp",
-                "https://id.example.com/federation/corp/saml/acs",
-                1_700_000_000,
-                60,
-            )
-            .unwrap_err();
+            let err = validate_test_response(&foreign).unwrap_err();
             assert!(err.message().contains(expected_error), "{name}: {err}");
         }
     }
@@ -1143,11 +1108,45 @@ mod tests {
     }
 
     #[test]
-    fn acs_validation_rejects_duplicate_direct_conditions() {
-        let unsigned = unsigned_response("https://id.example.com/realms/corp")
-            .replace("</saml:Conditions>", "</saml:Conditions><saml:Conditions/>");
-        let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
-        assert!(err.message().contains("exactly one direct Conditions"));
+    fn acs_validation_rejects_conditions_outside_clock_skew() {
+        for (not_before, not_on_or_after, expected_error) in [
+            (
+                "1700000061",
+                "1700000300",
+                "SAML Conditions is not yet valid",
+            ),
+            ("1699999990", "1699999940", "SAML Conditions has expired"),
+        ] {
+            let unsigned = unsigned_response("https://id.example.com/realms/corp").replace(
+                r#"<saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300">"#,
+                &format!(
+                    r#"<saml:Conditions NotBefore="{not_before}" NotOnOrAfter="{not_on_or_after}">"#
+                ),
+            );
+            let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
+            assert!(
+                matches!(&err, QidError::BadRequest { message } if message == expected_error),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn acs_validation_requires_exactly_one_direct_conditions() {
+        let unsigned = unsigned_response("https://id.example.com/realms/corp");
+        for xml in [
+            unsigned.replace("</saml:Conditions>", "</saml:Conditions><saml:Conditions/>"),
+            unsigned
+                .replace("<saml:Conditions ", "<saml:Advice><saml:Conditions ")
+                .replace("</saml:Conditions>", "</saml:Conditions></saml:Advice>"),
+        ] {
+            let err = validate_test_response(&sign_response(&xml)).unwrap_err();
+            assert!(
+                matches!(&err, QidError::BadRequest { message }
+                    if message == "SAML Assertion must contain exactly one direct Conditions element"),
+                "{err}"
+            );
+        }
     }
 
     /// Test cache with a manually advanced clock for deterministic TTL probes.
@@ -1263,15 +1262,7 @@ mod tests {
             "https://id.example.com/realms/corp",
             r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotBefore="1700000100" NotOnOrAfter="1700000300""#,
         );
-        let err = validate_saml_acs_response(
-            &sign_response(&unsigned),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .unwrap_err();
+        let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
         assert!(err.message().contains("SubjectConfirmationData NotBefore"));
     }
 
@@ -1282,15 +1273,7 @@ mod tests {
             r#"Recipient="https://id.example.com/federation/corp/saml/acs""#,
         );
         let signed = sign_response(&unsigned);
-        let err = validate_saml_acs_response(
-            &signed,
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .unwrap_err();
+        let err = validate_test_response(&signed).unwrap_err();
         assert!(err.message().contains("NotOnOrAfter"));
     }
 }

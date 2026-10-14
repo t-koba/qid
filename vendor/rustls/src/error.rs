@@ -197,10 +197,23 @@ pub enum InvalidMessage {
     DuplicateExtension(u16),
     /// A peer sent a message with a PSK offer extension in wrong position
     PreSharedKeyIsNotFinalExtension,
+    /// A peer sent `tls_cert_with_extern_psk` outside ClientHello or ServerHello.
+    TlsCertWithExternPskNotInHello,
     /// A server sent a HelloRetryRequest with an unknown extension
     UnknownHelloRetryRequestExtension,
     /// The peer sent a TLS1.3 Certificate with an unknown extension
     UnknownCertificateExtension,
+}
+
+impl InvalidMessage {
+    pub(crate) fn compressed_certificate_alert(&self) -> AlertDescription {
+        // RFC 9973 section 5 takes precedence over the usual RFC 8879
+        // bad_certificate alert for an invalid decompressed Certificate.
+        match self {
+            Self::TlsCertWithExternPskNotInHello => AlertDescription::IllegalParameter,
+            _ => AlertDescription::BadCertificate,
+        }
+    }
 }
 
 impl From<InvalidMessage> for Error {
@@ -213,6 +226,7 @@ impl From<InvalidMessage> for Error {
 impl From<InvalidMessage> for AlertDescription {
     fn from(e: InvalidMessage) -> Self {
         match e {
+            InvalidMessage::TlsCertWithExternPskNotInHello => Self::IllegalParameter,
             InvalidMessage::PreSharedKeyIsNotFinalExtension => Self::IllegalParameter,
             InvalidMessage::DuplicateExtension(_) => Self::IllegalParameter,
             InvalidMessage::UnknownHelloRetryRequestExtension => Self::UnsupportedExtension,

@@ -25,12 +25,212 @@ use super::handshake::{
     SupportedProtocolVersions,
 };
 use crate::enums::{
-    CertificateCompressionAlgorithm, CertificateType, CipherSuite, HandshakeType, ProtocolVersion,
-    SignatureScheme,
+    AlertDescription, CertificateCompressionAlgorithm, CertificateType, CipherSuite, HandshakeType,
+    ProtocolVersion, SignatureScheme,
 };
 use crate::error::InvalidMessage;
 use crate::sync::Arc;
 use crate::verify::DigitallySignedStruct;
+
+// Build wire extensions directly: the encoders for forbidden messages deliberately
+// have no slot for tls_cert_with_extern_psk.
+fn extension_vector(typ: ExtensionType, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    ((4 + payload.len()) as u16).encode(&mut bytes);
+    typ.encode(&mut bytes);
+    (payload.len() as u16).encode(&mut bytes);
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+fn handshake_encoding(typ: HandshakeType, body: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    typ.encode(&mut bytes);
+    super::codec::u24(body.len() as u32).encode(&mut bytes);
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+fn certificate_with_extension(typ: ExtensionType, payload: &[u8], entry: usize) -> Vec<u8> {
+    let mut entries = Vec::new();
+    for _ in 0..entry {
+        CertificateEntry::new(CertificateDer::from(vec![1])).encode(&mut entries);
+    }
+    CertificateDer::from(vec![1]).encode(&mut entries);
+    entries.extend_from_slice(&extension_vector(typ, payload));
+    let mut body = vec![0]; // empty certificate_request_context
+    super::codec::u24(entries.len() as u32).encode(&mut body);
+    body.extend_from_slice(&entries);
+    body
+}
+
+fn messages_with_extension(typ: ExtensionType, payload: &[u8]) -> Vec<Vec<u8>> {
+    let ext = extension_vector(typ, payload);
+    let mut hrr = sample_hello_retry_request();
+    hrr.extensions = HelloRetryRequestExtensions::default();
+    let mut hrr_body = hrr.get_encoding();
+    hrr_body.truncate(hrr_body.len() - 2); // replace the empty extension vector
+    hrr_body.extend_from_slice(&ext);
+    let mut request = vec![0]; // empty certificate_request_context
+    request.extend_from_slice(&ext);
+    let mut ticket = vec![0; 9]; // lifetime, age_add, empty nonce
+    ticket.extend_from_slice(&[0, 1, 1]); // nonempty ticket
+    ticket.extend_from_slice(&ext);
+    let mut messages = vec![
+        handshake_encoding(HandshakeType::ServerHello, &hrr_body),
+        handshake_encoding(HandshakeType::EncryptedExtensions, &ext),
+        handshake_encoding(HandshakeType::CertificateRequest, &request),
+        handshake_encoding(HandshakeType::NewSessionTicket, &ticket),
+    ];
+    for entry in 0..3 {
+        messages.push(handshake_encoding(
+            HandshakeType::Certificate,
+            &certificate_with_extension(typ, payload, entry),
+        ));
+    }
+    messages
+}
+
+#[test]
+fn tls_cert_with_extern_psk_in_forbidden_messages_is_illegal_parameter() {
+    // Placement must be rejected even if the extension body is not empty.
+    for payload in [&[][..], &[1][..]] {
+        for message in messages_with_extension(ExtensionType::TlsCertWithExternPsk, payload) {
+            let err = HandshakeMessagePayload::read_version(
+                &mut Reader::init(&message),
+                ProtocolVersion::TLSv1_3,
+            )
+            .unwrap_err();
+            assert_eq!(err, InvalidMessage::TlsCertWithExternPskNotInHello);
+            assert_eq!(
+                AlertDescription::from(err),
+                AlertDescription::IllegalParameter
+            );
+        }
+    }
+}
+
+#[test]
+fn tls_cert_with_extern_psk_is_preserved_in_client_and_server_hello() {
+    let mut ch = sample_client_hello_payload();
+    ch.extensions.tls_cert_with_extern_psk = Some(());
+    let sh = sample_server_hello_payload();
+    for payload in [
+        HandshakePayload::ClientHello(ch),
+        HandshakePayload::ServerHello(sh),
+    ] {
+        let bytes = HandshakeMessagePayload(payload).get_encoding();
+        let decoded = HandshakeMessagePayload::read_version(
+            &mut Reader::init(&bytes),
+            ProtocolVersion::TLSv1_3,
+        )
+        .unwrap();
+        match decoded.0 {
+            HandshakePayload::ClientHello(ch) => {
+                assert_eq!(ch.tls_cert_with_extern_psk, Some(()));
+                assert!(ch.preshared_key_offer.is_some());
+            }
+            HandshakePayload::ServerHello(sh) => {
+                assert_eq!(sh.tls_cert_with_extern_psk, Some(()));
+                assert_eq!(sh.preshared_key, Some(3));
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn unrelated_unknown_extensions_keep_their_existing_handling() {
+    let typ = ExtensionType::Unknown(0xffff);
+    let messages = messages_with_extension(typ, &[1]);
+    let expected = [
+        Some((
+            InvalidMessage::UnknownHelloRetryRequestExtension,
+            AlertDescription::UnsupportedExtension,
+        )),
+        None, // EE records unknown extensions for the subsequent unsolicited-extension check
+        None, // CertificateRequest discards a single unhandled extension
+        None, // NewSessionTicket discards a single unhandled extension
+        Some((
+            InvalidMessage::UnknownCertificateExtension,
+            AlertDescription::DecodeError,
+        )),
+        Some((
+            InvalidMessage::UnknownCertificateExtension,
+            AlertDescription::DecodeError,
+        )),
+        Some((
+            InvalidMessage::UnknownCertificateExtension,
+            AlertDescription::DecodeError,
+        )),
+    ];
+    for (message, expected) in messages.iter().zip(expected) {
+        let parsed = HandshakeMessagePayload::read_version(
+            &mut Reader::init(message),
+            ProtocolVersion::TLSv1_3,
+        );
+        match expected {
+            Some((error, alert)) => {
+                assert_eq!(parsed.unwrap_err(), error);
+                assert_eq!(AlertDescription::from(error), alert);
+            }
+            None => {
+                if let HandshakePayload::EncryptedExtensions(exts) = parsed.unwrap().0 {
+                    assert!(exts.unknown_extensions.contains(&u16::from(typ)));
+                }
+            }
+        }
+    }
+
+    // Repeated unrelated unknown extensions must still be rejected.
+    let mut duplicated = extension_vector(typ, &[1]);
+    duplicated.extend_from_within(2..);
+    let len = duplicated.len() - 2;
+    put_u16(len as u16, &mut duplicated);
+    let err = InvalidMessage::DuplicateExtension(u16::from(typ));
+    assert_eq!(
+        CertificateRequestExtensions::read_bytes(&duplicated).unwrap_err(),
+        err
+    );
+    assert_eq!(
+        NewSessionTicketExtensions::read_bytes(&duplicated).unwrap_err(),
+        err
+    );
+    let ee = handshake_encoding(HandshakeType::EncryptedExtensions, &duplicated);
+    assert_eq!(
+        HandshakeMessagePayload::read_version(&mut Reader::init(&ee), ProtocolVersion::TLSv1_3)
+            .unwrap_err(),
+        err,
+    );
+}
+
+#[test]
+fn decompressed_certificate_extension_errors_keep_the_required_alert() {
+    // Both connection roles use this parser and mapping after decompression.
+    for entry in 0..3 {
+        for (typ, expected, alert) in [
+            (
+                ExtensionType::TlsCertWithExternPsk,
+                InvalidMessage::TlsCertWithExternPskNotInHello,
+                AlertDescription::IllegalParameter,
+            ),
+            (
+                ExtensionType::Unknown(0xffff),
+                InvalidMessage::UnknownCertificateExtension,
+                AlertDescription::BadCertificate,
+            ),
+        ] {
+            let bytes = certificate_with_extension(typ, &[], entry);
+            let err = CertificatePayloadTls13::read_bytes(&bytes).unwrap_err();
+            assert_eq!(err, expected);
+            assert_eq!(err.compressed_certificate_alert(), alert);
+        }
+    }
+    assert_eq!(
+        InvalidMessage::MessageTooShort.compressed_certificate_alert(),
+        AlertDescription::BadCertificate
+    );
+}
 
 #[test]
 fn rejects_short_random() {
@@ -1087,7 +1287,10 @@ fn sample_new_session_ticket_payload_tls13() -> NewSessionTicketPayloadTls13 {
 }
 
 fn sample_encrypted_extensions() -> Box<ServerExtensions<'static>> {
-    sample_server_hello_payload().extensions
+    let mut extensions = sample_server_hello_payload().extensions;
+    // This acknowledgement is valid in ServerHello, not EncryptedExtensions.
+    extensions.tls_cert_with_extern_psk = None;
+    extensions
 }
 
 fn sample_certificate_status() -> CertificateStatus<'static> {

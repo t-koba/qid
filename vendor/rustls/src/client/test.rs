@@ -26,17 +26,19 @@ mod tests {
 
     use super::super::*;
     use crate::client::AlwaysResolvesClientRawPublicKeys;
-    use crate::crypto::cipher::MessageEncrypter;
+    use crate::crypto::cipher::{MessageDecrypter, MessageEncrypter};
     use crate::crypto::tls13::OkmBlock;
-    use crate::enums::CertificateType;
+    use crate::enums::{AlertDescription, CertificateType, ContentType};
+    use crate::error::InvalidMessage;
     use crate::msgs::base::PayloadU8;
+    use crate::msgs::enums::AlertLevel;
     use crate::msgs::enums::ECCurveType;
     use crate::msgs::handshake::{
         CertificateChain, EcParameters, HelloRetryRequestExtensions, KeyShareEntry,
         ServerEcdhParams, ServerExtensions, ServerKeyExchange, ServerKeyExchangeParams,
         ServerKeyExchangePayload,
     };
-    use crate::msgs::message::PlainMessage;
+    use crate::msgs::message::{InboundOpaqueMessage, PlainMessage};
     use crate::pki_types::pem::PemObject;
     use crate::pki_types::{PrivateKeyDer, UnixTime};
     use crate::sign::CertifiedKey;
@@ -395,9 +397,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_encrypted_extensions_placement_sends_the_specific_fatal_alert() {
+        for (extensions, expected_error, expected_alert) in [
+            (
+                ServerExtensions {
+                    tls_cert_with_extern_psk: Some(()),
+                    ..ServerExtensions::default()
+                },
+                Error::InvalidMessage(InvalidMessage::TlsCertWithExternPskNotInHello),
+                AlertDescription::IllegalParameter,
+            ),
+            (
+                ServerExtensions {
+                    key_share: Some(KeyShareEntry::new(NamedGroup::X25519, &[0xaa; 32])),
+                    ..ServerExtensions::default()
+                },
+                Error::PeerMisbehaved(PeerMisbehaved::DisallowedEncryptedExtension),
+                AlertDescription::UnsupportedExtension,
+            ),
+        ] {
+            let (mut conn, crypto, result) = client_requiring_rpk_server_ee(extensions);
+            assert_eq!(result, Err(expected_error));
+            let mut sent = Vec::new();
+            conn.write_tls(&mut sent).unwrap();
+            let mut reader = Reader::init(&sent);
+            let mut alert_count = 0;
+            while reader.any_left() {
+                let record = OutboundOpaqueMessage::read(&mut reader).unwrap();
+                if record.typ == ContentType::ChangeCipherSpec {
+                    continue;
+                }
+                let mut payload = record.payload.as_ref().to_vec();
+                let decrypted = crypto
+                    .client_handshake_decrypter()
+                    .decrypt(
+                        InboundOpaqueMessage::new(record.typ, record.version, &mut payload),
+                        0,
+                    )
+                    .unwrap();
+                match Message::try_from(decrypted).unwrap().payload {
+                    MessagePayload::Alert(alert) => {
+                        assert_eq!(alert.level, AlertLevel::Fatal);
+                        assert_eq!(alert.description, expected_alert);
+                        alert_count += 1;
+                    }
+                    _ => panic!("expected a fatal alert"),
+                }
+            }
+            assert_eq!(alert_count, 1);
+        }
+    }
+
     fn client_requiring_rpk_receives_server_ee(
         encrypted_extensions: ServerExtensions<'_>,
     ) -> Result<(), Error> {
+        client_requiring_rpk_server_ee(encrypted_extensions).2
+    }
+
+    fn client_requiring_rpk_server_ee(
+        encrypted_extensions: ServerExtensions<'_>,
+    ) -> (ClientConnection, Arc<FakeServerCrypto>, Result<(), Error>) {
         let fake_server_crypto = Arc::new(FakeServerCrypto::new());
         let mut conn = ClientConnection::new(
             client_config_for_rpk(fake_server_crypto.clone()).into(),
@@ -443,7 +503,8 @@ mod tests {
             .unwrap();
         conn.read_tls(&mut enc_ee.encode().as_slice())
             .unwrap();
-        conn.process_new_packets().map(|_| ())
+        let result = conn.process_new_packets().map(|_| ());
+        (conn, fake_server_crypto, result)
     }
 
     fn client_config_for_rpk(key_log: Arc<dyn KeyLog>) -> ClientConfig {
@@ -582,13 +643,28 @@ mod tests {
     #[derive(Debug)]
     struct FakeServerCrypto {
         server_handshake_secret: OnceLock<Vec<u8>>,
+        client_handshake_secret: OnceLock<Vec<u8>>,
     }
 
     impl FakeServerCrypto {
         fn new() -> Self {
             Self {
                 server_handshake_secret: OnceLock::new(),
+                client_handshake_secret: OnceLock::new(),
             }
+        }
+
+        fn client_handshake_decrypter(&self) -> Box<dyn MessageDecrypter> {
+            let cipher_suite = super::provider::cipher_suite::TLS13_AES_128_GCM_SHA256
+                .tls13()
+                .unwrap();
+            let secret = self.client_handshake_secret.get().unwrap();
+            let expander = cipher_suite
+                .hkdf_provider
+                .expander_for_okm(&OkmBlock::new(secret));
+            let key = derive_traffic_key(expander.as_ref(), cipher_suite.aead_alg);
+            let iv = derive_traffic_iv(expander.as_ref());
+            cipher_suite.aead_alg.decrypter(key, iv)
         }
 
         fn server_handshake_encrypter(&self) -> Box<dyn MessageEncrypter> {
@@ -618,6 +694,9 @@ mod tests {
         }
 
         fn log(&self, label: &str, _client_random: &[u8], secret: &[u8]) {
+            if label == "CLIENT_HANDSHAKE_TRAFFIC_SECRET" {
+                self.client_handshake_secret.set(secret.to_vec()).unwrap();
+            }
             if label == "SERVER_HANDSHAKE_TRAFFIC_SECRET" {
                 self.server_handshake_secret
                     .set(secret.to_vec())

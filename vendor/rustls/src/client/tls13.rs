@@ -1143,7 +1143,7 @@ impl State<ClientConnectionData> for ExpectCompressedCertificate {
                 Err(err) => {
                     return Err(cx
                         .common
-                        .send_fatal_alert(AlertDescription::BadCertificate, err));
+                        .send_fatal_alert(err.compressed_certificate_alert(), err));
                 }
             };
         trace!(

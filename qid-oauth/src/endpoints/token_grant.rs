@@ -1713,8 +1713,8 @@ mod tests {
     #[tokio::test]
     async fn initial_issuance_caps_access_at_family_deadline() {
         // Access TTL longer than refresh TTL must not let the first access
-        // token outlive the family deadline: record, JWT and expires_in all
-        // end at issued plus refresh TTL.
+        // token outlive the family deadline: the family record and JWT share
+        // the issued-plus-refresh-TTL deadline, and expires_in uses that TTL.
         let mut config = test_helpers::test_config();
         config.realms[0]
             .protocols
@@ -1766,8 +1766,6 @@ mod tests {
         let issued = authorization_code_grant(&state, &req, &client, None)
             .await
             .unwrap();
-        let deadline = now + 3600;
-        assert_eq!(decode_exp(&state, &issued.access_token), deadline as usize);
         assert_eq!(issued.expires_in, 3600);
         let stored = get_family(
             &repo,
@@ -1781,7 +1779,9 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(stored.refresh_expires_at, Some(deadline));
+        let deadline = stored.refresh_expires_at.unwrap();
+        assert_eq!(deadline, stored.issued_at + 3600);
+        assert_eq!(decode_exp(&state, &issued.access_token), deadline as usize);
     }
 
     #[tokio::test]

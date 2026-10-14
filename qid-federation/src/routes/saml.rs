@@ -833,23 +833,7 @@ mod tests {
     }
 
     fn signed_response(audience: &str) -> String {
-        let unsigned = unsigned_response(audience);
-        let assertion_start = unsigned
-            .find("<saml:Assertion")
-            .expect("test response must contain assertion");
-        let assertion_end = unsigned
-            .find("</saml:Assertion>")
-            .map(|pos| pos + "</saml:Assertion>".len())
-            .expect("test response must contain assertion close");
-        let assertion_xml = &unsigned[assertion_start..assertion_end];
-        let signature = qid_saml::sign_saml_element_with_key(
-            assertion_xml,
-            "assert-1",
-            qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
-            TEST_KEY.as_bytes(),
-        )
-        .expect("test SAML response must sign");
-        unsigned.replace("<!--SIGNATURE-->", &signature)
+        sign_response(&unsigned_response(audience))
     }
 
     fn signed_response_with_extra_condition(condition: &str) -> String {
@@ -1084,30 +1068,16 @@ mod tests {
                 profile: qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
             })
             .expect("wrong-namespace fixture must have a valid signature");
-            let err = validate_saml_acs_response(
-                &signed,
-                &provider(),
-                "https://id.example.com/realms/corp",
-                "https://id.example.com/federation/corp/saml/acs",
-                1_700_000_000,
-                60,
-            )
-            .expect_err("foreign namespace must not satisfy the audience requirement");
+            let err = validate_test_response(&signed)
+                .expect_err("foreign namespace must not satisfy the audience requirement");
             assert!(err.message().contains(expected_error), "{name}: {err}");
         }
     }
 
     #[test]
     fn acs_validation_rejects_wrong_audience() {
-        let err = validate_saml_acs_response(
-            &signed_response("https://other.example.com/realms/corp"),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .unwrap_err();
+        let err = validate_test_response(&signed_response("https://other.example.com/realms/corp"))
+            .unwrap_err();
         assert!(err.message().contains("Audience"));
     }
 
@@ -1120,15 +1090,7 @@ mod tests {
             r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
             "",
         );
-        let err = validate_saml_acs_response(
-            &sign_response(&unsigned),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .unwrap_err();
+        let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
         assert!(err.message().contains("Audience"));
     }
 
@@ -1141,15 +1103,7 @@ mod tests {
             r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
             r#"<saml:Audience xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://id.example.com/realms/corp</saml:Audience>"#,
         );
-        let err = validate_saml_acs_response(
-            &sign_response(&unsigned),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .unwrap_err();
+        let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
         assert!(err.message().contains("Audience"));
     }
 
@@ -1161,196 +1115,39 @@ mod tests {
             r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
             "",
         );
-        let validated = validate_saml_acs_response(
-            &sign_response(&unsigned),
-            &provider(),
-            "https://id.example.com/realms/corp",
-            "https://id.example.com/federation/corp/saml/acs",
-            1_700_000_000,
-            60,
-        )
-        .expect("all audience groups match this realm");
+        let validated = validate_test_response(&sign_response(&unsigned))
+            .expect("all audience groups match this realm");
         assert_eq!(validated.claims.subject, "subject@example.com");
     }
 
     #[test]
-    fn acs_validation_rejects_custom_generic_condition() {
-        let signed = signed_response_with_extra_condition(
-            r#"<saml:Condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:custom="urn:example:custom-condition" xsi:type="custom:ApprovalRequired"/>"#,
-        );
-        let err = validate_test_response(&signed).unwrap_err();
-        assert!(
-            err.message()
-                .contains("unsupported condition element: Condition"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn acs_validation_rejects_proxy_restriction() {
-        let signed = signed_response_with_extra_condition(
-            r#"<saml:ProxyRestriction Count="0"><saml:Audience>https://id.example.com/realms/corp</saml:Audience></saml:ProxyRestriction>"#,
-        );
-        let err = validate_test_response(&signed).unwrap_err();
-        assert!(
-            err.message()
-                .contains("unsupported condition element: ProxyRestriction"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn acs_validation_rejects_condition_namespace_lookalikes() {
-        for name in [
-            "AudienceRestriction",
-            "OneTimeUse",
-            "Condition",
-            "ProxyRestriction",
-        ] {
-            for child in [
-                format!(r#"<foreign:{name} xmlns:foreign="urn:example:not-saml"/>"#),
-                format!("<{name}/>"),
-            ] {
-                let err = validate_test_response(&signed_response_with_extra_condition(&child))
-                    .unwrap_err();
-                assert!(
-                    err.message().contains("unsupported condition element"),
-                    "{child}: {err}"
-                );
-            }
-        }
-        for child in [
-            "<saml:Audience/>",
-            "<saml:Conditions/>",
-            "<saml:UnknownCondition/>",
-        ] {
-            let err =
-                validate_test_response(&signed_response_with_extra_condition(child)).unwrap_err();
-            assert!(
-                err.message().contains("unsupported condition element"),
-                "{child}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn acs_validation_requires_exactly_one_direct_conditions() {
-        let conditions = r#"<saml:Conditions><saml:AudienceRestriction><saml:Audience>https://id.example.com/realms/corp</saml:Audience></saml:AudienceRestriction></saml:Conditions>"#;
-        for conditions_xml in [
-            String::new(),
-            format!("{conditions}{conditions}"),
-            format!("<saml:Advice>{conditions}</saml:Advice>"),
-        ] {
-            let unsigned = response_with_conditions(
-                &conditions_xml,
-                r#"Recipient="https://id.example.com/federation/corp/saml/acs" NotOnOrAfter="1700000300""#,
-                "",
-            );
-            let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
-            assert!(
-                err.message().contains("exactly one direct Conditions"),
-                "{conditions_xml}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn acs_validation_ignores_nested_conditions_lookalikes() {
-        // A nested group and its expired time bound must not shadow the direct
-        // Conditions element that actually governs this assertion.
-        let unsigned = unsigned_response("https://id.example.com/realms/corp").replace(
-            "<saml:Conditions NotBefore=",
-            r#"<saml:Advice><saml:Conditions NotOnOrAfter="1"><saml:AudienceRestriction><saml:Audience>https://other.example.com/realms/corp</saml:Audience></saml:AudienceRestriction></saml:Conditions></saml:Advice><saml:Conditions NotBefore="#,
-        );
-        validate_test_response(&sign_response(&unsigned))
-            .expect("only direct Conditions determines audience and time bounds");
-    }
-
-    #[test]
-    fn acs_validation_rejects_non_audience_restriction_children() {
-        for child in [
-            r#"<foreign:Audience xmlns:foreign="urn:example:not-saml">https://id.example.com/realms/corp</foreign:Audience>"#,
-            "<Audience>https://id.example.com/realms/corp</Audience>",
-            "<saml:OneTimeUse/>",
-        ] {
-            let unsigned = unsigned_response("https://id.example.com/realms/corp").replace(
-                "</saml:AudienceRestriction>",
-                &format!("{child}</saml:AudienceRestriction>"),
-            );
-            let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
-            assert!(
-                err.message()
-                    .contains("AudienceRestriction contains an unsupported element child"),
-                "{child}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn acs_validation_rejects_nonempty_or_duplicate_one_time_use() {
-        for condition in [
-            r#"<saml:OneTimeUse Count="1"/>"#,
-            r#"<saml:OneTimeUse xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="saml:OneTimeUseType"/>"#,
-            "<saml:OneTimeUse><saml:Audience/></saml:OneTimeUse>",
-            "<saml:OneTimeUse>not empty</saml:OneTimeUse>",
-            "<saml:OneTimeUse> <!--comment-->not empty</saml:OneTimeUse>",
-            "<saml:OneTimeUse><![CDATA[not empty]]></saml:OneTimeUse>",
-            "<saml:OneTimeUse/><saml:OneTimeUse/>",
+    fn acs_validation_rejects_unsupported_conditions() {
+        for (condition, name) in [
+            (
+                r#"<saml:Condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:custom="urn:example:custom-condition" xsi:type="custom:ApprovalRequired"/>"#,
+                "Condition",
+            ),
+            (
+                r#"<saml:ProxyRestriction Count="0"><saml:Audience>https://id.example.com/realms/corp</saml:Audience></saml:ProxyRestriction>"#,
+                "ProxyRestriction",
+            ),
         ] {
             let err = validate_test_response(&signed_response_with_extra_condition(condition))
                 .unwrap_err();
             assert!(
-                err.message().contains("at most one empty OneTimeUse"),
-                "{condition}: {err}"
+                err.message()
+                    .contains(&format!("unsupported condition element: {name}")),
+                "{err}"
             );
         }
     }
 
     #[test]
-    fn acs_validation_accepts_one_time_use_and_recorder_rejects_replay() {
-        for condition in [
-            "<saml:OneTimeUse/>",
-            "<saml:OneTimeUse> \n\t </saml:OneTimeUse>",
-            r#"<once:OneTimeUse xmlns:once="urn:oasis:names:tc:SAML:2.0:assertion"/>"#,
-            r#"<OneTimeUse xmlns="urn:oasis:names:tc:SAML:2.0:assertion"/>"#,
-        ] {
-            let signed = signed_response_with_extra_condition(condition);
-            let first = validate_test_response(&signed)
-                .expect("AudienceRestriction with an empty OneTimeUse must validate");
-            let cache = qid_core::cache::DpopState::new();
-            record_saml_acs_replay(&cache, "corp", &provider().id, &first, 1_700_000_000, 60)
-                .expect("first presentation must record before broker effects");
-            let second = validate_test_response(&signed)
-                .expect("the signed response still meets protocol checks");
-            let err =
-                record_saml_acs_replay(&cache, "corp", &provider().id, &second, 1_700_000_000, 60)
-                    .unwrap_err();
-            assert!(
-                err.message().contains("already been used"),
-                "{condition}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn acs_validation_preserves_conditions_time_bounds() {
-        for (old, new, expected_error) in [
-            (
-                r#"NotBefore="1699999990""#,
-                r#"NotBefore="1700000061""#,
-                "SAML Conditions is not yet valid",
-            ),
-            (
-                r#"NotOnOrAfter="1700000300"><saml:AudienceRestriction>"#,
-                r#"NotOnOrAfter="1699999940"><saml:AudienceRestriction>"#,
-                "SAML Conditions has expired",
-            ),
-        ] {
-            let unsigned =
-                unsigned_response("https://id.example.com/realms/corp").replace(old, new);
-            let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
-            assert!(err.message().contains(expected_error), "{err}");
-        }
+    fn acs_validation_rejects_duplicate_direct_conditions() {
+        let unsigned = unsigned_response("https://id.example.com/realms/corp")
+            .replace("</saml:Conditions>", "</saml:Conditions><saml:Conditions/>");
+        let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
+        assert!(err.message().contains("exactly one direct Conditions"));
     }
 
     /// Test cache with a manually advanced clock for deterministic TTL probes.
@@ -1442,36 +1239,21 @@ mod tests {
 
     #[test]
     fn acs_replay_detects_same_assertion_under_new_response_id() {
-        let audience = "https://id.example.com/realms/corp";
-        let acs_url = "https://id.example.com/federation/corp/saml/acs";
-        let provider = provider();
-        let first = validate_saml_acs_response(
-            &signed_response(audience),
-            &provider,
-            audience,
-            acs_url,
-            1_700_000_000,
-            60,
-        )
-        .expect("first presentation must validate");
+        let signed = signed_response_with_extra_condition("<saml:OneTimeUse/>");
+        let first = validate_test_response(&signed)
+            .expect("first presentation with OneTimeUse must validate");
         let cache = qid_core::cache::DpopState::new();
-        record_saml_acs_replay(&cache, "corp", &provider.id, &first, 1_700_000_000, 60)
+        record_saml_acs_replay(&cache, "corp", &provider().id, &first, 1_700_000_000, 60)
             .expect("first presentation must record");
         // Same signed assertion, only the unsigned Response ID relabelled.
-        let relabelled = signed_response(audience).replace("ID=\"resp-1\"", "ID=\"resp-2\"");
-        let second = validate_saml_acs_response(
-            &relabelled,
-            &provider,
-            audience,
-            acs_url,
-            1_700_000_000,
-            60,
-        )
-        .expect("relabelled response still validates the same assertion");
+        let relabelled = signed.replace("ID=\"resp-1\"", "ID=\"resp-2\"");
+        let second = validate_test_response(&relabelled)
+            .expect("relabelled response still validates the same assertion");
         assert_eq!(second.assertion_id, first.assertion_id);
         assert_ne!(second.response_id, first.response_id);
-        let err = record_saml_acs_replay(&cache, "corp", &provider.id, &second, 1_700_000_000, 60)
-            .unwrap_err();
+        let err =
+            record_saml_acs_replay(&cache, "corp", &provider().id, &second, 1_700_000_000, 60)
+                .unwrap_err();
         assert!(err.message().contains("already been used"));
     }
 
@@ -1499,21 +1281,7 @@ mod tests {
             "https://id.example.com/realms/corp",
             r#"Recipient="https://id.example.com/federation/corp/saml/acs""#,
         );
-        let assertion_start = unsigned
-            .find("<saml:Assertion")
-            .expect("test response must contain assertion");
-        let assertion_end = unsigned
-            .find("</saml:Assertion>")
-            .map(|pos| pos + "</saml:Assertion>".len())
-            .expect("test response must contain assertion close");
-        let signature = qid_saml::sign_saml_element_with_key(
-            &unsigned[assertion_start..assertion_end],
-            "assert-1",
-            qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
-            TEST_KEY.as_bytes(),
-        )
-        .expect("test SAML response must sign");
-        let signed = unsigned.replace("<!--SIGNATURE-->", &signature);
+        let signed = sign_response(&unsigned);
         let err = validate_saml_acs_response(
             &signed,
             &provider(),

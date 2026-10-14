@@ -1502,13 +1502,20 @@ mod tests {
         let deadline = now + 2600;
         let (state, _, client, _, token_1) =
             setup_refresh_case("deadline", now - 1000, Some(deadline), None).await;
+        let before_refresh = util::now_seconds();
         let rotated = grant_refresh(&state, token_1, &client, None, None)
             .await
             .unwrap();
+        let after_refresh = util::now_seconds();
         let refresh_token = rotated.refresh_token.as_ref().unwrap();
         assert_eq!(decode_exp(&state, refresh_token), deadline as usize);
         assert_eq!(decode_exp(&state, &rotated.access_token), deadline as usize);
-        assert_eq!(rotated.expires_in, deadline.saturating_sub(now));
+        assert!(
+            before_refresh <= after_refresh && after_refresh < deadline,
+            "refresh must complete within the measured validity interval"
+        );
+        assert!(rotated.expires_in >= deadline - after_refresh);
+        assert!(rotated.expires_in <= deadline - before_refresh);
     }
 
     #[tokio::test]

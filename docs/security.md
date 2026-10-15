@@ -215,11 +215,27 @@ Assertion's issuer, never the unsigned Response issuer. A signed Response's
 direct issuer is covered and may be used. Protocol checks on the separate policy
 tree require matching Response/Assertion IDs and the relevant issuer. The
 unit-returning compatibility verifier has been removed.
-The outbound custom signer/canonicalization code is unchanged: it is
-not a general W3C XMLDSig signer, and its default C14N-10 mode is not accepted
-by the inbound profile. Offline fixture coverage is described in
-`qid-saml/tests/fixtures/README.md`; no arbitrary XMLDSig or live-IdP coverage is
-claimed.
+Outbound signing uses the pinned bergshamra-dsig 0.9.2 signer rather than
+qid's removed custom canonicalizer. Its fixed profile uses exclusive C14N,
+enveloped signatures and SHA-256 with local PKCS#8 RSA >=2048 or P-256 keys.
+`sign_saml_document_with_key` returns the complete signed document, binding the
+caller-selected unique unqualified `ID` to the expanded Assertion, Response or
+EntityDescriptor name. Outbound IDs use the ASCII NCName subset
+`[A-Za-z_][A-Za-z0-9_.-]*`; duplicate ID aliases fail closed. Only the supplied
+private key is loaded; no KeyInfo is emitted or trusted. The complete parsed
+document retains inherited namespaces. When both signatures are requested,
+Assertion is signed first so Response covers the inner signature. In SSO, the
+IdP signing key is read once: sign the plaintext Assertion, attempt configured
+encryption, then sign the final plaintext-or-encrypted Response. The Response
+is never signed before encryption. Required encryption failures still reject
+issuance; optional encryption failures retain the signed plaintext Assertion.
+When signing is not required, the encryption-only path is unchanged. Metadata's
+Signature follows optional Extensions and precedes role descriptors (or is the
+first element when Extensions is absent).
+The inbound single-signature profile and trust controls above are unchanged.
+Offline fixture and production-signer coverage is described in
+`qid-saml/tests/fixtures/README.md`; no arbitrary XMLDSig, generic-SP or live-IdP
+coverage is claimed.
 
 ## Metrics and Audit Exposure
 

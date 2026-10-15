@@ -1,14 +1,8 @@
-use base64::Engine;
 use qid_core::error::{QidError, QidResult};
 use serde::{Deserialize, Serialize};
 
-use crate::xmldsig::{
-    SamlXmlSignatureAlgorithm, SigningCanonicalization, sign_saml_element_with_key_c14n,
-};
-use crate::{
-    SamlIssuedResponse, SamlServiceProviderMetadata, insert_after_first_child,
-    inspect_xml_signature_profile, reject_insecure_saml_xml,
-};
+use crate::xmldsig::{SamlSigningElement, SamlXmlSignatureAlgorithm, sign_saml_document_with_key};
+use crate::{SamlIssuedResponse, SamlServiceProviderMetadata, inspect_xml_signature_profile};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -30,23 +24,17 @@ pub struct SamlSignaturePlan {
     pub assertion_reference: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SamlDetachedSignature {
-    pub target: SamlSignatureTarget,
-    pub xml: String,
-}
-
 pub fn plan_saml_signatures(
     issued: &SamlIssuedResponse,
     sp: &SamlServiceProviderMetadata,
     policy: &SamlSigningPolicy,
 ) -> QidResult<SamlSignaturePlan> {
     let mut targets = Vec::new();
-    if policy.sign_response {
-        targets.push(SamlSignatureTarget::Response);
-    }
     if policy.sign_assertion || sp.want_assertions_signed {
         targets.push(SamlSignatureTarget::Assertion);
+    }
+    if policy.sign_response {
+        targets.push(SamlSignatureTarget::Response);
     }
     if targets.is_empty() {
         return Err(QidError::BadRequest {
@@ -64,187 +52,35 @@ pub fn plan_saml_signatures(
     })
 }
 
-pub fn apply_saml_signatures(
-    issued: &SamlIssuedResponse,
-    signatures: &[SamlDetachedSignature],
-) -> QidResult<SamlIssuedResponse> {
-    let mut xml = issued.xml.clone();
-    for signature in signatures {
-        reject_insecure_saml_xml(&signature.xml)?;
-        xml =
-            match signature.target {
-                SamlSignatureTarget::Response => {
-                    insert_after_first_child(&xml, "Response", "Issuer", &signature.xml)
-                        .ok_or_else(|| QidError::BadRequest {
-                            message: "could not insert SAML Response signature".to_string(),
-                        })?
-                }
-                SamlSignatureTarget::Assertion => {
-                    insert_after_first_child(&xml, "Assertion", "Issuer", &signature.xml)
-                        .ok_or_else(|| QidError::BadRequest {
-                            message: "could not insert SAML Assertion signature".to_string(),
-                        })?
-                }
-            };
-    }
-    reject_insecure_saml_xml(&xml)?;
-    Ok(SamlIssuedResponse {
-        response_id: issued.response_id.clone(),
-        assertion_id: issued.assertion_id.clone(),
-        xml,
-    })
-}
-
-/// Build a `<ds:Signature>`-shaped element for a SAML Response or Assertion
-/// using qid's limited custom signing profile and a PKCS#8 PEM private key.
-/// This is not a general W3C XMLDSig signer and makes no claim that arbitrary
-/// third-party SAML implementations can verify the result.
-pub fn build_saml_element_signature_with_key(
-    xml: &str,
-    element_name: &str,
-    element_id: &str,
-    private_key_pem: &[u8],
-    public_key_pem: Option<&[u8]>,
-    algorithm: SamlXmlSignatureAlgorithm,
-) -> QidResult<String> {
-    let _ = element_name;
-    let mut signature = sign_saml_element_with_key_c14n(
-        xml,
-        element_id,
-        algorithm,
-        private_key_pem,
-        SigningCanonicalization::Exclusive,
-    )?;
-    if let Some(public_key_pem) = public_key_pem {
-        let modulus = extract_rsa_modulus(public_key_pem).unwrap_or_default();
-        let exponent = extract_rsa_exponent(public_key_pem).unwrap_or_default();
-        if !modulus.is_empty() && !exponent.is_empty() {
-            signature = inject_keyinfo(&signature, &modulus, &exponent);
-        }
-    }
-    Ok(signature)
-}
-
-fn inject_keyinfo(signature_xml: &str, modulus_b64: &str, exponent_b64: &str) -> String {
-    let keyinfo = format!(
-        "<ds:KeyInfo><ds:KeyValue><ds:RSAKeyValue><ds:Modulus>{modulus_b64}</ds:Modulus><ds:Exponent>{exponent_b64}</ds:Exponent></ds:RSAKeyValue></ds:KeyValue></ds:KeyInfo>"
-    );
-    let insertion = format!("{keyinfo}<ds:SignatureValue");
-    if let Some(pos) = signature_xml.find("<ds:SignatureValue") {
-        let mut out = String::with_capacity(signature_xml.len() + keyinfo.len());
-        out.push_str(&signature_xml[..pos]);
-        out.push_str(&insertion);
-        out.push_str(&signature_xml[pos..]);
-        out
-    } else {
-        signature_xml.to_string()
-    }
-}
-
-fn extract_rsa_modulus(public_key_pem: &[u8]) -> QidResult<String> {
-    use rsa::pkcs8::DecodePublicKey;
-    use rsa::traits::PublicKeyParts;
-    let key = rsa::RsaPublicKey::from_public_key_pem(std::str::from_utf8(public_key_pem).map_err(
-        |e| QidError::Internal {
-            message: format!("RSA public key PEM is not valid UTF-8: {e}"),
-        },
-    )?)
-    .map_err(|e| QidError::Internal {
-        message: format!("failed to parse RSA public key: {e}"),
-    })?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(key.n().to_bytes_be()))
-}
-
-fn extract_rsa_exponent(public_key_pem: &[u8]) -> QidResult<String> {
-    use rsa::pkcs8::DecodePublicKey;
-    use rsa::traits::PublicKeyParts;
-    let key = rsa::RsaPublicKey::from_public_key_pem(std::str::from_utf8(public_key_pem).map_err(
-        |e| QidError::Internal {
-            message: format!("RSA public key PEM is not valid UTF-8: {e}"),
-        },
-    )?)
-    .map_err(|e| QidError::Internal {
-        message: format!("failed to parse RSA public key: {e}"),
-    })?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(key.e().to_bytes_be()))
-}
-
-/// Uses a PKCS#8 PEM private key to produce signatures in qid's limited
-/// custom XMLDSig-shaped profile. No standards-interoperability claim is made.
+/// Sign the Assertion before the Response so the outer signature covers the
+/// complete inner signature. Each pass signs the full document in context.
 pub fn sign_saml_response_with_key(
     issued: &SamlIssuedResponse,
     sp: &SamlServiceProviderMetadata,
     policy: &SamlSigningPolicy,
     private_key_pem: &[u8],
-    public_key_pem: Option<&[u8]>,
     algorithm: SamlXmlSignatureAlgorithm,
 ) -> QidResult<SamlIssuedResponse> {
     let plan = plan_saml_signatures(issued, sp, policy)?;
-    let mut signatures = Vec::new();
-    for target in &plan.targets {
-        let signature_xml = match target {
-            SamlSignatureTarget::Response => build_saml_element_signature_with_key(
-                &issued.xml,
-                "Response",
-                &issued.response_id,
-                private_key_pem,
-                public_key_pem,
-                algorithm,
-            )?,
-            SamlSignatureTarget::Assertion => {
-                let assertion_id = &issued.assertion_id;
-                let assertion_marker = format!("Assertion ID=\"{assertion_id}\"");
-                let assertion_start =
-                    issued
-                        .xml
-                        .find(&assertion_marker)
-                        .ok_or_else(|| QidError::BadRequest {
-                            message: "Assertion element not found in response".to_string(),
-                        })?;
-                let after_id = assertion_start + assertion_marker.len();
-                let open_end =
-                    issued.xml[after_id..]
-                        .find('>')
-                        .ok_or_else(|| QidError::BadRequest {
-                            message: "Assertion start tag malformed".to_string(),
-                        })?
-                        + after_id
-                        + 1;
-                let close_start = crate::find_close_tag(&issued.xml[open_end..], "Assertion")
-                    .ok_or_else(|| QidError::BadRequest {
-                        message: "Assertion close tag not found".to_string(),
-                    })?;
-                let close_end = open_end
-                    + close_start
-                    + crate::close_tag_len(&issued.xml[open_end + close_start..]).ok_or_else(
-                        || QidError::BadRequest {
-                            message: "Assertion close tag malformed".to_string(),
-                        },
-                    )?;
-                let assertion_xml = &issued.xml[assertion_start..close_end];
-                build_saml_element_signature_with_key(
-                    assertion_xml,
-                    "Assertion",
-                    &issued.assertion_id,
-                    private_key_pem,
-                    public_key_pem,
-                    algorithm,
-                )?
-            }
+    let mut xml = issued.xml.clone();
+    for target in plan.targets {
+        let (kind, id) = match target {
+            SamlSignatureTarget::Assertion => (SamlSigningElement::Assertion, &issued.assertion_id),
+            SamlSignatureTarget::Response => (SamlSigningElement::Response, &issued.response_id),
         };
-        signatures.push(SamlDetachedSignature {
-            target: *target,
-            xml: signature_xml,
-        });
+        xml = sign_saml_document_with_key(&xml, kind, id, algorithm, private_key_pem)?;
     }
-    apply_saml_signatures(issued, &signatures)
+    Ok(SamlIssuedResponse {
+        xml,
+        ..issued.clone()
+    })
 }
 
 pub fn validate_authn_request_signature_profile(
     req: &crate::SamlAuthnRequest,
     sp: &SamlServiceProviderMetadata,
 ) -> QidResult<crate::SamlXmlSignatureProfile> {
-    // Verify with qid's limited custom raw-string XMLDSig-shaped profile.
+    // Verify with the existing inbound profile.
     // The trust key is selected from the SP's configured signing certificates.
     if sp.signing_certificates.is_empty() {
         return Err(QidError::BadRequest {

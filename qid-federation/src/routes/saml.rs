@@ -770,7 +770,6 @@ mod tests {
   <samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>
   <saml:Assertion ID="assert-1" Version="2.0" IssueInstant="1700000000">
     <saml:Issuer>https://idp.partner.example/metadata</saml:Issuer>
-    <!--SIGNATURE-->
     <saml:Subject>
       <saml:NameID>subject@example.com</saml:NameID>
       <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
@@ -791,37 +790,16 @@ mod tests {
     }
 
     fn sign_target(unsigned: &str, id: &str) -> String {
-        let doc = Document::parse(unsigned).unwrap();
-        let target = doc
-            .descendants()
-            .find(|n| n.attribute("ID") == Some(id))
-            .unwrap();
-        let signature = qid_saml::sign_saml_element_with_key_c14n(
-            &unsigned[target.range()],
+        qid_saml::sign_saml_document_with_key(
+            unsigned,
+            if id == "assert-1" {
+                qid_saml::SamlSigningElement::Assertion
+            } else {
+                qid_saml::SamlSigningElement::Response
+            },
             id,
             qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
             TEST_KEY.as_bytes(),
-            qid_saml::SigningCanonicalization::Exclusive,
-        )
-        .unwrap();
-        // The production helper is a custom serializer, not W3C C14N. Use its
-        // exclusive template, remove its nonstandard parameter, and re-sign
-        // the full fixture with real C14N; production signing stays untouched.
-        let parsed = Document::parse(&signature).unwrap();
-        let mut template = signature.clone();
-        for node in parsed.descendants().rev() {
-            let replacement = match node.tag_name().name() {
-                "InclusiveNamespaces" => String::new(),
-                name @ ("DigestValue" | "SignatureValue") => format!("<ds:{name}/>"),
-                _ => continue,
-            };
-            template.replace_range(node.range(), &replacement);
-        }
-        let mut keys = bergshamra_keys::KeysManager::new();
-        keys.add_key(bergshamra_keys::loader::load_rsa_private_pem(TEST_KEY.as_bytes()).unwrap());
-        bergshamra_dsig::sign::sign(
-            &bergshamra_dsig::DsigContext::new(keys),
-            &unsigned.replace("<!--SIGNATURE-->", &template),
         )
         .unwrap()
     }

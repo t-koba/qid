@@ -71,28 +71,6 @@ pub(crate) fn parse_saml_bool_attr(tag_body: &str, attr: &str) -> QidResult<bool
     }
 }
 
-pub(crate) fn insert_after_first_child(
-    xml: &str,
-    parent_tag: &str,
-    child_tag: &str,
-    insertion: &str,
-) -> Option<String> {
-    let parent_start = tag_positions(xml, parent_tag).next()?;
-    let parent_open_end = parent_start + xml[parent_start..].find('>')? + 1;
-    let child_relative = tag_positions(&xml[parent_open_end..], child_tag).next()?;
-    let child_start = parent_open_end + child_relative;
-    let child_open_end = child_start + xml[child_start..].find('>')? + 1;
-    let close_relative = find_close_tag(&xml[child_open_end..], child_tag)?;
-    let insert_at =
-        child_open_end + close_relative + close_tag_len(&xml[child_open_end + close_relative..])?;
-    Some(format!(
-        "{}{}{}",
-        &xml[..insert_at],
-        insertion,
-        &xml[insert_at..]
-    ))
-}
-
 pub(crate) fn close_tag_len(fragment: &str) -> Option<usize> {
     Some(fragment.find('>')? + 1)
 }

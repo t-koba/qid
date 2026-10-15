@@ -70,16 +70,6 @@ async fn metadata<R: Repository>(
 </EntityDescriptor>"#
     );
     if realm_config.protocols.saml.sign_metadata {
-        let idp_descriptor = format!(
-            r#"<IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol" WantAuthnRequestsSigned="true">
-    <NameIDFormat>{EMAIL_NAME_ID_FORMAT}</NameIDFormat>
-    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{sso_url}"/>
-    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Artifact" Location="{sso_url}"/>
-    <SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{slo_url}"/>
-    <ArtifactResolutionService Binding="urn:oasis:names:tc:SAML:2.0:bindings:SOAP" Location="{artifact_url}" index="0"/>
-  </IDPSSODescriptor>"#
-        );
-        let _ = idp_descriptor;
         let key_path = match realm_config
             .protocols
             .saml
@@ -101,20 +91,14 @@ async fn metadata<R: Repository>(
                 ));
             }
         };
-        match crate::signature::build_saml_element_signature_with_key(
+        match crate::xmldsig::sign_saml_document_with_key(
             &xml,
-            "EntityDescriptor",
+            crate::xmldsig::SamlSigningElement::EntityDescriptor,
             &metadata_id,
-            &private_key_pem,
-            None,
             crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256,
+            &private_key_pem,
         ) {
-            Ok(sig) => {
-                xml = xml.replace(
-                    "  <IDPSSODescriptor",
-                    &format!("{sig}\n  <IDPSSODescriptor"),
-                );
-            }
+            Ok(signed) => xml = signed,
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -321,6 +305,58 @@ async fn sso<R: Repository>(
                     .into_response();
             }
         };
+        let should_sign = realm_config.protocols.saml.sign_assertions || sp.want_assertions_signed;
+        let private_key_pem = if should_sign {
+            let Some(key_path) = realm_config
+                .protocols
+                .saml
+                .idp_signing_key_pem_path
+                .as_deref()
+            else {
+                return saml_config_error(
+                    "SAML response signing requires idp_signing_key_pem_path",
+                );
+            };
+            let private_key_pem = match std::fs::read(key_path) {
+                Ok(key) => key,
+                Err(err) => {
+                    return saml_config_error(&format!(
+                        "failed to read SAML response signing key: {err}"
+                    ));
+                }
+            };
+            Some(private_key_pem)
+        } else {
+            None
+        };
+        // Sign the plaintext Assertion before encryption removes its target.
+        // Keep the Response unsigned until its final (possibly encrypted) form.
+        let issued = if let Some(private_key_pem) = private_key_pem.as_deref() {
+            match crate::signature::sign_saml_response_with_key(
+                &issued,
+                &sp,
+                &crate::SamlSigningPolicy {
+                    sign_response: false,
+                    sign_assertion: true,
+                },
+                private_key_pem,
+                crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256,
+            ) {
+                Ok(signed) => signed,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "saml_signing_failed",
+                            "message": err.to_string(),
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            issued
+        };
         let issued = if realm_config.protocols.saml.encrypt_assertions.as_deref()
             == Some("required")
             || realm_config.protocols.saml.encrypt_assertions.as_deref() == Some("optional")
@@ -364,40 +400,15 @@ async fn sso<R: Repository>(
         } else {
             issued
         };
-        let should_sign = realm_config.protocols.saml.sign_assertions || sp.want_assertions_signed;
-        let issued = if should_sign {
-            let signing_policy = crate::SamlSigningPolicy {
-                sign_response: true,
-                sign_assertion: true,
-            };
-            let Some(key_path) = realm_config
-                .protocols
-                .saml
-                .idp_signing_key_pem_path
-                .as_deref()
-            else {
-                return saml_config_error(
-                    "SAML response signing requires idp_signing_key_pem_path",
-                );
-            };
-            let private_key_pem = match std::fs::read(key_path) {
-                Ok(key) => key,
-                Err(err) => {
-                    return saml_config_error(&format!(
-                        "failed to read SAML response signing key: {err}"
-                    ));
-                }
-            };
-            let signing_result = crate::signature::sign_saml_response_with_key(
-                &issued,
-                &sp,
-                &signing_policy,
-                &private_key_pem,
-                None,
+        let issued = if let Some(private_key_pem) = private_key_pem.as_deref() {
+            match crate::xmldsig::sign_saml_document_with_key(
+                &issued.xml,
+                crate::xmldsig::SamlSigningElement::Response,
+                &issued.response_id,
                 crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256,
-            );
-            match signing_result {
-                Ok(signed) => signed,
+                private_key_pem,
+            ) {
+                Ok(xml) => crate::SamlIssuedResponse { xml, ..issued },
                 Err(err) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,

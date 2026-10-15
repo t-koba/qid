@@ -34,17 +34,16 @@ pub use routes::saml_routes;
 pub(crate) use xml::*;
 
 pub use signature::{
-    SamlDetachedSignature, SamlSignaturePlan, SamlSignatureTarget, SamlSigningPolicy,
-    apply_saml_signatures, plan_saml_signatures, validate_authn_request_signature_profile,
+    SamlSignaturePlan, SamlSignatureTarget, SamlSigningPolicy, plan_saml_signatures,
+    sign_saml_response_with_key, validate_authn_request_signature_profile,
 };
 pub use verification::{
     SamlSignatureInputs, SignedSamlElement, VerifiedSamlClaims, VerifiedSamlDocument,
     verify_saml_xml_signature_for,
 };
 pub use xmldsig::{
-    SamlXmlSignatureAlgorithm, SigningCanonicalization, canonicalize_saml_element,
-    cert_pem_to_public_key_pem_from_pem, sign_saml_element_with_key,
-    sign_saml_element_with_key_c14n,
+    SamlSigningElement, SamlXmlSignatureAlgorithm, cert_pem_to_public_key_pem_from_pem,
+    sign_saml_document_with_key,
 };
 
 pub(crate) const HTTP_POST_BINDING: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";

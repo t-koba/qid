@@ -1,1 +1,2 @@
 vendor/fuzz/corpus/** binary
+qid-saml/tests/fixtures/vgi-saml-signed-response-ecdsa.xml -text

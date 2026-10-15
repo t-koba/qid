@@ -33,6 +33,10 @@ Neither surface is enabled by an ordinary upstream rustls configuration. New beh
 - Carries upstream RFC 9149 ticket request extensions, RFC 9846 second-ClientHello PSK rules, `supports_version` protocol check, QUIC version suitability, OCSP non-empty enforcement (`PayloadU24<NonEmpty>`), ML-DSA support, and key-log file permission hardening.
 - qid protocol patches were re-applied on the 0.23.45 base: imported-PSK flows now use the `previous_hello` retry tracker, ticket counts honor both the imported-PSK policy (`send_tickets = 0`) and the client ticket request hint, and `CertificateStatus` keeps the `Ocsp`/`OcspMulti` enum with `NonEmpty` responses.
 
+## Local Record-Limit Correction
+
+A buffered application-data write rejected by the last-fragment record-limit preflight returns zero accepted bytes, rather than reporting the unsent input as consumed. TLS 1.2 still queues `close_notify` without sending any application-data fragment from that write; TLS 1.3 key-update handling is unchanged. The unit regression exercises `std::io::Write` with a two-record write crossing a small TLS 1.2 limit and checks both the byte count and the alert-only output.
+
 ## Update Procedure
 
 1. Verify the new upstream tag and licenses.

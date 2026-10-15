@@ -379,7 +379,7 @@ impl CommonState {
         // that a write crossing the limit is not sent in part.
         if let Some(last) = (iter.len() as u64).checked_sub(1) {
             if !self.check_pre_encrypt_action(last) {
-                return len;
+                return 0;
             }
         }
 
@@ -1134,3 +1134,72 @@ pub(crate) type HandshakeFlightTls13<'a> = HandshakeFlight<'a, true>;
 
 const DEFAULT_RECEIVED_PLAINTEXT_LIMIT: usize = 16 * 1024;
 pub(crate) const DEFAULT_BUFFER_LIMIT: usize = 64 * 1024;
+
+#[cfg(all(test, feature = "std", feature = "tls12"))]
+#[macro_rules_attribute::apply(test_for_each_provider)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+    use crate::crypto::cipher::MessageEncrypter;
+    use crate::{ClientConfig, ClientConnection, RootCertStore};
+
+    // Leave records readable so the test can check exactly what was encrypted and queued.
+    struct IdentityEncrypter;
+
+    impl MessageEncrypter for IdentityEncrypter {
+        fn encrypt(
+            &mut self,
+            msg: OutboundPlainMessage<'_>,
+            _seq: u64,
+        ) -> Result<OutboundOpaqueMessage, Error> {
+            Ok(msg.to_unencrypted_opaque())
+        }
+
+        fn encrypted_payload_len(&self, payload_len: usize) -> usize {
+            payload_len
+        }
+    }
+
+    #[test]
+    fn tls12_write_crossing_record_limit_accepts_no_plaintext() {
+        let config = ClientConfig::builder_with_provider(provider::default_provider().into())
+            .with_protocol_versions(&[&crate::version::TLS12])
+            .unwrap()
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth();
+        let mut conn =
+            ClientConnection::new(config.into(), "localhost".try_into().unwrap()).unwrap();
+        // Exercise the public Writer with application traffic enabled, without a handshake.
+        while conn.sendable_tls.pop().is_some() {}
+        conn.negotiated_version = Some(ProtocolVersion::TLSv1_2);
+        conn.may_send_application_data = true;
+        conn.message_fragmenter
+            .set_max_fragment_size(Some(32))
+            .unwrap();
+        conn.record_layer
+            .set_message_encrypter(Box::new(IdentityEncrypter), 2);
+
+        // A 32-byte record holds 27 plaintext bytes. The first record is below the limit.
+        let fragment = [42; 27];
+        assert_eq!(conn.writer().write(&fragment).unwrap(), fragment.len());
+        let mut tls = Vec::new();
+        conn.write_tls(&mut tls).unwrap();
+        assert_eq!(&tls[..5], &[23, 3, 3, 0, 27]);
+        assert_eq!(&tls[5..], &fragment);
+        assert_eq!(conn.record_layer.write_seq(), 1);
+        assert!(conn.record_layer.pre_encrypt_action(0) == PreEncryptAction::Nothing);
+        assert!(conn.record_layer.pre_encrypt_action(1) == PreEncryptAction::RefreshOrClose);
+
+        // The next write needs two records: its first would fit, but its last reaches the
+        // limit. Reject all of it, report no accepted bytes, and send only close_notify.
+        let accepted = conn.writer().write(&[42; 54]).unwrap();
+        tls.clear();
+        conn.write_tls(&mut tls).unwrap();
+        assert_eq!(tls, [21, 3, 3, 0, 2, 1, 0]);
+        assert!(conn.sendable_tls.is_empty());
+        assert!(conn.has_sent_close_notify);
+        assert_eq!(conn.record_layer.write_seq(), 2); // Only the alert used a sequence number.
+        assert_eq!(accepted, 0);
+    }
+}

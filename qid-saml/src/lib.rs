@@ -17,6 +17,7 @@ pub mod redirect_binding;
 mod routes;
 mod saml_document;
 mod signature;
+mod verification;
 mod xml;
 mod xmldsig;
 
@@ -36,9 +37,14 @@ pub use signature::{
     SamlDetachedSignature, SamlSignaturePlan, SamlSignatureTarget, SamlSigningPolicy,
     apply_saml_signatures, plan_saml_signatures, validate_authn_request_signature_profile,
 };
+pub use verification::{
+    SamlSignatureInputs, SignedSamlElement, VerifiedSamlClaims, VerifiedSamlDocument,
+    verify_saml_xml_signature_for,
+};
 pub use xmldsig::{
-    SamlSignatureInputs, SamlXmlSignatureAlgorithm, canonicalize_saml_element,
-    cert_pem_to_public_key_pem_from_pem, sign_saml_element_with_key, verify_saml_xml_signature,
+    SamlXmlSignatureAlgorithm, SigningCanonicalization, canonicalize_saml_element,
+    cert_pem_to_public_key_pem_from_pem, sign_saml_element_with_key,
+    sign_saml_element_with_key_c14n,
 };
 
 pub(crate) const HTTP_POST_BINDING: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";

@@ -452,27 +452,18 @@ fn build_saml_bearer_assertion(subject: &str, audience: &str, expires_at: u64) -
         .lines()
         .filter(|line| !line.starts_with("-----"))
         .collect();
-    use qid_saml::{SamlXmlSignatureAlgorithm, sign_saml_element_with_key};
-    let mut signature = sign_saml_element_with_key(
-        &unsigned,
-        "assert-saml-bearer-1",
-        SamlXmlSignatureAlgorithm::RsaSha256,
-        key_pem.as_bytes(),
-    )
-    .expect("SAML bearer assertion must sign");
-    let keyinfo = format!(
-        "<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>",
+    let signature = format!(
+        r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#assert-saml-bearer-1"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>"##,
         cert_body.trim()
     );
-    let insertion = format!("{keyinfo}<ds:SignatureValue");
-    if let Some(pos) = signature.find("<ds:SignatureValue") {
-        let mut out = String::with_capacity(signature.len() + keyinfo.len());
-        out.push_str(&signature[..pos]);
-        out.push_str(&insertion);
-        out.push_str(&signature[pos..]);
-        signature = out;
-    }
-    unsigned.replace("<!--SIGNATURE-->", &signature)
+    let template = unsigned.replace("<!--SIGNATURE-->", &signature);
+    let mut keys = bergshamra_keys::KeysManager::new();
+    keys.add_key(
+        bergshamra_keys::loader::load_rsa_private_pem(key_pem.as_bytes())
+            .expect("test SAML private key must load"),
+    );
+    bergshamra_dsig::sign::sign(&bergshamra_dsig::DsigContext::new(keys), &template)
+        .expect("SAML bearer assertion must sign in the enforced inbound profile")
 }
 
 #[tokio::test]

@@ -317,50 +317,6 @@ pub(crate) fn attr_value_after(xml: &str, tag: &str, attr: &str) -> Option<Strin
     attr_value(&tag_body, attr)
 }
 
-pub(crate) fn element_body<'a>(
-    xml: &'a str,
-    element_start: usize,
-    tag: &str,
-) -> QidResult<&'a str> {
-    let open_end = element_start
-        + xml[element_start..]
-            .find('>')
-            .ok_or_else(|| QidError::BadRequest {
-                message: format!("SAML {tag} start tag is malformed"),
-            })?
-        + 1;
-    let close_start =
-        find_close_tag(&xml[open_end..], tag).ok_or_else(|| QidError::BadRequest {
-            message: format!("SAML {tag} close tag is missing"),
-        })?;
-    Ok(&xml[open_end..open_end + close_start])
-}
-
-pub(crate) fn parse_required_epoch_attr(
-    tag_body: &str,
-    attr: &str,
-    missing_message: &str,
-) -> QidResult<u64> {
-    let value = attr_value(tag_body, attr).ok_or_else(|| QidError::BadRequest {
-        message: missing_message.to_string(),
-    })?;
-    value.parse::<u64>().map_err(|_| QidError::BadRequest {
-        message: format!("SAML {attr} must be epoch seconds"),
-    })
-}
-
-pub(crate) fn parse_optional_epoch_attr(tag_body: &str, attr: &str) -> QidResult<Option<u64>> {
-    let Some(value) = attr_value(tag_body, attr) else {
-        return Ok(None);
-    };
-    value
-        .parse::<u64>()
-        .map(Some)
-        .map_err(|_| QidError::BadRequest {
-            message: format!("SAML {attr} must be epoch seconds"),
-        })
-}
-
 pub(crate) fn attr_values(xml: &str, attr: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut rest = xml;

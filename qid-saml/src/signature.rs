@@ -271,20 +271,20 @@ pub fn validate_authn_request_signature_profile(
             message: "SAML signing cert does not match any trusted certificate".to_string(),
         });
     }
-    // Extract the public key from the embedded certificate and run the
-    // limited custom raw-string verifier. The verifier's tag selection and
-    // canonicalization do not promise arbitrary-prefix or standards
-    // interoperability with the IdP-side custom signing path.
+    // The certificate was matched against SP metadata above. Load only its key.
     let algorithm = profile
         .signature_method
         .as_deref()
         .and_then(crate::xmldsig::SamlXmlSignatureAlgorithm::from_uri)
         .unwrap_or(crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256);
     let public_key_pem = crate::xmldsig::cert_pem_to_public_key_pem_from_pem(signing_cert)?;
-    crate::xmldsig::verify_saml_xml_signature(crate::xmldsig::SamlSignatureInputs {
-        document: &req.raw_xml,
-        public_key_pem: public_key_pem.as_bytes(),
-        profile: algorithm,
-    })?;
+    crate::verify_saml_xml_signature_for(
+        crate::SamlSignatureInputs {
+            document: &req.raw_xml,
+            public_key_pem: public_key_pem.as_bytes(),
+            profile: algorithm,
+        },
+        crate::SignedSamlElement::AuthnRequest,
+    )?;
     Ok(profile)
 }

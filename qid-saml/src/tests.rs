@@ -53,32 +53,22 @@ fn sp_metadata() -> String {
     raw.replace("CERT_BODY_PLACEHOLDER", &cert_body)
 }
 
-fn sign_saml_test_document(
+pub(crate) fn sign_saml_test_document(
     document_xml: &str,
     element_id: &str,
     key_pem: &[u8],
     cert_body: &str,
 ) -> String {
-    use crate::xmldsig::{SamlXmlSignatureAlgorithm, sign_saml_element_with_key};
-    let mut signature = sign_saml_element_with_key(
-        document_xml,
-        element_id,
-        SamlXmlSignatureAlgorithm::RsaSha256,
-        key_pem,
-    )
-    .expect("test SAML document must sign successfully");
-    let keyinfo = format!(
-        "<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{cert_body}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>"
+    use bergshamra_dsig::DsigContext;
+    use bergshamra_keys::{KeysManager, loader};
+    let signature = format!(
+        r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#{element_id}"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{cert_body}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>"##
     );
-    let insertion = format!("{keyinfo}<ds:SignatureValue");
-    if let Some(pos) = signature.find("<ds:SignatureValue") {
-        let mut out = String::with_capacity(signature.len() + keyinfo.len());
-        out.push_str(&signature[..pos]);
-        out.push_str(&insertion);
-        out.push_str(&signature[pos..]);
-        signature = out;
-    }
-    document_xml.replace(SIGNATURE_PLACEHOLDER, &signature)
+    let template = document_xml.replace(SIGNATURE_PLACEHOLDER, &signature);
+    let mut keys = KeysManager::new();
+    keys.add_key(loader::load_rsa_private_pem(key_pem).unwrap());
+    bergshamra_dsig::sign::sign(&DsigContext::new(keys), &template)
+        .expect("test SAML document must sign in the enforced inbound profile")
 }
 
 fn authn_request_xml() -> String {

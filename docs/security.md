@@ -183,7 +183,43 @@ When encrypted assertions are required, SP encryption certificates must be confi
 
 Inbound SAML federation must validate signatures, issuer, audience, destination/recipient, conditions, subject confirmation expiry, and replay state. Missing or unverifiable trust material is a fail-closed condition.
 
-SAML XML processing rejects DOCTYPE declarations, XML comments, duplicate IDs, weak signature/digest algorithms, duplicate Signature elements, and Signature Reference URI mismatches. XML canonicalization is intentionally limited to the SAML/XMLDSig profiles implemented in `qid-saml`; unsupported transforms or reference schemes are rejected instead of silently normalized.
+Inbound `qid-saml` XMLDSig preflight rejects DOCTYPE declarations, XML comments,
+duplicate IDs across `ID`/`Id`/`id`/`AssertionID` (including namespaced id aliases),
+multiple XMLDSig Signature/SignedInfo/Reference elements, external references,
+missing or ambiguous targets, wrong SAML target namespaces/types, wrapping forms,
+and a Signature outside its referenced target. The enforced profile is exactly
+RSA-SHA256 with RSA keys >=2048 bits or ECDSA-SHA256 with P-256, SHA-256
+digest, exclusive C14N SignedInfo, and one local `#ID` reference with
+enveloped-signature then exclusive C14N.
+SHA-1, HMAC, unknown algorithms and unsupported transforms fail before crypto.
+
+Verification uses bergshamra-dsig 0.9.2 with `trusted_keys_only`,
+`strict_verification`, and `require_reference_digests` explicitly enabled. It
+loads only the key selected by qid's existing trust/profile logic, with no URL
+maps, external resolution or network configuration. Embedded KeyInfo cannot
+override that key. The caller-selected RSA SubjectPublicKeyInfo key is parsed
+and its modulus size checked before candidate verification; keys below 2048 bits
+are rejected. AuthnRequest/LogoutRequest certificate pinning to SP metadata
+is unchanged. The bearer helper's embedded-certificate selection remains proof
+of possession, **not** issuer/certificate trust establishment; the grant caller
+must still establish issuer trust. This change does not broaden Conditions.
+
+The verifier retains the parsed Uppsala Document and exact candidate-resolved
+NodeId internally; raw DOM/node access is crate-private. `qid-saml` bearer claims
+are consumed from that verified Assertion tree.
+Federation uses `verify_saml_xml_signature_for` with the explicit Reference target
+kind and extracts identity claims and replay IDs from the same verified tree via
+`VerifiedSamlDocument::assertion_claims`. A signed Response must have exactly one
+direct Assertion for claim extraction; an Assertion signature uses that exact
+Assertion's issuer, never the unsigned Response issuer. A signed Response's
+direct issuer is covered and may be used. Protocol checks on the separate policy
+tree require matching Response/Assertion IDs and the relevant issuer. The
+unit-returning compatibility verifier has been removed.
+The outbound custom signer/canonicalization code is unchanged: it is
+not a general W3C XMLDSig signer, and its default C14N-10 mode is not accepted
+by the inbound profile. Offline fixture coverage is described in
+`qid-saml/tests/fixtures/README.md`; no arbitrary XMLDSig or live-IdP coverage is
+claimed.
 
 ## Metrics and Audit Exposure
 

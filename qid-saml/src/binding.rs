@@ -195,26 +195,7 @@ pub fn validate_saml_bearer_assertion(
             message: "SAML bearer assertion must contain exactly one Assertion".to_string(),
         });
     }
-    let assertion_start =
-        tag_positions(xml, "Assertion")
-            .next()
-            .ok_or_else(|| QidError::BadRequest {
-                message: "SAML bearer Assertion is required".to_string(),
-            })?;
-    let assertion_tag =
-        start_tag_body(&xml[assertion_start..]).ok_or_else(|| QidError::BadRequest {
-            message: "SAML bearer Assertion start tag is malformed".to_string(),
-        })?;
-    let assertion_id = attr_value(&assertion_tag, "ID").ok_or_else(|| QidError::BadRequest {
-        message: "SAML bearer Assertion ID is required".to_string(),
-    })?;
-    let assertion_body = element_body(xml, assertion_start, "Assertion")?;
     let profile = inspect_xml_signature_profile(xml, "Assertion")?;
-    if profile.reference_uri.as_deref() != Some(&format!("#{assertion_id}")) {
-        return Err(QidError::BadRequest {
-            message: "SAML bearer Assertion signature must reference the Assertion ID".to_string(),
-        });
-    }
     let signing_cert =
         profile
             .signing_certificate
@@ -223,94 +204,115 @@ pub fn validate_saml_bearer_assertion(
                 message: "SAML bearer Assertion signature must include an X509Certificate"
                     .to_string(),
             })?;
-    // Extract the public key from the embedded certificate and verify with
-    // qid's limited custom raw-string XMLDSig-shaped profile. This does not
-    // claim arbitrary-prefix or standards interoperability with IdP-side
-    // signing.
+    // Preserve the bearer profile's certificate selection. This is proof of
+    // possession, not certificate trust establishment; issuer trust is the
+    // grant caller's responsibility. The engine cannot select a KeyInfo key.
     let algorithm = profile
         .signature_method
         .as_deref()
         .and_then(crate::xmldsig::SamlXmlSignatureAlgorithm::from_uri)
         .unwrap_or(crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256);
     let public_key_pem = crate::xmldsig::cert_pem_to_public_key_pem_from_pem(signing_cert)?;
-    crate::xmldsig::verify_saml_xml_signature(crate::xmldsig::SamlSignatureInputs {
-        document: xml,
-        public_key_pem: public_key_pem.as_bytes(),
-        profile: algorithm,
-    })?;
-    let issuer = text_values(assertion_body, "Issuer")
-        .into_iter()
-        .next()
+    let verified = crate::verify_saml_xml_signature_for(
+        crate::SamlSignatureInputs {
+            document: xml,
+            public_key_pem: public_key_pem.as_bytes(),
+            profile: algorithm,
+        },
+        crate::SignedSamlElement::Assertion,
+    )?;
+    use crate::verification::{ASSERTION_NS, attribute, children_named};
+    let doc = verified.document();
+    let assertion = verified.target();
+    if doc.document_element() != Some(assertion) {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer grant requires a bare Assertion, not a Response".into(),
+        });
+    }
+    let required_child = |parent, name: &str| {
+        let children = children_named(doc, parent, ASSERTION_NS, name);
+        if children.len() != 1 {
+            return Err(QidError::BadRequest {
+                message: format!("SAML bearer Assertion requires exactly one {name}"),
+            });
+        }
+        Ok(children[0])
+    };
+    let text = |node| doc.text_content_deep(node).trim().to_string();
+    let assertion_id = attribute(doc, assertion, "ID")
         .ok_or_else(|| QidError::BadRequest {
-            message: "SAML bearer Assertion Issuer is required".to_string(),
-        })?;
-    let subject = text_values(assertion_body, "NameID")
-        .into_iter()
-        .next()
-        .ok_or_else(|| QidError::BadRequest {
-            message: "SAML bearer Assertion Subject NameID is required".to_string(),
-        })?;
-    let audiences = text_values(assertion_body, "Audience");
+            message: "verified SAML ID is missing".into(),
+        })?
+        .to_string();
+    let issuer = text(required_child(assertion, "Issuer")?);
+    let subject_node = required_child(assertion, "Subject")?;
+    let subject = text(required_child(subject_node, "NameID")?);
+    let conditions = children_named(doc, assertion, ASSERTION_NS, "Conditions");
+    let audiences: Vec<_> = conditions
+        .iter()
+        .flat_map(|c| children_named(doc, *c, ASSERTION_NS, "AudienceRestriction"))
+        .flat_map(|r| children_named(doc, r, ASSERTION_NS, "Audience"))
+        .map(text)
+        .collect();
     if !audiences
         .iter()
         .any(|audience| audience == expected_audience)
     {
         return Err(QidError::BadRequest {
-            message: "SAML bearer Assertion audience does not match token endpoint".to_string(),
+            message: "SAML bearer Assertion audience does not match token endpoint".into(),
         });
     }
-    let subject_confirmation = tag_positions(assertion_body, "SubjectConfirmation")
-        .find_map(|start| start_tag_body(&assertion_body[start..]))
-        .ok_or_else(|| QidError::BadRequest {
-            message: "SAML bearer Assertion SubjectConfirmation is required".to_string(),
-        })?;
-    if attr_value(&subject_confirmation, "Method").as_deref() != Some(BEARER_CONFIRMATION_METHOD) {
+    let confirmation = required_child(subject_node, "SubjectConfirmation")?;
+    if attribute(doc, confirmation, "Method") != Some(BEARER_CONFIRMATION_METHOD) {
         return Err(QidError::BadRequest {
-            message: "SAML bearer Assertion SubjectConfirmation Method must be bearer".to_string(),
+            message: "SAML bearer Assertion SubjectConfirmation Method must be bearer".into(),
         });
     }
-    let confirmation_data = tag_positions(assertion_body, "SubjectConfirmationData")
-        .find_map(|start| start_tag_body(&assertion_body[start..]))
-        .ok_or_else(|| QidError::BadRequest {
-            message: "SAML bearer Assertion SubjectConfirmationData is required".to_string(),
-        })?;
-    if attr_value(&confirmation_data, "Recipient").as_deref() != Some(expected_audience) {
+    let data = required_child(confirmation, "SubjectConfirmationData")?;
+    if attribute(doc, data, "Recipient") != Some(expected_audience) {
         return Err(QidError::BadRequest {
-            message: "SAML bearer Assertion recipient does not match token endpoint".to_string(),
+            message: "SAML bearer Assertion recipient does not match token endpoint".into(),
         });
     }
-    let expires_at = parse_required_epoch_attr(
-        &confirmation_data,
-        "NotOnOrAfter",
-        "SAML bearer Assertion SubjectConfirmationData NotOnOrAfter is required",
-    )?;
+    // Retain the existing epoch-seconds Conditions subset; no date/time or
+    // additional condition interpretation is introduced by the verifier swap.
+    let epoch = |node, name: &str| -> QidResult<Option<u64>> {
+        attribute(doc, node, name)
+            .map(|s| {
+                s.parse::<u64>().map_err(|_| QidError::BadRequest {
+                    message: format!("SAML {name} must be epoch seconds"),
+                })
+            })
+            .transpose()
+    };
+    let expires_at = epoch(data, "NotOnOrAfter")?.ok_or_else(|| QidError::BadRequest {
+        message: "SAML bearer Assertion SubjectConfirmationData NotOnOrAfter is required".into(),
+    })?;
     if expires_at <= now_epoch.saturating_sub(clock_skew_seconds) {
         return Err(QidError::BadRequest {
-            message: "SAML bearer Assertion has expired".to_string(),
+            message: "SAML bearer Assertion has expired".into(),
         });
     }
-    if let Some(conditions_tag) = tag_positions(assertion_body, "Conditions")
-        .find_map(|start| start_tag_body(&assertion_body[start..]))
-    {
-        if let Some(not_before) = parse_optional_epoch_attr(&conditions_tag, "NotBefore")?
+    if let Some(conditions) = conditions.first() {
+        if let Some(not_before) = epoch(*conditions, "NotBefore")?
             && not_before > now_epoch + clock_skew_seconds
         {
             return Err(QidError::BadRequest {
-                message: "SAML bearer Assertion is not yet valid".to_string(),
+                message: "SAML bearer Assertion is not yet valid".into(),
             });
         }
-        if let Some(condition_expiry) = parse_optional_epoch_attr(&conditions_tag, "NotOnOrAfter")?
-            && condition_expiry <= now_epoch.saturating_sub(clock_skew_seconds)
+        if let Some(expiry) = epoch(*conditions, "NotOnOrAfter")?
+            && expiry <= now_epoch.saturating_sub(clock_skew_seconds)
         {
             return Err(QidError::BadRequest {
-                message: "SAML bearer Assertion conditions have expired".to_string(),
+                message: "SAML bearer Assertion conditions have expired".into(),
             });
         }
     }
-    let auth_time = tag_positions(assertion_body, "AuthnStatement")
-        .find_map(|start| start_tag_body(&assertion_body[start..]))
-        .and_then(|tag| attr_value(&tag, "AuthnInstant"))
-        .and_then(|value| value.parse::<u64>().ok());
+    let auth_time = children_named(doc, assertion, ASSERTION_NS, "AuthnStatement")
+        .first()
+        .and_then(|n| attribute(doc, *n, "AuthnInstant"))
+        .and_then(|s| s.parse::<u64>().ok());
     Ok(SamlBearerAssertion {
         assertion_id,
         issuer,
@@ -800,20 +802,21 @@ pub fn validate_logout_request_for_sp(
             message: "SAML LogoutRequest signing certificate is not trusted".to_string(),
         });
     }
-    // Verify with qid's limited custom raw-string XMLDSig-shaped profile,
-    // as for AuthnRequest and Assertion. No arbitrary-prefix or standards
-    // interoperability is claimed.
+    // The certificate was matched against SP metadata above. Load only its key.
     let algorithm = profile
         .signature_method
         .as_deref()
         .and_then(crate::xmldsig::SamlXmlSignatureAlgorithm::from_uri)
         .unwrap_or(crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256);
     let public_key_pem = crate::xmldsig::cert_pem_to_public_key_pem_from_pem(signing_certificate)?;
-    crate::xmldsig::verify_saml_xml_signature(crate::xmldsig::SamlSignatureInputs {
-        document: &req.raw_xml,
-        public_key_pem: public_key_pem.as_bytes(),
-        profile: algorithm,
-    })?;
+    crate::verify_saml_xml_signature_for(
+        crate::SamlSignatureInputs {
+            document: &req.raw_xml,
+            public_key_pem: public_key_pem.as_bytes(),
+            profile: algorithm,
+        },
+        crate::SignedSamlElement::LogoutRequest,
+    )?;
     Ok(profile)
 }
 

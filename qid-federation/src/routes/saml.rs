@@ -257,17 +257,24 @@ fn validate_saml_acs_response(
     })?;
     let response = response_element(&doc)?;
     let assertion = single_descendant(response, SAML_ASSERTION_NS, "Assertion")?;
-    let issuer = direct_child_text(response, SAML_ASSERTION_NS, "Issuer")
-        .or_else(|| direct_child_text(assertion, SAML_ASSERTION_NS, "Issuer"))
-        .ok_or_else(|| QidError::BadRequest {
-            message: "SAML Response or Assertion Issuer is required".to_string(),
-        })?;
-    if issuer != provider.issuer {
+    let verified = validate_saml_signature(xml, response, assertion, provider)?;
+    let identity = verified.assertion_claims()?;
+    let issuer = if verified.signed_element() == qid_saml::SignedSamlElement::Response {
+        direct_child_text(response, SAML_ASSERTION_NS, "Issuer")
+            .or_else(|| direct_child_text(assertion, SAML_ASSERTION_NS, "Issuer"))
+    } else {
+        direct_child_text(assertion, SAML_ASSERTION_NS, "Issuer")
+    };
+    if response.attribute("ID") != identity.response_id.as_deref()
+        || assertion.attribute("ID") != Some(identity.assertion_id.as_str())
+        || issuer.as_deref() != Some(identity.issuer.as_str())
+        || identity.issuer != provider.issuer
+    {
         return Err(QidError::BadRequest {
-            message: "SAML Response issuer does not match inbound provider".to_string(),
+            message: "SAML verified IDs or issuer do not match protocol tree or inbound provider"
+                .to_string(),
         });
     }
-    validate_saml_signature(xml, response, assertion, provider)?;
     let expires_at = validate_saml_response_protocol(
         response,
         assertion,
@@ -277,59 +284,24 @@ fn validate_saml_acs_response(
         clock_skew_seconds,
     )?;
 
-    let subject = descendant_text(assertion, SAML_ASSERTION_NS, "NameID").ok_or_else(|| {
-        QidError::BadRequest {
-            message: "SAML Assertion Subject NameID is required".to_string(),
-        }
-    })?;
-    let response_id = response
-        .attribute("ID")
-        .ok_or_else(|| QidError::BadRequest {
-            message: "SAML Response ID is required".to_string(),
-        })?
-        .to_string();
-    let assertion_id = assertion
-        .attribute("ID")
-        .ok_or_else(|| QidError::BadRequest {
-            message: "SAML Assertion ID is required".to_string(),
-        })?
-        .to_string();
+    let issuer = identity.issuer;
+    let subject = identity.subject;
+    let mut claims = [
+        ("issuer", &issuer),
+        ("external_subject", &subject),
+        ("subject", &subject),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_owned(), serde_json::json!(value)))
+    .collect::<std::collections::BTreeMap<_, _>>();
 
-    let mut claims = std::collections::BTreeMap::new();
-    claims.insert(
-        "issuer".to_string(),
-        serde_json::Value::String(issuer.clone()),
-    );
-    claims.insert(
-        "external_subject".to_string(),
-        serde_json::Value::String(subject.clone()),
-    );
-    claims.insert(
-        "subject".to_string(),
-        serde_json::Value::String(subject.clone()),
-    );
-
-    for attribute in assertion
-        .descendants()
-        .filter(|node| is_element(*node, SAML_ASSERTION_NS, "Attribute"))
-    {
-        if let Some(name) = attribute.attribute("Name") {
-            let values = attribute
-                .children()
-                .filter(|node| is_element(*node, SAML_ASSERTION_NS, "AttributeValue"))
-                .filter_map(|node| node.text())
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>();
-            let json_value = if values.len() == 1 {
-                serde_json::Value::String(values.into_iter().next().unwrap_or_default())
-            } else {
-                serde_json::Value::Array(
-                    values.into_iter().map(serde_json::Value::String).collect(),
-                )
-            };
-            claims.insert(name.to_string(), json_value);
-        }
+    for (name, values) in identity.attributes {
+        let json_value = if values.len() == 1 {
+            serde_json::Value::String(values.into_iter().next().unwrap_or_default())
+        } else {
+            serde_json::Value::Array(values.into_iter().map(serde_json::Value::String).collect())
+        };
+        claims.insert(name, json_value);
     }
 
     Ok(ValidatedSamlAcsResponse {
@@ -338,18 +310,20 @@ fn validate_saml_acs_response(
             subject,
             claims,
         },
-        response_id,
-        assertion_id,
+        response_id: identity.response_id.ok_or_else(|| QidError::BadRequest {
+            message: "SAML Response ID is required".to_string(),
+        })?,
+        assertion_id: identity.assertion_id,
         expires_at,
     })
 }
 
-fn validate_saml_signature(
-    xml: &str,
+fn validate_saml_signature<'a>(
+    xml: &'a str,
     response: Node<'_, '_>,
     assertion: Node<'_, '_>,
     provider: &InboundIdentityProvider,
-) -> Result<(), QidError> {
+) -> Result<qid_saml::VerifiedSamlDocument<'a>, QidError> {
     if provider.saml_signing_certificates.is_empty() {
         return Err(QidError::Unauthorized {
             message: "inbound SAML provider has no signing certificates".to_string(),
@@ -382,12 +356,16 @@ fn validate_saml_signature(
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML Assertion ID is required".to_string(),
         })?;
-    if reference_uri != format!("#{response_id}") && reference_uri != format!("#{assertion_id}") {
+    let expected = if reference_uri == format!("#{response_id}") {
+        qid_saml::SignedSamlElement::Response
+    } else if reference_uri == format!("#{assertion_id}") {
+        qid_saml::SignedSamlElement::Assertion
+    } else {
         return Err(QidError::BadRequest {
             message: "SAML Signature Reference URI must target the Response or Assertion ID"
                 .to_string(),
         });
-    }
+    };
     let signature_method = signature
         .descendants()
         .find(|node| is_element(*node, XMLDSIG_NS, "SignatureMethod"))
@@ -411,12 +389,15 @@ fn validate_saml_signature(
                 continue;
             }
         };
-        match qid_saml::verify_saml_xml_signature(qid_saml::SamlSignatureInputs {
-            document: xml,
-            public_key_pem: public_key_pem.as_bytes(),
-            profile: algorithm,
-        }) {
-            Ok(()) => return Ok(()),
+        match qid_saml::verify_saml_xml_signature_for(
+            qid_saml::SamlSignatureInputs {
+                document: xml,
+                public_key_pem: public_key_pem.as_bytes(),
+                profile: algorithm,
+            },
+            expected,
+        ) {
+            Ok(verified) => return Ok(verified),
             Err(err) => last_error = Some(err),
         }
     }
@@ -632,15 +613,6 @@ fn direct_child_text(node: Node<'_, '_>, namespace: &str, name: &str) -> Option<
         .map(ToString::to_string)
 }
 
-fn descendant_text(node: Node<'_, '_>, namespace: &str, name: &str) -> Option<String> {
-    node.descendants()
-        .find(|child| is_element(*child, namespace, name))
-        .and_then(|child| child.text())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-}
-
 fn is_element(node: Node<'_, '_>, namespace: &str, name: &str) -> bool {
     node.has_tag_name((namespace, name))
 }
@@ -815,21 +787,43 @@ mod tests {
     }
 
     fn sign_response(unsigned: &str) -> String {
-        let assertion_start = unsigned
-            .find("<saml:Assertion")
-            .expect("test response must contain assertion");
-        let assertion_end = unsigned
-            .find("</saml:Assertion>")
-            .map(|pos| pos + "</saml:Assertion>".len())
-            .expect("test response must contain assertion close");
-        let signature = qid_saml::sign_saml_element_with_key(
-            &unsigned[assertion_start..assertion_end],
-            "assert-1",
+        sign_target(unsigned, "assert-1")
+    }
+
+    fn sign_target(unsigned: &str, id: &str) -> String {
+        let doc = Document::parse(unsigned).unwrap();
+        let target = doc
+            .descendants()
+            .find(|n| n.attribute("ID") == Some(id))
+            .unwrap();
+        let signature = qid_saml::sign_saml_element_with_key_c14n(
+            &unsigned[target.range()],
+            id,
             qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
             TEST_KEY.as_bytes(),
+            qid_saml::SigningCanonicalization::Exclusive,
         )
-        .expect("test SAML response must sign");
-        unsigned.replace("<!--SIGNATURE-->", &signature)
+        .unwrap();
+        // The production helper is a custom serializer, not W3C C14N. Use its
+        // exclusive template, remove its nonstandard parameter, and re-sign
+        // the full fixture with real C14N; production signing stays untouched.
+        let parsed = Document::parse(&signature).unwrap();
+        let mut template = signature.clone();
+        for node in parsed.descendants().rev() {
+            let replacement = match node.tag_name().name() {
+                "InclusiveNamespaces" => String::new(),
+                name @ ("DigestValue" | "SignatureValue") => format!("<ds:{name}/>"),
+                _ => continue,
+            };
+            template.replace_range(node.range(), &replacement);
+        }
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(bergshamra_keys::loader::load_rsa_private_pem(TEST_KEY.as_bytes()).unwrap());
+        bergshamra_dsig::sign::sign(
+            &bergshamra_dsig::DsigContext::new(keys),
+            &unsigned.replace("<!--SIGNATURE-->", &template),
+        )
+        .unwrap()
     }
 
     fn signed_response(audience: &str) -> String {
@@ -864,17 +858,31 @@ mod tests {
 
     #[test]
     fn acs_validation_accepts_signed_saml_response() {
-        let validated =
-            validate_test_response(&signed_response("https://id.example.com/realms/corp"))
-                .expect("signed SAML response must validate");
-        assert_eq!(validated.claims.subject, "subject@example.com");
-        assert_eq!(validated.response_id, "resp-1");
-        assert_eq!(validated.assertion_id, "assert-1");
-        assert_eq!(validated.expires_at, 1_700_000_300);
-        assert_eq!(
-            validated.claims.claims["email"],
-            serde_json::json!("subject@example.com")
+        let unsigned = unsigned_response("https://id.example.com/realms/corp")
+            .replace("<saml:Subject>", "<saml:NameID>decoy</saml:NameID><saml:Subject>")
+            .replace("</saml:AttributeStatement>", "</saml:AttributeStatement><saml:Attribute Name=\"email\"><saml:AttributeValue>decoy</saml:AttributeValue></saml:Attribute>");
+        for id in ["assert-1", "resp-1"] {
+            let validated = validate_test_response(&sign_target(&unsigned, id)).unwrap();
+            assert_eq!(validated.claims.subject, "subject@example.com");
+            assert_eq!(validated.claims.issuer, provider().issuer);
+            assert_eq!(validated.response_id, "resp-1");
+            assert_eq!(validated.assertion_id, "assert-1");
+            assert_eq!(validated.expires_at, 1_700_000_300);
+            assert_eq!(
+                validated.claims.claims["email"],
+                serde_json::json!("subject@example.com")
+            );
+        }
+    }
+
+    #[test]
+    fn acs_rejects_signed_issuer_mismatch_despite_matching_unsigned_response() {
+        let unsigned = unsigned_response("https://id.example.com/realms/corp").replace(
+            "    <saml:Issuer>https://idp.partner.example/metadata",
+            "    <saml:Issuer>https://untrusted.example/metadata",
         );
+        let err = validate_test_response(&sign_response(&unsigned)).unwrap_err();
+        assert!(err.message().contains("issuer"), "{err}");
     }
 
     #[test]
@@ -943,16 +951,7 @@ mod tests {
             .replace("xmlns:samlp=", "xmlns:protocol=")
             .replace("saml:", "identity:")
             .replace("xmlns:saml=", "xmlns:identity=");
-        let start = unsigned.find("<identity:Assertion").unwrap();
-        let end = unsigned.find("</identity:Assertion>").unwrap() + "</identity:Assertion>".len();
-        let signature = qid_saml::sign_saml_element_with_key(
-            &unsigned[start..end],
-            "assert-1",
-            qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
-            TEST_KEY.as_bytes(),
-        )
-        .unwrap();
-        let signed = unsigned.replace("<!--SIGNATURE-->", &signature);
+        let signed = sign_response(&unsigned);
         assert_eq!(
             extract_saml_response_issuer(&signed).unwrap(),
             provider().issuer
@@ -1027,11 +1026,14 @@ mod tests {
             );
             let signed = sign_response(&unsigned);
             let public_key = qid_saml::cert_pem_to_public_key_pem_from_pem(TEST_CERT).unwrap();
-            qid_saml::verify_saml_xml_signature(qid_saml::SamlSignatureInputs {
-                document: &signed,
-                public_key_pem: public_key.as_bytes(),
-                profile: qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
-            })
+            qid_saml::verify_saml_xml_signature_for(
+                qid_saml::SamlSignatureInputs {
+                    document: &signed,
+                    public_key_pem: public_key.as_bytes(),
+                    profile: qid_saml::SamlXmlSignatureAlgorithm::RsaSha256,
+                },
+                qid_saml::SignedSamlElement::Assertion,
+            )
             .expect("wrong-namespace fixture must have a valid signature");
             let err = validate_test_response(&signed)
                 .expect_err("foreign namespace must not satisfy the audience requirement");

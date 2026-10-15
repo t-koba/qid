@@ -263,6 +263,7 @@ pub enum PeerMisbehaved {
     EarlyDataAttemptedInSecondClientHello,
     EarlyDataExtensionWithoutResumption,
     EarlyDataOfferedWithVariedCipherSuite,
+    EchAcceptanceVariedAfterRetry,
     HandshakeHashVariedAfterRetry,
     IllegalHelloRetryRequestWithEmptyCookie,
     IllegalHelloRetryRequestWithNoChanges,

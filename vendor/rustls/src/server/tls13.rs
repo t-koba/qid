@@ -497,7 +497,7 @@ mod client_hello {
                 cx,
                 &mut ocsp_response,
                 client_hello,
-                resumedata.as_ref(),
+                chosen_psk_index.zip(resumedata.as_ref()),
                 self.extra_exts,
                 &self.config,
                 self.send_tickets,
@@ -738,7 +738,7 @@ mod client_hello {
     fn decide_if_early_data_allowed(
         cx: &mut ServerContext<'_>,
         client_hello: &ClientHelloPayload,
-        resumedata: Option<&persist::ServerSessionValue>,
+        resuming: Option<(usize, &persist::ServerSessionValue)>,
         suite: &'static Tls13CipherSuite,
         config: &ServerConfig,
     ) -> EarlyDataDecision {
@@ -750,7 +750,7 @@ mod client_hello {
             false => EarlyDataDecision::Disabled,
         };
 
-        let Some(resume) = resumedata else {
+        let Some((psk_index, resume)) = resuming else {
             // never any early data if not resuming.
             return rejected_or_disabled;
         };
@@ -774,8 +774,13 @@ mod client_hello {
          *  - The selected cipher suite
          *  - The selected ALPN [RFC7301] protocol, if any"
          *
+         * "In order to accept early data, the server MUST have accepted a PSK
+         *  cipher suite and selected the first key offered in the client's
+         *  "pre_shared_key" extension."
+         *
          * (RFC8446, 4.2.10) */
         let early_data_possible = early_data_requested
+            && psk_index == 0
             && resume.is_fresh()
             && Some(resume.version) == cx.common.negotiated_version
             && resume.cipher_suite == suite.common.suite
@@ -799,7 +804,7 @@ mod client_hello {
         cx: &mut ServerContext<'_>,
         ocsp_response: &mut Option<&[u8]>,
         hello: &ClientHelloPayload,
-        resumedata: Option<&persist::ServerSessionValue>,
+        resuming: Option<(usize, &persist::ServerSessionValue)>,
         extra_exts: ServerExtensionsInput<'static>,
         config: &ServerConfig,
         send_tickets: usize,
@@ -812,7 +817,7 @@ mod client_hello {
             ocsp_response,
             &mut ocsp_multi_response,
             hello,
-            resumedata,
+            resuming.map(|(_, session)| session),
         )?;
 
         // RFC 9149: echo the expected ticket count if the client sent the extension.
@@ -822,7 +827,7 @@ mod client_hello {
             });
         }
 
-        let early_data = decide_if_early_data_allowed(cx, hello, resumedata, suite, config);
+        let early_data = decide_if_early_data_allowed(cx, hello, resuming, suite, config);
         if early_data == EarlyDataDecision::Accepted {
             ep.extensions.early_data_ack = Some(());
         }
@@ -1183,6 +1188,17 @@ impl State<ServerConnectionData> for ExpectCertificate {
             HandshakeType::Certificate,
             HandshakePayload::CertificateTls13
         )?;
+
+        // RFC 8446: the certificate_request_context in the client's Certificate
+        // must match the one in our CertificateRequest, which we always send
+        // empty.  The client applies the mirror-image check to the server's
+        // Certificate.
+        if !certp.context.0.is_empty() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::DecodeError,
+                InvalidMessage::InvalidCertRequest,
+            ));
+        }
 
         // We don't send any CertificateRequest extensions, so any extensions
         // here are illegal.

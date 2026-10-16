@@ -238,6 +238,27 @@ across both paths, while identical subject text from different issuers remains
 distinct. This replaces the earlier raw-subject output and does not resolve aliases;
 the hash is not a confidentiality guarantee for guessable identifiers.
 
+### Federated subject mapping rollout
+
+The new mapping applies when qid processes a JWT or SAML assertion; it does not
+rewrite access-token records or token claims issued under the earlier raw-subject
+mappings. Access-token subject and actor exchange reads the persisted `user_id`
+and preserves it, so an active pre-mapping token can retain its old raw subject
+in `sub` or `act.sub`; repeated exchanges can issue further tokens with that
+subject. The persisted record has no reliable federation source and mapping
+version for safely reconstructing all earlier identities, so qid does not
+heuristically rewrite unversioned IDs.
+
+Before relying on the new mapping, stop all old qid instances and revoke all
+pre-cutover access tokens, including tokens created by earlier exchanges. If
+all of them cannot be revoked, remove `token-exchange` from every client's
+`grant_types` and keep it disabled until every pre-cutover access token has
+expired or been revoked. Use the outstanding token expirations or the maximum access-token
+lifetime that applied before cutover; `access_token_ttl_seconds` is configurable.
+This pause prevents further exchanges but does not invalidate old tokens for
+ordinary resource access, which remain valid until expiry or revocation. This
+is a one-time cutover procedure, not support for legacy subject aliases.
+
 The verifier retains the parsed Uppsala Document and exact candidate-resolved
 NodeId internally; raw DOM/node access is crate-private. `qid-saml` bearer claims
 are consumed from that verified Assertion tree.

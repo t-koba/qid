@@ -295,6 +295,13 @@ fn oauth_saml_subject_id(
     ))
 }
 
+fn oauth_jwt_subject_id(realm_id: &str, issuer: &str, subject: &str) -> String {
+    let tuple = serde_json::json!([realm_id, issuer, subject]).to_string();
+    let mut encoded = b"qid:oauth:jwt-subject:v1\0".to_vec();
+    encoded.extend_from_slice(tuple.as_bytes());
+    format!("jwt:v1:{}", qid_core::util::sha256_base64url(encoded))
+}
+
 async fn advanced_subject_grant<R: Repository>(
     state: &SharedState<R>,
     req: &TokenRequest,
@@ -389,13 +396,11 @@ async fn advanced_subject_grant<R: Repository>(
                 let assertion =
                     validate_jwt_bearer_assertion(state, client, &realm.issuer, subject_material)?;
                 subject_user = User {
-                    id: assertion.subject,
+                    id: oauth_jwt_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
                     realm_id: realm.id.clone(),
                     email: None,
                     email_verified: false,
-                    display_name: assertion
-                        .issuer
-                        .map(|iss| format!("token-exchange subject from {iss}")),
+                    display_name: Some(format!("token-exchange subject from {}", assertion.issuer)),
                     failed_login_attempts: 0,
                     locked_until: None,
                     org: None,
@@ -451,13 +456,11 @@ async fn advanced_subject_grant<R: Repository>(
         let assertion =
             validate_jwt_bearer_assertion(state, client, &realm.issuer, subject_material)?;
         subject_user = User {
-            id: assertion.subject,
+            id: oauth_jwt_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
             realm_id: realm.id.clone(),
             email: None,
             email_verified: false,
-            display_name: assertion
-                .issuer
-                .map(|iss| format!("jwt-bearer subject from {iss}")),
+            display_name: Some(format!("jwt-bearer subject from {}", assertion.issuer)),
             failed_login_attempts: 0,
             locked_until: None,
             org: None,
@@ -636,7 +639,7 @@ async fn validate_token_exchange_actor<R: Repository>(
 
 struct ValidatedJwtBearerAssertion {
     subject: String,
-    issuer: Option<String>,
+    issuer: String,
     auth_time: Option<u64>,
     acr: Option<String>,
     amr: Vec<String>,
@@ -718,7 +721,7 @@ fn validate_jwt_bearer_assertion<R: Repository>(
     let cnf = claims.get("cnf").cloned();
     Ok(ValidatedJwtBearerAssertion {
         subject,
-        issuer: Some(assertion_issuer),
+        issuer: assertion_issuer,
         // iat marks assertion issuance, never user authentication: only an
         // explicit signed auth_time is preserved, otherwise it stays omitted.
         auth_time: claims.get("auth_time").and_then(|value| value.as_u64()),

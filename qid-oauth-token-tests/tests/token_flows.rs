@@ -12,7 +12,9 @@ use qid_core::{
     state::SharedState,
     test_helpers, util,
 };
-use qid_crypto::{Jwk, JwtClaims, LocalSigner, jwk::generate_es256};
+use qid_crypto::{
+    Jwk, JwtClaims, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header,
+};
 use qid_storage::{SqlRepository, prelude::*};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -75,6 +77,30 @@ async fn post_token_json(app: Router, token_path: &str, form_body: String) -> se
     let response = post_form(app, token_path, form_body).await;
     assert_eq!(response.status(), StatusCode::OK);
     json_body(response).await
+}
+
+async fn jwt_oauth_subject(
+    app: Router,
+    token_path: &str,
+    state: &Arc<SharedState<SqlRepository>>,
+    client_id: &str,
+    assertion: &str,
+    token_exchange: bool,
+) -> String {
+    let assertion = urlencoding::encode(assertion);
+    let body = if token_exchange {
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id={client_id}&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:jwt&subject_token={assertion}&audience=api://jwt-exchange&scope=jwt-exchange"
+        )
+    } else {
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&client_id={client_id}&client_secret=secret&assertion={assertion}&audience=api://jwt-bearer&scope=jwt-bearer"
+        )
+    };
+    let json = post_token_json(app, token_path, body).await;
+    decode_claims(state, json["access_token"].as_str().unwrap())
+        .sub
+        .unwrap()
 }
 
 fn test_server(
@@ -169,6 +195,40 @@ fn base_test_client(
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
     }
+}
+
+fn jwt_identity_client(client_id: &str, jwk: &Jwk) -> Client {
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        "client_secret_post",
+        vec![
+            "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string(),
+            "urn:ietf:params:oauth:grant-type:token-exchange".to_string(),
+        ],
+    );
+    client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    client.jwks = serde_json::json!({ "keys": [serde_json::to_value(jwk).unwrap()] });
+    client
+}
+
+fn build_jwt_subject_assertion(
+    issuer: &str,
+    subject: &str,
+    audience: &str,
+    jti: &str,
+    private_pem: &str,
+    jwk: &Jwk,
+) -> String {
+    let now = util::now_seconds();
+    let payload = serde_json::json!({
+        "iss": issuer,
+        "sub": subject,
+        "aud": audience,
+        "exp": now + 300,
+        "jti": jti,
+    });
+    sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), jwk, "JWT", &payload).unwrap()
 }
 
 fn client_credentials_client(client_id: &str, auth_method: &str) -> Client {
@@ -347,6 +407,108 @@ async fn setup_with_saml_trust(
     certificate: &str,
 ) -> (Router, String, Arc<SharedState<SqlRepository>>) {
     setup_with_config(config_with_saml_trust(issuer, certificate)).await
+}
+
+#[tokio::test]
+async fn jwt_oauth_subjects_are_issuer_scoped_and_stable_across_grants() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        test_server("api://jwt-bearer", &["jwt-bearer"], "introspection-client"),
+        test_server(
+            "api://jwt-exchange",
+            &["jwt-exchange"],
+            "introspection-client",
+        ),
+    ];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let key_a = generate_es256("jwt-subject-a").unwrap();
+    let key_b = generate_es256("jwt-subject-b").unwrap();
+    for (client_id, key) in [
+        ("jwt-subject-a", &key_a.public_jwk),
+        ("jwt-subject-b", &key_b.public_jwk),
+    ] {
+        state
+            .repo
+            .create_client(&jwt_identity_client(client_id, key))
+            .await
+            .unwrap();
+    }
+    let audience = format!("https://id.example.com{token_path}");
+    let subject = "same-external-subject";
+    let assertion_a_bearer = build_jwt_subject_assertion(
+        "jwt-subject-a",
+        subject,
+        &audience,
+        "jwt-subject-a-bearer",
+        &key_a.private_pem,
+        &key_a.public_jwk,
+    );
+    let assertion_a_exchange = build_jwt_subject_assertion(
+        "jwt-subject-a",
+        subject,
+        &audience,
+        "jwt-subject-a-exchange",
+        &key_a.private_pem,
+        &key_a.public_jwk,
+    );
+    let assertion_b_bearer = build_jwt_subject_assertion(
+        "jwt-subject-b",
+        subject,
+        &audience,
+        "jwt-subject-b-bearer",
+        &key_b.private_pem,
+        &key_b.public_jwk,
+    );
+    let assertion_b_exchange = build_jwt_subject_assertion(
+        "jwt-subject-b",
+        subject,
+        &audience,
+        "jwt-subject-b-exchange",
+        &key_b.private_pem,
+        &key_b.public_jwk,
+    );
+    let a_bearer = jwt_oauth_subject(
+        app.clone(),
+        &token_path,
+        &state,
+        "jwt-subject-a",
+        &assertion_a_bearer,
+        false,
+    )
+    .await;
+    let a_exchange = jwt_oauth_subject(
+        app.clone(),
+        &token_path,
+        &state,
+        "jwt-subject-a",
+        &assertion_a_exchange,
+        true,
+    )
+    .await;
+    let b_bearer = jwt_oauth_subject(
+        app.clone(),
+        &token_path,
+        &state,
+        "jwt-subject-b",
+        &assertion_b_bearer,
+        false,
+    )
+    .await;
+    let b_exchange = jwt_oauth_subject(
+        app,
+        &token_path,
+        &state,
+        "jwt-subject-b",
+        &assertion_b_exchange,
+        true,
+    )
+    .await;
+
+    assert!(a_bearer.starts_with("jwt:v1:"));
+    assert_ne!(a_bearer, subject);
+    assert_eq!(a_bearer, a_exchange);
+    assert_eq!(b_bearer, b_exchange);
+    assert_ne!(a_bearer, b_bearer);
 }
 
 #[tokio::test]

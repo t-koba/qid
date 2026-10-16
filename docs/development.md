@@ -77,7 +77,7 @@ Targeted examples:
 
 ```sh
 cargo test -p qid-oauth --test token_flows --locked -- --test-threads=1
-cargo test -p qid-oauth-saml-tests --locked -- --test-threads=1
+cargo test -p qid-oauth-token-tests --locked -- --test-threads=1
 cargo test -p qid-scim --locked -- --test-threads=1
 cargo test -p qid-saml --locked -- --test-threads=1
 cargo test -p qid-storage --test sql_repository --locked -- --test-threads=1

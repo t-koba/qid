@@ -228,6 +228,16 @@ provisioning behavior and perform no account-link/JIT writes. Token-exchange
 `act` claims keep the external issuer and apply the same opaque mapping to
 the actor, not raw NameID text.
 
+JWT-bearer assertions and JWT subject tokens in token exchange are verified
+against the invoking client's registered `jwks` and require signed `iss` to equal
+`client_id`. Their opaque deterministic OAuth `sub` is derived from realm ID,
+verified JWT `iss`, and exact JWT `sub`. A domain-separated v1 JSON tuple is
+hashed with SHA-256/base64url; the mapping does not depend on JWT serialization,
+`jti`, signing key, or grant path. Thus the same `(realm, iss, sub)` is stable
+across both paths, while identical subject text from different issuers remains
+distinct. This replaces the earlier raw-subject output and does not resolve aliases;
+the hash is not a confidentiality guarantee for guessable identifiers.
+
 The verifier retains the parsed Uppsala Document and exact candidate-resolved
 NodeId internally; raw DOM/node access is crate-private. `qid-saml` bearer claims
 are consumed from that verified Assertion tree.

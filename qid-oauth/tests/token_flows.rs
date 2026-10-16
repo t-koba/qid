@@ -964,7 +964,7 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let access_token = json["access_token"].as_str().unwrap();
     let claims = decode_claims(&state, access_token);
-    assert_eq!(claims.sub.as_deref(), Some("workload-123"));
+    assert!(claims.sub.as_deref().unwrap().starts_with("jwt:v1:"));
     assert_eq!(claims.aud_primary(), Some("api://workload"));
     assert_eq!(claims.extra["client_id"], "jwt-bearer-client");
     assert_eq!(claims.extra["scope"], "workload");

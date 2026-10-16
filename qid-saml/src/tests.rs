@@ -621,7 +621,10 @@ fn validates_saml_bearer_assertion_profile() {
     </saml:SubjectConfirmation>
   </saml:Subject>
   <saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300">
-    <saml:AudienceRestriction><saml:Audience>https://id.example.com/oauth2/token</saml:Audience></saml:AudienceRestriction>
+    <saml:AudienceRestriction>
+      <saml:Audience>https://id.example.com/oauth2/token</saml:Audience>
+      <saml:Audience>https://alternative.example.com/audience</saml:Audience>
+    </saml:AudienceRestriction>
   </saml:Conditions>
   <saml:AuthnStatement AuthnInstant="{now}"/>
 </saml:Assertion>
@@ -643,6 +646,26 @@ fn validates_saml_bearer_assertion_profile() {
 
     assert!(matches!(
         validate_saml_bearer_assertion(&assertion, "https://other.example.com/token", now, 60),
+        Err(QidError::BadRequest { .. })
+    ));
+
+    let conflicting_unsigned = unsigned.replace(
+        "</saml:AudienceRestriction>",
+        "</saml:AudienceRestriction>\n    <saml:AudienceRestriction><saml:Audience>https://other.example.com/audience</saml:Audience></saml:AudienceRestriction>",
+    );
+    let conflicting_assertion = sign_saml_test_document(
+        &conflicting_unsigned,
+        "assert-bearer-1",
+        TEST_SP_KEY_PEM.as_bytes(),
+        &test_sp_cert_body(),
+    );
+    assert!(matches!(
+        validate_saml_bearer_assertion(
+            &conflicting_assertion,
+            "https://id.example.com/oauth2/token",
+            now,
+            60
+        ),
         Err(QidError::BadRequest { .. })
     ));
 }

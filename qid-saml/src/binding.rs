@@ -248,19 +248,33 @@ pub fn validate_saml_bearer_assertion(
     let subject_node = required_child(assertion, "Subject")?;
     let subject = text(required_child(subject_node, "NameID")?);
     let conditions = children_named(doc, assertion, ASSERTION_NS, "Conditions");
-    let audiences: Vec<_> = conditions
+    let restrictions: Vec<_> = conditions
         .iter()
-        .flat_map(|c| children_named(doc, *c, ASSERTION_NS, "AudienceRestriction"))
-        .flat_map(|r| children_named(doc, r, ASSERTION_NS, "Audience"))
-        .map(text)
+        .flat_map(|conditions| {
+            children_named(doc, *conditions, ASSERTION_NS, "AudienceRestriction")
+        })
         .collect();
-    if !audiences
-        .iter()
-        .any(|audience| audience == expected_audience)
-    {
-        return Err(QidError::BadRequest {
-            message: "SAML bearer Assertion audience does not match token endpoint".into(),
-        });
+    let audience_mismatch = || QidError::BadRequest {
+        message: "SAML bearer Assertion audience does not match token endpoint".into(),
+    };
+    if restrictions.is_empty() {
+        return Err(audience_mismatch());
+    }
+    for restriction in restrictions {
+        let audiences = children_named(doc, restriction, ASSERTION_NS, "Audience");
+        let element_children = doc
+            .children(restriction)
+            .into_iter()
+            .filter(|child| doc.element(*child).is_some())
+            .count();
+        if audiences.is_empty()
+            || audiences.len() != element_children
+            || !audiences
+                .iter()
+                .any(|audience| text(*audience) == expected_audience)
+        {
+            return Err(audience_mismatch());
+        }
     }
     let confirmation = required_child(subject_node, "SubjectConfirmation")?;
     if attribute(doc, confirmation, "Method") != Some(BEARER_CONFIRMATION_METHOD) {

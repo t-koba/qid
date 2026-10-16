@@ -106,6 +106,35 @@ fn logout_request_xml() -> String {
     )
 }
 
+fn unsigned_bearer_assertion() -> &'static str {
+    r##"
+<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="assert-bearer-regression" Version="2.0" IssueInstant="1700000000">
+  <saml:Issuer>https://issuer.example.com</saml:Issuer>
+  <!--SIGNATURE-->
+  <saml:Subject>
+    <saml:NameID>subject@example.com</saml:NameID>
+    <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+      <saml:SubjectConfirmationData Recipient="https://id.example.com/oauth2/token" NotOnOrAfter="1700000300"/>
+    </saml:SubjectConfirmation>
+  </saml:Subject>
+  <saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300">
+    <saml:AudienceRestriction>
+      <saml:Audience>https://id.example.com/oauth2/token</saml:Audience>
+    </saml:AudienceRestriction>
+  </saml:Conditions>
+</saml:Assertion>
+"##
+}
+
+fn sign_bearer_assertion(unsigned: &str) -> String {
+    sign_saml_test_document(
+        unsigned,
+        "assert-bearer-regression",
+        TEST_SP_KEY_PEM.as_bytes(),
+        &test_sp_cert_body(),
+    )
+}
+
 #[test]
 fn imports_sp_metadata_and_rejects_sha1() {
     let imported = import_sp_metadata(&sp_metadata()).unwrap();
@@ -664,6 +693,62 @@ fn validates_saml_bearer_assertion_profile() {
             &conflicting_assertion,
             "https://id.example.com/oauth2/token",
             now,
+            60
+        ),
+        Err(QidError::BadRequest { .. })
+    ));
+}
+
+#[test]
+fn rejects_unsupported_saml_bearer_condition() {
+    for condition in ["<saml:Condition/>", "<saml:OneTimeUse/>"] {
+        let unsigned = unsigned_bearer_assertion().replace(
+            "</saml:Conditions>",
+            &format!("{condition}</saml:Conditions>"),
+        );
+        let assertion = sign_bearer_assertion(&unsigned);
+        assert!(matches!(
+            validate_saml_bearer_assertion(
+                &assertion,
+                "https://id.example.com/oauth2/token",
+                1_700_000_000,
+                60
+            ),
+            Err(QidError::BadRequest { .. })
+        ));
+    }
+}
+
+#[test]
+fn rejects_duplicate_saml_bearer_conditions_with_expired_second_element() {
+    let unsigned = unsigned_bearer_assertion().replace(
+        "</saml:Assertion>",
+        "<saml:Conditions NotOnOrAfter=\"1600000000\"><saml:AudienceRestriction><saml:Audience>https://id.example.com/oauth2/token</saml:Audience></saml:AudienceRestriction></saml:Conditions></saml:Assertion>",
+    );
+    let assertion = sign_bearer_assertion(&unsigned);
+    assert!(matches!(
+        validate_saml_bearer_assertion(
+            &assertion,
+            "https://id.example.com/oauth2/token",
+            1_700_000_000,
+            60
+        ),
+        Err(QidError::BadRequest { .. })
+    ));
+}
+
+#[test]
+fn rejects_saml_bearer_subject_confirmation_data_not_before() {
+    let unsigned = unsigned_bearer_assertion().replace(
+        "Recipient=\"https://id.example.com/oauth2/token\"",
+        "Recipient=\"https://id.example.com/oauth2/token\" NotBefore=\"1699999990\"",
+    );
+    let assertion = sign_bearer_assertion(&unsigned);
+    assert!(matches!(
+        validate_saml_bearer_assertion(
+            &assertion,
+            "https://id.example.com/oauth2/token",
+            1_700_000_000,
             60
         ),
         Err(QidError::BadRequest { .. })

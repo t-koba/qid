@@ -248,12 +248,23 @@ pub fn validate_saml_bearer_assertion(
     let subject_node = required_child(assertion, "Subject")?;
     let subject = text(required_child(subject_node, "NameID")?);
     let conditions = children_named(doc, assertion, ASSERTION_NS, "Conditions");
-    let restrictions: Vec<_> = conditions
-        .iter()
-        .flat_map(|conditions| {
-            children_named(doc, *conditions, ASSERTION_NS, "AudienceRestriction")
-        })
-        .collect();
+    if conditions.len() != 1 {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer Assertion requires exactly one direct Conditions".into(),
+        });
+    }
+    let conditions_node = conditions[0];
+    let restrictions = children_named(doc, conditions_node, ASSERTION_NS, "AudienceRestriction");
+    let condition_element_children = doc
+        .children(conditions_node)
+        .into_iter()
+        .filter(|child| doc.element(*child).is_some())
+        .count();
+    if restrictions.len() != condition_element_children {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer Assertion Conditions contains an unsupported child".into(),
+        });
+    }
     let audience_mismatch = || QidError::BadRequest {
         message: "SAML bearer Assertion audience does not match token endpoint".into(),
     };
@@ -283,6 +294,12 @@ pub fn validate_saml_bearer_assertion(
         });
     }
     let data = required_child(confirmation, "SubjectConfirmationData")?;
+    if attribute(doc, data, "NotBefore").is_some() {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer Assertion SubjectConfirmationData NotBefore is unsupported"
+                .into(),
+        });
+    }
     if attribute(doc, data, "Recipient") != Some(expected_audience) {
         return Err(QidError::BadRequest {
             message: "SAML bearer Assertion recipient does not match token endpoint".into(),
@@ -307,21 +324,19 @@ pub fn validate_saml_bearer_assertion(
             message: "SAML bearer Assertion has expired".into(),
         });
     }
-    if let Some(conditions) = conditions.first() {
-        if let Some(not_before) = epoch(*conditions, "NotBefore")?
-            && not_before > now_epoch + clock_skew_seconds
-        {
-            return Err(QidError::BadRequest {
-                message: "SAML bearer Assertion is not yet valid".into(),
-            });
-        }
-        if let Some(expiry) = epoch(*conditions, "NotOnOrAfter")?
-            && expiry <= now_epoch.saturating_sub(clock_skew_seconds)
-        {
-            return Err(QidError::BadRequest {
-                message: "SAML bearer Assertion conditions have expired".into(),
-            });
-        }
+    if let Some(not_before) = epoch(conditions_node, "NotBefore")?
+        && not_before > now_epoch + clock_skew_seconds
+    {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer Assertion is not yet valid".into(),
+        });
+    }
+    if let Some(expiry) = epoch(conditions_node, "NotOnOrAfter")?
+        && expiry <= now_epoch.saturating_sub(clock_skew_seconds)
+    {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer Assertion conditions have expired".into(),
+        });
     }
     let auth_time = children_named(doc, assertion, ASSERTION_NS, "AuthnStatement")
         .first()

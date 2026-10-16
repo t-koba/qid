@@ -10,6 +10,7 @@ members = [
     "qid-webauthn",
     "qid-oidc",
     "qid-oauth",
+    "qid-oauth-saml-tests",
     "qid-policy",
     "qid-proxy",
     "qid-observability",

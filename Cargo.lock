@@ -4165,6 +4165,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "qid-oauth-saml-tests"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bergshamra-dsig",
+ "bergshamra-keys",
+ "http-body-util",
+ "qid-core",
+ "qid-crypto",
+ "qid-oauth",
+ "qid-storage",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+ "urlencoding",
+]
+
+[[package]]
 name = "qid-observability"
 version = "0.1.0"
 dependencies = [

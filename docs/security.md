@@ -213,7 +213,7 @@ For OAuth SAML bearer grants and token-exchange SAML subject and actor tokens,
 qid maps the realm ID, verified external issuer, and structured NameID from the
 verified Assertion to an opaque deterministic `sub`: its text, effective Format,
 and optional NameQualifier, SPNameQualifier, and SPProvidedID. An absent Format
-uses the SAML Core §2.2.2 default `urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified`;
+uses the SAML Core §2.2.2 default corrected by [SAML 2.0 Approved Errata 05, E60](https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html), `urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified`;
 other optional attributes retain their exact parsed presence and value. The
 versioned, domain-separated, fixed-order JSON tuple uses SHA-256/base64url and
 does not depend on assertion IDs, issue/expiry times, signing certificates or

@@ -366,16 +366,17 @@ async fn saml_oauth_subject_mapping_accounts_for_name_id_attributes() {
     let cert = include_str!("../../qid-oauth/tests/data/test-sp.crt");
     let key = include_str!("../../qid-oauth/tests/data/test-sp.key");
     let attributes = [
-        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
-        r#" SPProvidedID="same&#38;alias" SPNameQualifier="https://sp.example" NameQualifier="https://tenant.example" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" SPProvidedID="same&#38;alias" SPNameQualifier="https://sp.example" NameQualifier="https://tenant.example" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified""#,
         r#" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
         r#" xmlns:spoof="urn:wrong" spoof:Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
         r#" Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
-        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://other-tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
-        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://other-sp.example" SPProvidedID="same&amp;alias""#,
-        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="other-alias""#,
-        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
-        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" NameQualifier="https://other-tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://other-sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="other-alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" NameQualifier="" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
     ];
     let mut subjects = Vec::new();
     for (index, name_id_attributes) in attributes.iter().enumerate() {

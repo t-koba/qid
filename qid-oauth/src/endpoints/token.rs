@@ -272,7 +272,7 @@ fn oauth_saml_subject_id(
     realm_id: &str,
     assertion: &qid_saml::SamlBearerAssertion,
 ) -> QidResult<String> {
-    const UNSPECIFIED_FORMAT: &str = "urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified";
+    const UNSPECIFIED_FORMAT: &str = "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified";
     let name_id = &assertion.name_id;
     let format = name_id.format.as_deref().unwrap_or(UNSPECIFIED_FORMAT);
     let tuple = serde_json::to_vec(&(

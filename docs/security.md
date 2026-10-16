@@ -209,17 +209,24 @@ certificates fail closed. Embedded KeyInfo is never trusted or used as fallback.
 Browser ACS selection and verification behavior are unchanged. This trust check
 does not broaden Conditions or claim broader RFC 7522 conformance.
 
-For OAuth SAML bearer grants and token-exchange SAML subject tokens, qid maps the
-realm ID, verified external issuer, and exact subject text exposed by the current
-SAML validator to an opaque deterministic `sub`. The mapping uses a versioned,
-domain-separated, length-prefixed encoding and SHA-256/base64url; it does not
-depend on assertion IDs, issue/expiry times, signing certificates or keys, XML
-serialization, or request path. This mapping does not claim to preserve or
-interpret NameID qualifiers beyond the subject text currently exposed by the
-validator. These OAuth token paths do not invoke the interactive federation
-broker's account-link or just-in-time provisioning behavior and perform no
-account-link/JIT writes. For token exchange, the `act` claim retains the external
-issuer and raw NameID subject for the actor.
+For OAuth SAML bearer grants and token-exchange SAML subject and actor tokens,
+qid maps the realm ID, verified external issuer, and structured NameID from the
+verified Assertion to an opaque deterministic `sub`: its text, effective Format,
+and optional NameQualifier, SPNameQualifier, and SPProvidedID. An absent Format
+uses the SAML Core §2.2.2 default `urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified`;
+other optional attributes retain their exact parsed presence and value. The
+versioned, domain-separated, fixed-order JSON tuple uses SHA-256/base64url and
+does not depend on assertion IDs, issue/expiry times, signing certificates or
+keys, XML serialization, or request path. This v2 mapping changes subjects
+issued by the earlier text-only mapping; consumers relying on those values must
+plan that change explicitly. This conservative tuple is not a NameID alias or
+format-equivalence rule: changing SPProvidedID can split one external principal
+into multiple OAuth subjects, and qid performs no alias resolution. The hash is
+not a confidentiality guarantee for guessable identifiers. These OAuth token paths do
+not invoke the interactive federation broker's account-link or just-in-time
+provisioning behavior and perform no account-link/JIT writes. Token-exchange
+`act` claims keep the external issuer and apply the same opaque mapping to
+the actor, not raw NameID text.
 
 The verifier retains the parsed Uppsala Document and exact candidate-resolved
 NodeId internally; raw DOM/node access is crate-private. `qid-saml` bearer claims

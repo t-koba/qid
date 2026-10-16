@@ -257,13 +257,34 @@ fn build_saml_bearer_assertion_with_id(
     key_pem: &str,
     assertion_id: &str,
 ) -> String {
+    build_saml_bearer_assertion_with_name_id_attributes(
+        subject,
+        audience,
+        expires_at,
+        issuer,
+        (cert_pem, key_pem),
+        assertion_id,
+        "",
+    )
+}
+
+fn build_saml_bearer_assertion_with_name_id_attributes(
+    subject: &str,
+    audience: &str,
+    expires_at: u64,
+    issuer: &str,
+    signer: (&str, &str),
+    assertion_id: &str,
+    name_id_attributes: &str,
+) -> String {
+    let (cert_pem, key_pem) = signer;
     let now = util::now_seconds();
     let unsigned = format!(
         r##"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="{assertion_id}" Version="2.0" IssueInstant="{now}">
   <saml:Issuer>{issuer}</saml:Issuer>
   <!--SIGNATURE-->
   <saml:Subject>
-    <saml:NameID>{subject}</saml:NameID>
+    <saml:NameID{name_id_attributes}>{subject}</saml:NameID>
     <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
       <saml:SubjectConfirmationData Recipient="{audience}" NotOnOrAfter="{expires_at}"/>
     </saml:SubjectConfirmation>
@@ -326,6 +347,106 @@ async fn setup_with_saml_trust(
     certificate: &str,
 ) -> (Router, String, Arc<SharedState<SqlRepository>>) {
     setup_with_config(config_with_saml_trust(issuer, certificate)).await
+}
+
+#[tokio::test]
+async fn saml_oauth_subject_mapping_accounts_for_name_id_attributes() {
+    let issuer = "https://saml-idp.example.com";
+    let mut config = config_with_saml_trust(
+        issuer,
+        include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+    );
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        test_server("api://saml", &["saml"], "introspection-client"),
+        test_server("api://delegated", &["delegated"], "introspection-client"),
+    ];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let audience = format!("https://id.example.com{token_path}");
+    let expires_at = util::now_seconds() + 300;
+    let cert = include_str!("../../qid-oauth/tests/data/test-sp.crt");
+    let key = include_str!("../../qid-oauth/tests/data/test-sp.key");
+    let attributes = [
+        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" SPProvidedID="same&#38;alias" SPNameQualifier="https://sp.example" NameQualifier="https://tenant.example" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified""#,
+        r#" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" xmlns:spoof="urn:wrong" spoof:Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://other-tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://other-sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="other-alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+        r#" Format="urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified" NameQualifier="" SPNameQualifier="https://sp.example" SPProvidedID="same&amp;alias""#,
+    ];
+    let mut subjects = Vec::new();
+    for (index, name_id_attributes) in attributes.iter().enumerate() {
+        let assertion = build_saml_bearer_assertion_with_name_id_attributes(
+            "shared-nameid",
+            &audience,
+            expires_at,
+            issuer,
+            (cert, key),
+            &format!("assert-name-id-attributes-{index}"),
+            name_id_attributes,
+        );
+        let body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}&audience=api://saml&scope=saml",
+            urlencoding::encode(&assertion)
+        );
+        let json = post_token_json(app.clone(), &token_path, body).await;
+        let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+        subjects.push(claims.sub.unwrap());
+    }
+
+    assert_eq!(subjects[0], subjects[1]);
+    assert_eq!(subjects[0], subjects[2]);
+    for subject in &subjects[1..4] {
+        assert_eq!(subjects[0], *subject);
+    }
+    for subject in &subjects[4..] {
+        assert_ne!(subjects[0], *subject);
+    }
+
+    let mut exchange_subjects = Vec::new();
+    for (index, name_id_attributes) in [attributes[0], attributes[5]].iter().enumerate() {
+        let assertion = build_saml_bearer_assertion_with_name_id_attributes(
+            "shared-nameid",
+            &audience,
+            expires_at,
+            issuer,
+            (cert, key),
+            &format!("assert-name-id-exchange-{index}"),
+            name_id_attributes,
+        );
+        let body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:saml2&subject_token={}&audience=api://delegated&scope=delegated",
+            urlencoding::encode(&assertion)
+        );
+        let json = post_token_json(app.clone(), &token_path, body).await;
+        let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+        exchange_subjects.push(claims.sub.unwrap());
+    }
+    assert_eq!(subjects[0], exchange_subjects[0]);
+    assert_ne!(exchange_subjects[0], exchange_subjects[1]);
+
+    let signed_assertion = build_saml_bearer_assertion_with_name_id_attributes(
+        "shared-nameid",
+        &audience,
+        expires_at,
+        issuer,
+        (cert, key),
+        "assert-name-id-attribute-tampered",
+        attributes[0],
+    );
+    let tampered_assertion = signed_assertion.replace(
+        "NameQualifier=\"https://tenant.example\"",
+        "NameQualifier=\"https://tampered.example\"",
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}&audience=api://saml&scope=saml",
+        urlencoding::encode(&tampered_assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
 }
 
 #[tokio::test]
@@ -454,7 +575,9 @@ async fn saml_oauth_subject_is_scoped_to_trusted_issuer_and_stable_across_paths(
         exchange_a_claims.extra["act"]["iss"],
         "https://saml-idp-b.example.com"
     );
-    assert_eq!(exchange_a_claims.extra["act"]["sub"], "raw-actor-nameid");
+    let actor_subject = exchange_a_claims.extra["act"]["sub"].as_str().unwrap();
+    assert!(actor_subject.starts_with("saml2:v2:"));
+    assert_ne!(actor_subject, "raw-actor-nameid");
 }
 
 #[tokio::test]
@@ -488,7 +611,7 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
         claims
             .sub
             .as_deref()
-            .is_some_and(|sub| sub.starts_with("saml2:v1:"))
+            .is_some_and(|sub| sub.starts_with("saml2:v2:"))
     );
     assert_eq!(claims.aud_primary(), Some("api://saml"));
     assert_eq!(claims.extra["client_id"], "saml-bearer-client");
@@ -663,19 +786,34 @@ async fn token_exchange_saml_subject_and_actor_use_configured_trust() {
     )];
     let (app, token_path, state) = setup_with_config(config).await;
     let audience = format!("https://id.example.com{token_path}");
-    let subject_assertion = build_saml_bearer_assertion(
+    let subject_assertion = build_saml_bearer_assertion_with_id(
         "saml-exchange-subject",
         &audience,
         util::now_seconds() + 300,
+        "https://saml-idp.example.com",
+        include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+        include_str!("../../qid-oauth/tests/data/test-sp.key"),
+        "assert-saml-exchange-subject-1",
     );
-    let actor_assertion =
-        build_saml_bearer_assertion("saml-exchange-actor", &audience, util::now_seconds() + 300);
+    let actor_attributes = r#" NameQualifier="https://tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="actor-alias""#;
+    let actor_assertion = build_saml_bearer_assertion_with_name_id_attributes(
+        "saml-exchange-actor",
+        &audience,
+        util::now_seconds() + 300,
+        "https://saml-idp.example.com",
+        (
+            include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+            include_str!("../../qid-oauth/tests/data/test-sp.key"),
+        ),
+        "assert-saml-exchange-actor-1",
+        actor_attributes,
+    );
     let body = format!(
         "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:saml2&subject_token={}&actor_token_type=urn:ietf:params:oauth:token-type:saml2&actor_token={}&audience=api://delegated&scope=delegated",
         urlencoding::encode(&subject_assertion),
         urlencoding::encode(&actor_assertion)
     );
-    let response = post_form(app, &token_path, body).await;
+    let response = post_form(app.clone(), &token_path, body).await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = json_body(response).await;
     let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
@@ -683,10 +821,45 @@ async fn token_exchange_saml_subject_and_actor_use_configured_trust() {
         claims
             .sub
             .as_deref()
-            .is_some_and(|sub| sub.starts_with("saml2:v1:"))
+            .is_some_and(|sub| sub.starts_with("saml2:v2:"))
     );
     assert_eq!(claims.extra["act"]["iss"], "https://saml-idp.example.com");
-    assert_eq!(claims.extra["act"]["sub"], "saml-exchange-actor");
+    let actor_id = claims.extra["act"]["sub"].as_str().unwrap();
+    assert!(actor_id.starts_with("saml2:v2:"));
+    assert_ne!(actor_id, "saml-exchange-actor");
+
+    let actor_variant = build_saml_bearer_assertion_with_name_id_attributes(
+        "saml-exchange-actor",
+        &audience,
+        util::now_seconds() + 301,
+        "https://saml-idp.example.com",
+        (
+            include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+            include_str!("../../qid-oauth/tests/data/test-sp.key"),
+        ),
+        "assert-saml-exchange-actor-2",
+        r#" NameQualifier="https://other-tenant.example" SPNameQualifier="https://sp.example" SPProvidedID="actor-alias""#,
+    );
+    let subject_variant = build_saml_bearer_assertion_with_id(
+        "saml-exchange-subject",
+        &audience,
+        util::now_seconds() + 301,
+        "https://saml-idp.example.com",
+        include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+        include_str!("../../qid-oauth/tests/data/test-sp.key"),
+        "assert-saml-exchange-subject-2",
+    );
+    let variant_body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:saml2&subject_token={}&actor_token_type=urn:ietf:params:oauth:token-type:saml2&actor_token={}&audience=api://delegated&scope=delegated",
+        urlencoding::encode(&subject_variant),
+        urlencoding::encode(&actor_variant)
+    );
+    let variant_response = post_form(app, &token_path, variant_body).await;
+    assert_eq!(variant_response.status(), StatusCode::OK);
+    let variant_json = json_body(variant_response).await;
+    let variant_claims = decode_claims(&state, variant_json["access_token"].as_str().unwrap());
+    assert_eq!(claims.sub, variant_claims.sub);
+    assert_ne!(actor_id, variant_claims.extra["act"]["sub"]);
 }
 
 #[tokio::test]

@@ -24,10 +24,19 @@ pub struct SamlResponseProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SamlNameId {
+    pub value: String,
+    pub format: Option<String>,
+    pub name_qualifier: Option<String>,
+    pub sp_name_qualifier: Option<String>,
+    pub sp_provided_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SamlBearerAssertion {
     pub assertion_id: String,
     pub issuer: String,
-    pub subject: String,
+    pub name_id: SamlNameId,
     pub audience: String,
     pub expires_at: u64,
     pub auth_time: Option<u64>,
@@ -277,12 +286,20 @@ pub fn validate_saml_bearer_assertion(
         });
     }
     let subject_node = required_child(assertion, "Subject")?;
-    let subject = text(required_child(subject_node, "NameID")?);
-    if subject.is_empty() {
+    let name_id_node = required_child(subject_node, "NameID")?;
+    let name_id_value = text(name_id_node);
+    if name_id_value.is_empty() {
         return Err(QidError::BadRequest {
             message: "SAML bearer Assertion NameID must not be empty".into(),
         });
     }
+    let name_id = SamlNameId {
+        value: name_id_value,
+        format: attribute(doc, name_id_node, "Format").map(ToOwned::to_owned),
+        name_qualifier: attribute(doc, name_id_node, "NameQualifier").map(ToOwned::to_owned),
+        sp_name_qualifier: attribute(doc, name_id_node, "SPNameQualifier").map(ToOwned::to_owned),
+        sp_provided_id: attribute(doc, name_id_node, "SPProvidedID").map(ToOwned::to_owned),
+    };
     let conditions = children_named(doc, assertion, ASSERTION_NS, "Conditions");
     if conditions.len() != 1 {
         return Err(QidError::BadRequest {
@@ -381,7 +398,7 @@ pub fn validate_saml_bearer_assertion(
     Ok(SamlBearerAssertion {
         assertion_id,
         issuer,
-        subject,
+        name_id,
         audience: expected_audience.to_string(),
         expires_at,
         auth_time,

@@ -673,7 +673,7 @@ fn validates_saml_bearer_assertion_profile() {
         &[TEST_SP_CERT_PEM.to_string()],
     )
     .expect("SAML bearer assertion should validate");
-    assert_eq!(validated.subject, "subject@example.com");
+    assert_eq!(validated.name_id.value, "subject@example.com");
     assert_eq!(validated.issuer, "https://issuer.example.com");
     assert_eq!(validated.expires_at, 1_700_000_300);
     assert_eq!(validated.auth_time, Some(now));

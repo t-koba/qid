@@ -268,13 +268,31 @@ fn token_error_with_fresh_dpop_nonce<R: Repository>(
     qid_http::dpop_nonce_error_response(err, nonce.as_deref())
 }
 
-fn oauth_saml_subject_id(realm_id: &str, issuer: &str, subject: &str) -> String {
-    let mut encoded = b"qid:oauth:saml-subject:v1\0".to_vec();
-    for value in [realm_id.as_bytes(), issuer.as_bytes(), subject.as_bytes()] {
-        encoded.extend_from_slice(&(value.len() as u64).to_be_bytes());
-        encoded.extend_from_slice(value);
-    }
-    format!("saml2:v1:{}", qid_core::util::sha256_base64url(encoded))
+fn oauth_saml_subject_id(
+    realm_id: &str,
+    assertion: &qid_saml::SamlBearerAssertion,
+) -> QidResult<String> {
+    const UNSPECIFIED_FORMAT: &str = "urn:oasis:names:tc:SAML:1.0:nameid-format:unspecified";
+    let name_id = &assertion.name_id;
+    let format = name_id.format.as_deref().unwrap_or(UNSPECIFIED_FORMAT);
+    let tuple = serde_json::to_vec(&(
+        realm_id,
+        &assertion.issuer,
+        &name_id.value,
+        format,
+        &name_id.name_qualifier,
+        &name_id.sp_name_qualifier,
+        &name_id.sp_provided_id,
+    ))
+    .map_err(|error| QidError::Internal {
+        message: format!("failed to serialize SAML OAuth identity tuple: {error}"),
+    })?;
+    let mut encoded = b"qid:oauth:saml-subject:v2\0".to_vec();
+    encoded.extend_from_slice(&tuple);
+    Ok(format!(
+        "saml2:v2:{}",
+        qid_core::util::sha256_base64url(encoded)
+    ))
 }
 
 async fn advanced_subject_grant<R: Repository>(
@@ -398,7 +416,7 @@ async fn advanced_subject_grant<R: Repository>(
                     realm.saml_clock_skew_seconds,
                 )?;
                 subject_user = User {
-                    id: oauth_saml_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
+                    id: oauth_saml_subject_id(&realm.id, &assertion)?,
                     realm_id: realm.id.clone(),
                     email: None,
                     email_verified: false,
@@ -468,7 +486,7 @@ async fn advanced_subject_grant<R: Repository>(
             realm.saml_clock_skew_seconds,
         )?;
         subject_user = User {
-            id: oauth_saml_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
+            id: oauth_saml_subject_id(&realm.id, &assertion)?,
             realm_id: realm.id.clone(),
             email: None,
             email_verified: false,
@@ -604,8 +622,9 @@ async fn validate_token_exchange_actor<R: Repository>(
                 &token_endpoint_url_for_realm(state, realm_id),
                 realm.saml_clock_skew_seconds,
             )?;
+            let subject_id = oauth_saml_subject_id(realm_id, &assertion)?;
             Ok(Some(serde_json::json!({
-                "sub": assertion.subject,
+                "sub": subject_id,
                 "iss": assertion.issuer,
             })))
         }
@@ -1108,19 +1127,13 @@ mod saml_subject_id_tests {
     use super::oauth_saml_subject_id;
 
     #[test]
-    fn saml_oauth_subject_id_scopes_realm_and_length_prefixed_components() {
-        let subject_id = oauth_saml_subject_id("realm-a", "https://idp.example", "person");
-        assert_eq!(
-            subject_id,
-            oauth_saml_subject_id("realm-a", "https://idp.example", "person")
-        );
+    fn realm_scoping() -> Result<(), Box<dyn std::error::Error>> {
+        let assertion: qid_saml::SamlBearerAssertion =
+            serde_json::from_str(include_str!("../../tests/data/saml-subject.json"))?;
         assert_ne!(
-            subject_id,
-            oauth_saml_subject_id("realm-b", "https://idp.example", "person")
+            oauth_saml_subject_id("realm-a", &assertion)?,
+            oauth_saml_subject_id("realm-b", &assertion)?
         );
-        assert_ne!(
-            oauth_saml_subject_id("a", "bc", "d"),
-            oauth_saml_subject_id("ab", "c", "d")
-        );
+        Ok(())
     }
 }

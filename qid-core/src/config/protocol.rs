@@ -816,6 +816,8 @@ pub struct InboundProviderConfig {
     pub jwks_uri: Option<String>,
     #[serde(default)]
     pub jwks: Option<serde_json::Value>,
+    /// PEM-encoded SAML signing certificates trusted for inbound assertions, including OAuth SAML bearer inputs.
+    /// No certificate supplied inside an assertion is trusted as a substitute.
     #[serde(default)]
     pub saml_signing_certificates: Vec<String>,
 }

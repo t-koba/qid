@@ -200,9 +200,14 @@ maps, external resolution or network configuration. Embedded KeyInfo cannot
 override that key. The caller-selected RSA SubjectPublicKeyInfo key is parsed
 and its modulus size checked before candidate verification; keys below 2048 bits
 are rejected. AuthnRequest/LogoutRequest certificate pinning to SP metadata
-is unchanged. The bearer helper's embedded-certificate selection remains proof
-of possession, **not** issuer/certificate trust establishment; the grant caller
-must still establish issuer trust. This change does not broaden Conditions.
+is unchanged. OAuth SAML bearer grant assertions and token-exchange SAML subject
+and actor assertions are verified only with certificates from an enabled realm
+`protocols.federation.inbound_providers` entry of `kind: saml`; federation must
+also be enabled, and the issuer extracted from the verified Assertion tree must
+exactly equal that provider's configured issuer. Missing providers or signing
+certificates fail closed. Embedded KeyInfo is never trusted or used as fallback.
+Browser ACS selection and verification behavior are unchanged. This trust check
+does not broaden Conditions or claim broader RFC 7522 conformance.
 
 The verifier retains the parsed Uppsala Document and exact candidate-resolved
 NodeId internally; raw DOM/node access is crate-private. `qid-saml` bearer claims

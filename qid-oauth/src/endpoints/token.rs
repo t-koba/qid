@@ -381,10 +381,11 @@ async fn advanced_subject_grant<R: Repository>(
             "urn:ietf:params:oauth:token-type:saml2" => {
                 let decrypted =
                     decrypt_encrypted_saml_assertion(state, &realm.id, subject_material)?;
-                let assertion = qid_saml::validate_saml_bearer_assertion(
+                let assertion = validate_oauth_saml_bearer_assertion(
+                    state,
+                    &realm.id,
                     &decrypted,
                     &token_endpoint_url_for_realm(state, &realm.id),
-                    qid_core::util::now_seconds(),
                     realm.saml_clock_skew_seconds,
                 )?;
                 subject_user = User {
@@ -450,10 +451,11 @@ async fn advanced_subject_grant<R: Repository>(
             });
         }
         let decrypted = decrypt_encrypted_saml_assertion(state, &realm.id, subject_material)?;
-        let assertion = qid_saml::validate_saml_bearer_assertion(
+        let assertion = validate_oauth_saml_bearer_assertion(
+            state,
+            &realm.id,
             &decrypted,
             &token_endpoint_url_for_realm(state, &realm.id),
-            qid_core::util::now_seconds(),
             realm.saml_clock_skew_seconds,
         )?;
         subject_user = User {
@@ -586,10 +588,11 @@ async fn validate_token_exchange_actor<R: Repository>(
             let realm = state.realm(realm_id).ok_or_else(|| QidError::Config {
                 message: format!("realm {realm_id} not found for actor token"),
             })?;
-            let assertion = qid_saml::validate_saml_bearer_assertion(
+            let assertion = validate_oauth_saml_bearer_assertion(
+                state,
+                realm_id,
                 &decrypted,
                 &token_endpoint_url_for_realm(state, realm_id),
-                qid_core::util::now_seconds(),
                 realm.saml_clock_skew_seconds,
             )?;
             Ok(Some(serde_json::json!({
@@ -965,6 +968,60 @@ async fn validate_client_auth_method<R: Repository>(
     }
 
     Ok(())
+}
+
+/// Validate OAuth SAML inputs only against the issuer-bound inbound federation trust
+/// configured for this realm. The verifier never uses assertion KeyInfo as trust.
+fn validate_oauth_saml_bearer_assertion<R: Repository>(
+    state: &SharedState<R>,
+    realm_id: &str,
+    xml: &str,
+    expected_audience: &str,
+    clock_skew_seconds: u64,
+) -> QidResult<qid_saml::SamlBearerAssertion> {
+    let realm_config = oauth_realm_config(state, realm_id)?;
+    let federation = &realm_config.protocols.federation;
+    if !federation.enabled {
+        return Err(QidError::Unauthorized {
+            message: "OAuth SAML assertions require enabled inbound federation trust".into(),
+        });
+    }
+
+    let providers = federation.inbound_providers.iter().filter(|provider| {
+        provider.enabled
+            && provider.kind == "saml"
+            && !provider.saml_signing_certificates.is_empty()
+    });
+    let mut attempted = false;
+    let mut last_error = None;
+    for provider in providers {
+        attempted = true;
+        match qid_saml::validate_saml_bearer_assertion(
+            xml,
+            expected_audience,
+            qid_core::util::now_seconds(),
+            clock_skew_seconds,
+            &provider.saml_signing_certificates,
+        ) {
+            Ok(assertion) if assertion.issuer == provider.issuer => return Ok(assertion),
+            Ok(_) => {
+                last_error = Some(QidError::Unauthorized {
+                    message: "verified SAML assertion issuer does not match configured provider"
+                        .into(),
+                });
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    if !attempted {
+        return Err(QidError::Unauthorized {
+            message: "no enabled inbound SAML provider with signing certificates is configured"
+                .into(),
+        });
+    }
+    Err(last_error.unwrap_or_else(|| QidError::Unauthorized {
+        message: "SAML assertion does not match configured inbound provider trust".into(),
+    }))
 }
 
 fn token_endpoint_url_for_realm<R: Repository>(state: &SharedState<R>, realm_id: &str) -> String {

@@ -665,16 +665,27 @@ fn validates_saml_bearer_assertion_profile() {
         TEST_SP_KEY_PEM.as_bytes(),
         &test_sp_cert_body(),
     );
-    let validated =
-        validate_saml_bearer_assertion(&assertion, "https://id.example.com/oauth2/token", now, 60)
-            .expect("SAML bearer assertion should validate");
+    let validated = validate_saml_bearer_assertion(
+        &assertion,
+        "https://id.example.com/oauth2/token",
+        now,
+        60,
+        &[TEST_SP_CERT_PEM.to_string()],
+    )
+    .expect("SAML bearer assertion should validate");
     assert_eq!(validated.subject, "subject@example.com");
     assert_eq!(validated.issuer, "https://issuer.example.com");
     assert_eq!(validated.expires_at, 1_700_000_300);
     assert_eq!(validated.auth_time, Some(now));
 
     assert!(matches!(
-        validate_saml_bearer_assertion(&assertion, "https://other.example.com/token", now, 60),
+        validate_saml_bearer_assertion(
+            &assertion,
+            "https://other.example.com/token",
+            now,
+            60,
+            &[TEST_SP_CERT_PEM.to_string()]
+        ),
         Err(QidError::BadRequest { .. })
     ));
 
@@ -693,10 +704,40 @@ fn validates_saml_bearer_assertion_profile() {
             &conflicting_assertion,
             "https://id.example.com/oauth2/token",
             now,
-            60
+            60,
+            &[TEST_SP_CERT_PEM.to_string()]
         ),
         Err(QidError::BadRequest { .. })
     ));
+}
+
+#[test]
+fn rejects_empty_saml_bearer_issuer_and_subject() {
+    let assertion = unsigned_bearer_assertion();
+    let unsigned_variants = [
+        assertion.replace(
+            "<saml:Issuer>https://issuer.example.com</saml:Issuer>",
+            "<saml:Issuer> </saml:Issuer>",
+        ),
+        assertion.replace(
+            "<saml:NameID>subject@example.com</saml:NameID>",
+            "<saml:NameID> </saml:NameID>",
+        ),
+    ];
+
+    for unsigned in unsigned_variants {
+        let signed = sign_bearer_assertion(&unsigned);
+        assert!(matches!(
+            validate_saml_bearer_assertion(
+                &signed,
+                "https://id.example.com/oauth2/token",
+                1_700_000_000,
+                60,
+                &[TEST_SP_CERT_PEM.to_string()]
+            ),
+            Err(QidError::BadRequest { .. })
+        ));
+    }
 }
 
 #[test]
@@ -712,7 +753,8 @@ fn rejects_unsupported_saml_bearer_condition() {
                 &assertion,
                 "https://id.example.com/oauth2/token",
                 1_700_000_000,
-                60
+                60,
+                &[TEST_SP_CERT_PEM.to_string()]
             ),
             Err(QidError::BadRequest { .. })
         ));
@@ -731,7 +773,8 @@ fn rejects_duplicate_saml_bearer_conditions_with_expired_second_element() {
             &assertion,
             "https://id.example.com/oauth2/token",
             1_700_000_000,
-            60
+            60,
+            &[TEST_SP_CERT_PEM.to_string()]
         ),
         Err(QidError::BadRequest { .. })
     ));
@@ -749,7 +792,8 @@ fn rejects_saml_bearer_subject_confirmation_data_not_before() {
             &assertion,
             "https://id.example.com/oauth2/token",
             1_700_000_000,
-            60
+            60,
+            &[TEST_SP_CERT_PEM.to_string()]
         ),
         Err(QidError::BadRequest { .. })
     ));

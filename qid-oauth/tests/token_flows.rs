@@ -8,7 +8,10 @@ use axum::{
 use base64::Engine;
 use http_body_util::BodyExt;
 use qid_core::{
-    config::{OAuthProtocolConfig, OAuthResourceServerConfig, PepRegistrationConfig, QidConfig},
+    config::{
+        InboundProviderConfig, OAuthProtocolConfig, OAuthResourceServerConfig,
+        PepRegistrationConfig, QidConfig,
+    },
     models::{AuthorizationCode, Client, ClientType, TokenFormat, User},
     state::SharedState,
     tenant::RealmId,
@@ -429,10 +432,28 @@ fn saml_bearer_client(client_id: &str) -> Client {
 }
 
 fn build_saml_bearer_assertion(subject: &str, audience: &str, expires_at: u64) -> String {
+    build_saml_bearer_assertion_with(
+        subject,
+        audience,
+        expires_at,
+        "https://saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+        include_str!("data/test-sp.key"),
+    )
+}
+
+fn build_saml_bearer_assertion_with(
+    subject: &str,
+    audience: &str,
+    expires_at: u64,
+    issuer: &str,
+    cert_pem: &str,
+    key_pem: &str,
+) -> String {
     let now = util::now_seconds();
     let unsigned = format!(
         r##"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="assert-saml-bearer-1" Version="2.0" IssueInstant="{now}">
-  <saml:Issuer>https://saml-idp.example.com</saml:Issuer>
+  <saml:Issuer>{issuer}</saml:Issuer>
   <!--SIGNATURE-->
   <saml:Subject>
     <saml:NameID>{subject}</saml:NameID>
@@ -446,8 +467,6 @@ fn build_saml_bearer_assertion(subject: &str, audience: &str, expires_at: u64) -
   <saml:AuthnStatement AuthnInstant="{now}"/>
 </saml:Assertion>"##
     );
-    let cert_pem = include_str!("data/test-sp.crt");
-    let key_pem = include_str!("data/test-sp.key");
     let cert_body: String = cert_pem
         .lines()
         .filter(|line| !line.starts_with("-----"))
@@ -464,6 +483,54 @@ fn build_saml_bearer_assertion(subject: &str, audience: &str, expires_at: u64) -
     );
     bergshamra_dsig::sign::sign(&bergshamra_dsig::DsigContext::new(keys), &template)
         .expect("SAML bearer assertion must sign in the enforced inbound profile")
+}
+
+fn saml_inbound_provider(issuer: &str, certificate: &str) -> InboundProviderConfig {
+    InboundProviderConfig {
+        id: "synthetic-saml-idp".to_string(),
+        kind: "saml".to_string(),
+        issuer: issuer.to_string(),
+        enabled: true,
+        domains: Vec::new(),
+        social_provider: None,
+        client_id: None,
+        client_secret: None,
+        token_url: None,
+        userinfo_url: None,
+        jit_provisioning: false,
+        account_linking: false,
+        claim_mappings: Vec::new(),
+        jwks_uri: None,
+        jwks: None,
+        saml_signing_certificates: vec![certificate.to_string()],
+    }
+}
+
+fn config_with_saml_trust(issuer: &str, certificate: &str) -> QidConfig {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.federation.enabled = true;
+    config.realms[0].protocols.federation.inbound_providers =
+        vec![saml_inbound_provider(issuer, certificate)];
+    config
+}
+
+async fn setup_with_saml_trust(
+    issuer: &str,
+    certificate: &str,
+) -> (Router, String, Arc<SharedState<SqlRepository>>) {
+    setup_with_config(config_with_saml_trust(issuer, certificate)).await
+}
+
+async fn assert_error_without_access_token(
+    response: axum::response::Response,
+    expected_status: StatusCode,
+) {
+    assert_eq!(response.status(), expected_status);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("access_token"),
+        "error response must not contain an issued token"
+    );
 }
 
 #[tokio::test]
@@ -1028,7 +1095,11 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
 
 #[tokio::test]
 async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
-    let (app, token_path, state) = setup().await;
+    let (app, token_path, state) = setup_with_saml_trust(
+        "https://saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+    )
+    .await;
     let token_url = format!("https://id.example.com{token_path}");
     let assertion =
         build_saml_bearer_assertion("saml-subject-123", &token_url, util::now_seconds() + 300);
@@ -1057,8 +1128,199 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
 }
 
 #[tokio::test]
-async fn saml_bearer_grant_rejects_wrong_audience() {
+async fn saml_bearer_grant_rejects_default_config_without_inbound_trust() {
     let (app, token_path, _) = setup().await;
+    let assertion = build_saml_bearer_assertion(
+        "saml-no-trust-subject",
+        &format!("https://id.example.com{token_path}"),
+        util::now_seconds() + 300,
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}",
+        urlencoding::encode(&assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn saml_bearer_grant_rejects_unconfigured_issuer_even_with_trusted_key() {
+    let (app, token_path, _) = setup_with_saml_trust(
+        "https://saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+    )
+    .await;
+    let assertion = build_saml_bearer_assertion_with(
+        "saml-unknown-issuer-subject",
+        &format!("https://id.example.com{token_path}"),
+        util::now_seconds() + 300,
+        "https://unknown-saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+        include_str!("data/test-sp.key"),
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}",
+        urlencoding::encode(&assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn saml_bearer_grant_rejects_matching_issuer_signed_by_untrusted_keyinfo_key() {
+    let (app, token_path, _) = setup_with_saml_trust(
+        "https://saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+    )
+    .await;
+    // This synthetic cert/key is test-only and deliberately differs from the configured trust.
+    let assertion = build_saml_bearer_assertion_with(
+        "saml-untrusted-key-subject",
+        &format!("https://id.example.com{token_path}"),
+        util::now_seconds() + 300,
+        "https://saml-idp.example.com",
+        include_str!("data/test-untrusted-saml.crt"),
+        include_str!("data/test-untrusted-saml.key"),
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}",
+        urlencoding::encode(&assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn saml_bearer_grant_rejects_a_key_trusted_for_a_different_issuer() {
+    let mut config = config_with_saml_trust(
+        "https://saml-idp-a.example.com",
+        include_str!("data/test-sp.crt"),
+    );
+    config.realms[0]
+        .protocols
+        .federation
+        .inbound_providers
+        .push(saml_inbound_provider(
+            "https://saml-idp-b.example.com",
+            include_str!("data/test-untrusted-saml.crt"),
+        ));
+    let (app, token_path, _) = setup_with_config(config).await;
+    let assertion = build_saml_bearer_assertion_with(
+        "saml-cross-issuer-subject",
+        &format!("https://id.example.com{token_path}"),
+        util::now_seconds() + 300,
+        "https://saml-idp-b.example.com",
+        include_str!("data/test-sp.crt"),
+        include_str!("data/test-sp.key"),
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}",
+        urlencoding::encode(&assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn saml_bearer_grant_rejects_provider_when_federation_is_disabled() {
+    let mut config = config_with_saml_trust(
+        "https://saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+    );
+    config.realms[0].protocols.federation.enabled = false;
+    let (app, token_path, _) = setup_with_config(config).await;
+    let assertion = build_saml_bearer_assertion(
+        "saml-disabled-federation-subject",
+        &format!("https://id.example.com{token_path}"),
+        util::now_seconds() + 300,
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}",
+        urlencoding::encode(&assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn token_exchange_saml_subject_rejects_without_inbound_trust() {
+    let (app, token_path, _) = setup().await;
+    let assertion = build_saml_bearer_assertion(
+        "saml-exchange-subject",
+        &format!("https://id.example.com{token_path}"),
+        util::now_seconds() + 300,
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:saml2&subject_token={}&audience=api://delegated&scope=delegated",
+        urlencoding::encode(&assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn token_exchange_saml_actor_rejects_without_inbound_trust() {
+    let (app, token_path, _) = setup().await;
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+    )
+    .await;
+    let actor_assertion = build_saml_bearer_assertion(
+        "saml-exchange-actor",
+        &format!("https://id.example.com{token_path}"),
+        util::now_seconds() + 300,
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&actor_token_type=urn:ietf:params:oauth:token-type:saml2&actor_token={}&audience=api://delegated&scope=delegated",
+        urlencoding::encode(&subject_token),
+        urlencoding::encode(&actor_assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn token_exchange_saml_subject_and_actor_use_configured_trust() {
+    let mut config = config_with_saml_trust(
+        "https://saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+    );
+    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://delegated",
+        &["delegated"],
+        "introspection-client",
+    )];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let audience = format!("https://id.example.com{token_path}");
+    let subject_assertion = build_saml_bearer_assertion(
+        "saml-exchange-subject",
+        &audience,
+        util::now_seconds() + 300,
+    );
+    let actor_assertion =
+        build_saml_bearer_assertion("saml-exchange-actor", &audience, util::now_seconds() + 300);
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:saml2&subject_token={}&actor_token_type=urn:ietf:params:oauth:token-type:saml2&actor_token={}&audience=api://delegated&scope=delegated",
+        urlencoding::encode(&subject_assertion),
+        urlencoding::encode(&actor_assertion)
+    );
+    let response = post_form(app, &token_path, body).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.sub.as_deref(), Some("saml-exchange-subject"));
+    assert_eq!(claims.extra["act"]["sub"], "saml-exchange-actor");
+}
+
+#[tokio::test]
+async fn saml_bearer_grant_rejects_wrong_audience() {
+    let (app, token_path, _) = setup_with_saml_trust(
+        "https://saml-idp.example.com",
+        include_str!("data/test-sp.crt"),
+    )
+    .await;
     let assertion = build_saml_bearer_assertion(
         "saml-subject-123",
         "https://wrong.example.com/oauth2/token",

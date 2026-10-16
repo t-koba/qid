@@ -178,11 +178,16 @@ pub fn inspect_saml_response_profile(xml: &str) -> QidResult<SamlResponseProfile
     })
 }
 
+/// Validate a bearer Assertion using only caller-selected, configured signing certificates.
+/// Embedded XMLDSig KeyInfo is never a trust source or fallback. A successful signature
+/// does not establish issuer authorization; the caller must bind the returned issuer to
+/// the provider associated with these certificates.
 pub fn validate_saml_bearer_assertion(
     xml: &str,
     expected_audience: &str,
     now_epoch: u64,
     clock_skew_seconds: u64,
+    trusted_signing_certificates: &[String],
 ) -> QidResult<SamlBearerAssertion> {
     reject_insecure_saml_xml(xml)?;
     if count_start_tags(xml, "Response") > 0 {
@@ -195,32 +200,53 @@ pub fn validate_saml_bearer_assertion(
             message: "SAML bearer assertion must contain exactly one Assertion".to_string(),
         });
     }
+    if trusted_signing_certificates.is_empty() {
+        return Err(QidError::Unauthorized {
+            message: "SAML bearer Assertion has no configured signing certificate trust".into(),
+        });
+    }
     let profile = inspect_xml_signature_profile(xml, "Assertion")?;
-    let signing_cert =
-        profile
-            .signing_certificate
-            .as_ref()
-            .ok_or_else(|| QidError::BadRequest {
-                message: "SAML bearer Assertion signature must include an X509Certificate"
-                    .to_string(),
-            })?;
-    // Preserve the bearer profile's certificate selection. This is proof of
-    // possession, not certificate trust establishment; issuer trust is the
-    // grant caller's responsibility. The engine cannot select a KeyInfo key.
     let algorithm = profile
         .signature_method
         .as_deref()
         .and_then(crate::xmldsig::SamlXmlSignatureAlgorithm::from_uri)
-        .unwrap_or(crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256);
-    let public_key_pem = crate::xmldsig::cert_pem_to_public_key_pem_from_pem(signing_cert)?;
-    let verified = crate::verify_saml_xml_signature_for(
-        crate::SamlSignatureInputs {
-            document: xml,
-            public_key_pem: public_key_pem.as_bytes(),
-            profile: algorithm,
-        },
-        crate::SignedSamlElement::Assertion,
-    )?;
+        .ok_or_else(|| QidError::BadRequest {
+            message: "SAML bearer Assertion signature method is unsupported".into(),
+        })?;
+
+    // The certificate list is provided by the caller's configured trust policy.
+    // KeyInfo is never used to select a verification key or establish trust.
+    let mut verified = None;
+    let mut last_error = None;
+    for certificate in trusted_signing_certificates {
+        let public_key_pem = match crate::xmldsig::cert_pem_to_public_key_pem_from_pem(certificate)
+        {
+            Ok(key) => key,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        match crate::verify_saml_xml_signature_for(
+            crate::SamlSignatureInputs {
+                document: xml,
+                public_key_pem: public_key_pem.as_bytes(),
+                profile: algorithm,
+            },
+            crate::SignedSamlElement::Assertion,
+        ) {
+            Ok(document) => {
+                verified = Some(document);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let verified = verified.ok_or_else(|| {
+        last_error.unwrap_or_else(|| QidError::Unauthorized {
+            message: "SAML XML signature verification failed".into(),
+        })
+    })?;
     use crate::verification::{ASSERTION_NS, attribute, children_named};
     let doc = verified.document();
     let assertion = verified.target();
@@ -245,8 +271,18 @@ pub fn validate_saml_bearer_assertion(
         })?
         .to_string();
     let issuer = text(required_child(assertion, "Issuer")?);
+    if issuer.is_empty() {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer Assertion Issuer must not be empty".into(),
+        });
+    }
     let subject_node = required_child(assertion, "Subject")?;
     let subject = text(required_child(subject_node, "NameID")?);
+    if subject.is_empty() {
+        return Err(QidError::BadRequest {
+            message: "SAML bearer Assertion NameID must not be empty".into(),
+        });
+    }
     let conditions = children_named(doc, assertion, ASSERTION_NS, "Conditions");
     if conditions.len() != 1 {
         return Err(QidError::BadRequest {

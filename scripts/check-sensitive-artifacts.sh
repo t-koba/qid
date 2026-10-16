@@ -32,7 +32,8 @@ is_allowed_fixture() {
     fi
 
     case "$1" in
-        ./qid-oauth/tests/data/test-sp.key) return 0 ;;
+        ./qid-oauth/tests/data/test-sp.key | \
+        ./qid-oauth/tests/data/test-untrusted-saml.key) return 0 ;;
         ./qid-saml/src/test-ec-key.pem) return 0 ;;
         ./qid-saml/tests/data/test-sp.key) return 0 ;;
         *) return 1 ;;

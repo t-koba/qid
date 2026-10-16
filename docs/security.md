@@ -253,11 +253,17 @@ Before relying on the new mapping, stop all old qid instances and revoke all
 pre-cutover access tokens, including tokens created by earlier exchanges. If
 all of them cannot be revoked, remove `token-exchange` from every client's
 `grant_types` and keep it disabled until every pre-cutover access token has
-expired or been revoked. Use the outstanding token expirations or the maximum access-token
-lifetime that applied before cutover; `access_token_ttl_seconds` is configurable.
-This pause prevents further exchanges but does not invalidate old tokens for
-ordinary resource access, which remain valid until expiry or revocation. This
-is a one-time cutover procedure, not support for legacy subject aliases.
+expired or been revoked. Use the outstanding token expirations or the maximum
+access-token lifetime that applied before cutover; `access_token_ttl_seconds` is
+configurable. This pause prevents further exchanges but does not itself
+invalidate old tokens for ordinary resource access. Qid's revocation state is
+checked by qid exchange/introspection paths, but a resource server that validates
+a JWT offline without consulting qid or its own denylist cannot see that state;
+it can continue accepting a revoked token until the token's signed `exp`. For
+immediate resource-level cutover, ensure every resource server honors revocation
+(e.g. through introspection or a denylist); otherwise wait for all pre-cutover
+JWTs to expire before relying on the new mapping at that server. This is a
+one-time cutover procedure, not support for legacy subject aliases.
 
 The verifier retains the parsed Uppsala Document and exact candidate-resolved
 NodeId internally; raw DOM/node access is crate-private. `qid-saml` bearer claims

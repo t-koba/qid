@@ -209,6 +209,18 @@ certificates fail closed. Embedded KeyInfo is never trusted or used as fallback.
 Browser ACS selection and verification behavior are unchanged. This trust check
 does not broaden Conditions or claim broader RFC 7522 conformance.
 
+For OAuth SAML bearer grants and token-exchange SAML subject tokens, qid maps the
+realm ID, verified external issuer, and exact subject text exposed by the current
+SAML validator to an opaque deterministic `sub`. The mapping uses a versioned,
+domain-separated, length-prefixed encoding and SHA-256/base64url; it does not
+depend on assertion IDs, issue/expiry times, signing certificates or keys, XML
+serialization, or request path. This mapping does not claim to preserve or
+interpret NameID qualifiers beyond the subject text currently exposed by the
+validator. These OAuth token paths do not invoke the interactive federation
+broker's account-link or just-in-time provisioning behavior and perform no
+account-link/JIT writes. For token exchange, the `act` claim retains the external
+issuer and raw NameID subject for the actor.
+
 The verifier retains the parsed Uppsala Document and exact candidate-resolved
 NodeId internally; raw DOM/node access is crate-private. `qid-saml` bearer claims
 are consumed from that verified Assertion tree.

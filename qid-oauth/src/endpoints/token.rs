@@ -268,6 +268,15 @@ fn token_error_with_fresh_dpop_nonce<R: Repository>(
     qid_http::dpop_nonce_error_response(err, nonce.as_deref())
 }
 
+fn oauth_saml_subject_id(realm_id: &str, issuer: &str, subject: &str) -> String {
+    let mut encoded = b"qid:oauth:saml-subject:v1\0".to_vec();
+    for value in [realm_id.as_bytes(), issuer.as_bytes(), subject.as_bytes()] {
+        encoded.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        encoded.extend_from_slice(value);
+    }
+    format!("saml2:v1:{}", qid_core::util::sha256_base64url(encoded))
+}
+
 async fn advanced_subject_grant<R: Repository>(
     state: &SharedState<R>,
     req: &TokenRequest,
@@ -389,7 +398,7 @@ async fn advanced_subject_grant<R: Repository>(
                     realm.saml_clock_skew_seconds,
                 )?;
                 subject_user = User {
-                    id: assertion.subject,
+                    id: oauth_saml_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
                     realm_id: realm.id.clone(),
                     email: None,
                     email_verified: false,
@@ -459,7 +468,7 @@ async fn advanced_subject_grant<R: Repository>(
             realm.saml_clock_skew_seconds,
         )?;
         subject_user = User {
-            id: assertion.subject,
+            id: oauth_saml_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
             realm_id: realm.id.clone(),
             email: None,
             email_verified: false,
@@ -1092,4 +1101,26 @@ async fn infer_authorization_code_client_id<R: Repository>(
         .get_authorization_code(&code_hash)
         .await?
         .map(|code| code.client_id))
+}
+
+#[cfg(test)]
+mod saml_subject_id_tests {
+    use super::oauth_saml_subject_id;
+
+    #[test]
+    fn saml_oauth_subject_id_scopes_realm_and_length_prefixed_components() {
+        let subject_id = oauth_saml_subject_id("realm-a", "https://idp.example", "person");
+        assert_eq!(
+            subject_id,
+            oauth_saml_subject_id("realm-a", "https://idp.example", "person")
+        );
+        assert_ne!(
+            subject_id,
+            oauth_saml_subject_id("realm-b", "https://idp.example", "person")
+        );
+        assert_ne!(
+            oauth_saml_subject_id("a", "bc", "d"),
+            oauth_saml_subject_id("ab", "c", "d")
+        );
+    }
 }

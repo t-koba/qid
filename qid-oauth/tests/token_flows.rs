@@ -450,9 +450,29 @@ fn build_saml_bearer_assertion_with(
     cert_pem: &str,
     key_pem: &str,
 ) -> String {
+    build_saml_bearer_assertion_with_id(
+        subject,
+        audience,
+        expires_at,
+        issuer,
+        cert_pem,
+        key_pem,
+        "assert-saml-bearer-1",
+    )
+}
+
+fn build_saml_bearer_assertion_with_id(
+    subject: &str,
+    audience: &str,
+    expires_at: u64,
+    issuer: &str,
+    cert_pem: &str,
+    key_pem: &str,
+    assertion_id: &str,
+) -> String {
     let now = util::now_seconds();
     let unsigned = format!(
-        r##"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="assert-saml-bearer-1" Version="2.0" IssueInstant="{now}">
+        r##"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="{assertion_id}" Version="2.0" IssueInstant="{now}">
   <saml:Issuer>{issuer}</saml:Issuer>
   <!--SIGNATURE-->
   <saml:Subject>
@@ -472,7 +492,7 @@ fn build_saml_bearer_assertion_with(
         .filter(|line| !line.starts_with("-----"))
         .collect();
     let signature = format!(
-        r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#assert-saml-bearer-1"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>"##,
+        r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#{assertion_id}"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>"##,
         cert_body.trim()
     );
     let template = unsigned.replace("<!--SIGNATURE-->", &signature);
@@ -1094,6 +1114,135 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
 }
 
 #[tokio::test]
+async fn saml_oauth_subject_is_scoped_to_trusted_issuer_and_stable_across_paths() {
+    let mut config = config_with_saml_trust(
+        "https://saml-idp-a.example.com",
+        include_str!("data/test-sp.crt"),
+    );
+    config.realms[0].protocols.federation.inbound_providers[0]
+        .saml_signing_certificates
+        .push(include_str!("data/test-untrusted-saml.crt").to_string());
+    let mut second_provider = saml_inbound_provider(
+        "https://saml-idp-b.example.com",
+        include_str!("data/test-untrusted-saml.crt"),
+    );
+    second_provider.id = "synthetic-saml-idp-b".to_string();
+    config.realms[0]
+        .protocols
+        .federation
+        .inbound_providers
+        .push(second_provider);
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        test_server("api://saml", &["saml"], "introspection-client"),
+        test_server("api://delegated", &["delegated"], "introspection-client"),
+    ];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let audience = format!("https://id.example.com{token_path}");
+    let now = util::now_seconds();
+    let assertion_a1 = build_saml_bearer_assertion_with_id(
+        "shared-nameid",
+        &audience,
+        now + 300,
+        "https://saml-idp-a.example.com",
+        include_str!("data/test-sp.crt"),
+        include_str!("data/test-sp.key"),
+        "assert-a-original-key",
+    );
+    let assertion_a2 = build_saml_bearer_assertion_with_id(
+        "shared-nameid",
+        &audience,
+        now + 301,
+        "https://saml-idp-a.example.com",
+        include_str!("data/test-untrusted-saml.crt"),
+        include_str!("data/test-untrusted-saml.key"),
+        "assert-a-rotated-key",
+    );
+    let assertion_b = build_saml_bearer_assertion_with_id(
+        "shared-nameid",
+        &audience,
+        now + 302,
+        "https://saml-idp-b.example.com",
+        include_str!("data/test-untrusted-saml.crt"),
+        include_str!("data/test-untrusted-saml.key"),
+        "assert-b",
+    );
+    let issue_bearer = |assertion: &str| {
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}&audience=api://saml&scope=saml",
+            urlencoding::encode(assertion)
+        )
+    };
+    let bearer_a1 = post_token_json(app.clone(), &token_path, issue_bearer(&assertion_a1)).await;
+    let bearer_a2 = post_token_json(app.clone(), &token_path, issue_bearer(&assertion_a2)).await;
+    let bearer_b = post_token_json(app.clone(), &token_path, issue_bearer(&assertion_b)).await;
+    let bearer_a1_claims = decode_claims(&state, bearer_a1["access_token"].as_str().unwrap());
+    let bearer_a2_claims = decode_claims(&state, bearer_a2["access_token"].as_str().unwrap());
+    let bearer_b_claims = decode_claims(&state, bearer_b["access_token"].as_str().unwrap());
+    assert_eq!(bearer_a1_claims.sub, bearer_a2_claims.sub);
+    assert_ne!(bearer_a1_claims.sub, bearer_b_claims.sub);
+
+    let assertion_a_exchange = build_saml_bearer_assertion_with_id(
+        "shared-nameid",
+        &audience,
+        now + 303,
+        "https://saml-idp-a.example.com",
+        include_str!("data/test-untrusted-saml.crt"),
+        include_str!("data/test-untrusted-saml.key"),
+        "assert-a-exchange",
+    );
+    let assertion_b_exchange = build_saml_bearer_assertion_with_id(
+        "shared-nameid",
+        &audience,
+        now + 304,
+        "https://saml-idp-b.example.com",
+        include_str!("data/test-untrusted-saml.crt"),
+        include_str!("data/test-untrusted-saml.key"),
+        "assert-b-exchange",
+    );
+    let actor_assertion = build_saml_bearer_assertion_with_id(
+        "raw-actor-nameid",
+        &audience,
+        now + 305,
+        "https://saml-idp-b.example.com",
+        include_str!("data/test-untrusted-saml.crt"),
+        include_str!("data/test-untrusted-saml.key"),
+        "assert-actor",
+    );
+    let exchange = |subject: &str, actor: Option<&str>| {
+        let actor_fields = actor
+            .map(|actor| {
+                format!(
+                    "&actor_token_type=urn:ietf:params:oauth:token-type:saml2&actor_token={}",
+                    urlencoding::encode(actor)
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:saml2&subject_token={}{}&audience=api://delegated&scope=delegated",
+            urlencoding::encode(subject),
+            actor_fields
+        )
+    };
+    let exchange_a = post_token_json(
+        app.clone(),
+        &token_path,
+        exchange(&assertion_a_exchange, Some(&actor_assertion)),
+    )
+    .await;
+    let exchange_b = post_token_json(app, &token_path, exchange(&assertion_b_exchange, None)).await;
+    let exchange_a_claims = decode_claims(&state, exchange_a["access_token"].as_str().unwrap());
+    let exchange_b_claims = decode_claims(&state, exchange_b["access_token"].as_str().unwrap());
+    assert_eq!(exchange_a_claims.sub, bearer_a1_claims.sub);
+    assert_eq!(exchange_b_claims.sub, bearer_b_claims.sub);
+    assert_ne!(exchange_a_claims.sub, exchange_b_claims.sub);
+    assert_eq!(
+        exchange_a_claims.extra["act"]["iss"],
+        "https://saml-idp-b.example.com"
+    );
+    assert_eq!(exchange_a_claims.extra["act"]["sub"], "raw-actor-nameid");
+}
+
+#[tokio::test]
 async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
     let (app, token_path, state) = setup_with_saml_trust(
         "https://saml-idp.example.com",
@@ -1120,7 +1269,12 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let access_token = json["access_token"].as_str().unwrap();
     let claims = decode_claims(&state, access_token);
-    assert_eq!(claims.sub.as_deref(), Some("saml-subject-123"));
+    assert!(
+        claims
+            .sub
+            .as_deref()
+            .is_some_and(|sub| sub.starts_with("saml2:v1:"))
+    );
     assert_eq!(claims.aud_primary(), Some("api://saml"));
     assert_eq!(claims.extra["client_id"], "saml-bearer-client");
     assert_eq!(claims.extra["scope"], "saml");
@@ -1310,7 +1464,13 @@ async fn token_exchange_saml_subject_and_actor_use_configured_trust() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = json_body(response).await;
     let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
-    assert_eq!(claims.sub.as_deref(), Some("saml-exchange-subject"));
+    assert!(
+        claims
+            .sub
+            .as_deref()
+            .is_some_and(|sub| sub.starts_with("saml2:v1:"))
+    );
+    assert_eq!(claims.extra["act"]["iss"], "https://saml-idp.example.com");
     assert_eq!(claims.extra["act"]["sub"], "saml-exchange-actor");
 }
 

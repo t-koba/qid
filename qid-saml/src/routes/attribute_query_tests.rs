@@ -15,6 +15,9 @@ const A: &str = "https://a.example.com/saml";
 const B: &str = "https://b.example.com/saml";
 const LOCAL_EMAIL: &str = "local@example.com";
 const FOREIGN_EMAIL: &str = "foreign@example.com";
+const IDP: &str = "https://idp.example.com/test?x=1&y=\"issuer\"";
+const ESCAPED_ID: &str = "local<&\"'id";
+const ESCAPED_EMAIL: &str = "local+<&\"'@example.com";
 const PRIVATE_NAME: &str = "Private Display Name";
 
 fn other_cert() -> String {
@@ -35,8 +38,11 @@ fn query(issuer: &str, subject: &str, format: &str) -> String {
     format!(
         r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:p="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:s="urn:oasis:names:tc:SAML:2.0:assertion"><soap:Body><p:AttributeQuery ID="_query" Version="2.0" IssueInstant="2026-10-17T00:00:00Z"><s:Issuer>{}</s:Issuer><!--SIGNATURE--><s:Subject><s:NameID Format="{}">{}</s:NameID></s:Subject></p:AttributeQuery></soap:Body></soap:Envelope>"#,
         xml_escape(issuer),
-        xml_escape(format),
-        xml_escape(subject)
+        xml_escape(format)
+            .replace('\t', "&#x9;")
+            .replace('\n', "&#xA;")
+            .replace('\r', "&#xD;"),
+        xml_escape(subject).replace('\r', "&#xD;")
     )
 }
 
@@ -88,6 +94,98 @@ fn assert_no_attributes(body: &str) {
     }
 }
 
+/// Inspect expanded names and direct children, not XML prefixes or substrings.
+fn assert_attribute_result(
+    body: &str,
+    subject: &str,
+    format: Option<&str>,
+    expected_attributes: &[(&str, &str)],
+) {
+    const SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+    const PROTOCOL: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
+    const SAML: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
+    fn child<'a, 'input>(
+        parent: roxmltree::Node<'a, 'input>,
+        ns: &str,
+        name: &str,
+    ) -> roxmltree::Node<'a, 'input> {
+        let children: Vec<_> = parent
+            .children()
+            .filter(|n| n.has_tag_name((ns, name)))
+            .collect();
+        assert_eq!(children.len(), 1, "expected one direct {name}");
+        children[0]
+    }
+    let doc = roxmltree::Document::parse(body).unwrap();
+    let envelope = doc.root_element();
+    assert!(envelope.has_tag_name((SOAP, "Envelope")));
+    let soap_body = child(envelope, SOAP, "Body");
+    let response = child(soap_body, PROTOCOL, "Response");
+    assert_eq!(response.attribute("InResponseTo"), Some("_query"));
+    assert_eq!(child(response, SAML, "Issuer").text(), Some(IDP));
+    let status = child(response, PROTOCOL, "Status");
+    assert_eq!(
+        child(status, PROTOCOL, "StatusCode").attribute("Value"),
+        Some("urn:oasis:names:tc:SAML:2.0:status:Success")
+    );
+    let assertion = child(response, SAML, "Assertion");
+    assert_eq!(child(assertion, SAML, "Issuer").text(), Some(IDP));
+    let response_id = response.attribute("ID").unwrap();
+    let assertion_id = assertion.attribute("ID").unwrap();
+    assert_ne!(response_id, assertion_id);
+    for node in [response, assertion] {
+        let id = node.attribute("ID").unwrap();
+        assert!(id.starts_with('_') && id.len() > 1);
+        assert_eq!(node.attribute("Version"), Some("2.0"));
+        let instant = node.attribute("IssueInstant").unwrap();
+        assert!(instant.contains('T') && instant.ends_with('Z'));
+        for name in ["ID", "Version", "IssueInstant"] {
+            assert!(
+                node.attributes()
+                    .any(|a| a.name() == name && a.namespace().is_none())
+            );
+        }
+        assert_eq!(
+            doc.descendants()
+                .filter(|n| n.attribute("ID") == Some(id))
+                .count(),
+            1
+        );
+    }
+    let name_id = child(child(assertion, SAML, "Subject"), SAML, "NameID");
+    assert_eq!(name_id.text(), Some(subject));
+    assert_eq!(name_id.attribute("Format"), format);
+    let statement = child(assertion, SAML, "AttributeStatement");
+    // No bare AttributeStatement under Response, nor any extra result statements.
+    assert_eq!(
+        doc.descendants()
+            .filter(|n| n.has_tag_name((SAML, "AttributeStatement")))
+            .count(),
+        1
+    );
+    let attributes: Vec<_> = statement.children().filter(|n| n.is_element()).collect();
+    assert_eq!(attributes.len(), expected_attributes.len());
+    assert_eq!(
+        doc.descendants()
+            .filter(|n| n.has_tag_name((SAML, "Attribute")))
+            .count(),
+        attributes.len()
+    );
+    for (attribute, (name, value)) in attributes.iter().zip(expected_attributes) {
+        assert!(attribute.has_tag_name((SAML, "Attribute")));
+        assert_eq!(attribute.attribute("Name"), Some(*name));
+        assert_eq!(
+            child(*attribute, SAML, "AttributeValue").text(),
+            Some(*value)
+        );
+    }
+    // These assertions remain unsigned; structure coverage is not XMLDSig validation.
+    assert!(
+        !doc.descendants()
+            .any(|n| n.has_tag_name((crate::verification::DSIG_NS, "Signature")))
+    );
+}
+
 async fn route_regressions<R: Repository>(repo: R) {
     for realm in ["test", "other"] {
         repo.create_realm(
@@ -102,6 +200,7 @@ async fn route_regressions<R: Repository>(repo: R) {
     for (id, realm, email) in [
         ("local-id", "test", LOCAL_EMAIL),
         ("foreign-id", "other", FOREIGN_EMAIL),
+        (ESCAPED_ID, "test", ESCAPED_EMAIL),
     ] {
         repo.create_user(&User {
             id: id.into(),
@@ -132,6 +231,7 @@ async fn route_regressions<R: Repository>(repo: R) {
         );
     }
     let mut config = test_config();
+    config.realms[0].issuer = IDP.into();
     config.realms[0].protocols.saml.enabled = true;
     config.realms[0].protocols.saml.service_providers = vec![
         SamlServiceProviderConfig {
@@ -177,7 +277,7 @@ async fn route_regressions<R: Repository>(repo: R) {
         let (status, body) = post_query(&app, "test", &sign(&query(A, "local-id", format))).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains(LOCAL_EMAIL));
-        assert!(body.contains("InResponseTo=\"_query\""));
+        assert_attribute_result(&body, "local-id", Some(format), &[("email", LOCAL_EMAIL)]);
         assert!(!body.contains(PRIVATE_NAME));
         assert!(!body.contains("displayName"));
     }
@@ -187,8 +287,25 @@ async fn route_regressions<R: Repository>(repo: R) {
     );
     let (status, body) = post_query(&app, "test", &sign(&without_format)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains(LOCAL_EMAIL));
+    assert_attribute_result(&body, "local-id", None, &[("email", LOCAL_EMAIL)]);
     assert!(!body.contains(PRIVATE_NAME));
+    // Exact verified text (including whitespace) and an arbitrary Format must
+    // survive XML escaping, without replacing the subject with a stored user ID.
+    let escaped_subject = format!(" \t{ESCAPED_ID} \n\r");
+    let escaped_format = "urn:example:format:<&\"'\t\n\r";
+    let (status, body) = post_query(
+        &app,
+        "test",
+        &sign(&query(A, &escaped_subject, escaped_format)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_attribute_result(
+        &body,
+        &escaped_subject,
+        Some(escaped_format),
+        &[("email", ESCAPED_EMAIL)],
+    );
     let (status, body) = post_query(
         &app,
         "test",
@@ -202,6 +319,12 @@ async fn route_regressions<R: Repository>(repo: R) {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(LOCAL_EMAIL));
     assert!(body.contains(PRIVATE_NAME));
+    assert_attribute_result(
+        &body,
+        "local-id",
+        Some(crate::PERSISTENT_NAME_ID_FORMAT),
+        &[("email", LOCAL_EMAIL), ("displayName", PRIVATE_NAME)],
+    );
 
     let (status, body) = post_query(
         &app,
@@ -212,6 +335,13 @@ async fn route_regressions<R: Repository>(repo: R) {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(LOCAL_EMAIL));
     assert!(!body.contains(PRIVATE_NAME));
+
+    assert_attribute_result(
+        &body,
+        LOCAL_EMAIL,
+        Some(EMAIL_NAME_ID_FORMAT),
+        &[("email", LOCAL_EMAIL)],
+    );
 
     // KeyInfo is ignored even if it names a different certificate/key. Only
     // the configured RSA key may verify this request.

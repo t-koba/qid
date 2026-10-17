@@ -818,15 +818,17 @@ async fn attribute_query<R: Repository>(
         return error(StatusCode::FORBIDDEN, "RequestDenied", "request denied");
     };
     let realm_id = qid_core::tenant::RealmId(realm);
+    // Preserve lookup normalization while returning the exact verified NameID.
+    let subject_lookup = query.name_id.trim();
     let user = if query.name_id_format.as_deref() == Some(EMAIL_NAME_ID_FORMAT) {
         state
             .repo
-            .get_user_by_email(&realm_id, &query.name_id)
+            .get_user_by_email(&realm_id, subject_lookup)
             .await
     } else {
         state
             .repo
-            .get_user_by_id_in_realm(&realm_id, &query.name_id)
+            .get_user_by_id_in_realm(&realm_id, subject_lookup)
             .await
     };
     let user = match user {
@@ -862,7 +864,13 @@ async fn attribute_query<R: Repository>(
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-        build_attribute_query_response(&query.id, &config.issuer, &attributes_xml),
+        build_attribute_query_response(
+            &query.id,
+            &config.issuer,
+            &query.name_id,
+            query.name_id_format.as_deref(),
+            &attributes_xml,
+        ),
     )
         .into_response()
 }

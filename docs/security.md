@@ -283,7 +283,11 @@ key or a KeyInfo-supplied key, and then requires the covered Issuer to equal tha
 SP's entity ID. Its SOAP 1.1 profile rejects wrapping and duplicate/decoy queries.
 Both email and ID subject resolution are realm-scoped. Missing and foreign-realm
 subjects release no attributes and receive the same UnknownPrincipal status;
-failures do not reflect request values or internal error details.
+failures do not reflect request values or internal error details. Successful
+responses place allowlisted attributes inside a subject-bound Assertion using
+the exact verified NameID and Format, not an unverified request subject. Both the
+SOAP Response and its Assertion remain unsigned; the offline structure tests do
+not establish full AttributeQuery conformance or live interoperability.
 
 Outbound signing uses the pinned bergshamra-dsig 0.9.2 signer rather than
 qid's removed custom canonicalizer. Its fixed profile uses exclusive C14N,

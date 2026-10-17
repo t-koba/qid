@@ -205,9 +205,13 @@ absent Format) use realm-local user ID lookup. Foreign-realm and missing subject
 both return `UnknownPrincipal` without attributes. The existing SP
 `attribute_release_policy` applies to `email` and `displayName`: a nonempty list
 releases only listed names; an empty list releases both available attributes.
-This does not alter SSO attribute-release behavior. Query responses retain the
-existing unsigned SOAP attribute-result format; no new response-signing,
-encryption, freshness/replay guarantee or full SAML conformance is claimed.
+This does not alter SSO attribute-release behavior. Successful SOAP Responses
+contain an unsigned SAML Assertion with its own ID, Version, IssueInstant and
+direct IdP Issuer. Its Subject/NameID preserves the verified query's exact value
+and Format (including absent Format), and its AttributeStatement contains only
+attributes permitted by that SP's release policy. The Response's InResponseTo is
+the verified query ID. Both Response and Assertion remain unsigned; no response
+signing, encryption, freshness/replay guarantee or full SAML conformance is claimed.
 
 Authentication/profile failures return HTTP 403 with `RequestDenied`; unknown
 principals return HTTP 200 with `UnknownPrincipal`; repository failures return

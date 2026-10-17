@@ -85,10 +85,13 @@ pub(crate) fn authenticate_attribute_query<'a>(
                 {
                     return Err(denied());
                 }
+                // Validate as before, but retain the exact verified value for
+                // the result Subject rather than serializing a normalized ID.
+                leaf_text(name)?;
                 return Ok((
                     VerifiedAttributeQuery {
                         id: attribute(doc, target, "ID").ok_or_else(denied)?.to_owned(),
-                        name_id: leaf_text(name)?,
+                        name_id: doc.text_content_deep(name),
                         name_id_format: attribute(doc, name, "Format").map(str::to_owned),
                     },
                     sp,
@@ -105,13 +108,20 @@ fn denied() -> QidError {
     }
 }
 
-/// Build a SOAP `<Response>` containing an `<AttributeStatement>` for the
-/// attribute query result.
+/// Build an unsigned SOAP Response with a subject-bound attribute Assertion.
+/// Subject values must come from the authenticated query; attributes are escaped
+/// and filtered by the caller before serialization.
 pub(crate) fn build_attribute_query_response(
     in_response_to: &str,
     issuer: &str,
+    name_id: &str,
+    name_id_format: Option<&str>,
     attributes_xml: &str,
 ) -> String {
+    let format = name_id_format
+        .map(|value| format!(r#" Format="{}""#, xml_escape(value)))
+        .unwrap_or_default();
+    let issue_instant = super::artifact::iso_now_utc();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -125,16 +135,27 @@ pub(crate) fn build_attribute_query_response(
       <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
       </samlp:Status>
-      <saml:AttributeStatement>
-        {}
-      </saml:AttributeStatement>
+      <saml:Assertion ID="_{}" Version="2.0" IssueInstant="{}">
+        <saml:Issuer>{}</saml:Issuer>
+        <saml:Subject>
+          <saml:NameID{}>{}</saml:NameID>
+        </saml:Subject>
+        <saml:AttributeStatement>
+          {}
+        </saml:AttributeStatement>
+      </saml:Assertion>
     </samlp:Response>
   </soap:Body>
 </soap:Envelope>"#,
         ulid::Ulid::new(),
-        super::artifact::iso_now_utc(),
+        issue_instant,
         xml_escape(in_response_to),
         xml_escape(issuer),
+        ulid::Ulid::new(),
+        issue_instant,
+        xml_escape(issuer),
+        format,
+        xml_escape(name_id),
         attributes_xml,
     )
 }
@@ -179,4 +200,9 @@ fn xml_escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+        // Character references preserve XML whitespace in both text and
+        // attributes instead of subjecting it to parser normalization.
+        .replace('\t', "&#x9;")
+        .replace('\n', "&#xA;")
+        .replace('\r', "&#xD;")
 }

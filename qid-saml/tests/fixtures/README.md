@@ -47,3 +47,14 @@ and EntityDescriptor targets. These generated documents are not third-party
 fixtures and do not establish generic-SP or live-IdP interoperability, arbitrary
 XMLDSig support, or an independent SAML fixture corpus. No MPL-2.0 fixture is
 included.
+
+## AttributeQuery route regressions
+
+`src/routes/attribute_query_tests.rs` uses the existing local RSA test key and
+certificate to sign SOAP 1.1 AttributeQuery documents with bergshamra. It uses the
+independent ECDSA fixture's public certificate only as a different configured or
+KeyInfo decoy key. Both File and SQLite-backed HTTP routes exercise configured
+realm-local trust, verified issuer/key binding, exact SOAP target shape,
+realm-local ID/email lookup, failure privacy and SP attribute allowlists. These
+are local security regressions, not independent AttributeQuery interoperability
+fixtures or full protocol-conformance tests.

@@ -276,6 +276,15 @@ Assertion's issuer, never the unsigned Response issuer. A signed Response's
 direct issuer is covered and may be used. Protocol checks on the separate policy
 tree require matching Response/Assertion IDs and the relevant issuer. The
 unit-returning compatibility verifier has been removed.
+The IdP's [AttributeQuery route](http-api.md#attributequery-subset) also consumes
+claims from the exact verified AttributeQuery node. It tries only SP signing
+certificates registered in the requested realm, never an unsigned Issuer-selected
+key or a KeyInfo-supplied key, and then requires the covered Issuer to equal that
+SP's entity ID. Its SOAP 1.1 profile rejects wrapping and duplicate/decoy queries.
+Both email and ID subject resolution are realm-scoped. Missing and foreign-realm
+subjects release no attributes and receive the same UnknownPrincipal status;
+failures do not reflect request values or internal error details.
+
 Outbound signing uses the pinned bergshamra-dsig 0.9.2 signer rather than
 qid's removed custom canonicalizer. Its fixed profile uses exclusive C14N,
 enveloped signatures and SHA-256 with local PKCS#8 RSA >=2048 or P-256 keys.

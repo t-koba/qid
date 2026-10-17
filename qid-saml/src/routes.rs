@@ -22,6 +22,7 @@ use crate::{
 pub fn saml_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
     Router::new()
         .route("/saml/:realm/metadata", get(metadata::<R>))
+        .route("/saml/:realm/attribute-query", post(attribute_query::<R>))
         .route("/saml/:realm/sso", post(sso::<R>))
         .route("/saml/:realm/slo", post(slo::<R>))
         .route("/saml/:realm/slo/initiate", get(slo_initiate::<R>))
@@ -781,6 +782,91 @@ async fn artifact_resolve<R: Repository>(
         .into_response()
 }
 
+async fn attribute_query<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    Path(realm): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    use crate::attribute_query::{
+        attribute_query_error_soap, authenticate_attribute_query, build_attribute_query_response,
+    };
+    let Some(config) = state.config.realms.iter().find(|r| r.id == realm) else {
+        return (StatusCode::NOT_FOUND, "realm not found").into_response();
+    };
+    if !config.protocols.saml.enabled {
+        return (StatusCode::NOT_FOUND, "saml disabled").into_response();
+    }
+    // Errors are deliberately constant: no parser/storage detail or request
+    // values (including IDs and subjects) are reflected on failure.
+    let error = |http_status, code: &str, message| {
+        (
+            http_status,
+            [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
+            attribute_query_error_soap(
+                "unknown",
+                &config.issuer,
+                &format!("urn:oasis:names:tc:SAML:2.0:status:{code}"),
+                message,
+            ),
+        )
+            .into_response()
+    };
+    let authenticated = std::str::from_utf8(&body).ok().and_then(|xml| {
+        authenticate_attribute_query(xml, &config.protocols.saml.service_providers).ok()
+    });
+    let Some((query, sp)) = authenticated else {
+        return error(StatusCode::FORBIDDEN, "RequestDenied", "request denied");
+    };
+    let realm_id = qid_core::tenant::RealmId(realm);
+    let user = if query.name_id_format.as_deref() == Some(EMAIL_NAME_ID_FORMAT) {
+        state
+            .repo
+            .get_user_by_email(&realm_id, &query.name_id)
+            .await
+    } else {
+        state
+            .repo
+            .get_user_by_id_in_realm(&realm_id, &query.name_id)
+            .await
+    };
+    let user = match user {
+        Ok(Some(user)) => user,
+        Ok(None) => return error(StatusCode::OK, "UnknownPrincipal", "user not found"),
+        Err(_) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Responder",
+                "query failed",
+            );
+        }
+    };
+    // Preserve AttributeQuery's existing release policy (empty means all of
+    // its supported attributes); this does not change SSO release semantics.
+    let allowed = |name: &str| {
+        sp.attribute_release_policy.is_empty()
+            || sp.attribute_release_policy.iter().any(|item| item == name)
+    };
+    let mut attributes_xml = String::new();
+    for (name, value) in [
+        ("email", user.email.as_deref()),
+        ("displayName", user.display_name.as_deref()),
+    ] {
+        if let Some(value) = value
+            && allowed(name)
+        {
+            attributes_xml.push_str(&format!(
+                r#"<saml:Attribute Name="{}"><saml:AttributeValue>{}</saml:AttributeValue></saml:Attribute>"#,
+                xml_escape(name), xml_escape(value)));
+        }
+    }
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
+        build_attribute_query_response(&query.id, &config.issuer, &attributes_xml),
+    )
+        .into_response()
+}
+
 fn artifact_error_soap(in_response_to: &str, issuer: &str, error_message: String) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -827,7 +913,7 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    struct TestSigner;
+    pub(super) struct TestSigner;
 
     impl Signer for TestSigner {
         fn sign(&self, _claims: &JwtClaims) -> anyhow::Result<String> {
@@ -856,7 +942,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attribute_query_post_is_unavailable() {
+    async fn attribute_query_post_denies_unsigned_input() {
         let directory = tempfile::tempdir().unwrap();
         let repo =
             qid_storage::FileRepository::new(directory.path().join("store.json").to_str().unwrap())
@@ -885,10 +971,13 @@ mod tests {
             .unwrap();
 
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
         assert!(!String::from_utf8_lossy(&body).contains(private_attribute));
     }
 }
+
+#[cfg(test)]
+mod attribute_query_tests;

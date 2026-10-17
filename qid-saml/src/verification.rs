@@ -28,6 +28,7 @@ pub enum SignedSamlElement {
     Response,
     AuthnRequest,
     LogoutRequest,
+    AttributeQuery,
 }
 
 impl SignedSamlElement {
@@ -37,6 +38,7 @@ impl SignedSamlElement {
             Self::Response => (PROTOCOL_NS, "Response"),
             Self::AuthnRequest => (PROTOCOL_NS, "AuthnRequest"),
             Self::LogoutRequest => (PROTOCOL_NS, "LogoutRequest"),
+            Self::AttributeQuery => (PROTOCOL_NS, "AttributeQuery"),
         }
     }
 }
@@ -331,6 +333,7 @@ fn preflight(
         SignedSamlElement::Response,
         SignedSamlElement::AuthnRequest,
         SignedSamlElement::LogoutRequest,
+        SignedSamlElement::AttributeQuery,
     ]
     .into_iter()
     .find(|k| {
@@ -360,6 +363,32 @@ fn preflight(
             target == root
                 && assertion_nodes.len() <= 1
                 && assertion_nodes.iter().all(|n| doc.parent(*n) == Some(root))
+        }
+        SignedSamlElement::AttributeQuery => {
+            const SOAP_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+            let elements = |node| {
+                doc.children(node)
+                    .into_iter()
+                    .filter(|n| doc.element(*n).is_some())
+                    .collect::<Vec<_>>()
+            };
+            let bodies = children_named(doc, root, SOAP_NS, "Body");
+            named(doc, root, SOAP_NS, "Envelope")
+                && bodies.len() == 1
+                && elements(root) == bodies
+                && elements(bodies[0]) == [target]
+                && nodes
+                    .iter()
+                    .filter(|n| named(doc, **n, SOAP_NS, "Body"))
+                    .count()
+                    == 1
+                && nodes
+                    .iter()
+                    .filter(|n| named(doc, **n, PROTOCOL_NS, "AttributeQuery"))
+                    .count()
+                    == 1
+                && assertion_nodes.is_empty()
+                && doc.parent(signature) == Some(target)
         }
         _ => target == root && assertion_nodes.is_empty(),
     };

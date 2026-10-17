@@ -32,6 +32,21 @@ impl UserRepository for SqlRepository {
         Ok(row.map(Into::into))
     }
 
+    async fn get_user_by_id_in_realm(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+    ) -> QidResult<Option<User>> {
+        let row: Option<UserRow> =
+            sqlx::query_as("SELECT * FROM users WHERE realm_id = ? AND id = ?")
+                .bind(realm_id.as_str())
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage_to_qid_error)?;
+        Ok(row.map(Into::into))
+    }
+
     async fn get_user_by_email(&self, realm_id: &RealmId, email: &str) -> QidResult<Option<User>> {
         let row: Option<UserRow> =
             sqlx::query_as("SELECT * FROM users WHERE realm_id = ? AND email = ?")

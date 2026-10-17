@@ -113,6 +113,7 @@ delegate!(RealmRepository {
 delegate!(UserRepository {
     create_user(&self, user: &qid_core::models::User) -> QidResult<()>;
     get_user_by_id(&self, id: &str) -> QidResult<Option<qid_core::models::User>>;
+    get_user_by_id_in_realm(&self, realm_id: &qid_core::tenant::RealmId, id: &str) -> QidResult<Option<qid_core::models::User>>;
     get_user_by_email(&self, realm_id: &qid_core::tenant::RealmId, email: &str) -> QidResult<Option<qid_core::models::User>>;
     list_users(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::User>>;
     list_users_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::User>>;

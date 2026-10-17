@@ -172,7 +172,7 @@ Inbound SCIM is an isolated provisioning registry: setting `active` to false or 
 
 ## SAML
 
-Installed when any realm enables SAML. SAML AttributeQuery is not exposed pending authenticated caller validation.
+Installed when any realm enables SAML; each endpoint also checks that the requested realm enables SAML.
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -181,6 +181,39 @@ Installed when any realm enables SAML. SAML AttributeQuery is not exposed pendin
 | `POST` | `/saml/:realm/slo` | SLO endpoint. |
 | `GET` | `/saml/:realm/slo/initiate` | Initiate SLO. |
 | `POST` | `/saml/:realm/artifact` | Artifact resolution. |
+| `POST` | `/saml/:realm/attribute-query` | Strict signed SOAP 1.1 AttributeQuery; configured realm-local SP certificate required. |
+
+### AttributeQuery subset
+
+Requires `protocols.saml.enabled` (default `false`) and an SP's
+`service_providers[].signing_certificates` in the requested realm (default empty,
+so no requester is trusted). The request must be a SOAP 1.1 Envelope containing
+only one direct Body, containing only one direct SAML protocol AttributeQuery.
+The query must have one direct assertion-namespace Issuer, one direct XMLDSig
+Signature, and one direct Subject containing one NameID. SOAP headers, alternative
+subjects, Extensions and attribute selectors are unsupported and rejected.
+
+Only configured certificates are tried; unsigned Issuer and document KeyInfo do
+not select or supply trust. The strict [XMLDSig subset](standards.md) verifies the
+query's exact `#ID` target before Issuer, ID, NameID and Format are read from that
+same verified node. The verified Issuer must equal the SP owning the verifying
+configured key. Duplicate/decoy queries, ID aliases and wrapped targets fail
+closed. No arbitrary XMLDSig or generic-SP interoperability is claimed.
+
+Email-format NameIDs use realm-local email lookup; other formats (including
+absent Format) use realm-local user ID lookup. Foreign-realm and missing subjects
+both return `UnknownPrincipal` without attributes. The existing SP
+`attribute_release_policy` applies to `email` and `displayName`: a nonempty list
+releases only listed names; an empty list releases both available attributes.
+This does not alter SSO attribute-release behavior. Query responses retain the
+existing unsigned SOAP attribute-result format; no new response-signing,
+encryption, freshness/replay guarantee or full SAML conformance is claimed.
+
+Authentication/profile failures return HTTP 403 with `RequestDenied`; unknown
+principals return HTTP 200 with `UnknownPrincipal`; repository failures return
+HTTP 500 with a generic `Responder` status. Failure responses do not echo request
+IDs, subject values, parser/storage details or attributes. Disabled/unknown
+realms return HTTP 404.
 
 ## FedCM, federation, CIAM
 

@@ -90,6 +90,12 @@ pub trait RealmRepository: Send + Sync + 'static {
 pub trait UserRepository: Send + Sync + 'static {
     async fn create_user(&self, user: &User) -> QidResult<()>;
     async fn get_user_by_id(&self, id: &str) -> QidResult<Option<User>>;
+    /// A foreign-realm ID is indistinguishable from an unknown ID.
+    async fn get_user_by_id_in_realm(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+    ) -> QidResult<Option<User>>;
     async fn get_user_by_email(&self, realm_id: &RealmId, email: &str) -> QidResult<Option<User>>;
     async fn list_users(&self, realm_id: &RealmId) -> QidResult<Vec<User>> {
         self.list_users_page(realm_id, 0, usize::MAX).await

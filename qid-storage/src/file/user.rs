@@ -16,6 +16,19 @@ impl UserRepository for FileRepository {
         Ok(store.users.get(id).cloned())
     }
 
+    async fn get_user_by_id_in_realm(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+    ) -> QidResult<Option<User>> {
+        let store = self.store.read().await;
+        Ok(store
+            .users
+            .get(id)
+            .filter(|user| user.realm_id == realm_id.0)
+            .cloned())
+    }
+
     async fn get_user_by_email(&self, realm_id: &RealmId, email: &str) -> QidResult<Option<User>> {
         let store = self.store.read().await;
         Ok(store

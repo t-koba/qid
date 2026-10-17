@@ -71,7 +71,7 @@ if leak_output="$(grep -REInI \
     --exclude-dir='.git' \
     --exclude-dir='target' \
     --exclude='check-sensitive-artifacts.sh' \
-    -- '/Users/tk|/private/var/folders|/var/folders|/private/tmp/qid[-_[:alnum:]]*' \
+    -- '/Users/[A-Za-z_][A-Za-z0-9_.-]*/|/private/var/folders|/var/folders|/private/tmp/qid[-_[:alnum:]]*' \
     .)"; then
     printf '%s\n' "${leak_output}"
     echo "ERROR: local machine path or temporary build path leaked into tracked files"

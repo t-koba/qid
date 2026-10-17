@@ -314,6 +314,7 @@ mod tests {
             claims,
             &["email".to_string()],
             3600,
+            86400,
             "https://issuer.example/status/1",
         )
         .unwrap();
@@ -393,6 +394,7 @@ mod tests {
             claims,
             &[],
             3600,
+            86400,
             "https://issuer.example/status/1",
         )
         .unwrap();
@@ -423,6 +425,7 @@ mod tests {
             claims,
             &[],
             3600,
+            86400,
             "https://issuer.example/status/1",
         )
         .unwrap();

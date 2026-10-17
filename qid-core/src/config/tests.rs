@@ -639,6 +639,15 @@ fn server_paths_default_values() {
 }
 
 #[test]
+fn vc_max_credential_lifetime_defaults_to_24h() {
+    let vc = VcProtocolConfig::default();
+    assert_eq!(vc.max_credential_lifetime_seconds, 86400);
+    // Missing field in stored config keeps parsing and takes the default.
+    let parsed: VcProtocolConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(parsed.max_credential_lifetime_seconds, 86400);
+}
+
+#[test]
 fn token_ttl_default_values() {
     let ttl = TokenTtlConfig::default();
     assert_eq!(ttl.access_token_ttl_seconds, 3600);

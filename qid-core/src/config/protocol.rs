@@ -699,7 +699,7 @@ pub struct CiamProtocolConfig {
     pub privacy_dashboard: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct VcProtocolConfig {
     #[serde(default)]
@@ -718,6 +718,32 @@ pub struct VcProtocolConfig {
     pub holder_binding_required: bool,
     #[serde(default)]
     pub issuer_key_ref: Option<String>,
+    /// Policy ceiling for requested credential lifetimes in seconds.
+    /// Issuance rejects `lifetime_seconds` above this value fail-closed.
+    /// Default: 86400 (24 hours, matching the default refresh-token TTL);
+    /// the default issuance lifetime of 3600 stays well under it.
+    #[serde(default = "default_vc_max_credential_lifetime")]
+    pub max_credential_lifetime_seconds: u64,
+}
+
+impl Default for VcProtocolConfig {
+    fn default() -> Self {
+        Self {
+            oid4vci: false,
+            oid4vp: false,
+            haip: false,
+            vc_data_model_2_0: false,
+            jose_cose: false,
+            status_list: false,
+            holder_binding_required: false,
+            issuer_key_ref: None,
+            max_credential_lifetime_seconds: default_vc_max_credential_lifetime(),
+        }
+    }
+}
+
+fn default_vc_max_credential_lifetime() -> u64 {
+    86400
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]

@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use qid_core::{
+    config::VcProtocolConfig,
     error::{QidError, QidResult},
     jwt::JwtClaims,
     models::{User, VcCredentialStatusRecord},
@@ -182,12 +183,22 @@ pub async fn issue_credential_from_bearer<R: Repository>(
     let status_list_uri = request
         .status_list_uri
         .unwrap_or_else(|| state.plan.public_base_url.trim_end_matches('/').to_string());
+    let lifetime_seconds = request.lifetime_seconds.unwrap_or(3600);
+    // Policy ceiling from the issuing realm; unknown realms fail closed to
+    // the compiled-in default. Checked before issuance so rejected requests
+    // persist no status and sign nothing.
+    let max_lifetime_seconds = state
+        .plan
+        .realm(&user.realm_id)
+        .map(|realm| realm.vc_max_credential_lifetime_seconds)
+        .unwrap_or(VcProtocolConfig::default().max_credential_lifetime_seconds);
     let (mut credential, holder_disclosures) = issue_sd_jwt_credential(
         &state.plan.public_base_url,
         &decoded.user_id,
         claims,
         &request.selectively_disclosed_claims,
-        request.lifetime_seconds.unwrap_or(3600),
+        lifetime_seconds,
+        max_lifetime_seconds,
         &status_list_uri,
     )?;
     if default_status_list_uri {
@@ -317,10 +328,16 @@ pub fn issue_sd_jwt_credential(
     claims: BTreeMap<String, Value>,
     selectively_disclosed_claims: &[String],
     lifetime_seconds: u64,
+    max_lifetime_seconds: u64,
     status_list_uri: &str,
 ) -> QidResult<(SdJwtCredential, Vec<CredentialDisclosure>)> {
     if lifetime_seconds == 0 {
         return Err(bad_request("Credential lifetime must be greater than zero"));
+    }
+    if lifetime_seconds > max_lifetime_seconds {
+        return Err(bad_request(
+            "Credential lifetime exceeds the configured maximum",
+        ));
     }
 
     let disclosure_set: HashSet<&str> = selectively_disclosed_claims
@@ -351,9 +368,9 @@ pub fn issue_sd_jwt_credential(
     holder_disclosures.sort_by(|a, b| a.claim_name.cmp(&b.claim_name));
 
     let issued_at = qid_core::util::now_seconds();
-    // Physical bounds only: checked addition plus storage (i64)
-    // representability. No policy ceiling is hardcoded here; the default
-    // lifetime stays 3600 at the issuance call site.
+    // Physical bounds only beyond the policy ceiling above: checked addition
+    // plus storage (i64) representability. The default lifetime stays 3600
+    // at the issuance call site.
     let expires_at = issued_at
         .checked_add(lifetime_seconds)
         .filter(|expires_at| *expires_at <= i64::MAX as u64)
@@ -595,6 +612,7 @@ mod tests {
             test_claims(),
             &[],
             900,
+            86400,
             "https://id.example.com",
         )
         .unwrap();
@@ -604,6 +622,7 @@ mod tests {
             test_claims(),
             &["email".to_string()],
             3600,
+            86400,
             "https://id.example.com",
         )
         .unwrap();
@@ -615,9 +634,12 @@ mod tests {
     }
 
     #[test]
-    fn issuance_rejects_unrepresentable_lifetimes() {
-        // Zero is rejected; normal lifetimes pass; u64::MAX overflows checked
-        // addition; lifetimes pushing expiry past i64::MAX are not storable.
+    fn issuance_enforces_lifetime_ceiling_and_representability() {
+        // Zero is rejected; a normal lifetime passes under the default
+        // ceiling; above-ceiling requests fail closed; u64::MAX overflows
+        // checked addition even with an unbounded ceiling; lifetimes pushing
+        // expiry past i64::MAX are not storable.
+        const CEILING: u64 = 86400;
         assert!(
             issue_sd_jwt_credential(
                 "https://id.example.com",
@@ -625,6 +647,30 @@ mod tests {
                 test_claims(),
                 &[],
                 0,
+                CEILING,
+                "https://id.example.com",
+            )
+            .is_err()
+        );
+        let (normal, _) = issue_sd_jwt_credential(
+            "https://id.example.com",
+            "user-1",
+            test_claims(),
+            &[],
+            3600,
+            CEILING,
+            "https://id.example.com",
+        )
+        .unwrap();
+        assert_eq!(normal.expires_at - normal.issued_at, 3600);
+        assert!(
+            issue_sd_jwt_credential(
+                "https://id.example.com",
+                "user-1",
+                test_claims(),
+                &[],
+                CEILING + 1,
+                CEILING,
                 "https://id.example.com",
             )
             .is_err()
@@ -635,6 +681,19 @@ mod tests {
                 "user-1",
                 test_claims(),
                 &[],
+                u64::MAX,
+                CEILING,
+                "https://id.example.com",
+            )
+            .is_err()
+        );
+        assert!(
+            issue_sd_jwt_credential(
+                "https://id.example.com",
+                "user-1",
+                test_claims(),
+                &[],
+                u64::MAX,
                 u64::MAX,
                 "https://id.example.com",
             )
@@ -647,6 +706,7 @@ mod tests {
                 test_claims(),
                 &[],
                 i64::MAX as u64,
+                u64::MAX,
                 "https://id.example.com",
             )
             .is_err()
@@ -657,6 +717,7 @@ mod tests {
             test_claims(),
             &[],
             i64::MAX as u64 - qid_core::util::now_seconds() - 3600,
+            u64::MAX,
             "https://id.example.com",
         )
         .unwrap();
@@ -673,6 +734,7 @@ mod tests {
             test_claims(),
             &["email".to_string()],
             900,
+            86400,
             "https://id.example.com",
         )
         .unwrap();
@@ -682,6 +744,7 @@ mod tests {
             test_claims(),
             &["email".to_string()],
             900,
+            86400,
             "https://id.example.com",
         )
         .unwrap();

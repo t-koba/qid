@@ -64,6 +64,7 @@ pub struct RuntimeRealm {
     pub policy: PolicyConfig,
     pub passwordless_only: bool,
     pub saml_clock_skew_seconds: u64,
+    pub vc_max_credential_lifetime_seconds: u64,
 }
 
 impl RuntimeRealm {
@@ -87,6 +88,7 @@ impl RuntimeRealm {
             policy: config.policy.clone(),
             passwordless_only: config.authentication.passwordless_only,
             saml_clock_skew_seconds: config.protocols.saml.max_clock_skew_seconds,
+            vc_max_credential_lifetime_seconds: config.protocols.vc.max_credential_lifetime_seconds,
         })
     }
 }

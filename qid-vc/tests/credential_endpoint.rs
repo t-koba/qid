@@ -606,6 +606,68 @@ async fn credential_issuance_rejects_overflowing_lifetime() {
 }
 
 #[tokio::test]
+async fn credential_issuance_enforces_configured_lifetime_ceiling() {
+    // The default ceiling (86400) is representable, so only the policy
+    // ceiling can reject 86401; the boundary value itself must succeed.
+    async fn issue_with_lifetime(
+        app: Router,
+        access_token: &str,
+        holder_private_pem: &str,
+        holder_jwk: &qid_crypto::Jwk,
+        nonce: &str,
+        lifetime_seconds: u64,
+    ) -> StatusCode {
+        let proof = credential_proof(holder_private_pem, holder_jwk, nonce);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/vc/v1/credential")
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "credential_configuration_id": "qid_identity_sd_jwt",
+                    "claims": ["sub"],
+                    "lifetime_seconds": lifetime_seconds,
+                    "holder_jwk": holder_jwk,
+                    "proof": { "jwt": proof },
+                    "nonce": nonce
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        app.oneshot(request).await.unwrap().status()
+    }
+
+    let (app, state, user) = setup().await;
+    let access_token = issue_identity_access_token(&state, &user).await;
+    let holder = generate_es256("holder-ceiling").unwrap();
+    assert_eq!(
+        issue_with_lifetime(
+            app.clone(),
+            &access_token,
+            &holder.private_pem,
+            &holder.public_jwk,
+            "nonce-ceiling-ok",
+            86400,
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        issue_with_lifetime(
+            app.clone(),
+            &access_token,
+            &holder.private_pem,
+            &holder.public_jwk,
+            "nonce-ceiling-over",
+            86401,
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
 async fn credential_concurrent_issuances_use_distinct_revocable_identifiers() {
     use std::collections::HashSet;
 

@@ -20,6 +20,7 @@ fn minimal_config() -> QidConfig {
             http_message_signatures: Default::default(),
             cors: qid_core::config::CorsConfig::default(),
             paths: ServerPaths::default(),
+            hsts: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),

@@ -11,7 +11,7 @@ use axum::http::{
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use qid_core::config::{CorsConfig, ServerPaths};
+use qid_core::config::{CorsConfig, HstsConfig, ServerPaths};
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use tracing::{Instrument, info, warn};
 
@@ -249,18 +249,32 @@ pub async fn csp_headers_layer(req: Request, next: Next) -> Response {
     response
 }
 
-/// Set `Strict-Transport-Security` headers on every response.
+/// Set `Strict-Transport-Security` headers on secure responses.
 ///
-/// Per RFC 6797, user agents ignore HSTS received over plaintext HTTP and
-/// honor it only over TLS. We default to a one-year policy with
-/// `includeSubDomains`. `preload` stays opt-in because it requires operator
-/// submission to browser preload lists.
-pub async fn hsts_layer(req: Request, next: Next) -> Response {
+/// Per RFC 6797 section 7.2, HSTS must not be sent over insecure transport,
+/// so the header is emitted only when the request URI scheme is `https`.
+/// Wire with `axum::middleware::from_fn_with_state(config, ..)` so the
+/// deployment `server.hsts` policy is honoured. Defaults to a one-year
+/// policy with `includeSubDomains`. `preload` stays opt-in because it
+/// requires operator submission to browser preload lists.
+pub async fn hsts_layer(State(config): State<HstsConfig>, req: Request, next: Next) -> Response {
+    let is_https = req.uri().scheme_str() == Some("https");
     let mut response = next.run(req).await;
-    let value = HeaderValue::from_static("max-age=31536000; includeSubDomains");
-    response
-        .headers_mut()
-        .insert(STRICT_TRANSPORT_SECURITY, value);
+    if !config.enabled || !is_https {
+        return response;
+    }
+    let mut value = format!("max-age={}", config.max_age_seconds);
+    if config.include_subdomains {
+        value.push_str("; includeSubDomains");
+    }
+    if config.preload {
+        value.push_str("; preload");
+    }
+    if let Ok(header) = HeaderValue::from_str(&value) {
+        response
+            .headers_mut()
+            .insert(STRICT_TRANSPORT_SECURITY, header);
+    }
     response
 }
 
@@ -743,29 +757,31 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn hsts_layer_defaults_without_preload() {
-        use axum::Router;
-        use axum::body::Body;
-        use axum::http::{Request, StatusCode};
-        use axum::routing::get;
+    async fn hsts_get(config: HstsConfig, uri: &str) -> axum::http::Response<axum::body::Body> {
         use tower::ServiceExt;
-
-        let app = Router::new()
-            .route("/health", get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn(hsts_layer));
-
-        let req = Request::builder()
-            .uri("/health")
-            .body(Body::empty())
+        let app = axum::Router::new()
+            .route("/health", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(config, hsts_layer));
+        let req = axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
             .unwrap();
-        let res = app.oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let hsts = res
-            .headers()
+        app.oneshot(req).await.unwrap()
+    }
+
+    fn hsts_value(res: &axum::http::Response<axum::body::Body>) -> &str {
+        res.headers()
             .get("strict-transport-security")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn hsts_layer_defaults_without_preload() {
+        use axum::http::StatusCode;
+        let res = hsts_get(HstsConfig::default(), "https://id.example.com/health").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let hsts = hsts_value(&res).to_string();
         assert!(
             hsts.contains("max-age=31536000"),
             "HSTS must carry one-year max-age, got: {hsts}"
@@ -777,6 +793,69 @@ mod tests {
         assert!(
             !hsts.contains("preload"),
             "HSTS preload must stay opt-in, got: {hsts}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hsts_layer_disabled_emits_no_header() {
+        use axum::http::StatusCode;
+        let config = HstsConfig {
+            enabled: false,
+            ..HstsConfig::default()
+        };
+        let res = hsts_get(config, "https://id.example.com/health").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers().get("strict-transport-security").is_none(),
+            "disabled HSTS must not emit a header"
+        );
+    }
+
+    #[tokio::test]
+    async fn hsts_layer_custom_max_age_without_subdomains() {
+        use axum::http::StatusCode;
+        let config = HstsConfig {
+            max_age_seconds: 86400,
+            include_subdomains: false,
+            ..HstsConfig::default()
+        };
+        let res = hsts_get(config, "https://id.example.com/health").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let hsts = hsts_value(&res).to_string();
+        assert!(
+            hsts.contains("max-age=86400"),
+            "HSTS must carry custom max-age, got: {hsts}"
+        );
+        assert!(
+            !hsts.contains("includeSubDomains"),
+            "HSTS must omit subdomains when disabled, got: {hsts}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hsts_layer_preload_opt_in() {
+        use axum::http::StatusCode;
+        let config = HstsConfig {
+            preload: true,
+            ..HstsConfig::default()
+        };
+        let res = hsts_get(config, "https://id.example.com/health").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let hsts = hsts_value(&res).to_string();
+        assert!(
+            hsts.contains("preload"),
+            "HSTS must include preload when opted in, got: {hsts}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hsts_layer_skipped_over_plaintext_http() {
+        use axum::http::StatusCode;
+        let res = hsts_get(HstsConfig::default(), "http://id.example.com/health").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers().get("strict-transport-security").is_none(),
+            "HSTS must not be sent over plaintext http"
         );
     }
 
@@ -1024,7 +1103,7 @@ mod tests {
         use axum::routing::post;
         use tower::ServiceExt;
 
-        use qid_core::config::{CorsConfig, ServerPaths};
+        use qid_core::config::{CorsConfig, HstsConfig, ServerPaths};
 
         // Mirrors config/usecases/01-getting-started/oidc-spa-pkce.yaml CORS.
         let paths = ServerPaths::default();
@@ -1056,7 +1135,10 @@ mod tests {
             ))
             .layer(axum::middleware::from_fn(csp_headers_layer))
             .layer(axum::middleware::from_fn(zero_rtt_rejection_layer))
-            .layer(axum::middleware::from_fn(hsts_layer))
+            .layer(axum::middleware::from_fn_with_state(
+                HstsConfig::default(),
+                hsts_layer,
+            ))
             .layer(axum::middleware::from_fn(security_headers_middleware))
             .layer(cors_layer(&cors));
 

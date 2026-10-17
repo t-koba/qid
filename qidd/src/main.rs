@@ -308,7 +308,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn(
             qid_http::zero_rtt_rejection_layer,
         ))
-        .layer(axum::middleware::from_fn(qid_http::hsts_layer))
+        .layer(axum::middleware::from_fn_with_state(
+            config.server.hsts.clone(),
+            qid_http::hsts_layer,
+        ))
         .layer(axum::middleware::from_fn(
             qid_http::security_headers_middleware,
         ))
@@ -1555,6 +1558,7 @@ mod tests {
                 http_message_signatures: Default::default(),
                 cors: CorsConfig::default(),
                 paths: ServerPaths::default(),
+                hsts: Default::default(),
             },
             admin: AdminConfig::default(),
             storage: StorageConfig::default(),

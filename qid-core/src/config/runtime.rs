@@ -321,6 +321,8 @@ pub struct ServerConfig {
     pub cors: CorsConfig,
     #[serde(default)]
     pub paths: ServerPaths,
+    #[serde(default)]
+    pub hsts: HstsConfig,
 }
 
 impl ServerConfig {
@@ -341,6 +343,34 @@ impl ServerConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HstsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_hsts_max_age_seconds")]
+    pub max_age_seconds: u64,
+    #[serde(default = "default_true")]
+    pub include_subdomains: bool,
+    #[serde(default)]
+    pub preload: bool,
+}
+
+impl Default for HstsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_age_seconds: default_hsts_max_age_seconds(),
+            include_subdomains: true,
+            preload: false,
+        }
+    }
+}
+
+fn default_hsts_max_age_seconds() -> u64 {
+    31_536_000
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -269,6 +269,7 @@ mod tests {
                 http_message_signatures: Default::default(),
                 cors: CorsConfig::default(),
                 paths: ServerPaths::default(),
+                hsts: Default::default(),
             },
             admin: AdminConfig::default(),
             storage: StorageConfig::default(),

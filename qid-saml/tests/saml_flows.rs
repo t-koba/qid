@@ -1,4 +1,5 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
+mod common;
 use qid_saml::{
     EMAIL_NAME_ID_FORMAT, SamlAssertionRequest, SamlPostBindingForm, SamlRelayStatePolicy,
     SamlSubject, build_assertion_request_from_authn, build_saml_response, import_sp_metadata,
@@ -6,69 +7,17 @@ use qid_saml::{
     validate_authn_request_for_sp,
 };
 
-const TEST_SP_CERT_PEM: &str = include_str!("data/test-sp.crt");
-const TEST_SP_KEY_PEM: &str = include_str!("data/test-sp.key");
-const SIGNATURE_PLACEHOLDER: &str = "<!--SIGNATURE-->";
-
-fn test_sp_cert_body() -> String {
-    TEST_SP_CERT_PEM
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
 fn sp_metadata() -> String {
-    format!(
-        r#"
-<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.example.com/metadata">
-  <md:SPSSODescriptor WantAssertionsSigned="true">
-    <md:NameIDFormat>{EMAIL_NAME_ID_FORMAT}</md:NameIDFormat>
-    <md:KeyDescriptor use="signing">
-      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
-        <ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data>
-      </ds:KeyInfo>
-    </md:KeyDescriptor>
-    <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example.com/acs"/>
-    <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example.com/slo"/>
-  </md:SPSSODescriptor>
-</md:EntityDescriptor>
-"#,
-        test_sp_cert_body()
-    )
-}
-
-fn sign_saml_test_document(document_xml: &str, element_id: &str) -> anyhow::Result<String> {
-    use bergshamra_dsig::DsigContext;
-    use bergshamra_keys::{KeysManager, loader};
-    let cert_body = test_sp_cert_body();
-    let signature = format!(
-        r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#{element_id}"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{cert_body}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>"##
-    );
-    let template = document_xml.replace(SIGNATURE_PLACEHOLDER, &signature);
-    let mut keys = KeysManager::new();
-    keys.add_key(
-        loader::load_rsa_private_pem(TEST_SP_KEY_PEM.as_bytes())
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-    );
-    bergshamra_dsig::sign::sign(&DsigContext::new(keys), &template)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))
+    include_str!("fixtures/sp-metadata-flow-test.xml")
+        .replace("{name_id_format}", EMAIL_NAME_ID_FORMAT)
+        .replace("{cert_body}", &common::test_sp_cert_body())
 }
 
 fn signed_authn_request_xml() -> anyhow::Result<String> {
-    let unsigned = r##"
-<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="req-123" Version="2.0" Destination="https://idp.example.com/saml/corp/sso" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" AssertionConsumerServiceURL="https://sp.example.com/acs" ForceAuthn="true">
-  <saml:Issuer>https://sp.example.com/metadata</saml:Issuer>
-  <!--SIGNATURE-->
-  <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"/>
-</samlp:AuthnRequest>
-"##;
-    sign_saml_test_document(unsigned, "req-123")
-}
-
-fn response_xml(request: &SamlAssertionRequest) -> anyhow::Result<String> {
-    Ok(build_saml_response(request)?.xml)
+    Ok(common::sign_test_document(
+        include_str!("fixtures/authn-request-test.xml"),
+        "req-123",
+    ))
 }
 
 #[test]
@@ -77,7 +26,7 @@ fn sp_metadata_authn_request_and_response_round_trip() -> anyhow::Result<()> {
     assert_eq!(sp.entity_id, "https://sp.example.com/metadata");
     assert_eq!(sp.acs_url, "https://sp.example.com/acs");
     assert_eq!(sp.name_id_formats, vec![EMAIL_NAME_ID_FORMAT]);
-    assert_eq!(sp.signing_certificates, vec![test_sp_cert_body()]);
+    assert_eq!(sp.signing_certificates, vec![common::test_sp_cert_body()]);
     assert!(sp.want_assertions_signed);
 
     let form = SamlPostBindingForm {
@@ -198,7 +147,7 @@ fn public_saml_entrypoints_reject_xsw_attack_patterns() -> anyhow::Result<()> {
         );
     }
 
-    let issued = response_xml(&SamlAssertionRequest {
+    let issued = build_saml_response(&SamlAssertionRequest {
         issuer: "https://idp.example.com/saml/corp".to_string(),
         sp_entity_id: "https://sp.example.com/metadata".to_string(),
         acs_url: "https://sp.example.com/acs".to_string(),
@@ -214,7 +163,8 @@ fn public_saml_entrypoints_reject_xsw_attack_patterns() -> anyhow::Result<()> {
         not_on_or_after: 1_735_689_900,
         session_index: None,
         attribute_release_policy: Vec::new(),
-    })?;
+    })?
+    .xml;
     let response_attacks = [
         (
             "duplicate Response",

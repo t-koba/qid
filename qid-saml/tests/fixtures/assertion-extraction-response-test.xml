@@ -1,0 +1,6 @@
+<samlp:Response xmlns:samlp="{PROTOCOL_NS}" xmlns:saml="{ASSERTION_NS}" ID="r"><saml:Issuer>response-issuer</saml:Issuer>
+<saml:Assertion ID="a"><saml:Issuer>assertion-issuer</saml:Issuer><!--SIGNATURE-->
+<saml:NameID>decoy</saml:NameID><saml:Subject><saml:NameID>verified-subject</saml:NameID></saml:Subject>
+<saml:AttributeStatement><saml:Attribute Name="role"><saml:AttributeValue>admin</saml:AttributeValue><saml:AttributeValue>user</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>
+<saml:Advice><saml:Attribute Name="role"><saml:AttributeValue>decoy</saml:AttributeValue></saml:Attribute></saml:Advice>
+</saml:Assertion></samlp:Response>

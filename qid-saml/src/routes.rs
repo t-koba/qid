@@ -858,7 +858,7 @@ async fn attribute_query<R: Repository>(
         {
             attributes_xml.push_str(&format!(
                 r#"<saml:Attribute Name="{}"><saml:AttributeValue>{}</saml:AttributeValue></saml:Attribute>"#,
-                xml_escape(name), xml_escape(value)));
+                crate::xml::xml_escape(name), crate::xml::xml_escape(value)));
         }
     }
     (
@@ -897,29 +897,13 @@ fn artifact_error_soap(in_response_to: &str, issuer: &str, error_message: String
         crate::artifact::iso_now_utc(),
         in_response_to,
         issuer,
-        xml_escape(&error_message),
+        crate::xml::xml_escape(&error_message),
     )
-}
-
-fn xml_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use axum::{body::Body, http::Request};
-    use qid_core::{
-        jwt::{JwtClaims, Signer, TokenData},
-        test_helpers::test_config,
-    };
-    use std::sync::Arc;
-    use tower::ServiceExt;
+    use qid_core::jwt::{JwtClaims, Signer, TokenData};
 
     pub(super) struct TestSigner;
 
@@ -947,43 +931,6 @@ mod tests {
         fn algorithm(&self) -> &'static str {
             "HS256"
         }
-    }
-
-    #[tokio::test]
-    async fn attribute_query_post_denies_unsigned_input() {
-        let directory = tempfile::tempdir().unwrap();
-        let repo =
-            qid_storage::FileRepository::new(directory.path().join("store.json").to_str().unwrap())
-                .await
-                .unwrap();
-        let mut config = test_config();
-        config.realms[0].protocols.saml.enabled = true;
-        let state = Arc::new(
-            SharedState::new(
-                config,
-                Arc::new(repo),
-                Arc::new(TestSigner),
-                serde_json::json!({}),
-            )
-            .unwrap(),
-        );
-        let app = saml_routes::<qid_storage::FileRepository>().with_state(state);
-        let private_attribute = "private-attribute-value";
-        let request = Request::builder()
-            .method("POST")
-            .uri("/saml/test/attribute-query")
-            .header(header::CONTENT_TYPE, "text/xml")
-            .body(Body::from(format!(
-                "<AttributeQuery><AttributeValue>{private_attribute}</AttributeValue></AttributeQuery>"
-            )))
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        assert!(!String::from_utf8_lossy(&body).contains(private_attribute));
     }
 }
 

@@ -1,0 +1,18 @@
+
+<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="assert-bearer-1" Version="2.0" IssueInstant="{now}">
+  <saml:Issuer>https://issuer.example.com</saml:Issuer>
+  <!--SIGNATURE-->
+  <saml:Subject>
+    <saml:NameID>subject@example.com</saml:NameID>
+    <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+      <saml:SubjectConfirmationData Recipient="https://id.example.com/oauth2/token" NotOnOrAfter="1700000300"/>
+    </saml:SubjectConfirmation>
+  </saml:Subject>
+  <saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300">
+    <saml:AudienceRestriction>
+      <saml:Audience>https://id.example.com/oauth2/token</saml:Audience>
+      <saml:Audience>https://alternative.example.com/audience</saml:Audience>
+    </saml:AudienceRestriction>
+  </saml:Conditions>
+  <saml:AuthnStatement AuthnInstant="{now}"/>
+</saml:Assertion>

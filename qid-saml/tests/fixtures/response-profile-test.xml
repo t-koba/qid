@@ -1,0 +1,4 @@
+
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="resp1" Destination="https://idp.example.com/saml/corp/sso" InResponseTo="req1">
+  <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="assert1"/>
+</samlp:Response>

@@ -1,5 +1,7 @@
 //! Offline route regressions; only existing public test keys/certificates are used.
 use super::*;
+use crate::test_support::{TEST_SP_CERT_PEM as CERT, test_sp_cert_body};
+use crate::xml::xml_escape_preserving_whitespace;
 use axum::{body::Body, http::Request};
 use qid_core::{
     config::SamlServiceProviderConfig,
@@ -9,8 +11,6 @@ use qid_core::{
 };
 use tower::ServiceExt;
 
-const CERT: &str = include_str!("../../tests/data/test-sp.crt");
-const KEY: &str = include_str!("../../tests/data/test-sp.key");
 const A: &str = "https://a.example.com/saml";
 const B: &str = "https://b.example.com/saml";
 const LOCAL_EMAIL: &str = "local@example.com";
@@ -19,44 +19,32 @@ const IDP: &str = "https://idp.example.com/test?x=1&y=\"issuer\"";
 const ESCAPED_ID: &str = "local<&\"'id";
 const ESCAPED_EMAIL: &str = "local+<&\"'@example.com";
 const PRIVATE_NAME: &str = "Private Display Name";
+const PRIVATE_ATTRIBUTE: &str = "private-attribute-value";
 
-fn other_cert() -> String {
-    let doc = roxmltree::Document::parse(include_str!(
-        "../../tests/fixtures/vgi-saml-signed-response-ecdsa.xml"
-    ))
-    .unwrap();
-    doc.descendants()
-        .find(|n| n.has_tag_name((crate::verification::DSIG_NS, "X509Certificate")))
-        .unwrap()
-        .text()
-        .unwrap()
-        .split_whitespace()
-        .collect()
+fn service_provider(
+    entity_id: &str,
+    certificate: String,
+    release: &[&str],
+) -> SamlServiceProviderConfig {
+    SamlServiceProviderConfig {
+        entity_id: entity_id.into(),
+        signing_certificates: vec![certificate],
+        attribute_release_policy: release.iter().map(|name| (*name).into()).collect(),
+        ..Default::default()
+    }
 }
 
 fn query(issuer: &str, subject: &str, format: &str) -> String {
     format!(
         r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:p="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:s="urn:oasis:names:tc:SAML:2.0:assertion"><soap:Body><p:AttributeQuery ID="_query" Version="2.0" IssueInstant="2026-10-17T00:00:00Z"><s:Issuer>{}</s:Issuer><!--SIGNATURE--><s:Subject><s:NameID Format="{}">{}</s:NameID></s:Subject></p:AttributeQuery></soap:Body></soap:Envelope>"#,
-        xml_escape(issuer),
-        xml_escape(format)
-            .replace('\t', "&#x9;")
-            .replace('\n', "&#xA;")
-            .replace('\r', "&#xD;"),
-        xml_escape(subject).replace('\r', "&#xD;")
+        xml_escape_preserving_whitespace(issuer),
+        xml_escape_preserving_whitespace(format),
+        xml_escape_preserving_whitespace(subject)
     )
 }
 
 fn sign(xml: &str) -> String {
-    use bergshamra_dsig::DsigContext;
-    use bergshamra_keys::{KeysManager, loader};
-    let signature = r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#_query"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/></ds:Signature>"##;
-    let mut keys = KeysManager::new();
-    keys.add_key(loader::load_rsa_private_pem(KEY.as_bytes()).unwrap());
-    bergshamra_dsig::sign::sign(
-        &DsigContext::new(keys),
-        &xml.replace("<!--SIGNATURE-->", signature),
-    )
-    .unwrap()
+    crate::test_support::sign_test_document(xml, "_query")
 }
 
 async fn post_query(app: &Router, realm: &str, xml: &str) -> (StatusCode, String) {
@@ -89,6 +77,7 @@ fn assert_no_attributes(body: &str) {
         "local-id",
         "foreign-id",
         "_query",
+        PRIVATE_ATTRIBUTE,
     ] {
         assert!(!body.contains(private), "failure leaked {private}");
     }
@@ -179,6 +168,9 @@ fn assert_attribute_result(
             Some(*value)
         );
     }
+    let display_name_released = expected_attributes.iter().any(|a| a.0 == "displayName");
+    assert_eq!(body.contains(PRIVATE_NAME), display_name_released);
+    assert_eq!(body.contains("displayName"), display_name_released);
     // These assertions remain unsigned; structure coverage is not XMLDSig validation.
     assert!(
         !doc.descendants()
@@ -234,27 +226,14 @@ async fn route_regressions<R: Repository>(repo: R) {
     config.realms[0].issuer = IDP.into();
     config.realms[0].protocols.saml.enabled = true;
     config.realms[0].protocols.saml.service_providers = vec![
-        SamlServiceProviderConfig {
-            entity_id: A.into(),
-            signing_certificates: vec![CERT.into()],
-            attribute_release_policy: vec!["email".into()],
-            ..Default::default()
-        },
-        SamlServiceProviderConfig {
-            entity_id: "https://all.example.com/saml".into(),
-            signing_certificates: vec![CERT.into()],
-            ..Default::default()
-        },
-        SamlServiceProviderConfig {
-            entity_id: B.into(),
-            signing_certificates: vec![other_cert()],
-            ..Default::default()
-        },
+        service_provider(A, CERT.into(), &["email"]),
+        service_provider("https://all.example.com/saml", CERT.into(), &[]),
+        service_provider(B, crate::tests::external_ec_cert(), &[]),
     ];
     let mut other = config.realms[0].clone();
     other.id = "other".into();
     for sp in &mut other.protocols.saml.service_providers {
-        sp.signing_certificates = vec![other_cert()];
+        sp.signing_certificates = vec![crate::tests::external_ec_cert()];
     }
     config.realms.push(other);
     let mut disabled = config.realms[0].clone();
@@ -276,10 +255,7 @@ async fn route_regressions<R: Repository>(repo: R) {
     for format in [crate::PERSISTENT_NAME_ID_FORMAT, ""] {
         let (status, body) = post_query(&app, "test", &sign(&query(A, "local-id", format))).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains(LOCAL_EMAIL));
         assert_attribute_result(&body, "local-id", Some(format), &[("email", LOCAL_EMAIL)]);
-        assert!(!body.contains(PRIVATE_NAME));
-        assert!(!body.contains("displayName"));
     }
     let without_format = unsigned.replace(
         &format!(" Format=\"{}\"", crate::PERSISTENT_NAME_ID_FORMAT),
@@ -288,7 +264,6 @@ async fn route_regressions<R: Repository>(repo: R) {
     let (status, body) = post_query(&app, "test", &sign(&without_format)).await;
     assert_eq!(status, StatusCode::OK);
     assert_attribute_result(&body, "local-id", None, &[("email", LOCAL_EMAIL)]);
-    assert!(!body.contains(PRIVATE_NAME));
     // Exact verified text (including whitespace) and an arbitrary Format must
     // survive XML escaping, without replacing the subject with a stored user ID.
     let escaped_subject = format!(" \t{ESCAPED_ID} \n\r");
@@ -317,8 +292,6 @@ async fn route_regressions<R: Repository>(repo: R) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains(LOCAL_EMAIL));
-    assert!(body.contains(PRIVATE_NAME));
     assert_attribute_result(
         &body,
         "local-id",
@@ -333,9 +306,6 @@ async fn route_regressions<R: Repository>(repo: R) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains(LOCAL_EMAIL));
-    assert!(!body.contains(PRIVATE_NAME));
-
     assert_attribute_result(
         &body,
         LOCAL_EMAIL,
@@ -345,12 +315,13 @@ async fn route_regressions<R: Repository>(repo: R) {
 
     // KeyInfo is ignored even if it names a different certificate/key. Only
     // the configured RSA key may verify this request.
-    let with_decoy_key = signed.replace("</ds:Signature>", &format!("<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>", other_cert()));
+    let decoy_cert = crate::tests::external_ec_cert();
+    let with_decoy_key = signed.replace(&test_sp_cert_body(), &decoy_cert);
     assert_eq!(
         post_query(&app, "test", &with_decoy_key).await.0,
         StatusCode::OK
     );
-    let with_matching_key = signed.replace("</ds:Signature>", &format!("<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>", CERT.lines().filter(|l| !l.starts_with("-----")).collect::<String>()));
+    let with_matching_key = signed.clone();
     // The same embedded certificate must not create trust in another realm.
     for (realm, xml) in [
         ("test", unsigned.replace("<!--SIGNATURE-->", "")),
@@ -360,6 +331,12 @@ async fn route_regressions<R: Repository>(repo: R) {
         ),
         ("other", with_matching_key),
         ("test", signed.replace("local-id", "foreign-id")),
+        (
+            "test",
+            format!(
+                "<AttributeQuery><AttributeValue>{PRIVATE_ATTRIBUTE}</AttributeValue></AttributeQuery>"
+            ),
+        ),
     ] {
         let (status, body) = post_query(&app, realm, &xml).await;
         assert_eq!(status, StatusCode::FORBIDDEN);

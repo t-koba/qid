@@ -1,0 +1,7 @@
+
+<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="logout-123" Version="2.0" Destination="https://idp.example.com/saml/corp/slo">
+  <saml:Issuer>https://sp.example.com/metadata</saml:Issuer>
+  <!--SIGNATURE-->
+  <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">alice@example.com</saml:NameID>
+  <samlp:SessionIndex>sid-1</samlp:SessionIndex>
+</samlp:LogoutRequest>

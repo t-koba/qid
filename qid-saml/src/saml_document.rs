@@ -114,17 +114,7 @@ mod tests {
     use super::*;
 
     fn valid_saml_xml() -> &'static str {
-        r##"<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="req-123">
-  <ds:Signature>
-    <ds:SignedInfo>
-      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
-      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
-      <ds:Reference URI="#req-123">
-        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
-      </ds:Reference>
-    </ds:SignedInfo>
-  </ds:Signature>
-</samlp:AuthnRequest>"##
+        include_str!("../tests/fixtures/saml-document-authn-request-test.xml")
     }
 
     #[test]
@@ -143,12 +133,9 @@ mod tests {
             "</ds:Signature>\n  <ds:Signature><ds:SignedInfo><ds:SignatureMethod Algorithm=\"rsa-sha256\"/><ds:Reference URI=\"#req-123\"><ds:DigestMethod Algorithm=\"sha256\"/></ds:Reference></ds:SignedInfo></ds:Signature>",
         );
         let doc = SamlDocument::parse(&xml).unwrap();
-        assert!(
-            matches!(
-                doc.inspect_signature_profile("AuthnRequest"),
-                Err(QidError::BadRequest { .. })
-            ),
-            "multiple Signature elements must be rejected"
+        crate::tests::assert_bad_request_with_context(
+            doc.inspect_signature_profile("AuthnRequest"),
+            "multiple Signature elements must be rejected",
         );
     }
 
@@ -159,12 +146,9 @@ mod tests {
             "</ds:Signature>\n  <saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>\n</samlp:AuthnRequest>",
         );
         let doc = SamlDocument::parse(&xml).unwrap();
-        assert!(
-            matches!(
-                doc.inspect_signature_profile("AuthnRequest"),
-                Err(QidError::BadRequest { .. })
-            ),
-            "forbidden sibling Assertion must be rejected"
+        crate::tests::assert_bad_request_with_context(
+            doc.inspect_signature_profile("AuthnRequest"),
+            "forbidden sibling Assertion must be rejected",
         );
     }
 
@@ -172,12 +156,9 @@ mod tests {
     fn dom_rejects_reference_uri_mismatch() {
         let xml = valid_saml_xml().replace("#req-123", "#other");
         let doc = SamlDocument::parse(&xml).unwrap();
-        assert!(
-            matches!(
-                doc.inspect_signature_profile("AuthnRequest"),
-                Err(QidError::BadRequest { .. })
-            ),
-            "Reference URI mismatch must be rejected"
+        crate::tests::assert_bad_request_with_context(
+            doc.inspect_signature_profile("AuthnRequest"),
+            "Reference URI mismatch must be rejected",
         );
     }
 
@@ -185,12 +166,9 @@ mod tests {
     fn dom_rejects_comment_before_signature() {
         let xml = valid_saml_xml().replace("<ds:Signature", "<!-- payload --><ds:Signature");
 
-        assert!(
-            matches!(
-                crate::xml::inspect_xml_signature_profile(&xml, "AuthnRequest"),
-                Err(QidError::BadRequest { .. })
-            ),
-            "SAML comments must be rejected before DOM inspection"
+        crate::tests::assert_bad_request_with_context(
+            crate::xml::inspect_xml_signature_profile(&xml, "AuthnRequest"),
+            "SAML comments must be rejected before DOM inspection",
         );
     }
 }

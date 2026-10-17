@@ -1,5 +1,6 @@
 //! Strict SOAP AttributeQuery authentication and response serialization.
 use crate::verification::{ASSERTION_NS, DSIG_NS, attribute, children_named, named};
+use crate::xml::xml_escape_preserving_whitespace as xml_escape;
 use crate::{
     SamlSignatureInputs, SamlXmlSignatureAlgorithm, SignedSamlElement,
     verify_saml_xml_signature_for,
@@ -191,18 +192,4 @@ pub(crate) fn attribute_query_error_soap(
         xml_escape(status_code),
         xml_escape(status_message),
     )
-}
-
-fn xml_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-        // Character references preserve XML whitespace in both text and
-        // attributes instead of subjecting it to parser normalization.
-        .replace('\t', "&#x9;")
-        .replace('\n', "&#xA;")
-        .replace('\r', "&#xD;")
 }

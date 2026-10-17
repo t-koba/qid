@@ -5,134 +5,143 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use qid_core::config::SamlServiceProviderConfig;
 use qid_core::models::{Session, User};
 
-const TEST_SP_CERT_PEM: &str = include_str!("../tests/data/test-sp.crt");
-const TEST_SP_KEY_PEM: &str = include_str!("../tests/data/test-sp.key");
-const SIGNATURE_PLACEHOLDER: &str = "<!--SIGNATURE-->";
+pub(crate) use crate::test_support::sign_saml_test_document;
+pub(crate) fn external_ec_cert() -> String {
+    roxmltree::Document::parse(include_str!(
+        "../tests/fixtures/vgi-saml-signed-response-ecdsa.xml"
+    ))
+    .unwrap()
+    .descendants()
+    .find(|node| node.has_tag_name(("http://www.w3.org/2000/09/xmldsig#", "X509Certificate")))
+    .unwrap()
+    .text()
+    .unwrap()
+    .split_whitespace()
+    .collect()
+}
+use crate::test_support::{
+    TEST_SP_CERT_PEM, TEST_SP_KEY_PEM, sign_test_document, test_sp_cert_body,
+};
 
-fn test_sp_cert_body() -> String {
-    TEST_SP_CERT_PEM
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect::<String>()
-        .trim()
-        .to_string()
+pub(crate) fn assert_bad_request<T>(result: Result<T, QidError>) {
+    assert!(matches!(result, Err(QidError::BadRequest { .. })));
+}
+pub(crate) fn assert_bad_request_with_context<T: std::fmt::Debug>(
+    result: Result<T, QidError>,
+    context: &str,
+) {
+    assert!(
+        matches!(result, Err(QidError::BadRequest { .. })),
+        "{context}: {result:?}"
+    );
+}
+
+fn assert_xsw_rejected(xml: &str, context: &str) {
+    assert_bad_request_with_context(inspect_xml_signature_profile(xml, "AuthnRequest"), context);
+}
+
+fn test_session(acr: Option<&str>, amr: &[&str]) -> Session {
+    Session {
+        id: "sid-1".to_string(),
+        realm_id: "corp".to_string(),
+        user_id: "user-1".to_string(),
+        auth_time: 1_000,
+        acr: acr.map(str::to_string),
+        amr: amr.iter().map(|method| (*method).to_string()).collect(),
+        idle_expires_at: qid_core::util::now_seconds() + 300,
+        absolute_expires_at: qid_core::util::now_seconds() + 3_600,
+        revoked: false,
+        created_at: 1_000,
+        cnf: None,
+    }
+}
+
+fn test_subject(display_name: Option<&str>, groups: &[&str]) -> SamlSubject {
+    SamlSubject {
+        user_id: "user-1".to_string(),
+        email: Some("alice@example.com".to_string()),
+        display_name: display_name.map(str::to_string),
+        groups: groups.iter().map(|group| (*group).to_string()).collect(),
+    }
+}
+
+fn test_assertion_request(
+    sp: &SamlServiceProviderMetadata,
+    subject: SamlSubject,
+) -> SamlAssertionRequest {
+    SamlAssertionRequest {
+        issuer: "https://idp.example.com/realms/corp".to_string(),
+        sp_entity_id: sp.entity_id.clone(),
+        acs_url: sp.acs_url.clone(),
+        request_id: Some("req-123".to_string()),
+        subject,
+        name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
+        issued_at: 1_000,
+        not_on_or_after: 1_300,
+        session_index: None,
+        attribute_release_policy: Vec::new(),
+    }
+}
+
+fn assert_bearer_rejected(assertion: &str, audience: &str, now: u64) {
+    assert_bad_request(validate_saml_bearer_assertion(
+        assertion,
+        audience,
+        now,
+        60,
+        &[TEST_SP_CERT_PEM.to_string()],
+    ));
+}
+
+fn assert_authn_request_rejected(xml: &str, sp: &SamlServiceProviderMetadata) {
+    let request = inspect_saml_authn_request(xml, None).unwrap();
+    assert_bad_request(validate_authn_request_for_sp(
+        &request,
+        sp,
+        Some("https://idp.example.com/saml/corp/sso"),
+    ));
+}
+
+fn assert_authn_signature_rejected(xml: &str, sp: &SamlServiceProviderMetadata) {
+    let request = inspect_saml_authn_request(xml, None).unwrap();
+    assert_bad_request(validate_authn_request_signature_profile(&request, sp));
+}
+
+fn assert_logout_request_rejected(xml: &str, sp: &SamlServiceProviderMetadata) {
+    let request = inspect_saml_logout_request(xml, None).unwrap();
+    assert_bad_request(validate_logout_request_for_sp(
+        &request,
+        sp,
+        Some("https://idp.example.com/saml/corp/slo"),
+    ));
 }
 
 fn sp_metadata() -> String {
     let cert_body = test_sp_cert_body();
-    let raw = r#"
-<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.example.com/metadata">
-  <md:Extensions>
-    <mdattr:EntityAttributes xmlns:mdattr="urn:oasis:names:tc:SAML:metadata:attribute">
-      <saml:Attribute xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" Name="http://macedir.org/entity-category">
-        <saml:AttributeValue>http://refeds.org/category/research-and-scholarship</saml:AttributeValue>
-      </saml:Attribute>
-    </mdattr:EntityAttributes>
-  </md:Extensions>
-  <md:SPSSODescriptor WantAssertionsSigned="true">
-    <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</md:NameIDFormat>
-    <md:KeyDescriptor use="signing">
-      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
-        <ds:X509Data><ds:X509Certificate>
-          CERT_BODY_PLACEHOLDER
-        </ds:X509Certificate></ds:X509Data>
-      </ds:KeyInfo>
-    </md:KeyDescriptor>
-    <md:KeyDescriptor use="encryption">
-      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
-        <ds:X509Data><ds:X509Certificate>
-          CERT_BODY_PLACEHOLDER
-        </ds:X509Certificate></ds:X509Data>
-      </ds:KeyInfo>
-    </md:KeyDescriptor>
-    <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example.com/acs"/>
-    <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example.com/slo"/>
-  </md:SPSSODescriptor>
-</md:EntityDescriptor>
-"#;
+    let raw = include_str!("../tests/fixtures/sp-metadata-test.xml");
     raw.replace("CERT_BODY_PLACEHOLDER", &cert_body)
 }
 
-pub(crate) fn sign_saml_test_document(
-    document_xml: &str,
-    element_id: &str,
-    key_pem: &[u8],
-    cert_body: &str,
-) -> String {
-    use bergshamra_dsig::DsigContext;
-    use bergshamra_keys::{KeysManager, loader};
-    let signature = format!(
-        r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#{element_id}"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{cert_body}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>"##
-    );
-    let template = document_xml.replace(SIGNATURE_PLACEHOLDER, &signature);
-    let mut keys = KeysManager::new();
-    keys.add_key(loader::load_rsa_private_pem(key_pem).unwrap());
-    bergshamra_dsig::sign::sign(&DsigContext::new(keys), &template)
-        .expect("test SAML document must sign in the enforced inbound profile")
-}
-
 fn authn_request_xml() -> String {
-    let unsigned = r##"
-<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="req-123" Version="2.0" Destination="https://idp.example.com/saml/corp/sso" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" AssertionConsumerServiceURL="https://sp.example.com/acs" ForceAuthn="true">
-  <saml:Issuer>https://sp.example.com/metadata</saml:Issuer>
-  <!--SIGNATURE-->
-  <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"/>
-</samlp:AuthnRequest>
-"##
-    .to_string();
-    sign_saml_test_document(
-        &unsigned,
+    sign_test_document(
+        include_str!("../tests/fixtures/authn-request-test.xml"),
         "req-123",
-        TEST_SP_KEY_PEM.as_bytes(),
-        &test_sp_cert_body(),
     )
 }
 
 fn logout_request_xml() -> String {
-    let unsigned = r##"
-<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="logout-123" Version="2.0" Destination="https://idp.example.com/saml/corp/slo">
-  <saml:Issuer>https://sp.example.com/metadata</saml:Issuer>
-  <!--SIGNATURE-->
-  <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">alice@example.com</saml:NameID>
-  <samlp:SessionIndex>sid-1</samlp:SessionIndex>
-</samlp:LogoutRequest>
-"##
-    .to_string();
-    sign_saml_test_document(
-        &unsigned,
+    sign_test_document(
+        include_str!("../tests/fixtures/logout-request-test.xml"),
         "logout-123",
-        TEST_SP_KEY_PEM.as_bytes(),
-        &test_sp_cert_body(),
     )
 }
 
 fn unsigned_bearer_assertion() -> &'static str {
-    r##"
-<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="assert-bearer-regression" Version="2.0" IssueInstant="1700000000">
-  <saml:Issuer>https://issuer.example.com</saml:Issuer>
-  <!--SIGNATURE-->
-  <saml:Subject>
-    <saml:NameID>subject@example.com</saml:NameID>
-    <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
-      <saml:SubjectConfirmationData Recipient="https://id.example.com/oauth2/token" NotOnOrAfter="1700000300"/>
-    </saml:SubjectConfirmation>
-  </saml:Subject>
-  <saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300">
-    <saml:AudienceRestriction>
-      <saml:Audience>https://id.example.com/oauth2/token</saml:Audience>
-    </saml:AudienceRestriction>
-  </saml:Conditions>
-</saml:Assertion>
-"##
+    include_str!("../tests/fixtures/unsigned-bearer-assertion-test.xml")
 }
 
 fn sign_bearer_assertion(unsigned: &str) -> String {
-    sign_saml_test_document(
-        unsigned,
-        "assert-bearer-regression",
-        TEST_SP_KEY_PEM.as_bytes(),
-        &test_sp_cert_body(),
-    )
+    crate::test_support::sign_test_document(unsigned, "assert-bearer-regression")
 }
 
 #[test]
@@ -157,10 +166,7 @@ fn imports_sp_metadata_and_rejects_sha1() {
             "</md:SPSSODescriptor>",
             r#"<ds:SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/></md:SPSSODescriptor>"#,
         );
-    assert!(matches!(
-        import_sp_metadata(&insecure),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(import_sp_metadata(&insecure));
 }
 
 #[test]
@@ -182,16 +188,10 @@ fn imports_federation_metadata_aggregate_entity_categories_and_rollover_keys() {
                 "</md:KeyDescriptor>",
                 "</md:KeyDescriptor><md:KeyDescriptor use=\"signing\"><ds:KeyInfo xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\"><ds:X509Data><ds:X509Certificate>MIIBnextsigningcertificate</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>",
             );
-    let aggregate = format!(
-        r#"<md:EntitiesDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata">
-{}
-{}
-{}
-</md:EntitiesDescriptor>"#,
-        sp_metadata(),
-        rollover_metadata,
-        sp_metadata()
-    );
+    let aggregate = include_str!("../tests/fixtures/entities-descriptor-test.xml")
+        .replace("{first}", &sp_metadata())
+        .replace("{rollover}", &rollover_metadata)
+        .replace("{duplicate}", &sp_metadata());
 
     let imported = import_sp_metadata_aggregate(&aggregate).unwrap();
 
@@ -288,39 +288,28 @@ fn authn_request_validation_rejects_unsafe_or_mismatched_inputs() {
         saml_request: STANDARD.encode(authn_request_xml()),
         relay_state: Some("https://evil.example".to_string()),
     };
-    assert!(matches!(
-        parse_post_binding_authn_request(&invalid_relay, &SamlRelayStatePolicy::default()),
-        Err(QidError::BadRequest { .. })
+    assert_bad_request(parse_post_binding_authn_request(
+        &invalid_relay,
+        &SamlRelayStatePolicy::default(),
     ));
 
     let bad_binding = authn_request_xml().replace(
         "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
         "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
     );
-    let req = inspect_saml_authn_request(&bad_binding, None).unwrap();
-    assert!(matches!(
-        validate_authn_request_for_sp(&req, &sp, Some("https://idp.example.com/saml/corp/sso")),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_authn_request_rejected(&bad_binding, &sp);
 
     let bad_acs = authn_request_xml().replace(
         "https://sp.example.com/acs",
         "https://sp.example.com/other-acs",
     );
-    let req = inspect_saml_authn_request(&bad_acs, None).unwrap();
-    assert!(matches!(
-        validate_authn_request_for_sp(&req, &sp, Some("https://idp.example.com/saml/corp/sso")),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_authn_request_rejected(&bad_acs, &sp);
 
     let duplicate = authn_request_xml().replace(
         "</samlp:AuthnRequest>",
         "<samlp:AuthnRequest ID=\"req-456\"></samlp:AuthnRequest></samlp:AuthnRequest>",
     );
-    assert!(matches!(
-        inspect_saml_authn_request(&duplicate, None),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(inspect_saml_authn_request(&duplicate, None));
 }
 
 #[test]
@@ -332,40 +321,22 @@ fn authn_request_signature_profile_is_fail_closed() {
     if let Some(pos) = stripped.find("</ds:XSignature>") {
         stripped.replace_range(pos..pos + "</ds:XSignature>".len(), "");
     }
-    let req = inspect_saml_authn_request(&stripped, None).unwrap();
-    assert!(matches!(
-        validate_authn_request_signature_profile(&req, &sp),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_authn_signature_rejected(&stripped, &sp);
 
     let wrong_reference = authn_request_xml().replace("URI=\"#req-123\"", "URI=\"#other\"");
-    let req = inspect_saml_authn_request(&wrong_reference, None).unwrap();
-    assert!(matches!(
-        validate_authn_request_signature_profile(&req, &sp),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_authn_signature_rejected(&wrong_reference, &sp);
 
     let untrusted_cert =
         authn_request_xml().replace(&test_sp_cert_body()[..18], "MIIBuntrustedcertif");
-    let req = inspect_saml_authn_request(&untrusted_cert, None).unwrap();
-    assert!(matches!(
-        validate_authn_request_signature_profile(&req, &sp),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_authn_signature_rejected(&untrusted_cert, &sp);
 
     let insecure_digest =
         authn_request_xml().replace("http://www.w3.org/2001/04/xmlenc#sha256", "md5");
-    assert!(matches!(
-        inspect_saml_authn_request(&insecure_digest, None),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(inspect_saml_authn_request(&insecure_digest, None));
 
     let insecure_signature =
         authn_request_xml().replace("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256", "md5");
-    assert!(matches!(
-        inspect_saml_authn_request(&insecure_signature, None),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(inspect_saml_authn_request(&insecure_signature, None));
 }
 
 #[test]
@@ -431,14 +402,11 @@ fn builds_logout_response_and_post_binding_form() {
     let decoded = String::from_utf8(decoded).unwrap();
     assert_eq!(decoded, issued.xml);
 
-    assert!(matches!(
-        build_saml_logout_response(
-            "https://idp.example.com/realms/corp",
-            "",
-            "logout-123",
-            1_000
-        ),
-        Err(QidError::BadRequest { .. })
+    assert_bad_request(build_saml_logout_response(
+        "https://idp.example.com/realms/corp",
+        "",
+        "logout-123",
+        1_000,
     ));
 }
 
@@ -449,35 +417,20 @@ fn logout_request_validation_is_fail_closed() {
         "https://idp.example.com/saml/corp/slo",
         "https://idp.example.com/saml/other/slo",
     );
-    let req = inspect_saml_logout_request(&wrong_destination, None).unwrap();
-    assert!(matches!(
-        validate_logout_request_for_sp(&req, &sp, Some("https://idp.example.com/saml/corp/slo")),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_logout_request_rejected(&wrong_destination, &sp);
 
     let wrong_reference = logout_request_xml().replace("URI=\"#logout-123\"", "URI=\"#other\"");
-    let req = inspect_saml_logout_request(&wrong_reference, None).unwrap();
-    assert!(matches!(
-        validate_logout_request_for_sp(&req, &sp, Some("https://idp.example.com/saml/corp/slo")),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_logout_request_rejected(&wrong_reference, &sp);
 
     let untrusted_cert =
         logout_request_xml().replace(&test_sp_cert_body()[..18], "MIIBuntrustedcertif");
-    let req = inspect_saml_logout_request(&untrusted_cert, None).unwrap();
-    assert!(matches!(
-        validate_logout_request_for_sp(&req, &sp, Some("https://idp.example.com/saml/corp/slo")),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_logout_request_rejected(&untrusted_cert, &sp);
 
     let duplicate = logout_request_xml().replace(
         "</samlp:LogoutRequest>",
         "<samlp:LogoutRequest ID=\"logout-456\"></samlp:LogoutRequest></samlp:LogoutRequest>",
     );
-    assert!(matches!(
-        inspect_saml_logout_request(&duplicate, None),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(inspect_saml_logout_request(&duplicate, None));
 }
 
 #[test]
@@ -488,12 +441,7 @@ fn builds_assertion_request_from_valid_authn_request() {
         &req,
         &sp,
         "https://idp.example.com/realms/corp",
-        SamlSubject {
-            user_id: "user-1".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: None,
-            groups: vec![],
-        },
+        test_subject(None, &[]),
         1_000,
         300,
         Some("session-1".to_string()),
@@ -512,19 +460,7 @@ fn builds_assertion_request_from_valid_authn_request() {
 #[test]
 fn builds_subject_and_post_response_from_browser_session() {
     let browser_subject = SamlBrowserSubject {
-        session: Session {
-            id: "sid-1".to_string(),
-            realm_id: "corp".to_string(),
-            user_id: "user-1".to_string(),
-            auth_time: 1_000,
-            acr: Some("urn:qid:acr:password".to_string()),
-            amr: vec!["pwd".to_string()],
-            idle_expires_at: qid_core::util::now_seconds() + 300,
-            absolute_expires_at: qid_core::util::now_seconds() + 3_600,
-            revoked: false,
-            created_at: 1_000,
-            cnf: None,
-        },
+        session: test_session(Some("urn:qid:acr:password"), &["pwd"]),
         user: User {
             id: "user-1".to_string(),
             realm_id: "corp".to_string(),
@@ -571,19 +507,7 @@ fn cookie_and_session_checks_are_strict() {
     );
     assert!(extract_cookie(&headers, "missing").is_none());
 
-    let mut session = Session {
-        id: "sid-1".to_string(),
-        realm_id: "corp".to_string(),
-        user_id: "user-1".to_string(),
-        auth_time: 1_000,
-        acr: None,
-        amr: vec![],
-        idle_expires_at: qid_core::util::now_seconds() + 300,
-        absolute_expires_at: qid_core::util::now_seconds() + 3_600,
-        revoked: false,
-        created_at: 1_000,
-        cnf: None,
-    };
+    let mut session = test_session(None, &[]);
     assert!(is_active_session_for_realm(&session, "corp"));
     assert!(!is_active_session_for_realm(&session, "other"));
     session.revoked = true;
@@ -597,74 +521,34 @@ fn validates_relay_state_policy() {
         allowed_prefixes: vec!["/app".to_string()],
     };
     validate_relay_state(Some("/app/home"), &policy).unwrap();
-    assert!(matches!(
-        validate_relay_state(Some("https://evil.example"), &policy),
-        Err(QidError::BadRequest { .. })
-    ));
-    assert!(matches!(
-        validate_relay_state(Some("/app/home\nx"), &policy),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(validate_relay_state(Some("https://evil.example"), &policy));
+    assert_bad_request(validate_relay_state(Some("/app/home\nx"), &policy));
 }
 
 #[test]
 fn inspects_response_profile_and_rejects_wrapping_shapes() {
-    let response = r#"
-<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="resp1" Destination="https://idp.example.com/saml/corp/sso" InResponseTo="req1">
-  <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="assert1"/>
-</samlp:Response>
-"#;
+    let response = include_str!("../tests/fixtures/response-profile-test.xml");
     let profile = inspect_saml_response_profile(response).unwrap();
     assert_eq!(profile.response_id.as_deref(), Some("resp1"));
     assert_eq!(profile.assertion_ids, vec!["assert1"]);
     assert_eq!(profile.in_response_to.as_deref(), Some("req1"));
 
     let duplicate_id = response.replace("ID=\"assert1\"", "ID=\"resp1\"");
-    assert!(matches!(
-        inspect_saml_response_profile(&duplicate_id),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(inspect_saml_response_profile(&duplicate_id));
 
     let multiple_assertions = response.replace(
             "</samlp:Response>",
             r#"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="assert2"/></samlp:Response>"#,
         );
-    assert!(matches!(
-        inspect_saml_response_profile(&multiple_assertions),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(inspect_saml_response_profile(&multiple_assertions));
 }
 
 #[test]
 fn validates_saml_bearer_assertion_profile() {
     let now = 1_700_000_000;
-    let unsigned = format!(
-        r##"
-<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="assert-bearer-1" Version="2.0" IssueInstant="{now}">
-  <saml:Issuer>https://issuer.example.com</saml:Issuer>
-  <!--SIGNATURE-->
-  <saml:Subject>
-    <saml:NameID>subject@example.com</saml:NameID>
-    <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
-      <saml:SubjectConfirmationData Recipient="https://id.example.com/oauth2/token" NotOnOrAfter="1700000300"/>
-    </saml:SubjectConfirmation>
-  </saml:Subject>
-  <saml:Conditions NotBefore="1699999990" NotOnOrAfter="1700000300">
-    <saml:AudienceRestriction>
-      <saml:Audience>https://id.example.com/oauth2/token</saml:Audience>
-      <saml:Audience>https://alternative.example.com/audience</saml:Audience>
-    </saml:AudienceRestriction>
-  </saml:Conditions>
-  <saml:AuthnStatement AuthnInstant="{now}"/>
-</saml:Assertion>
-"##
-    );
-    let assertion = sign_saml_test_document(
-        &unsigned,
-        "assert-bearer-1",
-        TEST_SP_KEY_PEM.as_bytes(),
-        &test_sp_cert_body(),
-    );
+    let unsigned = include_str!("../tests/fixtures/bearer-assertion-profile-test.xml")
+        .replace("{now}", &now.to_string());
+    let assertion = crate::test_support::sign_test_document(&unsigned, "assert-bearer-1");
     let validated = validate_saml_bearer_assertion(
         &assertion,
         "https://id.example.com/oauth2/token",
@@ -678,37 +562,19 @@ fn validates_saml_bearer_assertion_profile() {
     assert_eq!(validated.expires_at, 1_700_000_300);
     assert_eq!(validated.auth_time, Some(now));
 
-    assert!(matches!(
-        validate_saml_bearer_assertion(
-            &assertion,
-            "https://other.example.com/token",
-            now,
-            60,
-            &[TEST_SP_CERT_PEM.to_string()]
-        ),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bearer_rejected(&assertion, "https://other.example.com/token", now);
 
     let conflicting_unsigned = unsigned.replace(
         "</saml:AudienceRestriction>",
         "</saml:AudienceRestriction>\n    <saml:AudienceRestriction><saml:Audience>https://other.example.com/audience</saml:Audience></saml:AudienceRestriction>",
     );
-    let conflicting_assertion = sign_saml_test_document(
-        &conflicting_unsigned,
-        "assert-bearer-1",
-        TEST_SP_KEY_PEM.as_bytes(),
-        &test_sp_cert_body(),
+    let conflicting_assertion =
+        crate::test_support::sign_test_document(&conflicting_unsigned, "assert-bearer-1");
+    assert_bearer_rejected(
+        &conflicting_assertion,
+        "https://id.example.com/oauth2/token",
+        now,
     );
-    assert!(matches!(
-        validate_saml_bearer_assertion(
-            &conflicting_assertion,
-            "https://id.example.com/oauth2/token",
-            now,
-            60,
-            &[TEST_SP_CERT_PEM.to_string()]
-        ),
-        Err(QidError::BadRequest { .. })
-    ));
 }
 
 #[test]
@@ -727,16 +593,11 @@ fn rejects_empty_saml_bearer_issuer_and_subject() {
 
     for unsigned in unsigned_variants {
         let signed = sign_bearer_assertion(&unsigned);
-        assert!(matches!(
-            validate_saml_bearer_assertion(
-                &signed,
-                "https://id.example.com/oauth2/token",
-                1_700_000_000,
-                60,
-                &[TEST_SP_CERT_PEM.to_string()]
-            ),
-            Err(QidError::BadRequest { .. })
-        ));
+        assert_bearer_rejected(
+            &signed,
+            "https://id.example.com/oauth2/token",
+            1_700_000_000,
+        );
     }
 }
 
@@ -748,16 +609,11 @@ fn rejects_unsupported_saml_bearer_condition() {
             &format!("{condition}</saml:Conditions>"),
         );
         let assertion = sign_bearer_assertion(&unsigned);
-        assert!(matches!(
-            validate_saml_bearer_assertion(
-                &assertion,
-                "https://id.example.com/oauth2/token",
-                1_700_000_000,
-                60,
-                &[TEST_SP_CERT_PEM.to_string()]
-            ),
-            Err(QidError::BadRequest { .. })
-        ));
+        assert_bearer_rejected(
+            &assertion,
+            "https://id.example.com/oauth2/token",
+            1_700_000_000,
+        );
     }
 }
 
@@ -768,16 +624,11 @@ fn rejects_duplicate_saml_bearer_conditions_with_expired_second_element() {
         "<saml:Conditions NotOnOrAfter=\"1600000000\"><saml:AudienceRestriction><saml:Audience>https://id.example.com/oauth2/token</saml:Audience></saml:AudienceRestriction></saml:Conditions></saml:Assertion>",
     );
     let assertion = sign_bearer_assertion(&unsigned);
-    assert!(matches!(
-        validate_saml_bearer_assertion(
-            &assertion,
-            "https://id.example.com/oauth2/token",
-            1_700_000_000,
-            60,
-            &[TEST_SP_CERT_PEM.to_string()]
-        ),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bearer_rejected(
+        &assertion,
+        "https://id.example.com/oauth2/token",
+        1_700_000_000,
+    );
 }
 
 #[test]
@@ -787,16 +638,11 @@ fn rejects_saml_bearer_subject_confirmation_data_not_before() {
         "Recipient=\"https://id.example.com/oauth2/token\" NotBefore=\"1699999990\"",
     );
     let assertion = sign_bearer_assertion(&unsigned);
-    assert!(matches!(
-        validate_saml_bearer_assertion(
-            &assertion,
-            "https://id.example.com/oauth2/token",
-            1_700_000_000,
-            60,
-            &[TEST_SP_CERT_PEM.to_string()]
-        ),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bearer_rejected(
+        &assertion,
+        "https://id.example.com/oauth2/token",
+        1_700_000_000,
+    );
 }
 
 #[test]
@@ -804,24 +650,13 @@ fn selects_name_id_and_builds_saml_response() {
     let sp = import_sp_metadata(&sp_metadata()).unwrap();
     let name_id_format = select_name_id_format(&sp, Some(EMAIL_NAME_ID_FORMAT));
     assert_eq!(name_id_format, EMAIL_NAME_ID_FORMAT);
-    let issued = build_saml_response(&SamlAssertionRequest {
-        issuer: "https://idp.example.com/realms/corp".to_string(),
-        sp_entity_id: sp.entity_id.clone(),
-        acs_url: sp.acs_url.clone(),
-        request_id: Some("req-123".to_string()),
-        subject: SamlSubject {
-            user_id: "user-1".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: Some("Alice <Example>".to_string()),
-            groups: vec!["engineering".to_string(), "admins".to_string()],
-        },
-        name_id_format,
-        issued_at: 1_000,
-        not_on_or_after: 1_300,
-        session_index: Some("session-1".to_string()),
-        attribute_release_policy: Vec::new(),
-    })
-    .unwrap();
+    let mut request = test_assertion_request(
+        &sp,
+        test_subject(Some("Alice <Example>"), &["engineering", "admins"]),
+    );
+    request.name_id_format = name_id_format;
+    request.session_index = Some("session-1".to_string());
+    let issued = build_saml_response(&request).unwrap();
 
     let profile = inspect_saml_response_profile(&issued.xml).unwrap();
     assert_eq!(
@@ -858,33 +693,14 @@ fn persistent_name_id_uses_stable_subject_id_and_rejects_missing_email() {
         name_id_value(&subject, PERSISTENT_NAME_ID_FORMAT).unwrap(),
         "user-stable"
     );
-    assert!(matches!(
-        name_id_value(&subject, EMAIL_NAME_ID_FORMAT),
-        Err(QidError::BadRequest { .. })
-    ));
+    assert_bad_request(name_id_value(&subject, EMAIL_NAME_ID_FORMAT));
 }
 
 #[test]
 fn plans_response_and_assertion_signatures() {
     let sp = import_sp_metadata(&sp_metadata()).unwrap();
-    let issued = build_saml_response(&SamlAssertionRequest {
-        issuer: "https://idp.example.com/realms/corp".to_string(),
-        sp_entity_id: sp.entity_id.clone(),
-        acs_url: sp.acs_url.clone(),
-        request_id: Some("req-123".to_string()),
-        subject: SamlSubject {
-            user_id: "user-1".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: None,
-            groups: vec![],
-        },
-        name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
-        issued_at: 1_000,
-        not_on_or_after: 1_300,
-        session_index: None,
-        attribute_release_policy: Vec::new(),
-    })
-    .unwrap();
+    let request = test_assertion_request(&sp, test_subject(None, &[]));
+    let issued = build_saml_response(&request).unwrap();
 
     let plan = plan_saml_signatures(
         &issued,
@@ -914,69 +730,28 @@ fn plans_response_and_assertion_signatures() {
 
 #[test]
 fn signature_plan_rejects_unsigned_saml_response_policy() {
-    let sp = SamlServiceProviderMetadata {
-        entity_id: "https://sp.example.com/metadata".to_string(),
-        acs_url: "https://sp.example.com/acs".to_string(),
-        slo_url: None,
-        name_id_formats: vec![EMAIL_NAME_ID_FORMAT.to_string()],
-        attribute_release_policy: vec![],
-        signing_certificates: vec![],
-        encryption_certificates: vec![],
-        want_assertions_signed: false,
-        entity_categories: Vec::new(),
-    };
-    let issued = build_saml_response(&SamlAssertionRequest {
-        issuer: "https://idp.example.com/realms/corp".to_string(),
-        sp_entity_id: sp.entity_id.clone(),
-        acs_url: sp.acs_url.clone(),
-        request_id: None,
-        subject: SamlSubject {
-            user_id: "user-1".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: None,
-            groups: vec![],
+    let mut sp = import_sp_metadata(&sp_metadata()).unwrap();
+    sp.signing_certificates.clear();
+    sp.encryption_certificates.clear();
+    sp.want_assertions_signed = false;
+    let mut request = test_assertion_request(&sp, test_subject(None, &[]));
+    request.request_id = None;
+    let issued = build_saml_response(&request).unwrap();
+    assert_bad_request(plan_saml_signatures(
+        &issued,
+        &sp,
+        &SamlSigningPolicy {
+            sign_response: false,
+            sign_assertion: false,
         },
-        name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
-        issued_at: 1_000,
-        not_on_or_after: 1_300,
-        session_index: None,
-        attribute_release_policy: Vec::new(),
-    })
-    .unwrap();
-    assert!(matches!(
-        plan_saml_signatures(
-            &issued,
-            &sp,
-            &SamlSigningPolicy {
-                sign_response: false,
-                sign_assertion: false,
-            }
-        ),
-        Err(QidError::BadRequest { .. })
     ));
 }
 
 #[test]
 fn plans_and_applies_encrypted_assertion() {
     let sp = import_sp_metadata(&sp_metadata()).unwrap();
-    let issued = build_saml_response(&SamlAssertionRequest {
-        issuer: "https://idp.example.com/realms/corp".to_string(),
-        sp_entity_id: sp.entity_id.clone(),
-        acs_url: sp.acs_url.clone(),
-        request_id: Some("req-123".to_string()),
-        subject: SamlSubject {
-            user_id: "user-1".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: None,
-            groups: vec![],
-        },
-        name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
-        issued_at: 1_000,
-        not_on_or_after: 1_300,
-        session_index: None,
-        attribute_release_policy: Vec::new(),
-    })
-    .unwrap();
+    let request = test_assertion_request(&sp, test_subject(None, &[]));
+    let issued = build_saml_response(&request).unwrap();
 
     let plan = plan_saml_encryption(
         &issued,
@@ -1006,34 +781,16 @@ fn plans_and_applies_encrypted_assertion() {
 fn encryption_plan_rejects_missing_sp_certificate() {
     let mut sp = import_sp_metadata(&sp_metadata()).unwrap();
     sp.encryption_certificates.clear();
-    let issued = build_saml_response(&SamlAssertionRequest {
-        issuer: "https://idp.example.com/realms/corp".to_string(),
-        sp_entity_id: sp.entity_id.clone(),
-        acs_url: sp.acs_url.clone(),
-        request_id: None,
-        subject: SamlSubject {
-            user_id: "user-1".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: None,
-            groups: vec![],
-        },
-        name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
-        issued_at: 1_000,
-        not_on_or_after: 1_300,
-        session_index: None,
-        attribute_release_policy: Vec::new(),
-    })
-    .unwrap();
+    let mut request = test_assertion_request(&sp, test_subject(None, &[]));
+    request.request_id = None;
+    let issued = build_saml_response(&request).unwrap();
 
-    assert!(matches!(
-        plan_saml_encryption(
-            &issued,
-            &sp,
-            &SamlEncryptionPolicy {
-                encrypt_assertion: true,
-            }
-        ),
-        Err(QidError::BadRequest { .. })
+    assert_bad_request(plan_saml_encryption(
+        &issued,
+        &sp,
+        &SamlEncryptionPolicy {
+            encrypt_assertion: true,
+        },
     ));
     assert_eq!(
         plan_saml_encryption(
@@ -1050,12 +807,7 @@ fn encryption_plan_rejects_missing_sp_certificate() {
 
 #[test]
 fn encrypt_decrypt_assertion_xml_roundtrip() {
-    let assertion_xml = r#"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="assert-1" Version="2.0" IssueInstant="1000">
-  <saml:Issuer>https://idp.example.com/realms/corp</saml:Issuer>
-  <saml:Subject>
-    <saml:NameID>alice@example.com</saml:NameID>
-  </saml:Subject>
-</saml:Assertion>"#;
+    let assertion_xml = include_str!("../tests/fixtures/assertion-encryption-test.xml");
 
     let cert_body = test_sp_cert_body();
     let encrypted = encrypt_assertion_xml(assertion_xml, &cert_body).unwrap();
@@ -1081,33 +833,18 @@ fn decrypt_assertion_xml_rejects_bad_key() {
 
 #[test]
 fn decrypt_assertion_xml_rejects_garbage_xml() {
-    assert!(matches!(
-        decrypt_assertion_xml("<not-encrypted/>", TEST_SP_KEY_PEM.as_bytes()),
-        Err(QidError::BadRequest { .. })
+    assert_bad_request(decrypt_assertion_xml(
+        "<not-encrypted/>",
+        TEST_SP_KEY_PEM.as_bytes(),
     ));
 }
 
 #[test]
 fn encrypt_decrypt_saml_response_roundtrip() {
     let sp = import_sp_metadata(&sp_metadata()).unwrap();
-    let issued = build_saml_response(&SamlAssertionRequest {
-        issuer: "https://idp.example.com/realms/corp".to_string(),
-        sp_entity_id: sp.entity_id.clone(),
-        acs_url: sp.acs_url.clone(),
-        request_id: Some("req-1".to_string()),
-        subject: SamlSubject {
-            user_id: "user-1".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: None,
-            groups: vec![],
-        },
-        name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
-        issued_at: 1_000,
-        not_on_or_after: 1_300,
-        session_index: None,
-        attribute_release_policy: Vec::new(),
-    })
-    .unwrap();
+    let mut request = test_assertion_request(&sp, test_subject(None, &[]));
+    request.request_id = Some("req-1".to_string());
+    let issued = build_saml_response(&request).unwrap();
 
     let encrypted = encrypt_saml_response(&issued, &test_sp_cert_body()).unwrap();
     assert!(encrypted.xml.contains("EncryptedAssertion"));
@@ -1125,18 +862,7 @@ fn encrypt_decrypt_saml_response_roundtrip() {
 // ---------------------------------------------------------------------------
 
 fn xsw_valid_signed_element() -> String {
-    r##"<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="req-123">
-  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
-    <ds:SignedInfo>
-      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
-      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
-      <ds:Reference URI="#req-123">
-        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
-      </ds:Reference>
-    </ds:SignedInfo>
-  </ds:Signature>
-</samlp:AuthnRequest>"##
-        .to_string()
+    include_str!("../tests/fixtures/xsw-authn-request-test.xml").to_string()
 }
 
 #[test]
@@ -1145,12 +871,7 @@ fn xsw_rejects_multiple_signatures() {
         "</ds:Signature>",
         "</ds:Signature>\n  <ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\">\n    <ds:SignedInfo>\n      <ds:SignatureMethod Algorithm=\"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256\"/>\n      <ds:Reference URI=\"#req-123\">\n        <ds:DigestMethod Algorithm=\"http://www.w3.org/2001/04/xmlenc#sha256\"/>\n      </ds:Reference>\n    </ds:SignedInfo>\n  </ds:Signature>",
     );
-    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
-    assert!(
-        matches!(result, Err(QidError::BadRequest { .. })),
-        "multiple Signature elements must be rejected: {:?}",
-        result
-    );
+    assert_xsw_rejected(&xml, "multiple Signature elements must be rejected");
 }
 
 #[test]
@@ -1159,12 +880,7 @@ fn xsw_rejects_forbidden_sibling_assertion() {
         "</ds:Signature>\n</samlp:AuthnRequest>",
         "</ds:Signature>\n  <saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>\n</samlp:AuthnRequest>",
     );
-    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
-    assert!(
-        matches!(result, Err(QidError::BadRequest { .. })),
-        "forbidden sibling Assertion must be rejected: {:?}",
-        result
-    );
+    assert_xsw_rejected(&xml, "forbidden sibling Assertion must be rejected");
 }
 
 #[test]
@@ -1173,23 +889,13 @@ fn xsw_rejects_forbidden_sibling_extensions() {
         "</ds:Signature>\n</samlp:AuthnRequest>",
         "</ds:Signature>\n  <samlp:Extensions/>\n</samlp:AuthnRequest>",
     );
-    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
-    assert!(
-        matches!(result, Err(QidError::BadRequest { .. })),
-        "forbidden sibling Extensions must be rejected: {:?}",
-        result
-    );
+    assert_xsw_rejected(&xml, "forbidden sibling Extensions must be rejected");
 }
 
 #[test]
 fn xsw_rejects_reference_uri_mismatch() {
     let xml = xsw_valid_signed_element().replace("#req-123", "#other");
-    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
-    assert!(
-        matches!(result, Err(QidError::BadRequest { .. })),
-        "Reference URI mismatch must be rejected: {:?}",
-        result
-    );
+    assert_xsw_rejected(&xml, "Reference URI mismatch must be rejected");
 }
 
 #[test]
@@ -1198,12 +904,7 @@ fn xsw_comment_is_rejected_before_tag_scanning() {
         "<ds:Signature",
         "<!-- hidden attacker payload --><ds:Signature",
     );
-    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
-    assert!(
-        matches!(result, Err(QidError::BadRequest { .. })),
-        "comment before Signature must be rejected: {:?}",
-        result
-    );
+    assert_xsw_rejected(&xml, "comment before Signature must be rejected");
 }
 
 #[test]
@@ -1213,12 +914,7 @@ fn xsw_doctype_is_rejected_before_tag_scanning() {
         "<!DOCTYPE samlp:AuthnRequest [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>\n<samlp:AuthnRequest",
         1,
     );
-    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
-    assert!(
-        matches!(result, Err(QidError::BadRequest { .. })),
-        "DOCTYPE must be rejected: {:?}",
-        result
-    );
+    assert_xsw_rejected(&xml, "DOCTYPE must be rejected");
 }
 
 #[test]
@@ -1244,10 +940,8 @@ fn xsw_namespace_prefix_trick_does_not_bypass_sibling_check() {
         "</ds:Signature>\n</samlp:AuthnRequest>",
         "</ds:Signature>\n  <pfx:Assertion xmlns:pfx=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>\n</samlp:AuthnRequest>",
     );
-    let result = inspect_xml_signature_profile(&xml, "AuthnRequest");
-    assert!(
-        matches!(result, Err(QidError::BadRequest { .. })),
-        "namespace-prefixed forbidden sibling must be rejected: {:?}",
-        result
+    assert_xsw_rejected(
+        &xml,
+        "namespace-prefixed forbidden sibling must be rejected",
     );
 }

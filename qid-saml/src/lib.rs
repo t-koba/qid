@@ -56,4 +56,8 @@ const PASSWORD_PROTECTED_TRANSPORT_AUTHN_CONTEXT: &str =
 pub use binding::*;
 
 #[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_support;
+
+#[cfg(test)]
 mod tests;

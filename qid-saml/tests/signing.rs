@@ -3,11 +3,14 @@
 use bergshamra_dsig::{DsigContext, VerifyResult};
 use bergshamra_keys::{KeysManager, loader};
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
+#[allow(dead_code)]
+mod common;
+
 use qid_saml::{
-    SamlIssuedResponse, SamlSignatureInputs, SamlSigningElement, SamlSigningPolicy,
-    SamlXmlSignatureAlgorithm, SignedSamlElement, decrypt_saml_response, encrypt_saml_response,
-    import_sp_metadata, sign_saml_document_with_key, sign_saml_response_with_key,
-    verify_saml_xml_signature_for,
+    SamlIssuedResponse, SamlServiceProviderMetadata, SamlSignatureInputs, SamlSigningElement,
+    SamlSigningPolicy, SamlXmlSignatureAlgorithm, SignedSamlElement, decrypt_saml_response,
+    encrypt_saml_response, import_sp_metadata, sign_saml_document_with_key,
+    sign_saml_response_with_key, verify_saml_xml_signature_for,
 };
 
 const RSA: &[u8] = include_bytes!("data/test-sp.key");
@@ -55,6 +58,39 @@ fn context(algorithm: SamlXmlSignatureAlgorithm) -> DsigContext {
 
 // The inbound protocol profile deliberately permits only one signature. Use
 // the backend directly to check both signatures without broadening that policy.
+fn issued_response() -> SamlIssuedResponse {
+    SamlIssuedResponse {
+        response_id: "r1".into(),
+        assertion_id: "a1".into(),
+        xml: XML.into(),
+    }
+}
+
+fn signing_policy(sign_response: bool, sign_assertion: bool) -> SamlSigningPolicy {
+    SamlSigningPolicy {
+        sign_response,
+        sign_assertion,
+    }
+}
+
+fn sign_response(
+    issued: &SamlIssuedResponse,
+    sp: &SamlServiceProviderMetadata,
+    key: &[u8],
+    algorithm: SamlXmlSignatureAlgorithm,
+    sign_response_flag: bool,
+    sign_assertion: bool,
+) -> SamlIssuedResponse {
+    sign_saml_response_with_key(
+        issued,
+        sp,
+        &signing_policy(sign_response_flag, sign_assertion),
+        key,
+        algorithm,
+    )
+    .unwrap()
+}
+
 fn check_references(xml: &str, algorithm: SamlXmlSignatureAlgorithm, ids: &[&str]) {
     let doc = uppsala::parse(xml).unwrap();
     let results = bergshamra_dsig::verify::verify_all_document(&context(algorithm), &doc).unwrap();
@@ -162,24 +198,10 @@ fn production_signer_binds_rsa_and_p256_inherited_namespace_targets() {
 #[test]
 fn sequential_response_signing_covers_the_inner_signature_and_honors_policy() {
     let mut sp = import_sp_metadata(r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.example"><SPSSODescriptor WantAssertionsSigned="true"><AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example/acs"/></SPSSODescriptor></EntityDescriptor>"#).unwrap();
-    let issued = SamlIssuedResponse {
-        response_id: "r1".into(),
-        assertion_id: "a1".into(),
-        xml: XML.into(),
-    };
+    let issued = issued_response();
     for (algorithm, key) in profiles() {
         // SP requirement adds Assertion even though caller requests only Response.
-        let both = sign_saml_response_with_key(
-            &issued,
-            &sp,
-            &SamlSigningPolicy {
-                sign_response: true,
-                sign_assertion: false,
-            },
-            key,
-            algorithm,
-        )
-        .unwrap();
+        let both = sign_response(&issued, &sp, key, algorithm, true, false);
         check_references(&both.xml, algorithm, &["r1", "a1"]);
         let doc = roxmltree::Document::parse(&both.xml).unwrap();
         let inner_value = doc
@@ -203,42 +225,12 @@ fn sequential_response_signing_covers_the_inner_signature_and_honors_policy() {
                 .is_valid(),
             "outer Response must cover the inner Assertion signature"
         );
-        let assertion = sign_saml_response_with_key(
-            &issued,
-            &sp,
-            &SamlSigningPolicy {
-                sign_response: false,
-                sign_assertion: false,
-            },
-            key,
-            algorithm,
-        )
-        .unwrap();
+        let assertion = sign_response(&issued, &sp, key, algorithm, false, false);
         check_references(&assertion.xml, algorithm, &["a1"]);
         sp.want_assertions_signed = false;
-        let requested_assertion = sign_saml_response_with_key(
-            &issued,
-            &sp,
-            &SamlSigningPolicy {
-                sign_response: false,
-                sign_assertion: true,
-            },
-            key,
-            algorithm,
-        )
-        .unwrap();
+        let requested_assertion = sign_response(&issued, &sp, key, algorithm, false, true);
         check_references(&requested_assertion.xml, algorithm, &["a1"]);
-        let response = sign_saml_response_with_key(
-            &issued,
-            &sp,
-            &SamlSigningPolicy {
-                sign_response: true,
-                sign_assertion: false,
-            },
-            key,
-            algorithm,
-        )
-        .unwrap();
+        let response = sign_response(&issued, &sp, key, algorithm, true, false);
         check_references(&response.xml, algorithm, &["r1"]);
         assert!(
             sign_saml_response_with_key(
@@ -260,28 +252,11 @@ fn sequential_response_signing_covers_the_inner_signature_and_honors_policy() {
 #[test]
 fn assertion_sign_encrypt_response_sign_decrypt_preserves_both_signatures() {
     let sp = import_sp_metadata(r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.example"><SPSSODescriptor WantAssertionsSigned="true"><AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example/acs"/></SPSSODescriptor></EntityDescriptor>"#).unwrap();
-    let cert: String = include_str!("data/test-sp.crt")
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect();
-    let issued = SamlIssuedResponse {
-        response_id: "r1".into(),
-        assertion_id: "a1".into(),
-        xml: XML.into(),
-    };
+    let cert = common::test_sp_cert_body();
+    let issued = issued_response();
     for (algorithm, key) in profiles() {
         // Match SSO's production order: no outer signature before encryption.
-        let assertion_signed = sign_saml_response_with_key(
-            &issued,
-            &sp,
-            &SamlSigningPolicy {
-                sign_response: false,
-                sign_assertion: true,
-            },
-            key,
-            algorithm,
-        )
-        .unwrap();
+        let assertion_signed = sign_response(&issued, &sp, key, algorithm, false, true);
         check_references(&assertion_signed.xml, algorithm, &["a1"]);
         let encrypted = encrypt_saml_response(&assertion_signed, &cert).unwrap();
         let signed = sign_saml_document_with_key(

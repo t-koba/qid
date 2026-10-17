@@ -61,6 +61,13 @@ pub(crate) fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+pub(crate) fn xml_escape_preserving_whitespace(value: &str) -> String {
+    xml_escape(value)
+        .replace('\t', "&#x9;")
+        .replace('\n', "&#xA;")
+        .replace('\r', "&#xD;")
+}
+
 pub(crate) fn parse_saml_bool_attr(tag_body: &str, attr: &str) -> QidResult<bool> {
     match attr_value(tag_body, attr).as_deref() {
         Some("true") | Some("1") => Ok(true),

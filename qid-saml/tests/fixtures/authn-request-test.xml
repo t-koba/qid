@@ -1,0 +1,6 @@
+
+<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="req-123" Version="2.0" Destination="https://idp.example.com/saml/corp/sso" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" AssertionConsumerServiceURL="https://sp.example.com/acs" ForceAuthn="true">
+  <saml:Issuer>https://sp.example.com/metadata</saml:Issuer>
+  <!--SIGNATURE-->
+  <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"/>
+</samlp:AuthnRequest>

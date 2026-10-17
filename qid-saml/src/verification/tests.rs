@@ -8,16 +8,7 @@ const EXTERNAL_EC: &str = include_str!("../../tests/fixtures/vgi-saml-signed-res
 const EC_METHOD: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
 
 fn fixture_key() -> String {
-    let doc = uppsala::parse(EXTERNAL_EC).unwrap();
-    let cert = doc
-        .descendants(doc.root())
-        .into_iter()
-        .find(|n| named(&doc, *n, DSIG_NS, "X509Certificate"))
-        .unwrap();
-    let cert = doc
-        .text_content_deep(cert)
-        .split_whitespace()
-        .collect::<String>();
+    let cert = crate::tests::external_ec_cert();
     let der = STANDARD.decode(&cert).unwrap();
     assert_eq!(
         hex::encode(Sha256::digest(&der)),
@@ -377,14 +368,9 @@ fn verify_rsa(xml: &str, kind: SignedSamlElement) -> QidResult<VerifiedSamlDocum
 
 #[test]
 fn both_signature_targets_extract_only_the_exact_assertions_direct_claims() {
-    let xml = format!(
-        r#"<samlp:Response xmlns:samlp="{PROTOCOL_NS}" xmlns:saml="{ASSERTION_NS}" ID="r"><saml:Issuer>response-issuer</saml:Issuer>
-<saml:Assertion ID="a"><saml:Issuer>assertion-issuer</saml:Issuer><!--SIGNATURE-->
-<saml:NameID>decoy</saml:NameID><saml:Subject><saml:NameID>verified-subject</saml:NameID></saml:Subject>
-<saml:AttributeStatement><saml:Attribute Name="role"><saml:AttributeValue>admin</saml:AttributeValue><saml:AttributeValue>user</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>
-<saml:Advice><saml:Attribute Name="role"><saml:AttributeValue>decoy</saml:AttributeValue></saml:Attribute></saml:Advice>
-</saml:Assertion></samlp:Response>"#
-    );
+    let xml = include_str!("../../tests/fixtures/assertion-extraction-response-test.xml")
+        .replace("{PROTOCOL_NS}", PROTOCOL_NS)
+        .replace("{ASSERTION_NS}", ASSERTION_NS);
     for (kind, id, issuer) in [
         (SignedSamlElement::Assertion, "a", "assertion-issuer"),
         (SignedSamlElement::Response, "r", "response-issuer"),

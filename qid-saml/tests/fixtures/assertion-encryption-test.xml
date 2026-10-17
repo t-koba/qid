@@ -1,0 +1,6 @@
+<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="assert-1" Version="2.0" IssueInstant="1000">
+  <saml:Issuer>https://idp.example.com/realms/corp</saml:Issuer>
+  <saml:Subject>
+    <saml:NameID>alice@example.com</saml:NameID>
+  </saml:Subject>
+</saml:Assertion>

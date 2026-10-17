@@ -58,3 +58,10 @@ realm-local trust, verified issuer/key binding, exact SOAP target shape,
 realm-local ID/email lookup, failure privacy and SP attribute allowlists. These
 are local security regressions, not independent AttributeQuery interoperability
 fixtures or full protocol-conformance tests.
+
+## Local XML input templates
+
+Files named `*-test.xml` are local XML input templates moved out of Rust test
+modules. Where present, placeholder tokens are substituted by the offline tests. These are
+synthetic regression inputs, not third-party fixtures, signed interoperability
+vectors, or live identity-provider data.

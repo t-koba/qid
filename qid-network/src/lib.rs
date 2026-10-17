@@ -20,11 +20,6 @@ use md5::{Digest, Md5};
 use qid_core::error::{QidError, QidResult};
 use sha2::Sha256;
 
-#[cfg(feature = "quic")]
-pub mod quic;
-
-pub mod capport;
-pub mod diameter;
 pub mod eap_handshake;
 pub mod radius_tls;
 pub mod server;

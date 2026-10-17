@@ -142,8 +142,8 @@ mod tests {
     #[test]
     fn dom_rejects_forbidden_sibling() {
         let xml = valid_saml_xml().replace(
-            "</ds:Signature>\n</samlp:AuthnRequest>",
-            "</ds:Signature>\n  <saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>\n</samlp:AuthnRequest>",
+            "</ds:Signature>",
+            "</ds:Signature><saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>",
         );
         let doc = SamlDocument::parse(&xml).unwrap();
         crate::tests::assert_bad_request_with_context(

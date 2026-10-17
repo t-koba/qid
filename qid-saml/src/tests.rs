@@ -877,18 +877,16 @@ fn xsw_rejects_multiple_signatures() {
 #[test]
 fn xsw_rejects_forbidden_sibling_assertion() {
     let xml = xsw_valid_signed_element().replace(
-        "</ds:Signature>\n</samlp:AuthnRequest>",
-        "</ds:Signature>\n  <saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>\n</samlp:AuthnRequest>",
+        "</ds:Signature>",
+        "</ds:Signature><saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>",
     );
     assert_xsw_rejected(&xml, "forbidden sibling Assertion must be rejected");
 }
 
 #[test]
 fn xsw_rejects_forbidden_sibling_extensions() {
-    let xml = xsw_valid_signed_element().replace(
-        "</ds:Signature>\n</samlp:AuthnRequest>",
-        "</ds:Signature>\n  <samlp:Extensions/>\n</samlp:AuthnRequest>",
-    );
+    let xml =
+        xsw_valid_signed_element().replace("</ds:Signature>", "</ds:Signature><samlp:Extensions/>");
     assert_xsw_rejected(&xml, "forbidden sibling Extensions must be rejected");
 }
 
@@ -937,8 +935,8 @@ fn xsw_namespace_prefix_trick_does_not_bypass_sibling_check() {
     // Using a different namespace prefix that resolves to the same namespace
     // must still be rejected by the forbidden-sibling check.
     let xml = xsw_valid_signed_element().replace(
-        "</ds:Signature>\n</samlp:AuthnRequest>",
-        "</ds:Signature>\n  <pfx:Assertion xmlns:pfx=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>\n</samlp:AuthnRequest>",
+        "</ds:Signature>",
+        "</ds:Signature><pfx:Assertion xmlns:pfx=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"fake\"/>",
     );
     assert_xsw_rejected(
         &xml,

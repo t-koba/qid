@@ -172,7 +172,7 @@ Inbound SCIM is an isolated provisioning registry: setting `active` to false or 
 
 ## SAML
 
-Installed when any realm enables SAML.
+Installed when any realm enables SAML. SAML AttributeQuery is not exposed pending authenticated caller validation.
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -181,7 +181,6 @@ Installed when any realm enables SAML.
 | `POST` | `/saml/:realm/slo` | SLO endpoint. |
 | `GET` | `/saml/:realm/slo/initiate` | Initiate SLO. |
 | `POST` | `/saml/:realm/artifact` | Artifact resolution. |
-| `POST` | `/saml/:realm/attribute-query` | Attribute query. |
 
 ## FedCM, federation, CIAM
 

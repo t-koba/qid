@@ -9,7 +9,6 @@ use qid_core::{
 use serde::{Deserialize, Serialize};
 
 mod artifact;
-mod attribute_query;
 mod binding;
 mod encryption;
 mod metadata;

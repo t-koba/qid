@@ -26,7 +26,6 @@ pub fn saml_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
         .route("/saml/:realm/slo", post(slo::<R>))
         .route("/saml/:realm/slo/initiate", get(slo_initiate::<R>))
         .route("/saml/:realm/artifact", post(artifact_resolve::<R>))
-        .route("/saml/:realm/attribute-query", post(attribute_query::<R>))
 }
 
 async fn metadata<R: Repository>(
@@ -782,178 +781,6 @@ async fn artifact_resolve<R: Repository>(
         .into_response()
 }
 
-async fn attribute_query<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    Path(realm): Path<String>,
-    body: axum::body::Bytes,
-) -> Response {
-    let Some(realm_config) = state.config.realms.iter().find(|r| r.id == realm) else {
-        return (StatusCode::NOT_FOUND, "realm not found").into_response();
-    };
-    if !realm_config.protocols.saml.enabled {
-        return (StatusCode::NOT_FOUND, "saml disabled").into_response();
-    }
-    let body_str = match std::str::from_utf8(&body) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_utf8",
-                    "message": "SOAP request body must be valid UTF-8"
-                })),
-            )
-                .into_response();
-        }
-    };
-    let query = match crate::attribute_query::parse_attribute_query(body_str) {
-        Ok(q) => q,
-        Err(e) => {
-            let error_xml = crate::attribute_query::attribute_query_error_soap(
-                "unknown",
-                &realm_config.issuer,
-                "urn:oasis:names:tc:SAML:2.0:status:RequestDenied",
-                &e.to_string(),
-            );
-            return (
-                StatusCode::BAD_REQUEST,
-                [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-                error_xml,
-            )
-                .into_response();
-        }
-    };
-    let sp_config = realm_config
-        .protocols
-        .saml
-        .service_providers
-        .iter()
-        .find(|sp| sp.entity_id == query.issuer)
-        .cloned();
-    let Some(sp_config) = sp_config else {
-        let error_xml = crate::attribute_query::attribute_query_error_soap(
-            &query.id,
-            &realm_config.issuer,
-            "urn:oasis:names:tc:SAML:2.0:status:RequestDenied",
-            "untrusted SAML service provider",
-        );
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-            error_xml,
-        )
-            .into_response();
-    };
-    let user = {
-        let is_email = query.name_id_format.as_deref() == Some(crate::EMAIL_NAME_ID_FORMAT);
-        if is_email {
-            match state
-                .repo
-                .get_user_by_email(&qid_core::tenant::RealmId(realm.clone()), &query.name_id)
-                .await
-            {
-                Ok(Some(u)) => u,
-                Ok(None) => {
-                    let error_xml = crate::attribute_query::attribute_query_error_soap(
-                        &query.id,
-                        &realm_config.issuer,
-                        "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal",
-                        "user not found",
-                    );
-                    return (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-                        error_xml,
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    let error_xml = crate::attribute_query::attribute_query_error_soap(
-                        &query.id,
-                        &realm_config.issuer,
-                        "urn:oasis:names:tc:SAML:2.0:status:Responder",
-                        &e.to_string(),
-                    );
-                    return (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-                        error_xml,
-                    )
-                        .into_response();
-                }
-            }
-        } else {
-            match state.repo.get_user_by_id(&query.name_id).await {
-                Ok(Some(u)) => u,
-                Ok(None) => {
-                    let error_xml = crate::attribute_query::attribute_query_error_soap(
-                        &query.id,
-                        &realm_config.issuer,
-                        "urn:oasis:names:tc:SAML:2.0:status:UnknownPrincipal",
-                        "user not found",
-                    );
-                    return (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-                        error_xml,
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    let error_xml = crate::attribute_query::attribute_query_error_soap(
-                        &query.id,
-                        &realm_config.issuer,
-                        "urn:oasis:names:tc:SAML:2.0:status:Responder",
-                        &e.to_string(),
-                    );
-                    return (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-                        error_xml,
-                    )
-                        .into_response();
-                }
-            }
-        }
-    };
-    let allowed = |name: &str| -> bool {
-        sp_config.attribute_release_policy.is_empty()
-            || sp_config
-                .attribute_release_policy
-                .contains(&name.to_string())
-    };
-    let mut attributes_xml = String::new();
-    if let Some(email) = &user.email
-        && allowed("email")
-    {
-        push_saml_attribute(&mut attributes_xml, "email", email);
-    }
-    if let Some(display_name) = &user.display_name
-        && allowed("displayName")
-    {
-        push_saml_attribute(&mut attributes_xml, "displayName", display_name);
-    }
-    let soap = crate::attribute_query::build_attribute_query_response(
-        &query.id,
-        &realm_config.issuer,
-        &attributes_xml,
-    );
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-        soap,
-    )
-        .into_response()
-}
-
-fn push_saml_attribute(xml: &mut String, name: &str, value: &str) {
-    xml.push_str(&format!(
-        r#"<saml:Attribute Name="{}"><saml:AttributeValue>{}</saml:AttributeValue></saml:Attribute>"#,
-        xml_escape(name),
-        xml_escape(value),
-    ));
-}
-
 fn artifact_error_soap(in_response_to: &str, issuer: &str, error_message: String) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -987,4 +814,81 @@ fn xml_escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use qid_core::{
+        jwt::{JwtClaims, Signer, TokenData},
+        test_helpers::test_config,
+    };
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    struct TestSigner;
+
+    impl Signer for TestSigner {
+        fn sign(&self, _claims: &JwtClaims) -> anyhow::Result<String> {
+            Ok("test-token".to_string())
+        }
+
+        fn sign_with_typ(&self, _claims: &JwtClaims, _typ: &str) -> anyhow::Result<String> {
+            Ok("test-token".to_string())
+        }
+
+        fn decode_signature_only(&self, _token: &str) -> anyhow::Result<TokenData<JwtClaims>> {
+            anyhow::bail!("test signer does not decode tokens")
+        }
+
+        fn decode_with_aud(
+            &self,
+            _token: &str,
+            _expected_audience: &str,
+        ) -> anyhow::Result<TokenData<JwtClaims>> {
+            anyhow::bail!("test signer does not decode tokens")
+        }
+
+        fn algorithm(&self) -> &'static str {
+            "HS256"
+        }
+    }
+
+    #[tokio::test]
+    async fn attribute_query_post_is_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo =
+            qid_storage::FileRepository::new(directory.path().join("store.json").to_str().unwrap())
+                .await
+                .unwrap();
+        let mut config = test_config();
+        config.realms[0].protocols.saml.enabled = true;
+        let state = Arc::new(
+            SharedState::new(
+                config,
+                Arc::new(repo),
+                Arc::new(TestSigner),
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        );
+        let app = saml_routes::<qid_storage::FileRepository>().with_state(state);
+        let private_attribute = "private-attribute-value";
+        let request = Request::builder()
+            .method("POST")
+            .uri("/saml/test/attribute-query")
+            .header(header::CONTENT_TYPE, "text/xml")
+            .body(Body::from(format!(
+                "<AttributeQuery><AttributeValue>{private_attribute}</AttributeValue></AttributeQuery>"
+            )))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains(private_attribute));
+    }
 }

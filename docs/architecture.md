@@ -73,7 +73,7 @@ flowchart LR
 | `qid-session` | Password auth, browser sessions, refresh, WebAuthn/passkeys, TOTP API, email magic link, push MFA. |
 | `qid-mfa` | MFA factor primitives. |
 | `qid-webauthn` | WebAuthn ceremony helpers and tests. |
-| `qid-saml` | SAML metadata, SSO/SLO, artifact, attribute query, XMLDSig, encryption. |
+| `qid-saml` | SAML metadata, SSO/SLO, artifact, XMLDSig, encryption. AttributeQuery is not exposed pending authenticated caller validation. |
 | `qid-scim` | SCIM 2.0 server surface and outbound reconcile helpers. |
 | `qid-directory` | LDAP/AD/HR connectors, directory routes, sync logic, filter handling. |
 | `qid-federation` | Inbound OIDC/SAML/social broker, OpenID Federation discovery and trust-chain validation. |

@@ -426,3 +426,96 @@ fn fallback_bundle_uses_realm_default_decision() {
         "unknown default_decision values must fail loudly"
     );
 }
+
+#[tokio::test]
+async fn rebac_tenant_tuples_drive_pep_decisions_without_cross_tenant_leak() {
+    let config = rebac_test_config();
+    let path = std::env::temp_dir().join(format!(
+        "qid-pep-rebac-isolation-{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
+        .await
+        .expect("file repository");
+    repo.migrate().await.expect("file repository migration");
+
+    // Tuple as stored by the tenant-scoped admin API (`{tenant}::{namespace}`).
+    qid_iga::write_tuples(
+        &repo,
+        &[qid_core::models::RelationshipTuple {
+            namespace: "tenant-a::document".to_string(),
+            object_id: "doc-1".to_string(),
+            relation: "viewer".to_string(),
+            subject_namespace: "tenant-a::user".to_string(),
+            subject_id: "alice".to_string(),
+            subject_relation: String::new(),
+            created_at_epoch_seconds: qid_core::util::now_seconds(),
+        }],
+    )
+    .await
+    .expect("relationship tuple write");
+
+    // Same unscoped ReBAC allow rule for both realms; only the tenant scope differs.
+    let compiled = serde_json::json!({
+        "version": "1",
+        "default_decision": "deny",
+        "rules": [{
+            "name": "rebac-viewer",
+            "type": "allow",
+            "action": "*",
+            "expression": {
+                "namespace": "document",
+                "object_id": "doc-1",
+                "relation": "viewer",
+                "subject_namespace": "user"
+            }
+        }]
+    });
+    for (realm_id, id) in [("realm-a", "bundle-a"), ("realm-b", "bundle-b")] {
+        repo.create_policy_bundle(&qid_core::models::PolicyBundle {
+            id: id.to_string(),
+            realm_id: realm_id.to_string(),
+            name: "rebac-bundle".to_string(),
+            source_hash: "sha256:test".to_string(),
+            compiled_json: compiled.clone(),
+            version: 1,
+            active: true,
+        })
+        .await
+        .expect("policy bundle stored");
+    }
+
+    let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
+        "test",
+        b"test-secret-for-rebac-tenant-isolation",
+    ));
+    let state = SharedState::new(config, Arc::new(repo), signer, serde_json::json!({}))
+        .expect("shared state");
+
+    let ctx = PolicyContext {
+        subject_id: Some("alice".to_string()),
+        ..PolicyContext::default()
+    };
+
+    // Cold path loads from the DB; the second load for the same realm hits the cache.
+    let engine = load_policy_engine(&state, "realm-a")
+        .await
+        .expect("realm-a engine");
+    assert_eq!(engine.decide(&ctx).await.decision, Decision::Allow);
+    let engine = load_policy_engine(&state, "realm-a")
+        .await
+        .expect("realm-a cached engine");
+    assert_eq!(engine.decide(&ctx).await.decision, Decision::Allow);
+
+    // The same tuple must not grant access in the other tenant's scope.
+    let engine = load_policy_engine(&state, "realm-b")
+        .await
+        .expect("realm-b engine");
+    assert_eq!(engine.decide(&ctx).await.decision, Decision::Deny);
+    let engine = load_policy_engine(&state, "realm-b")
+        .await
+        .expect("realm-b cached engine");
+    assert_eq!(engine.decide(&ctx).await.decision, Decision::Deny);
+
+    std::fs::remove_file(path).ok();
+}

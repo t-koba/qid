@@ -7,7 +7,7 @@ use axum::{
     routing::get,
 };
 use clap::Parser;
-use qid_core::config::{DeploymentProfile, QidConfig, StaticClientConfig};
+use qid_core::config::{DeploymentProfile, QidConfig, StaticClientConfig, effective_hsts_config};
 use qid_core::jwt::Signer;
 use qid_core::models::{Client, PolicyBundle};
 use qid_core::state::SharedState;
@@ -309,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
             qid_http::zero_rtt_rejection_layer,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            config.server.hsts.clone(),
+            effective_hsts_config(&config.server.hsts, &config.server.public_base_url),
             qid_http::hsts_layer,
         ))
         .layer(axum::middleware::from_fn(

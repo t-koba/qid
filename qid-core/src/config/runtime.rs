@@ -373,6 +373,25 @@ fn default_hsts_max_age_seconds() -> u64 {
     31_536_000
 }
 
+/// Derive the effective HSTS policy from the deployment public scheme.
+///
+/// Transport trust comes from `server.public_base_url` resolved at wiring
+/// (per RFC 6797 s7.2); behind a TLS proxy the configured URL declares the
+/// external scheme. Returns a disabled clone unless the scheme is `https`.
+pub fn effective_hsts_config(config: &HstsConfig, public_base_url: &str) -> HstsConfig {
+    let https = url::Url::parse(public_base_url)
+        .map(|url| url.scheme() == "https")
+        .unwrap_or(false);
+    if https {
+        config.clone()
+    } else {
+        HstsConfig {
+            enabled: false,
+            ..config.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HttpMessageSignaturesConfig {

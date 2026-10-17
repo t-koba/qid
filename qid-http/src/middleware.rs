@@ -249,18 +249,17 @@ pub async fn csp_headers_layer(req: Request, next: Next) -> Response {
     response
 }
 
-/// Set `Strict-Transport-Security` headers on secure responses.
+/// Set `Strict-Transport-Security` headers on secure deployments.
 ///
-/// Per RFC 6797 section 7.2, HSTS must not be sent over insecure transport,
-/// so the header is emitted only when the request URI scheme is `https`.
-/// Wire with `axum::middleware::from_fn_with_state(config, ..)` so the
-/// deployment `server.hsts` policy is honoured. Defaults to a one-year
-/// policy with `includeSubDomains`. `preload` stays opt-in because it
-/// requires operator submission to browser preload lists.
+/// Per RFC 6797 s7.2 HSTS must not be sent over insecure transport; transport
+/// trust comes from the deployment public scheme resolved at wiring, so behind
+/// a TLS proxy `server.public_base_url` declares the external scheme.
+/// Wire with `axum::middleware::from_fn_with_state(effective_config, ..)`.
+/// Defaults to a one-year policy with `includeSubDomains`. `preload` stays
+/// opt-in because it requires operator submission to browser preload lists.
 pub async fn hsts_layer(State(config): State<HstsConfig>, req: Request, next: Next) -> Response {
-    let is_https = req.uri().scheme_str() == Some("https");
     let mut response = next.run(req).await;
-    if !config.enabled || !is_https {
+    if !config.enabled {
         return response;
     }
     let mut value = format!("max-age={}", config.max_age_seconds);
@@ -779,7 +778,7 @@ mod tests {
     #[tokio::test]
     async fn hsts_layer_defaults_without_preload() {
         use axum::http::StatusCode;
-        let res = hsts_get(HstsConfig::default(), "https://id.example.com/health").await;
+        let res = hsts_get(HstsConfig::default(), "/health").await;
         assert_eq!(res.status(), StatusCode::OK);
         let hsts = hsts_value(&res).to_string();
         assert!(
@@ -803,7 +802,7 @@ mod tests {
             enabled: false,
             ..HstsConfig::default()
         };
-        let res = hsts_get(config, "https://id.example.com/health").await;
+        let res = hsts_get(config, "/health").await;
         assert_eq!(res.status(), StatusCode::OK);
         assert!(
             res.headers().get("strict-transport-security").is_none(),
@@ -819,7 +818,7 @@ mod tests {
             include_subdomains: false,
             ..HstsConfig::default()
         };
-        let res = hsts_get(config, "https://id.example.com/health").await;
+        let res = hsts_get(config, "/health").await;
         assert_eq!(res.status(), StatusCode::OK);
         let hsts = hsts_value(&res).to_string();
         assert!(
@@ -839,7 +838,7 @@ mod tests {
             preload: true,
             ..HstsConfig::default()
         };
-        let res = hsts_get(config, "https://id.example.com/health").await;
+        let res = hsts_get(config, "/health").await;
         assert_eq!(res.status(), StatusCode::OK);
         let hsts = hsts_value(&res).to_string();
         assert!(
@@ -848,15 +847,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn hsts_layer_skipped_over_plaintext_http() {
-        use axum::http::StatusCode;
-        let res = hsts_get(HstsConfig::default(), "http://id.example.com/health").await;
-        assert_eq!(res.status(), StatusCode::OK);
-        assert!(
-            res.headers().get("strict-transport-security").is_none(),
-            "HSTS must not be sent over plaintext http"
-        );
+    #[test]
+    fn effective_hsts_config_follows_public_scheme() {
+        use qid_core::config::effective_hsts_config;
+        assert!(effective_hsts_config(&HstsConfig::default(), "https://id.example.com").enabled);
+        assert!(!effective_hsts_config(&HstsConfig::default(), "http://id.example.com").enabled);
     }
 
     #[tokio::test]

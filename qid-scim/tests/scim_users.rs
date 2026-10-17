@@ -10,8 +10,8 @@ use http_body_util::BodyExt;
 use qid_core::models::{AccessToken, Session, User};
 use qid_core::{state::SharedState, test_helpers};
 use qid_crypto::LocalSigner;
-use qid_storage::FileRepository;
 use qid_storage::prelude::*;
+use qid_storage::{FileRepository, SqlRepository};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -26,14 +26,28 @@ async fn setup_with_store() -> (Router, Arc<FileRepository>, std::path::PathBuf)
     let path = dir.join("store.json");
     let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
     repo.migrate().await.unwrap();
+    (test_app(repo.clone()), repo, path)
+}
+
+fn test_app<R: Repository>(repo: Arc<R>) -> Router {
     let mut config = test_helpers::test_config();
     config.realms[0].id = "corp".to_string();
     config.realms[0].protocols.scim.cursor_secret =
         Some("0123456789abcdef0123456789abcdef".to_string());
+    config.realms[0].protocols.scim.event_callback_allowed_hosts =
+        vec!["events.example.com".into()];
+    let mut other = config.realms[0].clone();
+    other.id = "other".into();
+    config.realms.push(other);
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let state =
         Arc::new(SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap());
-    (qid_scim::scim_routes().with_state(state), repo, path)
+    qid_scim::scim_routes().with_state(state)
+}
+
+async fn response_json(response: axum::response::Response) -> serde_json::Value {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
 }
 
 #[tokio::test]
@@ -46,13 +60,7 @@ async fn scim_discovery_advertises_enterprise_user_extension() {
         .unwrap();
     let schemas_response = app.clone().oneshot(schemas_request).await.unwrap();
     assert_eq!(schemas_response.status(), StatusCode::OK);
-    let bytes = schemas_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let schemas: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let schemas = response_json(schemas_response).await;
     assert_eq!(schemas["totalResults"], 3);
     assert!(
         schemas["Resources"]
@@ -76,13 +84,7 @@ async fn scim_discovery_advertises_enterprise_user_extension() {
         .unwrap();
     let resource_types_response = app.oneshot(resource_types_request).await.unwrap();
     assert_eq!(resource_types_response.status(), StatusCode::OK);
-    let bytes = resource_types_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let resource_types: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let resource_types = response_json(resource_types_response).await;
     let user = resource_types["Resources"]
         .as_array()
         .unwrap()
@@ -109,13 +111,7 @@ async fn scim_user_can_be_created_read_patched_and_deleted() {
         .unwrap();
     let create_response = app.clone().oneshot(create_request).await.unwrap();
     assert_eq!(create_response.status(), StatusCode::CREATED);
-    let bytes = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let created = response_json(create_response).await;
     let id = created["id"].as_str().unwrap();
     let created_version = created["meta"]["version"].as_str().unwrap().to_string();
     assert!(
@@ -149,13 +145,7 @@ async fn scim_user_can_be_created_read_patched_and_deleted() {
         .unwrap();
     let patch_response = app.clone().oneshot(patch_request).await.unwrap();
     assert_eq!(patch_response.status(), StatusCode::OK);
-    let bytes = patch_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let patched: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let patched = response_json(patch_response).await;
     assert_eq!(patched["userName"], "alice2@example.com");
     assert_eq!(patched["active"], false);
     assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["department"], "Platform");
@@ -194,13 +184,7 @@ async fn scim_user_can_be_created_read_patched_and_deleted() {
         .unwrap();
     let soft_deleted_response = app.clone().oneshot(soft_deleted_request).await.unwrap();
     assert_eq!(soft_deleted_response.status(), StatusCode::OK);
-    let bytes = soft_deleted_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let soft_deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let soft_deleted = response_json(soft_deleted_response).await;
     assert_eq!(soft_deleted["active"], false);
     let soft_deleted_version = soft_deleted["meta"]["version"].as_str().unwrap();
 
@@ -247,13 +231,7 @@ async fn scim_users_support_external_id_filter_and_pagination() {
         .unwrap();
     let filter_response = app.clone().oneshot(filter_request).await.unwrap();
     assert_eq!(filter_response.status(), StatusCode::OK);
-    let bytes = filter_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let filtered: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let filtered = response_json(filter_response).await;
     assert_eq!(filtered["totalResults"], 1);
     assert_eq!(filtered["Resources"][0]["externalId"], "hr-1");
 
@@ -264,13 +242,7 @@ async fn scim_users_support_external_id_filter_and_pagination() {
         .unwrap();
     let user_name_response = app.clone().oneshot(user_name_request).await.unwrap();
     assert_eq!(user_name_response.status(), StatusCode::OK);
-    let bytes = user_name_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let user_name_filtered: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let user_name_filtered = response_json(user_name_response).await;
     assert_eq!(user_name_filtered["totalResults"], 1);
     assert_eq!(
         user_name_filtered["Resources"][0]["userName"],
@@ -284,13 +256,7 @@ async fn scim_users_support_external_id_filter_and_pagination() {
         .unwrap();
     let active_response = app.clone().oneshot(active_request).await.unwrap();
     assert_eq!(active_response.status(), StatusCode::OK);
-    let bytes = active_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let active_filtered: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let active_filtered = response_json(active_response).await;
     assert_eq!(active_filtered["totalResults"], 1);
     assert_eq!(active_filtered["Resources"][0]["active"], false);
     assert_eq!(active_filtered["Resources"][0]["externalId"], "hr-2");
@@ -302,13 +268,7 @@ async fn scim_users_support_external_id_filter_and_pagination() {
         .unwrap();
     let enterprise_response = app.clone().oneshot(enterprise_request).await.unwrap();
     assert_eq!(enterprise_response.status(), StatusCode::OK);
-    let bytes = enterprise_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let enterprise_filtered: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let enterprise_filtered = response_json(enterprise_response).await;
     assert_eq!(enterprise_filtered["totalResults"], 1);
     assert_eq!(enterprise_filtered["Resources"][0]["externalId"], "hr-1");
 
@@ -319,13 +279,7 @@ async fn scim_users_support_external_id_filter_and_pagination() {
         .unwrap();
     let short_enterprise_response = app.clone().oneshot(short_enterprise_request).await.unwrap();
     assert_eq!(short_enterprise_response.status(), StatusCode::OK);
-    let bytes = short_enterprise_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let short_enterprise_filtered: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let short_enterprise_filtered = response_json(short_enterprise_response).await;
     assert_eq!(short_enterprise_filtered["totalResults"], 2);
 
     let page_request = Request::builder()
@@ -335,13 +289,7 @@ async fn scim_users_support_external_id_filter_and_pagination() {
         .unwrap();
     let page_response = app.clone().oneshot(page_request).await.unwrap();
     assert_eq!(page_response.status(), StatusCode::OK);
-    let bytes = page_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let page = response_json(page_response).await;
     assert_eq!(page["totalResults"], 3);
     assert_eq!(page["startIndex"], 2);
     assert_eq!(page["itemsPerPage"], 1);
@@ -369,13 +317,7 @@ async fn scim_group_can_be_created_patched_filtered_and_deleted() {
         .unwrap();
     let create_response = app.clone().oneshot(create_request).await.unwrap();
     assert_eq!(create_response.status(), StatusCode::CREATED);
-    let bytes = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let created = response_json(create_response).await;
     let id = created["id"].as_str().unwrap();
     let created_version = created["meta"]["version"].as_str().unwrap().to_string();
 
@@ -390,13 +332,7 @@ async fn scim_group_can_be_created_patched_filtered_and_deleted() {
         .unwrap();
     let patch_response = app.clone().oneshot(patch_request).await.unwrap();
     assert_eq!(patch_response.status(), StatusCode::OK);
-    let bytes = patch_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let patched: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let patched = response_json(patch_response).await;
     assert_eq!(patched["displayName"], "platform");
     assert_eq!(patched["members"][0]["value"], "user-2");
     assert_ne!(patched["meta"]["version"], created_version);
@@ -408,13 +344,7 @@ async fn scim_group_can_be_created_patched_filtered_and_deleted() {
         .unwrap();
     let list_response = app.clone().oneshot(list_request).await.unwrap();
     assert_eq!(list_response.status(), StatusCode::OK);
-    let bytes = list_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let listed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let listed = response_json(list_response).await;
     assert_eq!(listed["totalResults"], 1);
 
     let delete_request = Request::builder()
@@ -439,13 +369,7 @@ async fn scim_group_patch_add_members_appends_instead_of_replacing() {
         .unwrap();
     let create_response = app.clone().oneshot(create_request).await.unwrap();
     assert_eq!(create_response.status(), StatusCode::CREATED);
-    let bytes = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let created = response_json(create_response).await;
     let id = created["id"].as_str().unwrap();
     let version = created["meta"]["version"].as_str().unwrap();
 
@@ -461,13 +385,7 @@ async fn scim_group_patch_add_members_appends_instead_of_replacing() {
         .unwrap();
     let patch_response = app.clone().oneshot(patch_request).await.unwrap();
     assert_eq!(patch_response.status(), StatusCode::OK);
-    let bytes = patch_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let patched: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let patched = response_json(patch_response).await;
     let members: Vec<&str> = patched["members"]
         .as_array()
         .unwrap()
@@ -487,13 +405,7 @@ async fn scim_group_patch_add_members_appends_instead_of_replacing() {
         .unwrap();
     let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
     assert_eq!(bulk_response.status(), StatusCode::OK);
-    let bytes = bulk_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let bulk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let bulk = response_json(bulk_response).await;
     assert_eq!(bulk["Operations"][0]["status"], "200");
     let members: Vec<&str> = bulk["Operations"][0]["response"]["members"]
         .as_array()
@@ -517,13 +429,7 @@ async fn scim_bulk_dispatches_create_and_delete_operations() {
         .unwrap();
     let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
     assert_eq!(bulk_response.status(), StatusCode::OK);
-    let bytes = bulk_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let bulk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let bulk = response_json(bulk_response).await;
     assert_eq!(bulk["Operations"][0]["status"], "201");
     assert_eq!(bulk["Operations"][1]["status"], "201");
 
@@ -539,13 +445,7 @@ async fn scim_bulk_dispatches_create_and_delete_operations() {
         .unwrap();
     let delete_response = app.oneshot(delete_request).await.unwrap();
     assert_eq!(delete_response.status(), StatusCode::OK);
-    let bytes = delete_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let deleted = response_json(delete_response).await;
     assert_eq!(deleted["Operations"][0]["status"], "204");
 }
 
@@ -562,13 +462,7 @@ async fn scim_bulk_stops_after_server_error_at_threshold() {
         .unwrap();
     let create_response = app.clone().oneshot(create_request).await.unwrap();
     assert_eq!(create_response.status(), StatusCode::CREATED);
-    let bytes = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let created = response_json(create_response).await;
     let id = created["id"].as_str().unwrap().to_string();
 
     // Inject a repository failure: replace the store file with a directory so
@@ -587,13 +481,7 @@ async fn scim_bulk_stops_after_server_error_at_threshold() {
         .unwrap();
     let bulk_response = app.oneshot(bulk_request).await.unwrap();
     assert_eq!(bulk_response.status(), StatusCode::OK);
-    let bytes = bulk_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let bulk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let bulk = response_json(bulk_response).await;
     assert_eq!(bulk["Operations"][0]["status"], "500");
     // The server failure counts toward failOnErrors, so the later mutation
     // must not run.
@@ -617,13 +505,7 @@ async fn scim_lifecycle_mutations_do_not_touch_login_records() {
         .unwrap();
     let create_response = app.clone().oneshot(create_request).await.unwrap();
     assert_eq!(create_response.status(), StatusCode::CREATED);
-    let bytes = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let created = response_json(create_response).await;
     let scim_id = created["id"].as_str().unwrap().to_string();
 
     repo.create_user(&User {
@@ -723,13 +605,7 @@ async fn scim_bulk_supports_patch_soft_delete_and_unlimited_failures() {
         .unwrap();
     let create_response = app.clone().oneshot(create_request).await.unwrap();
     assert_eq!(create_response.status(), StatusCode::OK);
-    let bytes = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let created = response_json(create_response).await;
     let user_location = created["Operations"][0]["location"].as_str().unwrap();
     let group_location = created["Operations"][1]["location"].as_str().unwrap();
     let user_id = user_location.trim_start_matches("/scim/v2/Users/");
@@ -745,13 +621,7 @@ async fn scim_bulk_supports_patch_soft_delete_and_unlimited_failures() {
         .unwrap();
     let patch_response = app.clone().oneshot(patch_request).await.unwrap();
     assert_eq!(patch_response.status(), StatusCode::OK);
-    let bytes = patch_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let patched: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let patched = response_json(patch_response).await;
     assert_eq!(patched["Operations"].as_array().unwrap().len(), 4);
     assert_eq!(patched["Operations"][0]["status"], "200");
     assert_eq!(
@@ -784,13 +654,7 @@ async fn scim_bulk_supports_patch_soft_delete_and_unlimited_failures() {
         .unwrap();
     let get_soft_deleted_response = app.clone().oneshot(get_soft_deleted_request).await.unwrap();
     assert_eq!(get_soft_deleted_response.status(), StatusCode::OK);
-    let bytes = get_soft_deleted_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let soft_deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let soft_deleted = response_json(get_soft_deleted_response).await;
     assert_eq!(soft_deleted["active"], false);
 
     let hard_delete_request = Request::builder()
@@ -811,4 +675,119 @@ async fn scim_bulk_supports_patch_soft_delete_and_unlimited_failures() {
         .unwrap();
     let get_hard_deleted_response = app.oneshot(get_hard_deleted_request).await.unwrap();
     assert_eq!(get_hard_deleted_response.status(), StatusCode::NOT_FOUND);
+}
+
+async fn realm_request(
+    app: &Router,
+    method: Method,
+    path: &str,
+    realm: &str,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(format!("/scim/v2/{path}"))
+                .header("Content-Type", "application/json")
+                // This is the context installed by the authenticated SCIM boundary.
+                .extension(qid_scim::ScimRequestContext {
+                    realm_id: realm.into(),
+                })
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn stored_resource<R: Repository>(repo: &R, resource: &str) -> serde_json::Value {
+    if resource == "Devices" {
+        serde_json::to_value(repo.get_scim_device("shared-id").await.unwrap().unwrap()).unwrap()
+    } else {
+        serde_json::to_value(
+            repo.get_scim_event_subscription("shared-id")
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+    }
+}
+
+async fn assert_realm_upsert_contract<R: Repository>(repo: Arc<R>) {
+    for realm in ["corp", "other"] {
+        repo.create_realm(
+            &"tenant".into(),
+            &realm.into(),
+            &format!("https://{realm}.example.com"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let app = test_app(repo.clone());
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/upserts.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let resource = case["resource"].as_str().unwrap();
+        let initial = case["initial"].clone();
+        let mut changed = case["changed"].clone();
+        let response = realm_request(&app, Method::POST, resource, "corp", initial).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let incumbent = stored_resource(repo.as_ref(), resource).await;
+        assert_eq!(incumbent["realm_id"], "corp");
+        // A body claiming the incumbent realm must not override the other context.
+        changed["realm_id"] = "corp".into();
+        let response = realm_request(&app, Method::POST, resource, "other", changed.clone()).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            response_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("conflict:")
+        );
+        assert_eq!(stored_resource(repo.as_ref(), resource).await, incumbent);
+        let path = format!("{resource}/shared-id");
+        let response =
+            realm_request(&app, Method::GET, &path, "other", serde_json::Value::Null).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response =
+            realm_request(&app, Method::GET, &path, "corp", serde_json::Value::Null).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // Same-realm POST remains an intentional update, even with a spoofed body realm.
+        changed["realm_id"] = "other".into();
+        let response = realm_request(&app, Method::POST, resource, "corp", changed.clone()).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let updated = stored_resource(repo.as_ref(), resource).await;
+        assert_ne!(updated, incumbent);
+        changed["realm_id"] = "corp".into();
+        for (key, value) in changed.as_object().unwrap() {
+            if key != "created_at" {
+                assert_eq!(&updated[key], value, "{resource}.{key}");
+            }
+        }
+        // An identical same-realm upsert is still successful (not a no-op conflict).
+        let response = realm_request(&app, Method::POST, resource, "corp", changed).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+}
+
+#[tokio::test]
+async fn file_scim_upserts_preserve_realm_ownership() {
+    let (_, repo, path) = setup_with_store().await;
+    assert_realm_upsert_contract(repo).await;
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn sql_scim_upserts_preserve_realm_ownership() {
+    let path = std::env::temp_dir().join(format!("qid-scim-{}.db", ulid::Ulid::new()));
+    let repo = Arc::new(
+        SqlRepository::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap(),
+    );
+    repo.migrate().await.unwrap();
+    assert_realm_upsert_contract(repo).await;
 }

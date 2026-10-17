@@ -187,61 +187,11 @@ async fn test_app_catalog_realm_migration_backfills_single_realm_tenant() {
     let pool = sqlx::SqlitePool::connect(&url)
         .await
         .expect("connect failed");
-    sqlx::query(
-        "CREATE TABLE realms (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL,
-            issuer TEXT NOT NULL UNIQUE,
-            display_name TEXT,
-            config_json TEXT NOT NULL DEFAULT '{}',
-            created_at INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL DEFAULT 0
-        )",
-    )
-    .execute(&pool)
-    .await
-    .expect("create realms table failed");
-    sqlx::query(
-        "CREATE TABLE app_catalog_entries (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            oidc_client_id TEXT,
-            saml_entity_id TEXT,
-            scim_enabled INTEGER NOT NULL,
-            marketplace_connector_id TEXT
-        )",
-    )
-    .execute(&pool)
-    .await
-    .expect("create old app catalog table failed");
+    sqlx::raw_sql(include_str!("fixtures/legacy_app_catalog.sql"))
+        .execute(&pool)
+        .await
+        .expect("load legacy app catalog fixture failed");
 
-    for (id, tenant, issuer) in [
-        (
-            "realm-single",
-            "tenant-single",
-            "https://single.example.com",
-        ),
-        (
-            "realm-multi-a",
-            "tenant-multi",
-            "https://multi-a.example.com",
-        ),
-        (
-            "realm-multi-b",
-            "tenant-multi",
-            "https://multi-b.example.com",
-        ),
-    ] {
-        sqlx::query("INSERT INTO realms (id, tenant_id, issuer) VALUES (?, ?, ?)")
-            .bind(id)
-            .bind(tenant)
-            .bind(issuer)
-            .execute(&pool)
-            .await
-            .expect("insert realm failed");
-    }
     for (id, tenant) in [
         ("app-single", "tenant-single"),
         ("app-multi", "tenant-multi"),

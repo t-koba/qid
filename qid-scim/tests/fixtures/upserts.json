@@ -1,0 +1,26 @@
+[
+  {
+    "resource": "Devices",
+    "initial": {
+      "id": "shared-id", "realm_id": "other", "display_name": "Original device",
+      "manufacturer": "Original maker", "model": "Original model", "os": "Original OS",
+      "os_version": "1", "last_seen": 100
+    },
+    "changed": {
+      "id": "shared-id", "realm_id": "corp", "display_name": "Changed device",
+      "manufacturer": "Changed maker", "model": "Changed model", "os": "Changed OS",
+      "os_version": "2", "last_seen": 200
+    }
+  },
+  {
+    "resource": "EventSubscriptions",
+    "initial": {
+      "id": "shared-id", "realm_id": "other", "callback_url": "https://events.example.com/original",
+      "event_types": ["user.created"], "enabled": true, "created_at": 0
+    },
+    "changed": {
+      "id": "shared-id", "realm_id": "corp", "callback_url": "https://events.example.com/changed",
+      "event_types": ["user.deleted"], "enabled": false, "created_at": 1
+    }
+  }
+]

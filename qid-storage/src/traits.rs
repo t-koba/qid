@@ -352,10 +352,14 @@ pub trait ScimRepository: Send + Sync + 'static {
     async fn get_scim_group(&self, id: &str) -> QidResult<Option<ScimGroup>>;
     async fn update_scim_group(&self, group: &ScimGroup) -> QidResult<()>;
     async fn delete_scim_group(&self, id: &str) -> QidResult<()>;
+    /// Insert or update within the owning realm. A globally colliding ID from another
+    /// realm must atomically return `QidError::Conflict` without changing the record.
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()>;
     async fn get_scim_device(&self, id: &str) -> QidResult<Option<ScimDeviceRecord>>;
     async fn list_scim_devices(&self, realm_id: &RealmId) -> QidResult<Vec<ScimDeviceRecord>>;
     async fn delete_scim_device(&self, id: &str) -> QidResult<bool>;
+    /// Insert or update within the owning realm, with the same atomic ID ownership
+    /// contract as `upsert_scim_device`.
     async fn upsert_scim_event_subscription(
         &self,
         subscription: &ScimEventSubscriptionRecord,

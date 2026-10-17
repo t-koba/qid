@@ -212,9 +212,9 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()> {
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO scim_devices (id, realm_id, display_name, manufacturer, model, os, os_version, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET realm_id = excluded.realm_id, display_name = excluded.display_name, manufacturer = excluded.manufacturer, model = excluded.model, os = excluded.os, os_version = excluded.os_version, last_seen = excluded.last_seen",
+             ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, manufacturer = excluded.manufacturer, model = excluded.model, os = excluded.os, os_version = excluded.os_version, last_seen = excluded.last_seen WHERE scim_devices.realm_id = excluded.realm_id",
         )
         .bind(&device.id)
         .bind(&device.realm_id)
@@ -227,6 +227,11 @@ impl ScimRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "SCIM device ID belongs to another realm".to_string(),
+            });
+        }
         Ok(())
     }
 
@@ -262,9 +267,9 @@ impl ScimRepository for SqlRepository {
         &self,
         subscription: &ScimEventSubscriptionRecord,
     ) -> QidResult<()> {
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO scim_event_subscriptions (id, realm_id, callback_url, event_types_json, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET realm_id = excluded.realm_id, callback_url = excluded.callback_url, event_types_json = excluded.event_types_json, enabled = excluded.enabled",
+             ON CONFLICT(id) DO UPDATE SET callback_url = excluded.callback_url, event_types_json = excluded.event_types_json, enabled = excluded.enabled WHERE scim_event_subscriptions.realm_id = excluded.realm_id",
         )
         .bind(&subscription.id)
         .bind(&subscription.realm_id)
@@ -275,6 +280,11 @@ impl ScimRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "SCIM event subscription ID belongs to another realm".to_string(),
+            });
+        }
         Ok(())
     }
 

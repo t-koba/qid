@@ -604,3 +604,116 @@ async fn credential_issuance_rejects_overflowing_lifetime() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn credential_concurrent_issuances_use_distinct_revocable_identifiers() {
+    use std::collections::HashSet;
+
+    const PARALLEL_ISSUANCES: usize = 8;
+
+    let (app, state, user) = setup().await;
+    let access_token = issue_identity_access_token(&state, &user).await;
+
+    // Same subject issued back-to-back (same second) with distinct holders and
+    // alternating lifetimes, so a time/claim-derived identifier would collide.
+    let mut handles = Vec::with_capacity(PARALLEL_ISSUANCES);
+    for index in 0..PARALLEL_ISSUANCES {
+        let app = app.clone();
+        let access_token = access_token.clone();
+        let holder = generate_es256(format!("holder-concurrent-{index}")).unwrap();
+        let lifetime_seconds = if index % 2 == 0 { 900 } else { 3600 };
+        let nonce = format!("nonce-concurrent-{index}");
+        handles.push(tokio::spawn(async move {
+            let proof = credential_proof(&holder.private_pem, &holder.public_jwk, &nonce);
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/vc/v1/credential")
+                .header("authorization", format!("Bearer {access_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "credential_configuration_id": "qid_identity_sd_jwt",
+                        "claims": ["sub", "email"],
+                        "selectively_disclosed_claims": [],
+                        "lifetime_seconds": lifetime_seconds,
+                        "holder_jwk": holder.public_jwk,
+                        "proof": { "jwt": proof },
+                        "nonce": nonce
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            body["credential"].as_str().unwrap().to_string()
+        }));
+    }
+
+    let mut credential_jwts = Vec::with_capacity(PARALLEL_ISSUANCES);
+    for handle in handles {
+        credential_jwts.push(handle.await.unwrap());
+    }
+
+    let mut credential_ids = Vec::with_capacity(PARALLEL_ISSUANCES);
+    for credential_jwt in &credential_jwts {
+        let token_data = state.signer.decode_signature_only(credential_jwt).unwrap();
+        credential_ids.push(
+            token_data.claims.extra["vc"]["status"]["credential_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        credential_ids.iter().collect::<HashSet<_>>().len(),
+        PARALLEL_ISSUANCES,
+        "concurrent issuances must not share an identifier"
+    );
+    for credential_id in &credential_ids {
+        let stored = state
+            .repo
+            .get_vc_credential_status(credential_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stored.revoked);
+    }
+
+    // Revoking one concurrent issuance leaves the others usable.
+    let first_id = &credential_ids[0];
+    let revoke_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/vc/v1/status/{first_id}/revoke"))
+                .header("authorization", format!("Bearer {access_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"reason":"key_compromised"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoke_response.status(), StatusCode::OK);
+    let revoked = state
+        .repo
+        .get_vc_credential_status(first_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(revoked.revoked);
+    for credential_id in credential_ids.iter().skip(1) {
+        let stored = state
+            .repo
+            .get_vc_credential_status(credential_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !stored.revoked,
+            "revocation must not alias across issuances"
+        );
+    }
+}

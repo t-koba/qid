@@ -3,7 +3,6 @@
 
 pub mod aead;
 pub mod cose;
-pub mod ech;
 pub mod hotp;
 #[cfg(feature = "hpke-rfc9180")]
 pub mod hpke;

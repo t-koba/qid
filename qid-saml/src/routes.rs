@@ -425,19 +425,20 @@ async fn sso<R: Repository>(
         };
         let uses_artifact = req.protocol_binding.as_deref() == Some(ARTIFACT_BINDING);
         if uses_artifact {
-            let artifact = match crate::artifact::store_artifact(&issued.xml, 300) {
-                Ok(artifact) => artifact,
-                Err(err) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": "saml_artifact_store_failed",
-                            "message": err.message(),
-                        })),
-                    )
-                        .into_response();
-                }
-            };
+            let artifact =
+                match crate::artifact::store_artifact(&issued.xml, 300, &realm, &sp.entity_id) {
+                    Ok(artifact) => artifact,
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({
+                                "error": "saml_artifact_store_failed",
+                                "message": err.message(),
+                            })),
+                        )
+                            .into_response();
+                    }
+                };
             let redirect = format!(
                 "{}?SAMLart={}&RelayState={}",
                 sp.acs_url,
@@ -747,31 +748,46 @@ async fn artifact_resolve<R: Repository>(
                 .into_response();
         }
     };
-    let resolve = match crate::artifact::parse_artifact_resolve(body_str) {
-        Ok(r) => r,
-        Err(e) => {
+    // Destination (when present) must match this external endpoint URL, never Host.
+    let expected_destination = format!(
+        "{}/saml/{}/artifact",
+        state.plan.public_base_url.trim_end_matches('/'),
+        urlencoding::encode(&realm)
+    );
+    let (resolve, sp) = match crate::artifact::authenticate_artifact_resolve(
+        body_str,
+        &realm_config.protocols.saml.service_providers,
+        &expected_destination,
+    ) {
+        Ok(request) => request,
+        Err(_) => {
+            // Never reflect unverified IDs or return stored data on auth failure.
             return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_artifact_resolve",
-                    "message": e.to_string(),
-                })),
-            )
-                .into_response();
-        }
-    };
-    let saml_response = match crate::artifact::resolve_artifact(&resolve.artifact) {
-        Ok(response) => response,
-        Err(e) => {
-            let error_xml = artifact_error_soap(&resolve.id, &realm_config.issuer, e.to_string());
-            return (
-                StatusCode::OK,
+                StatusCode::UNAUTHORIZED,
                 [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-                error_xml,
+                artifact_error_soap(
+                    "",
+                    &realm_config.issuer,
+                    "SAML ArtifactResolve request denied".into(),
+                ),
             )
                 .into_response();
         }
     };
+    let saml_response =
+        match crate::artifact::resolve_artifact(&resolve.artifact, &realm, &sp.entity_id) {
+            Ok(response) => response,
+            Err(e) => {
+                let error_xml =
+                    artifact_error_soap(&resolve.id, &realm_config.issuer, e.to_string());
+                return (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
+                    error_xml,
+                )
+                    .into_response();
+            }
+        };
     let soap =
         crate::artifact::build_artifact_response(&resolve.id, &realm_config.issuer, &saml_response);
     (
@@ -895,9 +911,9 @@ fn artifact_error_soap(in_response_to: &str, issuer: &str, error_message: String
 </soap:Envelope>"#,
         ulid::Ulid::new(),
         crate::artifact::iso_now_utc(),
-        in_response_to,
-        issuer,
-        crate::xml::xml_escape(&error_message),
+        crate::xml::xml_escape_preserving_whitespace(in_response_to),
+        crate::xml::xml_escape_preserving_whitespace(issuer),
+        crate::xml::xml_escape_preserving_whitespace(&error_message),
     )
 }
 
@@ -936,3 +952,6 @@ mod tests {
 
 #[cfg(test)]
 mod attribute_query_tests;
+
+#[cfg(test)]
+mod artifact_tests;

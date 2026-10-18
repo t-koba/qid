@@ -10,7 +10,7 @@ use crate::xmldsig::{ENVELOPED_SIGNATURE_URI, EXC_C14N_URI, SamlXmlSignatureAlgo
 
 pub(crate) const DSIG_NS: &str = "http://www.w3.org/2000/09/xmldsig#";
 pub(crate) const ASSERTION_NS: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
-const PROTOCOL_NS: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
+pub(crate) const PROTOCOL_NS: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
 const SHA256_URI: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 
 /// Only the key selected by the caller's trust policy is loaded. KeyInfo is not
@@ -29,6 +29,7 @@ pub enum SignedSamlElement {
     AuthnRequest,
     LogoutRequest,
     AttributeQuery,
+    ArtifactResolve,
 }
 
 impl SignedSamlElement {
@@ -39,6 +40,7 @@ impl SignedSamlElement {
             Self::AuthnRequest => (PROTOCOL_NS, "AuthnRequest"),
             Self::LogoutRequest => (PROTOCOL_NS, "LogoutRequest"),
             Self::AttributeQuery => (PROTOCOL_NS, "AttributeQuery"),
+            Self::ArtifactResolve => (PROTOCOL_NS, "ArtifactResolve"),
         }
     }
 }
@@ -334,6 +336,7 @@ fn preflight(
         SignedSamlElement::AuthnRequest,
         SignedSamlElement::LogoutRequest,
         SignedSamlElement::AttributeQuery,
+        SignedSamlElement::ArtifactResolve,
     ]
     .into_iter()
     .find(|k| {
@@ -384,7 +387,49 @@ fn preflight(
                     == 1
                 && nodes
                     .iter()
-                    .filter(|n| named(doc, **n, PROTOCOL_NS, "AttributeQuery"))
+                    .filter(|n| named(doc, **n, PROTOCOL_NS, kind.name().1))
+                    .count()
+                    == 1
+                && assertion_nodes.is_empty()
+                && doc.parent(signature) == Some(target)
+        }
+        SignedSamlElement::ArtifactResolve => {
+            const SOAP_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+            let elements = |node| {
+                doc.children(node)
+                    .into_iter()
+                    .filter(|n| doc.element(*n).is_some())
+                    .collect::<Vec<_>>()
+            };
+            let bodies = children_named(doc, root, SOAP_NS, "Body");
+            let headers = children_named(doc, root, SOAP_NS, "Header");
+            // An optional single SOAP 1.1 Header may precede exactly one Body.
+            // Header semantics (mustUnderstand) are enforced by the caller;
+            // preflight only fixes the supported envelope shape here.
+            let envelope_ok = named(doc, root, SOAP_NS, "Envelope")
+                && bodies.len() == 1
+                && headers.len() <= 1
+                && nodes
+                    .iter()
+                    .filter(|n| named(doc, **n, SOAP_NS, "Body"))
+                    .count()
+                    == 1
+                && nodes
+                    .iter()
+                    .filter(|n| named(doc, **n, SOAP_NS, "Header"))
+                    .count()
+                    == headers.len();
+            let order_ok = if headers.is_empty() {
+                elements(root) == bodies
+            } else {
+                elements(root) == vec![headers[0], bodies[0]]
+            };
+            envelope_ok
+                && order_ok
+                && elements(bodies[0]) == [target]
+                && nodes
+                    .iter()
+                    .filter(|n| named(doc, **n, PROTOCOL_NS, kind.name().1))
                     .count()
                     == 1
                 && assertion_nodes.is_empty()

@@ -1,7 +1,7 @@
 use super::*;
 use qid_core::config::{
-    AdminConfig, AuthenticationConfig, CryptoConfig, DeploymentProfile, KeyringConfig,
-    OAuthResourceServerConfig, ObservabilityConfig, OpsConfig, PepAuthorityConfig,
+    AdminConfig, AuthenticationConfig, CryptoConfig, DeploymentProfile, InboundProviderConfig,
+    KeyringConfig, OAuthResourceServerConfig, ObservabilityConfig, OpsConfig, PepAuthorityConfig,
     PepCapabilityConfig, PepCapabilityConstraintsConfig, PepRegistrationConfig,
     PepRegistrationsConfig, PolicyBundleConfig, PolicyConfig, ProtocolConfig, RealmConfig,
     RotationConfig, ServerConfig, ServerPaths, SignerConfig, StaticClientConfig, StorageConfig,
@@ -311,6 +311,46 @@ fn check_report_errors_when_pep_realm_lacks_dedicated_assertion_keyring() {
             && check.message.contains("must be dedicated")
     }));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn ciam_profile_diagnostics_follow_shared_inbound_provider_requirement() {
+    let mut config = minimal_config();
+    config.profile = DeploymentProfile::Ciam;
+    config.realms[0].protocols.federation.enabled = true;
+    config.realms[0]
+        .protocols
+        .federation
+        .inbound_providers
+        .push(InboundProviderConfig {
+            id: "social-google".to_string(),
+            kind: "social".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            enabled: true,
+            domains: vec!["example.com".to_string()],
+            social_provider: Some("google".to_string()),
+            client_id: Some("google-client".to_string()),
+            client_secret: Some("secret://google".to_string()),
+            token_url: None,
+            userinfo_url: None,
+            jit_provisioning: true,
+            account_linking: true,
+            claim_mappings: Vec::new(),
+            jwks_uri: None,
+            jwks: None,
+            saml_signing_certificates: Vec::new(),
+        });
+    let federation_status = |config: &QidConfig| {
+        check_profile_obligations(config)
+            .into_iter()
+            .find(|check| check.name == "profile.ciam.federation.realm.corp")
+            .expect("CIAM federation profile check")
+            .status
+    };
+    assert_eq!(federation_status(&config), CheckStatus::Ok);
+
+    config.realms[0].protocols.federation.inbound_providers[0].client_secret = None;
+    assert_eq!(federation_status(&config), CheckStatus::Error);
 }
 
 #[test]

@@ -328,29 +328,8 @@ pub(crate) fn check_profile_obligations(config: &QidConfig) -> Vec<CheckItem> {
                     });
                 }
                 let federation = format!("profile.ciam.federation.realm.{}", realm.id);
-                let has_social_or_oidc =
-                    realm
-                        .protocols
-                        .federation
-                        .inbound_providers
-                        .iter()
-                        .any(|provider| {
-                            provider.enabled
-                                && matches!(provider.kind.as_str(), "oidc" | "social")
-                                && provider
-                                    .client_id
-                                    .as_deref()
-                                    .is_some_and(|value| !value.is_empty())
-                                && provider
-                                    .client_secret
-                                    .as_deref()
-                                    .is_some_and(|value| !value.is_empty())
-                                && !provider.domains.is_empty()
-                                && provider.account_linking
-                                && provider.jit_provisioning
-                                && (provider.kind == "oidc" || provider.social_provider.is_some())
-                        });
-                checks.push(if realm.protocols.federation.enabled && has_social_or_oidc {
+                let has_ciam_provider = realm.has_ciam_compatible_inbound_provider();
+                checks.push(if realm.protocols.federation.enabled && has_ciam_provider {
                     check_ok(&federation, "inbound OIDC or social provider configured")
                 } else {
                     check_error(

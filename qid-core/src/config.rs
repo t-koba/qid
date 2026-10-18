@@ -469,29 +469,8 @@ fn validate_ciam_profile(config: &QidConfig) -> QidResult<()> {
                 ),
             });
         }
-        let has_social_or_oidc =
-            realm
-                .protocols
-                .federation
-                .inbound_providers
-                .iter()
-                .any(|provider| {
-                    provider.enabled
-                        && matches!(provider.kind.as_str(), "oidc" | "social")
-                        && provider
-                            .client_id
-                            .as_deref()
-                            .is_some_and(|value| !value.is_empty())
-                        && provider
-                            .client_secret
-                            .as_deref()
-                            .is_some_and(|value| !value.is_empty())
-                        && !provider.domains.is_empty()
-                        && provider.account_linking
-                        && provider.jit_provisioning
-                        && (provider.kind == "oidc" || provider.social_provider.is_some())
-                });
-        if !has_social_or_oidc {
+        let has_ciam_provider = realm.has_ciam_compatible_inbound_provider();
+        if !has_ciam_provider {
             return Err(QidError::Config {
                 message: format!(
                     "profile ciam requires an enabled inbound OIDC or social provider with client credentials, domains, account linking, and JIT provisioning for realm {}",
@@ -844,6 +823,30 @@ pub struct RealmConfig {
 }
 
 impl RealmConfig {
+    /// Whether this realm has an inbound provider meeting the CIAM profile requirements.
+    pub fn has_ciam_compatible_inbound_provider(&self) -> bool {
+        self.protocols
+            .federation
+            .inbound_providers
+            .iter()
+            .any(|provider| {
+                provider.enabled
+                    && matches!(provider.kind.as_str(), "oidc" | "social")
+                    && provider
+                        .client_id
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty())
+                    && provider
+                        .client_secret
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty())
+                    && !provider.domains.is_empty()
+                    && provider.account_linking
+                    && provider.jit_provisioning
+                    && (provider.kind == "oidc" || provider.social_provider.is_some())
+            })
+    }
+
     fn validate(&self) -> QidResult<()> {
         if self.id.trim().is_empty() {
             return Err(QidError::Config {

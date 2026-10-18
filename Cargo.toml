@@ -46,9 +46,10 @@ exclude = ["vendor/rustls"]
 # 29 session realm-resolution, 29 shared runtime-realm lookup, 45 lowercase-hex utility,
 # 17 session-config mapping, 9 session-cookie, 4 shared SHA-256-hex,
 # 1 MFA email-token utility, 24 audited-delete response lines, and
-# 12 shared JWK kid-selection lines and 52 browser-session context lines.
+# 12 shared JWK kid-selection lines, 52 browser-session context lines, and
+# 18 shared CIAM-provider predicate lines.
 [workspace.metadata.budget]
-total = 103281
+total = 103263
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

@@ -922,6 +922,21 @@ fn deployment_profiles_enforce_required_capabilities() {
         jwks: None,
         saml_signing_certificates: Vec::new(),
     }];
+    assert!(ciam_config.realms[0].has_ciam_compatible_inbound_provider());
+    let mut incomplete_ciam_realm = ciam_config.realms[0].clone();
+    incomplete_ciam_realm.protocols.federation.inbound_providers[0].client_secret = None;
+    assert!(!incomplete_ciam_realm.has_ciam_compatible_inbound_provider());
+    let mut missing_social_provider = ciam_config.realms[0].clone();
+    missing_social_provider
+        .protocols
+        .federation
+        .inbound_providers[0]
+        .social_provider = None;
+    assert!(!missing_social_provider.has_ciam_compatible_inbound_provider());
+    let mut oidc_provider = ciam_config.realms[0].clone();
+    oidc_provider.protocols.federation.inbound_providers[0].kind = "oidc".to_string();
+    oidc_provider.protocols.federation.inbound_providers[0].social_provider = None;
+    assert!(oidc_provider.has_ciam_compatible_inbound_provider());
     ciam_config.validate().unwrap();
     assert!(!ciam_config.realms[0].protocols.scim.enabled);
     assert!(!ciam_config.realms[0].protocols.saml.enabled);

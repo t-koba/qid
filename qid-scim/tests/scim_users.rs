@@ -29,15 +29,44 @@ async fn setup_with_store() -> (Router, Arc<FileRepository>, std::path::PathBuf)
     (test_app(repo.clone()), repo, path)
 }
 
+fn custom_schema(
+    id: &str,
+    name: &str,
+    attribute: &str,
+) -> qid_core::config::CustomScimSchemaConfig {
+    qid_core::config::CustomScimSchemaConfig {
+        id: id.to_string(),
+        name: name.to_string(),
+        description: format!("{name} description"),
+        attributes: vec![qid_core::config::CustomScimAttributeConfig {
+            name: attribute.to_string(),
+            r#type: "string".to_string(),
+            multi_valued: false,
+            required: false,
+            case_exact: false,
+            mutability: "readWrite".to_string(),
+            returned: "default".to_string(),
+        }],
+    }
+}
+
 fn test_app<R: Repository>(repo: Arc<R>) -> Router {
     let mut config = test_helpers::test_config();
     config.realms[0].id = "corp".to_string();
+    config.realms[0].protocols.scim.custom_schemas = vec![
+        custom_schema("urn:example:CorpOnly", "CorpOnly", "corpAttr"),
+        custom_schema("urn:example:Shared", "SharedCorp", "corpSharedAttr"),
+    ];
     config.realms[0].protocols.scim.cursor_secret =
         Some("0123456789abcdef0123456789abcdef".to_string());
     config.realms[0].protocols.scim.event_callback_allowed_hosts =
         vec!["events.example.com".into()];
     let mut other = config.realms[0].clone();
     other.id = "other".into();
+    other.protocols.scim.custom_schemas = vec![
+        custom_schema("urn:example:OtherOnly", "OtherOnly", "otherAttr"),
+        custom_schema("urn:example:Shared", "SharedOther", "otherSharedAttr"),
+    ];
     config.realms.push(other);
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let state =
@@ -48,54 +77,6 @@ fn test_app<R: Repository>(repo: Arc<R>) -> Router {
 async fn response_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
-}
-
-#[tokio::test]
-async fn scim_discovery_advertises_enterprise_user_extension() {
-    let app = setup().await;
-    let schemas_request = Request::builder()
-        .method(Method::GET)
-        .uri("/scim/v2/Schemas")
-        .body(Body::empty())
-        .unwrap();
-    let schemas_response = app.clone().oneshot(schemas_request).await.unwrap();
-    assert_eq!(schemas_response.status(), StatusCode::OK);
-    let schemas = response_json(schemas_response).await;
-    assert_eq!(schemas["totalResults"], 3);
-    assert!(
-        schemas["Resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|resource| {
-                resource["id"] == ENTERPRISE_USER_SCHEMA
-                    && resource["attributes"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|attribute| attribute["name"] == "department")
-            })
-    );
-
-    let resource_types_request = Request::builder()
-        .method(Method::GET)
-        .uri("/scim/v2/ResourceTypes")
-        .body(Body::empty())
-        .unwrap();
-    let resource_types_response = app.oneshot(resource_types_request).await.unwrap();
-    assert_eq!(resource_types_response.status(), StatusCode::OK);
-    let resource_types = response_json(resource_types_response).await;
-    let user = resource_types["Resources"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|resource| resource["id"] == "User")
-        .unwrap();
-    assert_eq!(
-        user["schemaExtensions"][0]["schema"],
-        ENTERPRISE_USER_SCHEMA
-    );
-    assert_eq!(user["schemaExtensions"][0]["required"], false);
 }
 
 #[tokio::test]
@@ -790,4 +771,94 @@ async fn sql_scim_upserts_preserve_realm_ownership() {
     );
     repo.migrate().await.unwrap();
     assert_realm_upsert_contract(repo).await;
+}
+
+async fn get_json(app: &Router, uri: &str, realm: Option<&str>) -> serde_json::Value {
+    let response = match realm {
+        Some(realm) => {
+            realm_request(
+                app,
+                Method::GET,
+                uri.strip_prefix("/scim/v2/").unwrap(),
+                realm,
+                serde_json::json!({}),
+            )
+            .await
+        }
+        None => app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    };
+    assert_eq!(response.status(), StatusCode::OK);
+    response_json(response).await
+}
+
+#[tokio::test]
+async fn scim_schema_discovery_is_scoped_to_authenticated_realm() {
+    const CORP_ONLY: &str = "urn:example:CorpOnly";
+    const OTHER_ONLY: &str = "urn:example:OtherOnly";
+    const SHARED: &str = "urn:example:Shared";
+    let app = setup().await;
+
+    for (realm, only, shared_attr, foreign_attr) in [
+        ("corp", CORP_ONLY, "corpSharedAttr", "otherSharedAttr"),
+        ("other", OTHER_ONLY, "otherSharedAttr", "corpSharedAttr"),
+    ] {
+        let schemas = get_json(&app, "/scim/v2/Schemas", Some(realm))
+            .await
+            .to_string();
+        assert!(schemas.contains(only), "{realm} sees its own schema");
+        assert!(schemas.contains(SHARED), "{realm} sees the shared id");
+        assert!(
+            schemas.contains(shared_attr),
+            "{realm} sees its own shared definition"
+        );
+        assert!(
+            !schemas.contains(foreign_attr),
+            "{realm} omits the other shared definition"
+        );
+        assert!(!schemas.contains("OtherOnly") || realm == "other");
+        assert!(!schemas.contains("CorpOnly") || realm == "corp");
+
+        let types = get_json(&app, "/scim/v2/ResourceTypes", Some(realm))
+            .await
+            .to_string();
+        assert!(types.contains(ENTERPRISE_USER_SCHEMA));
+        assert!(types.contains(only), "{realm} advertises its own schema");
+        assert!(types.contains(SHARED), "{realm} advertises the shared id");
+        assert!(!types.contains("OtherOnly") || realm == "other");
+        assert!(!types.contains("CorpOnly") || realm == "corp");
+    }
+
+    for uri in ["/scim/v2/Schemas", "/scim/v2/ResourceTypes"] {
+        for realm in [None, Some("unknown")] {
+            let body = get_json(&app, uri, realm).await;
+            assert!(!body.to_string().contains("example:"));
+        }
+    }
+    let schemas = get_json(&app, "/scim/v2/Schemas", None).await;
+    assert_eq!(schemas["totalResults"], 3);
+    assert!(
+        schemas["Resources"].as_array().unwrap().iter().any(|r| {
+            r["id"] == ENTERPRISE_USER_SCHEMA
+                && r["attributes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a["name"] == "department")
+        }),
+        "built-in enterprise extension stays advertised"
+    );
+    let types = get_json(&app, "/scim/v2/ResourceTypes", None).await;
+    assert_eq!(
+        types["Resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "User")
+            .unwrap()["schemaExtensions"],
+        serde_json::json!([{"schema": ENTERPRISE_USER_SCHEMA, "required": false}])
+    );
 }

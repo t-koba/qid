@@ -497,25 +497,24 @@ async fn rebac_tenant_tuples_drive_pep_decisions_without_cross_tenant_leak() {
         ..PolicyContext::default()
     };
 
-    // Cold path loads from the DB; the second load for the same realm hits the cache.
-    let engine = load_policy_engine(&state, "realm-a")
-        .await
-        .expect("realm-a engine");
-    assert_eq!(engine.decide(&ctx).await.decision, Decision::Allow);
-    let engine = load_policy_engine(&state, "realm-a")
-        .await
-        .expect("realm-a cached engine");
-    assert_eq!(engine.decide(&ctx).await.decision, Decision::Allow);
-
-    // The same tuple must not grant access in the other tenant's scope.
-    let engine = load_policy_engine(&state, "realm-b")
-        .await
-        .expect("realm-b engine");
-    assert_eq!(engine.decide(&ctx).await.decision, Decision::Deny);
-    let engine = load_policy_engine(&state, "realm-b")
-        .await
-        .expect("realm-b cached engine");
-    assert_eq!(engine.decide(&ctx).await.decision, Decision::Deny);
+    // Both the cold DB path and the cached path must attach the evaluator.
+    for realm in ["realm-a", "realm-b"] {
+        let expected = if realm == "realm-a" {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        };
+        for _ in 0..2 {
+            let engine = load_policy_engine(&state, realm)
+                .await
+                .expect("engine loads");
+            assert_eq!(
+                engine.decide(&ctx).await.decision,
+                expected,
+                "{realm} stays isolated"
+            );
+        }
+    }
 
     std::fs::remove_file(path).ok();
 }

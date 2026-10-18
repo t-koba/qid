@@ -640,85 +640,27 @@ mod tests {
         // checked addition even with an unbounded ceiling; lifetimes pushing
         // expiry past i64::MAX are not storable.
         const CEILING: u64 = 86400;
-        assert!(
+        let issue = |lifetime: u64, max: u64| {
             issue_sd_jwt_credential(
                 "https://id.example.com",
                 "user-1",
                 test_claims(),
                 &[],
-                0,
-                CEILING,
+                lifetime,
+                max,
                 "https://id.example.com",
             )
-            .is_err()
-        );
-        let (normal, _) = issue_sd_jwt_credential(
-            "https://id.example.com",
-            "user-1",
-            test_claims(),
-            &[],
-            3600,
-            CEILING,
-            "https://id.example.com",
-        )
-        .unwrap();
+        };
+        assert!(issue(0, CEILING).is_err());
+        let (normal, _) = issue(3600, CEILING).unwrap();
         assert_eq!(normal.expires_at - normal.issued_at, 3600);
-        assert!(
-            issue_sd_jwt_credential(
-                "https://id.example.com",
-                "user-1",
-                test_claims(),
-                &[],
-                CEILING + 1,
-                CEILING,
-                "https://id.example.com",
-            )
-            .is_err()
-        );
-        assert!(
-            issue_sd_jwt_credential(
-                "https://id.example.com",
-                "user-1",
-                test_claims(),
-                &[],
-                u64::MAX,
-                CEILING,
-                "https://id.example.com",
-            )
-            .is_err()
-        );
-        assert!(
-            issue_sd_jwt_credential(
-                "https://id.example.com",
-                "user-1",
-                test_claims(),
-                &[],
-                u64::MAX,
-                u64::MAX,
-                "https://id.example.com",
-            )
-            .is_err()
-        );
-        assert!(
-            issue_sd_jwt_credential(
-                "https://id.example.com",
-                "user-1",
-                test_claims(),
-                &[],
-                i64::MAX as u64,
-                u64::MAX,
-                "https://id.example.com",
-            )
-            .is_err()
-        );
-        let (largest, _) = issue_sd_jwt_credential(
-            "https://id.example.com",
-            "user-1",
-            test_claims(),
-            &[],
+        assert!(issue(CEILING + 1, CEILING).is_err());
+        assert!(issue(u64::MAX, CEILING).is_err());
+        assert!(issue(u64::MAX, u64::MAX).is_err());
+        assert!(issue(i64::MAX as u64, u64::MAX).is_err());
+        let (largest, _) = issue(
             i64::MAX as u64 - qid_core::util::now_seconds() - 3600,
             u64::MAX,
-            "https://id.example.com",
         )
         .unwrap();
         assert!(largest.expires_at <= i64::MAX as u64);

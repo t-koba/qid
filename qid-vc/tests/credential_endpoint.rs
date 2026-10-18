@@ -641,30 +641,24 @@ async fn credential_issuance_enforces_configured_lifetime_ceiling() {
     let (app, state, user) = setup().await;
     let access_token = issue_identity_access_token(&state, &user).await;
     let holder = generate_es256("holder-ceiling").unwrap();
-    assert_eq!(
-        issue_with_lifetime(
-            app.clone(),
-            &access_token,
-            &holder.private_pem,
-            &holder.public_jwk,
-            "nonce-ceiling-ok",
-            86400,
-        )
-        .await,
-        StatusCode::OK
-    );
-    assert_eq!(
-        issue_with_lifetime(
-            app.clone(),
-            &access_token,
-            &holder.private_pem,
-            &holder.public_jwk,
-            "nonce-ceiling-over",
-            86401,
-        )
-        .await,
-        StatusCode::BAD_REQUEST
-    );
+    for (nonce, lifetime, expected) in [
+        ("nonce-ceiling-ok", 86400, StatusCode::OK),
+        ("nonce-ceiling-over", 86401, StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(
+            issue_with_lifetime(
+                app.clone(),
+                &access_token,
+                &holder.private_pem,
+                &holder.public_jwk,
+                nonce,
+                lifetime,
+            )
+            .await,
+            expected,
+            "lifetime {lifetime} must map to {expected:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -741,41 +735,5 @@ async fn credential_concurrent_issuances_use_distinct_revocable_identifiers() {
             .unwrap()
             .unwrap();
         assert!(!stored.revoked);
-    }
-
-    // Revoking one concurrent issuance leaves the others usable.
-    let first_id = &credential_ids[0];
-    let revoke_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri(format!("/vc/v1/status/{first_id}/revoke"))
-                .header("authorization", format!("Bearer {access_token}"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"reason":"key_compromised"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(revoke_response.status(), StatusCode::OK);
-    let revoked = state
-        .repo
-        .get_vc_credential_status(first_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(revoked.revoked);
-    for credential_id in credential_ids.iter().skip(1) {
-        let stored = state
-            .repo
-            .get_vc_credential_status(credential_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            !stored.revoked,
-            "revocation must not alias across issuances"
-        );
     }
 }

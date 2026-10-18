@@ -1,8 +1,10 @@
+use axum::extract::Extension;
 use axum::{Json, extract::State, response::IntoResponse};
 use qid_core::state::SharedState;
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
+use crate::ScimRequestContext;
 use crate::{ENTERPRISE_USER_SCHEMA, RFC_9944_DEVICE_SCHEMA, RFC_9967_EVENT_SUBSCRIPTION_SCHEMA};
 
 pub(crate) async fn service_provider_config() -> impl IntoResponse {
@@ -20,6 +22,7 @@ pub(crate) async fn service_provider_config() -> impl IntoResponse {
 
 pub(crate) async fn schemas<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    context: Option<Extension<ScimRequestContext>>,
 ) -> impl IntoResponse {
     let mut resources = vec![
         serde_json::json!({
@@ -55,30 +58,39 @@ pub(crate) async fn schemas<R: Repository>(
             ]
         }),
     ];
-    for realm_config in &state.config.realms {
-        for custom in &realm_config.protocols.scim.custom_schemas {
-            let attrs: Vec<serde_json::Value> = custom
-                .attributes
+    let customs = context
+        .as_ref()
+        .and_then(|ext| {
+            state
+                .config
+                .realms
                 .iter()
-                .map(|a| {
-                    serde_json::json!({
-                        "name": a.name,
-                        "type": a.r#type,
-                        "multiValued": a.multi_valued,
-                        "required": a.required,
-                        "caseExact": a.case_exact,
-                        "mutability": a.mutability,
-                        "returned": a.returned,
-                    })
+                .find(|realm| realm.id == ext.0.realm_id)
+        })
+        .map(|realm| realm.protocols.scim.custom_schemas.as_slice())
+        .unwrap_or(&[]);
+    for custom in customs {
+        let attrs: Vec<serde_json::Value> = custom
+            .attributes
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "type": a.r#type,
+                    "multiValued": a.multi_valued,
+                    "required": a.required,
+                    "caseExact": a.case_exact,
+                    "mutability": a.mutability,
+                    "returned": a.returned,
                 })
-                .collect();
-            resources.push(serde_json::json!({
-                "id": custom.id,
-                "name": custom.name,
-                "description": custom.description,
-                "attributes": attrs,
-            }));
-        }
+            })
+            .collect();
+        resources.push(serde_json::json!({
+            "id": custom.id,
+            "name": custom.name,
+            "description": custom.description,
+            "attributes": attrs,
+        }));
     }
     Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
@@ -89,18 +101,28 @@ pub(crate) async fn schemas<R: Repository>(
 
 pub(crate) async fn resource_types<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    context: Option<Extension<ScimRequestContext>>,
 ) -> impl IntoResponse {
     let mut user_extensions = vec![serde_json::json!({
         "schema": ENTERPRISE_USER_SCHEMA,
         "required": false
     })];
-    for realm_config in &state.config.realms {
-        for custom in &realm_config.protocols.scim.custom_schemas {
-            user_extensions.push(serde_json::json!({
-                "schema": custom.id,
-                "required": false
-            }));
-        }
+    let customs = context
+        .as_ref()
+        .and_then(|ext| {
+            state
+                .config
+                .realms
+                .iter()
+                .find(|realm| realm.id == ext.0.realm_id)
+        })
+        .map(|realm| realm.protocols.scim.custom_schemas.as_slice())
+        .unwrap_or(&[]);
+    for custom in customs {
+        user_extensions.push(serde_json::json!({
+            "schema": custom.id,
+            "required": false
+        }));
     }
     Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],

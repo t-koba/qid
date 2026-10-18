@@ -776,75 +776,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hsts_layer_defaults_without_preload() {
+    async fn hsts_policy_matrix() {
         use axum::http::StatusCode;
-        let res = hsts_get(HstsConfig::default(), "/health").await;
-        assert_eq!(res.status(), StatusCode::OK);
-        let hsts = hsts_value(&res).to_string();
-        assert!(
-            hsts.contains("max-age=31536000"),
-            "HSTS must carry one-year max-age, got: {hsts}"
-        );
-        assert!(
-            hsts.contains("includeSubDomains"),
-            "HSTS must include subdomains, got: {hsts}"
-        );
-        assert!(
-            !hsts.contains("preload"),
-            "HSTS preload must stay opt-in, got: {hsts}"
-        );
-    }
-
-    #[tokio::test]
-    async fn hsts_layer_disabled_emits_no_header() {
-        use axum::http::StatusCode;
-        let config = HstsConfig {
-            enabled: false,
-            ..HstsConfig::default()
-        };
-        let res = hsts_get(config, "/health").await;
-        assert_eq!(res.status(), StatusCode::OK);
-        assert!(
-            res.headers().get("strict-transport-security").is_none(),
-            "disabled HSTS must not emit a header"
-        );
-    }
-
-    #[tokio::test]
-    async fn hsts_layer_custom_max_age_without_subdomains() {
-        use axum::http::StatusCode;
-        let config = HstsConfig {
-            max_age_seconds: 86400,
-            include_subdomains: false,
-            ..HstsConfig::default()
-        };
-        let res = hsts_get(config, "/health").await;
-        assert_eq!(res.status(), StatusCode::OK);
-        let hsts = hsts_value(&res).to_string();
-        assert!(
-            hsts.contains("max-age=86400"),
-            "HSTS must carry custom max-age, got: {hsts}"
-        );
-        assert!(
-            !hsts.contains("includeSubDomains"),
-            "HSTS must omit subdomains when disabled, got: {hsts}"
-        );
-    }
-
-    #[tokio::test]
-    async fn hsts_layer_preload_opt_in() {
-        use axum::http::StatusCode;
-        let config = HstsConfig {
-            preload: true,
-            ..HstsConfig::default()
-        };
-        let res = hsts_get(config, "/health").await;
-        assert_eq!(res.status(), StatusCode::OK);
-        let hsts = hsts_value(&res).to_string();
-        assert!(
-            hsts.contains("preload"),
-            "HSTS must include preload when opted in, got: {hsts}"
-        );
+        struct Case {
+            name: &'static str,
+            config: HstsConfig,
+            present: bool,
+            contains: &'static [&'static str],
+            absent: &'static [&'static str],
+        }
+        let def = HstsConfig::default();
+        let cases = [
+            Case {
+                name: "defaults",
+                config: def.clone(),
+                present: true,
+                contains: &["max-age=31536000", "includeSubDomains"],
+                absent: &["preload"],
+            },
+            Case {
+                name: "disabled",
+                config: HstsConfig {
+                    enabled: false,
+                    ..def.clone()
+                },
+                present: false,
+                contains: &[],
+                absent: &[],
+            },
+            Case {
+                name: "custom",
+                config: HstsConfig {
+                    max_age_seconds: 86400,
+                    include_subdomains: false,
+                    ..def.clone()
+                },
+                present: true,
+                contains: &["max-age=86400"],
+                absent: &["includeSubDomains"],
+            },
+            Case {
+                name: "preload",
+                config: HstsConfig {
+                    preload: true,
+                    ..def
+                },
+                present: true,
+                contains: &["preload"],
+                absent: &[],
+            },
+        ];
+        for case in cases {
+            let res = hsts_get(case.config, "/health").await;
+            assert_eq!(res.status(), StatusCode::OK, "{}", case.name);
+            let hsts = hsts_value(&res).to_string();
+            assert_eq!(!hsts.is_empty(), case.present, "{} emits", case.name);
+            for want in case.contains {
+                assert!(
+                    hsts.contains(want),
+                    "{} carries {want}, got: {hsts}",
+                    case.name
+                );
+            }
+            for missing in case.absent {
+                assert!(
+                    !hsts.contains(missing),
+                    "{} omits {missing}, got: {hsts}",
+                    case.name
+                );
+            }
+        }
     }
 
     #[test]

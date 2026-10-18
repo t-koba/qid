@@ -1128,7 +1128,8 @@ mod tests {
 
         // Confidential DPoP-bound family without fresh proof still succeeds
         // (bound via client authentication, per RFC 9449 section 5).
-        let conf_family = refresh_test_family(
+        let conf_binding = serde_json::json!({ "jkt": "test-jkt-confidential-key" });
+        let mut conf_family = refresh_test_family(
             "dpop-conf-family",
             &user.id.clone(),
             "dpop-conf",
@@ -1137,10 +1138,16 @@ mod tests {
             now,
             Some(now + 86_400),
         );
+        conf_family.sender_constraint = Some(conf_binding.clone());
         repo.create_token_family(&conf_family).await.unwrap();
         let token = signed_refresh(&state, &conf_family, "dpop-conf-jti").await;
         let ok = grant_refresh(&state, token, &confidential_client, None, None).await;
         assert!(ok.is_ok(), "confidential refresh must succeed: {ok:?}");
+        assert_eq!(
+            get_family(&repo, &conf_family.id).await.sender_constraint,
+            Some(conf_binding),
+            "successful confidential refresh must retain the family's DPoP binding"
+        );
     }
 
     #[tokio::test]

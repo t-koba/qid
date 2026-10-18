@@ -23,18 +23,13 @@ pub(crate) async fn list_sessions_handler<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<SessionListQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     qid_http::list_handler!(
         state.repo.list_sessions(&realm, query.user_id.as_deref()),
         |s| SessionView {
@@ -72,18 +67,13 @@ pub(crate) async fn list_token_families_handler<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<TokenFamilyListQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     qid_http::list_handler!(
         state.repo.list_token_families(
             &realm,
@@ -123,18 +113,13 @@ pub(crate) async fn list_pep_decisions_handler<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<PepDecisionQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::AuditRead,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let decisions = match PEP_DECISIONS.lock() {
         Ok(decisions) => decisions,
         Err(_) => {
@@ -175,18 +160,13 @@ pub(crate) async fn list_risk_events_handler<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<RiskEventQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::AuditRead,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let events = qid_risk::risk_events();
     let limit = query.limit.unwrap_or(50).min(200);
     let offset = query.offset.unwrap_or(0);
@@ -213,18 +193,13 @@ pub(crate) async fn revoke_session_handler<R: Repository>(
     Path((realm, session_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let session = match state.repo.get_session(&session_id).await {
         Ok(Some(session)) => session,
         Ok(None) => {
@@ -268,18 +243,13 @@ pub(crate) async fn revoke_token_family_handler<R: Repository>(
     Path((realm, family_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let family = match state.repo.get_token_family(&family_id).await {
         Ok(Some(family)) => family,
         Ok(None) => {
@@ -338,18 +308,13 @@ pub(crate) async fn list_service_accounts_handler<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::AppAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     qid_http::list_handler!(state.repo.list_service_accounts(&realm), |sa| {
         ServiceAccountView {
             id: sa.id,
@@ -366,18 +331,13 @@ pub(crate) async fn create_service_account_handler<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CreateServiceAccountRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::AppAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let sa = qid_core::models::ServiceAccount {
         id: Ulid::new().to_string(),
         client_id: req.client_id,
@@ -413,18 +373,13 @@ pub(crate) async fn delete_service_account_handler<R: Repository>(
     Path((realm, sa_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::AppAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let belongs_to_realm = match state.repo.list_service_accounts(&realm).await {
         Ok(accounts) => accounts.iter().any(|account| account.id == sa_id),
         Err(e) => return qid_http::error_response(e),

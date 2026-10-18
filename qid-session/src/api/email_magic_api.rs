@@ -143,13 +143,9 @@ async fn email_magic_link_verify<R: Repository>(
         });
     }
 
-    let realm_config = match state.realm(&realm) {
-        Some(cfg) => cfg,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match super::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let authenticator = crate::auth::Authenticator::new(state.repo.clone());

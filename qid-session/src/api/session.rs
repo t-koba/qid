@@ -17,13 +17,9 @@ pub async fn session_refresh<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match super::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let cookie_name = &realm_config.browser_session.cookie_name;
@@ -75,13 +71,9 @@ pub async fn session_revoke<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match super::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let cookie_name = &realm_config.browser_session.cookie_name;

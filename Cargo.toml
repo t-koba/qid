@@ -42,9 +42,10 @@ exclude = ["vendor/rustls"]
 # Headroom covers the configurable CAPPORT/QUIC wiring (server.paths.capport_details,
 # server.quic, qid-network listener split, per-realm gating).
 # Ratchet: 12 edge-PEP, 41 OAuth, 64 IGA tenant-context, 256 admin error-mapping,
-# and 6 OAuth token-audit, 7 DCR-context, 16 OAuth response-mapping, and 95 session-cookie lines.
+# and 6 OAuth token-audit, 7 DCR-context, 16 OAuth response-mapping, 95 session-cookie,
+# and 29 session realm-resolution lines.
 [workspace.metadata.budget]
-total = 103503
+total = 103474
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

@@ -280,13 +280,9 @@ pub async fn webauthn_auth_finish<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<WebAuthnAuthFinishRequest>,
 ) -> Response {
-    let realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match super::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let webauthn = match build_webauthn_service(&state, &realm) {
@@ -436,13 +432,9 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<WebAuthnDiscoverableFinishRequest>,
 ) -> Response {
-    let realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match super::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let webauthn = match build_webauthn_service(&state, &realm) {

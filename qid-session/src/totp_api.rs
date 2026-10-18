@@ -64,13 +64,9 @@ async fn totp_enroll<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match crate::api::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let cookie_name = &realm_config.browser_session.cookie_name;
@@ -150,13 +146,9 @@ async fn totp_verify<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<TotpVerifyRequest>,
 ) -> Response {
-    let realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match crate::api::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let cookie_name = &realm_config.browser_session.cookie_name;
@@ -245,13 +237,9 @@ async fn totp_authenticate<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<TotpAuthenticateRequest>,
 ) -> Response {
-    let realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let realm_config = match crate::api::require_realm(&state, &realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let user = match state.repo.get_user_by_id(&req.user_id).await {

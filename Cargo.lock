@@ -4082,7 +4082,6 @@ dependencies = [
 name = "qid-mfa"
 version = "0.1.0"
 dependencies = [
- "hex",
  "qid-core",
  "qid-crypto",
  "rand 0.8.8",

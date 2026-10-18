@@ -16,7 +16,6 @@ qid-crypto = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
-hex = { workspace = true }
 
 [lints]
 workspace = true

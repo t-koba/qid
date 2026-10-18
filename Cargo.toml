@@ -44,9 +44,10 @@ exclude = ["vendor/rustls"]
 # Ratchet: 12 edge-PEP, 41 OAuth, 64 IGA tenant-context, 256 admin error-mapping,
 # and 6 OAuth token-audit, 7 DCR-context, 16 OAuth response-mapping, 95 session-cookie,
 # 29 session realm-resolution, 29 shared runtime-realm lookup, 45 lowercase-hex utility,
-# 17 session-config mapping, 9 session-cookie, and 4 shared SHA-256-hex reuse lines.
+# 17 session-config mapping, 9 session-cookie, 4 shared SHA-256-hex,
+# and 1 MFA email-token utility line.
 [workspace.metadata.budget]
-total = 103370
+total = 103369
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

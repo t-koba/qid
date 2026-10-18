@@ -1,7 +1,6 @@
 use qid_core::error::{QidError, QidResult};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -58,8 +57,8 @@ pub fn create_email_magic_link_challenge(
     let id = format!("eml_{:016x}", rand::thread_rng().next_u64());
     let mut raw = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw);
-    let raw_token = hex::encode(raw);
-    let token_hash = hex::encode(Sha256::digest(raw_token.as_bytes()));
+    let raw_token = qid_core::util::hex_encode_lower(&raw);
+    let token_hash = qid_core::util::sha256_hex(raw_token.as_bytes());
 
     let challenge = EmailMagicLinkChallenge {
         id: id.clone(),
@@ -112,7 +111,7 @@ pub fn verify_email_magic_link(
         });
     }
 
-    let computed_hash = hex::encode(Sha256::digest(raw_token.as_bytes()));
+    let computed_hash = qid_core::util::sha256_hex(raw_token.as_bytes());
     if computed_hash != challenge.token_hash {
         return Err(QidError::BadRequest {
             message: "invalid magic link token".to_string(),

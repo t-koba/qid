@@ -16,14 +16,11 @@ pub(super) async fn create_access_review<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<AccessReviewRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (admin, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let now = now_seconds();
     let assignments = match active_assignments_for_review(&state, &tenant_id, now).await {
         Ok(assignments) => assignments,
@@ -81,13 +78,9 @@ pub(super) async fn list_access_reviews<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(None, &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
+    let (_, tenant_id) = match require_admin_tenant_context(&headers, &state, None).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     let campaigns = match state
         .repo
@@ -116,14 +109,11 @@ pub(super) async fn close_access_review<R: Repository>(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<CloseAccessReviewRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     if let Err(error) = state
         .repo
         .close_iga_access_review_campaign(&tenant_id, &id)
@@ -154,14 +144,11 @@ pub(super) async fn create_access_review_decision<R: Repository>(
     axum::extract::Path(campaign_id): axum::extract::Path<String>,
     Json(req): Json<AccessReviewDecisionRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (admin, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let campaign = match state
         .repo
         .get_iga_access_review_campaign(&tenant_id, &campaign_id)
@@ -230,13 +217,9 @@ pub(super) async fn list_access_review_decisions<R: Repository>(
     headers: HeaderMap,
     axum::extract::Path(campaign_id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(None, &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
+    let (_, tenant_id) = match require_admin_tenant_context(&headers, &state, None).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     let decisions = match state
         .repo
@@ -283,14 +266,11 @@ pub(super) async fn list_certifications<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<CertificationQuery>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(query.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, query.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let certification_type = query
         .certification_type
         .as_ref()
@@ -316,14 +296,11 @@ pub(super) async fn create_certification<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CertificationRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (admin, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let catalog = match catalog_for_tenant(&state, &tenant_id).await {
         Ok(catalog) => catalog,
         Err(error) => return storage_error_response("list_iga_entitlements", error),

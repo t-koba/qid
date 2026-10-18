@@ -29,6 +29,8 @@ mod credential;
 mod device;
 mod fedcm;
 mod iga;
+#[cfg(test)]
+mod persistence_tests;
 mod policy;
 mod realm;
 mod rebac;
@@ -137,7 +139,13 @@ struct Store {
 pub struct FileRepository {
     store: Arc<tokio::sync::RwLock<Store>>,
     path: PathBuf,
+    // When both locks are needed, acquire save_lock before store. Ordinary
+    // writers must release store before calling save()/waiting for save_lock.
     save_lock: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(test)]
+    flush_hook: Arc<std::sync::Mutex<Option<persistence_tests::FlushHook>>>,
+    #[cfg(test)]
+    rotation_hook: Arc<std::sync::Mutex<Option<persistence_tests::RotationHook>>>,
     _process_lock: Arc<ProcessLock>,
     dirty: Arc<AtomicBool>,
     flush_mode: FileFlushMode,
@@ -179,6 +187,10 @@ impl FileRepository {
             store: Arc::new(tokio::sync::RwLock::new(store)),
             path: p,
             save_lock: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            flush_hook: Arc::default(),
+            #[cfg(test)]
+            rotation_hook: Arc::default(),
             _process_lock: Arc::new(process_lock),
             dirty: Arc::new(AtomicBool::new(false)),
             flush_mode,
@@ -221,7 +233,23 @@ impl FileRepository {
     }
 
     async fn flush_store(&self) -> QidResult<()> {
-        let _save_guard = self.save_lock.lock().await;
+        let save_guard = self.save_lock.lock().await;
+        self.flush_store_locked(&save_guard).await
+    }
+
+    // The caller must hold this repository's save_lock through persistence and
+    // any rollback. Never call the locking wrapper while holding that lock.
+    async fn flush_store_locked(
+        &self,
+        _save_guard: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> QidResult<()> {
+        #[cfg(test)]
+        {
+            let hook = self.flush_hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook.run().await?;
+            }
+        }
         let content = {
             let store = self.store.read().await;
             serde_json::to_string(&*store).map_err(|e| QidError::Internal {

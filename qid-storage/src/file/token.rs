@@ -40,12 +40,22 @@ impl TokenRepository for FileRepository {
     }
 
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()> {
+        // This operation replaces an existing ID. Serialize it with immediate
+        // rotations so their rollback cannot overwrite the replacement's fields.
+        let save_guard = if self.flush_mode == FileFlushMode::Immediate {
+            Some(self.save_lock.lock().await)
+        } else {
+            None
+        };
         let mut store = self.store.write().await;
         store
             .token_families
             .insert(family.id.clone(), family.clone());
         drop(store);
-        self.save().await
+        match save_guard {
+            Some(guard) => self.flush_store_locked(&guard).await,
+            None => self.save().await,
+        }
     }
 
     async fn get_token_family(&self, id: &str) -> QidResult<Option<TokenFamily>> {
@@ -60,6 +70,13 @@ impl TokenRepository for FileRepository {
         refresh_hash: &str,
         refresh_expires_at: u64,
     ) -> QidResult<()> {
+        // Own persistence before validation/mutation, not just before the write:
+        // no other save may snapshot tentative rotation fields before rollback.
+        let save_guard = if self.flush_mode == FileFlushMode::Immediate {
+            Some(self.save_lock.lock().await)
+        } else {
+            None
+        };
         let mut store = self.store.write().await;
         let family = store
             .token_families
@@ -73,9 +90,24 @@ impl TokenRepository for FileRepository {
         family.current_refresh_hash = refresh_hash.to_string();
         family.refresh_expires_at = Some(refresh_expires_at);
         drop(store);
-        if let Err(save_err) = self.save().await {
+        #[cfg(test)]
+        {
+            let hook = self.rotation_hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook.run().await;
+            }
+        }
+        let Some(save_guard) = save_guard else {
+            // Interval mode only marks dirty; background flush errors do not
+            // undo an accepted in-memory rotation.
+            return self.save().await;
+        };
+        // Handle returned errors while still owning save_lock. This does not
+        // provide cancellation safety or hide tentative fields from readers.
+        if let Err(save_err) = self.flush_store_locked(&save_guard).await {
             let mut store = self.store.write().await;
             if let Some(family) = store.token_families.get_mut(id) {
+                // Preserve concurrent revocation and other unrelated fields.
                 family.current_refresh_hash = previous_hash;
                 family.refresh_expires_at = previous_deadline;
             }

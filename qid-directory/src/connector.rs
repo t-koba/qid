@@ -336,6 +336,9 @@ fn run_ldap_search(
 ) -> QidResult<Vec<LdapDirectoryEntry>> {
     use ldap3::SearchEntry;
 
+    if let Some(enabled_expr) = mapping.enabled.as_deref() {
+        validate_enabled_expression(enabled_expr)?;
+    }
     // INTEROP §4513: enforce TLS for LDAP plain bind.
     // Reject non-TLS URLs unless the connection uses a Unix socket.
     if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
@@ -724,18 +727,53 @@ pub fn resolve_search_base(config: &DirectoryConnectionConfig) -> String {
         .join(",")
 }
 
-/// Filter out disabled users based on the `userAccountControl` bitmask heuristic.
-/// Used by the AD connector to evaluate the enabled mapping expression.
-pub fn evaluate_enabled_expression(_expr: &str, _user_account_control: Option<&str>) -> bool {
-    // Simple heuristic: if expression contains "2)" (ACCOUNTDISABLE bit),
-    // check that the bit is NOT set
-    if let Some(uac) = _user_account_control
-        && let Ok(flags) = uac.parse::<u64>()
-    {
-        // Bit 1 = ACCOUNTDISABLE
-        return flags & 2 == 0;
+/// Evaluate the `enabled` attribute-mapping expression.
+///
+/// Only the documented Active Directory predicate is supported:
+/// `!(userAccountControl:1.2.840.113556.1.4.803:=2)`
+/// (LDAP_MATCHING_RULE_BIT_AND for `ACCOUNTDISABLE` = 2).
+/// ASCII whitespace is ignored and the attribute name matches
+/// case-insensitively. Every other expression — including the
+/// non-negated `(userAccountControl:1.2.840.113556.1.4.803:=2)` —
+/// is rejected rather than guessed (fail closed).
+///
+/// For the supported predicate a missing or non-numeric
+/// `userAccountControl` value is an error; it must not silently
+/// fall back to enabled.
+pub fn evaluate_enabled_expression(
+    expr: &str,
+    user_account_control: Option<&str>,
+) -> QidResult<bool> {
+    validate_enabled_expression(expr)?;
+    let raw = user_account_control.ok_or_else(|| QidError::Internal {
+        message: "missing userAccountControl for enabled expression".to_string(),
+    })?;
+    let flags = raw.trim().parse::<u64>().map_err(|_| QidError::Internal {
+        message: "malformed userAccountControl value: expected unsigned integer".to_string(),
+    })?;
+    // Bit 1 = ACCOUNTDISABLE.
+    Ok(flags & 2 == 0)
+}
+
+/// Validate a configured `enabled` expression without entry data.
+///
+/// Accepts only the documented predicate
+/// `!(userAccountControl:1.2.840.113556.1.4.803:=2)`
+/// (ASCII whitespace ignored, attribute name case-insensitive).
+/// Rejects everything else so an empty search result cannot conceal
+/// unsupported configuration.
+fn validate_enabled_expression(expr: &str) -> QidResult<()> {
+    const SUPPORTED_EXPRESSION: &str = "!(userAccountControl:1.2.840.113556.1.4.803:=2)";
+    let compact: String = expr.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    if compact.eq_ignore_ascii_case(SUPPORTED_EXPRESSION) {
+        Ok(())
+    } else {
+        Err(QidError::BadRequest {
+            message: format!(
+                "unsupported enabled expression; only `{SUPPORTED_EXPRESSION}` is supported"
+            ),
+        })
     }
-    true
 }
 
 /// Map raw LDAP attribute values into a canonical `LdapDirectoryEntry`.
@@ -753,7 +791,7 @@ pub fn map_ldap_entry(
 
     let enabled = if let Some(enabled_expr) = &mapping.enabled {
         let uac = get_first_attr(attrs, "userAccountControl")?;
-        evaluate_enabled_expression(enabled_expr, uac.as_deref())
+        evaluate_enabled_expression(enabled_expr, uac.as_deref())?
     } else {
         default_enabled
     };
@@ -804,6 +842,9 @@ pub fn run_ldap_search_with_options(
     use ldap3::SearchEntry;
     use ldap3::controls::{Control, ControlType, PagedResults};
 
+    if let Some(enabled_expr) = mapping.enabled.as_deref() {
+        validate_enabled_expression(enabled_expr)?;
+    }
     if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
         return Err(qid_core::error::QidError::BadRequest {
             message: "LDAP URL must use ldaps:// or ldap:// scheme".to_string(),
@@ -945,6 +986,7 @@ mod tests {
             "manager".to_string(),
             vec!["CN=Bob,OU=Users,DC=example,DC=com".to_string()],
         );
+        attrs.insert("userAccountControl".to_string(), vec!["512".to_string()]);
 
         let mapping = DirectoryAttributeMapping::default();
         let entry = map_ldap_entry(
@@ -1046,19 +1088,19 @@ mod tests {
     }
 
     #[test]
-    fn enabled_user_when_no_account_control_attribute() {
+    fn missing_user_account_control_is_an_error() {
         let attrs = std::collections::BTreeMap::new();
 
         let mapping = DirectoryAttributeMapping::default();
-        let entry = map_ldap_entry(
+        let error = map_ldap_entry(
             "CN=No UAC,OU=Users,DC=example,DC=com",
             &attrs,
             &mapping,
             true,
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert!(entry.enabled);
+        assert!(error.message().contains("missing userAccountControl"));
     }
 
     #[test]
@@ -1073,6 +1115,7 @@ mod tests {
         let mapping = DirectoryAttributeMapping {
             uid: Some("cn".to_string()),
             mail: Some("proxyAddresses".to_string()),
+            enabled: None,
             ..Default::default()
         };
 
@@ -1127,26 +1170,151 @@ mod tests {
 
     #[test]
     fn evaluate_enabled_true_for_normal_account() {
-        assert!(evaluate_enabled_expression(
-            "!(userAccountControl:1.2.840.113556.1.4.803:=2)",
-            Some("512")
-        ));
+        assert!(
+            evaluate_enabled_expression(
+                "!(userAccountControl:1.2.840.113556.1.4.803:=2)",
+                Some("512")
+            )
+            .unwrap()
+        );
     }
 
     #[test]
     fn evaluate_enabled_false_for_disabled_account() {
-        assert!(!evaluate_enabled_expression(
-            "!(userAccountControl:1.2.840.113556.1.4.803:=2)",
-            Some("514")
-        ));
+        assert!(
+            !evaluate_enabled_expression(
+                "!(userAccountControl:1.2.840.113556.1.4.803:=2)",
+                Some("514")
+            )
+            .unwrap()
+        );
     }
 
     #[test]
-    fn evaluate_enabled_defaults_true() {
-        assert!(evaluate_enabled_expression(
+    fn evaluate_enabled_accepts_whitespace_and_case_variation() {
+        assert!(
+            evaluate_enabled_expression(
+                "! (USERACCOUNTCONTROL : 1.2.840.113556.1.4.803 := 2)",
+                Some("512")
+            )
+            .unwrap()
+        );
+        assert!(
+            !evaluate_enabled_expression(
+                "! (USERACCOUNTCONTROL : 1.2.840.113556.1.4.803 := 2)",
+                Some("514")
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn evaluate_enabled_rejects_inverse_predicate() {
+        let error = evaluate_enabled_expression(
+            "(userAccountControl:1.2.840.113556.1.4.803:=2)",
+            Some("512"),
+        )
+        .unwrap_err();
+        assert!(error.message().contains("unsupported enabled expression"));
+    }
+
+    #[test]
+    fn evaluate_enabled_rejects_unrelated_expression() {
+        let error = evaluate_enabled_expression("(objectClass=user)", Some("512")).unwrap_err();
+        assert!(error.message().contains("unsupported enabled expression"));
+    }
+
+    #[test]
+    fn evaluate_enabled_rejects_missing_user_account_control() {
+        let error =
+            evaluate_enabled_expression("!(userAccountControl:1.2.840.113556.1.4.803:=2)", None)
+                .unwrap_err();
+        assert!(error.message().contains("missing userAccountControl"));
+    }
+
+    #[test]
+    fn evaluate_enabled_rejects_malformed_user_account_control() {
+        let error = evaluate_enabled_expression(
             "!(userAccountControl:1.2.840.113556.1.4.803:=2)",
-            None
-        ));
+            Some("not-a-number"),
+        )
+        .unwrap_err();
+        assert!(error.message().contains("malformed userAccountControl"));
+    }
+
+    #[test]
+    fn map_ldap_entry_rejects_unsupported_enabled_expression() {
+        let mut attrs = std::collections::BTreeMap::new();
+        attrs.insert("sAMAccountName".to_string(), vec!["alice".to_string()]);
+        attrs.insert("userAccountControl".to_string(), vec!["512".to_string()]);
+        let mapping = DirectoryAttributeMapping {
+            enabled: Some("(userAccountControl:1.2.840.113556.1.4.803:=2)".to_string()),
+            ..Default::default()
+        };
+        let error = map_ldap_entry(
+            "CN=Alice,OU=Users,DC=example,DC=com",
+            &attrs,
+            &mapping,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.message().contains("unsupported enabled expression"));
+    }
+
+    #[test]
+    fn map_ldap_entry_rejects_malformed_user_account_control() {
+        let attrs = std::collections::BTreeMap::from([
+            ("sAMAccountName".to_string(), vec!["alice".to_string()]),
+            ("userAccountControl".to_string(), vec!["bogus".to_string()]),
+        ]);
+        let error = map_ldap_entry(
+            "CN=Alice,OU=Users,DC=example,DC=com",
+            &attrs,
+            &DirectoryAttributeMapping::default(),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.message().contains("malformed userAccountControl"));
+    }
+
+    #[test]
+    fn ldap_search_entrypoints_reject_unsupported_enabled_expression_before_connecting() {
+        let mapping = DirectoryAttributeMapping {
+            enabled: Some("(userAccountControl:1.2.840.113556.1.4.803:=2)".to_string()),
+            ..Default::default()
+        };
+
+        let error = run_ldap_search(
+            "not-an-ldap-url",
+            None,
+            None,
+            "dc=example,dc=com",
+            "(objectClass=user)",
+            &mapping,
+            1,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.message().contains("unsupported enabled expression"));
+
+        let error = run_ldap_search_with_options(
+            "not-an-ldap-url",
+            None,
+            None,
+            "dc=example,dc=com",
+            "(objectClass=user)",
+            &mapping,
+            LdapSearchOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.message().contains("unsupported enabled expression"));
+    }
+
+    #[test]
+    fn validate_enabled_expression_rejects_unsupported_upfront() {
+        let error = validate_enabled_expression("(objectClass=user)").unwrap_err();
+        assert!(error.message().contains("unsupported enabled expression"));
+        validate_enabled_expression("!(userAccountControl:1.2.840.113556.1.4.803:=2)").unwrap();
     }
 
     #[test]

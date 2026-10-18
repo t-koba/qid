@@ -986,6 +986,9 @@ pub struct DirectoryAttributeMapping {
     pub department: Option<String>,
     #[serde(default)]
     pub manager_dn: Option<String>,
+    /// LDAP enabled predicate. The connector currently supports only
+    /// `!(userAccountControl:1.2.840.113556.1.4.803:=2)`; unsupported expressions
+    /// and entries with missing or malformed `userAccountControl` fail closed.
     #[serde(default)]
     pub enabled: Option<String>,
 }

@@ -216,6 +216,60 @@ fn shared_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Run operations with an owned driver. JoinSet aborts the driver on cancellation;
+/// unlike ldap3::drive!, this never leaves a detached connection task behind.
+/// Callers choose settings: production must continue to require StartTLS or LDAPS.
+async fn with_ldap_session<T>(
+    settings: ldap3::LdapConnSettings,
+    url: &str,
+    timeout_secs: u64,
+    operation: impl AsyncFnOnce(&mut ldap3::Ldap) -> QidResult<T>,
+) -> QidResult<T> {
+    use std::time::Duration;
+
+    let (conn, mut ldap) = ldap3::LdapConnAsync::with_settings(settings, url)
+        .await
+        .map_err(|e| QidError::Internal {
+            message: format!("LDAP connect to {url} failed: {e}"),
+        })?;
+    let mut driver = tokio::task::JoinSet::new();
+    driver.spawn(conn.drive());
+    let timeout = Duration::from_secs(timeout_secs);
+    ldap.with_timeout(timeout);
+    let result = operation(&mut ldap).await;
+
+    // Always try unbind, including after bind/search errors. Bound cleanup even
+    // if the transport cannot send, then drop the last handle to close the driver.
+    let unbind = tokio::time::timeout(timeout, ldap.unbind())
+        .await
+        .map_err(|e| QidError::Internal {
+            message: format!("LDAP unbind timed out: {e}"),
+        })
+        .and_then(|r| {
+            r.map_err(|e| QidError::Internal {
+                message: format!("LDAP unbind failed: {e}"),
+            })
+        });
+    drop(ldap);
+    let closed = match tokio::time::timeout(timeout, driver.join_next()).await {
+        Ok(Some(Ok(Ok(())))) => Ok(()),
+        other => Err(QidError::Internal {
+            message: format!("LDAP connection driver failed to close cleanly: {other:?}"),
+        }),
+    };
+    // Observe both cleanup results, but preserve the original operation error.
+    if let Err(error) = &unbind {
+        tracing::warn!(%error, "LDAP session cleanup failed");
+    }
+    if let Err(error) = &closed {
+        tracing::warn!(%error, "LDAP driver cleanup failed");
+    }
+    match result {
+        Err(error) => Err(error),
+        Ok(value) => unbind.and(closed).map(|()| value),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_ldap_search(
     url: &str,
@@ -228,7 +282,6 @@ fn run_ldap_search(
     tls_insecure: bool,
 ) -> QidResult<Vec<LdapDirectoryEntry>> {
     use ldap3::SearchEntry;
-    use std::time::Duration;
 
     // INTEROP §4513: enforce TLS for LDAP plain bind.
     // Reject non-TLS URLs unless the connection uses a Unix socket.
@@ -244,48 +297,42 @@ fn run_ldap_search(
         let settings = ldap3::LdapConnSettings::new()
             .set_starttls(use_starttls)
             .set_no_tls_verify(tls_insecure);
-        let (_, mut ldap) = ldap3::LdapConnAsync::with_settings(settings, &url)
-            .await
-            .map_err(|e| qid_core::error::QidError::Internal {
-                message: format!("LDAP connect to {url} failed: {e}"),
-            })?;
-        ldap.with_timeout(Duration::from_secs(timeout_secs));
+        with_ldap_session(settings, &url, timeout_secs, async |ldap| {
+            if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
+                ldap.simple_bind(dn, pw).await.map_err(|e| {
+                    qid_core::error::QidError::Internal {
+                        message: format!("LDAP bind failed: {e}"),
+                    }
+                })?;
+            }
 
-        if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
-            ldap.simple_bind(dn, pw)
+            let ldap3::SearchResult(entries, _res) = ldap
+                .search(
+                    search_base,
+                    ldap3::Scope::Subtree,
+                    search_filter,
+                    vec!["*", "userAccountControl"],
+                )
                 .await
                 .map_err(|e| qid_core::error::QidError::Internal {
-                    message: format!("LDAP bind failed: {e}"),
+                    message: format!("LDAP search failed: {e}"),
                 })?;
-        }
 
-        let ldap3::SearchResult(entries, _res) = ldap
-            .search(
-                search_base,
-                ldap3::Scope::Subtree,
-                search_filter,
-                vec!["*", "userAccountControl"],
-            )
-            .await
-            .map_err(|e| qid_core::error::QidError::Internal {
-                message: format!("LDAP search failed: {e}"),
-            })?;
+            let result: Vec<LdapDirectoryEntry> = entries
+                .into_iter()
+                .map(|entry| {
+                    let se = SearchEntry::construct(entry);
+                    let mut attrs = std::collections::BTreeMap::new();
+                    for (k, v) in se.attrs {
+                        attrs.insert(k, v);
+                    }
+                    map_ldap_entry(&se.dn, &attrs, mapping, true)
+                })
+                .collect();
 
-        ldap.unbind().await.ok();
-
-        let result: Vec<LdapDirectoryEntry> = entries
-            .into_iter()
-            .map(|entry| {
-                let se = SearchEntry::construct(entry);
-                let mut attrs = std::collections::BTreeMap::new();
-                for (k, v) in se.attrs {
-                    attrs.insert(k, v);
-                }
-                map_ldap_entry(&se.dn, &attrs, mapping, true)
-            })
-            .collect();
-
-        Ok(result)
+            Ok(result)
+        })
+        .await
     })
 }
 
@@ -692,7 +739,6 @@ pub fn run_ldap_search_with_options(
 ) -> QidResult<Vec<LdapDirectoryEntry>> {
     use ldap3::SearchEntry;
     use ldap3::controls::{Control, ControlType, PagedResults};
-    use std::time::Duration;
 
     if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
         return Err(qid_core::error::QidError::BadRequest {
@@ -708,79 +754,74 @@ pub fn run_ldap_search_with_options(
             .set_no_tls_verify(false);
         // Note: tls_insecure is not passed into this function; the
         // paged-search variant currently defaults to strict verification.
-        let (_, mut ldap) = ldap3::LdapConnAsync::with_settings(settings, &url)
-            .await
-            .map_err(|e| qid_core::error::QidError::Internal {
-                message: format!("LDAP connect to {url} failed: {e}"),
-            })?;
-        ldap.with_timeout(Duration::from_secs(options.timeout_secs));
+        with_ldap_session(settings, &url, options.timeout_secs, async |ldap| {
+            if options.use_sasl {
+                if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
+                    ldap_sasl_scram_sha256_bind(ldap, dn, pw)
+                        .await
+                        .map_err(|e| qid_core::error::QidError::Internal {
+                            message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
+                        })?;
+                }
+            } else if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
+                ldap.simple_bind(dn, pw).await.map_err(|e| {
+                    qid_core::error::QidError::Internal {
+                        message: format!("LDAP bind failed: {e}"),
+                    }
+                })?;
+            }
 
-        if options.use_sasl {
-            if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
-                ldap_sasl_scram_sha256_bind(&mut ldap, dn, pw)
+            let page_size = options.page_size.unwrap_or(0);
+            let mut all_entries = Vec::new();
+            let mut cookie = Vec::new();
+
+            loop {
+                if page_size > 0 {
+                    ldap.with_controls(PagedResults {
+                        size: page_size as i32,
+                        cookie: cookie.clone(),
+                    });
+                }
+                let ldap3::SearchResult(entries, res) = ldap
+                    .search(
+                        search_base,
+                        ldap3::Scope::Subtree,
+                        search_filter,
+                        vec!["*", "userAccountControl"],
+                    )
                     .await
                     .map_err(|e| qid_core::error::QidError::Internal {
-                        message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
+                        message: format!("LDAP search failed: {e}"),
                     })?;
-            }
-        } else if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
-            ldap.simple_bind(dn, pw)
-                .await
-                .map_err(|e| qid_core::error::QidError::Internal {
-                    message: format!("LDAP bind failed: {e}"),
-                })?;
-        }
-
-        let page_size = options.page_size.unwrap_or(0);
-        let mut all_entries = Vec::new();
-        let mut cookie = Vec::new();
-
-        loop {
-            if page_size > 0 {
-                ldap.with_controls(PagedResults {
-                    size: page_size as i32,
-                    cookie: cookie.clone(),
-                });
-            }
-            let ldap3::SearchResult(entries, res) = ldap
-                .search(
-                    search_base,
-                    ldap3::Scope::Subtree,
-                    search_filter,
-                    vec!["*", "userAccountControl"],
-                )
-                .await
-                .map_err(|e| qid_core::error::QidError::Internal {
-                    message: format!("LDAP search failed: {e}"),
-                })?;
-            if page_size > 0 {
-                let raw = res.ctrls.iter().find_map(|ctrl| {
-                    if let Control(Some(ControlType::PagedResults), raw) = ctrl {
-                        Some(raw)
-                    } else {
-                        None
+                if page_size > 0 {
+                    let raw = res.ctrls.iter().find_map(|ctrl| {
+                        if let Control(Some(ControlType::PagedResults), raw) = ctrl {
+                            Some(raw)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(raw) = raw {
+                        let pr: PagedResults = raw.parse();
+                        cookie = pr.cookie;
                     }
-                });
-                if let Some(raw) = raw {
-                    let pr: PagedResults = raw.parse();
-                    cookie = pr.cookie;
+                }
+                for entry in entries {
+                    let se = SearchEntry::construct(entry);
+                    let mut attrs = std::collections::BTreeMap::new();
+                    for (k, v) in se.attrs {
+                        attrs.insert(k, v);
+                    }
+                    all_entries.push(map_ldap_entry(&se.dn, &attrs, mapping, true));
+                }
+                if page_size == 0 || cookie.is_empty() {
+                    break;
                 }
             }
-            for entry in entries {
-                let se = SearchEntry::construct(entry);
-                let mut attrs = std::collections::BTreeMap::new();
-                for (k, v) in se.attrs {
-                    attrs.insert(k, v);
-                }
-                all_entries.push(map_ldap_entry(&se.dn, &attrs, mapping, true));
-            }
-            if page_size == 0 || cookie.is_empty() {
-                break;
-            }
-        }
 
-        ldap.unbind().await.ok();
-        Ok(all_entries)
+            Ok(all_entries)
+        })
+        .await
     })
 }
 
@@ -1073,3 +1114,6 @@ mod tests {
         assert!(err.message().contains("invalid event"));
     }
 }
+
+#[cfg(test)]
+mod driver_tests;

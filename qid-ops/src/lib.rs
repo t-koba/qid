@@ -13,7 +13,6 @@ pub use keyring::*;
 
 use qid_core::error::{QidError, QidResult};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use ulid::Ulid;
 
@@ -21,9 +20,7 @@ use ulid::Ulid;
 // Shared utility functions
 // ---------------------------------------------------------------------------
 
-pub fn sha256_hex(input: impl AsRef<[u8]>) -> String {
-    format!("{:x}", Sha256::digest(input.as_ref()))
-}
+pub use qid_core::util::sha256_hex;
 
 pub(crate) fn bad_request(message: impl Into<String>) -> QidError {
     QidError::BadRequest {

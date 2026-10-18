@@ -10,7 +10,6 @@ use axum::{
 use qid_core::{state::SharedState, tenant::RealmId};
 use qid_storage::prelude::*;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use super::not_found_response;
@@ -222,8 +221,8 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
             message: format!("workload SVID certificate signing failed: {error}"),
         })?;
     let cert_der = cert.der().as_ref();
-    let x5t_s256 = hex::encode(Sha256::digest(cert_der));
-    let csr_sha256 = hex::encode(Sha256::digest(leaf_key.public_key_der()));
+    let x5t_s256 = qid_core::util::sha256_hex(cert_der);
+    let csr_sha256 = qid_core::util::sha256_hex(leaf_key.public_key_der());
     let serial_number = ulid::Ulid::new().to_string();
     let certificate_pem = format!("{}{}", cert.pem(), ca_cert.pem());
     let certificate = WorkloadCertificate {

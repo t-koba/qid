@@ -27,7 +27,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Import HR joiner/mover/leaver records from JSON.
+    /// Import HR lifecycle records; duplicate/ambiguous external_ids conflict, and omitted mover department/manager values clear stored attributes.
     HrImport {
         #[arg(long)]
         realm: String,

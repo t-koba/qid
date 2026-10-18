@@ -16,6 +16,13 @@ pub enum EmploymentState {
     LeavePending,
 }
 
+/// One HR-driven lifecycle input row.
+///
+/// `department` and `manager_external_id` follow mover-clear semantics: on a
+/// [`LifecycleEvent::Mover`] record, `Some` sets the stored enterprise value
+/// and `None` clears the previously stored value. On joiner/leaver records
+/// `None` preserves the stored value. Unrelated enterprise attributes are
+/// always preserved.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrRecord {
     pub external_id: String,
@@ -42,19 +49,55 @@ pub struct HrImportResult {
     pub action: HrImportAction,
 }
 
+/// Import HR joiner/mover/leaver records with whole-batch semantics.
+///
+/// The complete `records` input is preflighted before any write:
+/// a repeated [`HrRecord::external_id`] anywhere in one batch fails with
+/// [`QidError::Conflict`] (a batch is not an ordered event stream, so two
+/// rows for one key never apply sequentially). All existing targets are also
+/// resolved uniquely and missing leaver targets are validated before the
+/// first write, so a later ambiguous or missing key cannot leave earlier
+/// deterministic prefix mutations behind.
+///
+/// Target lookup never selects the first repository-order match: it matches
+/// raw [`ScimUser::external_id`] and fails closed with [`QidError::Conflict`]
+/// when more than one realm user shares it. HR records carry no provider
+/// identity, so any shared `external_id` is ambiguous (including
+/// provider-owned duplicates); unique targets keep the previous
+/// create/update/deprovision behavior. Ownership is never inferred from
+/// forgeable `enterprise_json`. Storage errors after
+/// preflight may still leave prefix writes; no repository transaction is
+/// claimed.
 pub async fn import_hr_records<R: Repository>(
     state: &SharedState<R>,
     realm_id: &str,
     records: Vec<HrRecord>,
 ) -> QidResult<Vec<HrImportResult>> {
     let realm = RealmId::from(realm_id.to_string());
+    let mut seen = BTreeSet::new();
+    for record in &records {
+        if !seen.insert(record.external_id.clone()) {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "duplicate HR external_id '{}' in batch; a batch carries at most one record per external_id",
+                    record.external_id
+                ),
+            });
+        }
+    }
     let existing = state.repo.list_scim_users(&realm).await?;
-    let mut results = Vec::with_capacity(records.len());
+    let mut planned: Vec<(HrRecord, Option<ScimUser>)> = Vec::with_capacity(records.len());
     for record in records {
-        let current = existing
-            .iter()
-            .find(|user| user.external_id.as_deref() == Some(record.external_id.as_str()))
-            .cloned();
+        let current = find_hr_user(&existing, record.external_id.as_str())?.cloned();
+        if matches!(record.event, LifecycleEvent::Leaver) && current.is_none() {
+            return Err(QidError::NotFound {
+                resource: format!("hr user {}", record.external_id),
+            });
+        }
+        planned.push((record, current));
+    }
+    let mut results = Vec::with_capacity(planned.len());
+    for (record, current) in planned {
         let result = match (record.event.clone(), current) {
             (LifecycleEvent::Joiner | LifecycleEvent::Mover, Some(mut user)) => {
                 apply_hr_record(&mut user, &record);

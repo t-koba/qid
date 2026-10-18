@@ -227,12 +227,22 @@ cargo run --bin qid-worker -- --config target/qid-dev/qid.yaml key-rotation-exec
 
 | Command | Purpose |
 | --- | --- |
-| `hr-import` | Import HR joiner/mover/leaver records from JSON. |
+| `hr-import` | Import HR joiner/mover/leaver records from JSON; duplicate or ambiguous identities conflict. |
 | `ldap-sync` | Synchronize LDAP/AD directory entries from JSON (requires `--provider-id`; IDs must stay stable, `externalId` remains the raw DN). |
 | `deprovision-sla` | Audit leaver deprovisioning SLA from JSON events (optional `provider_id` disambiguates shared DNs; ambiguous legacy events conflict). |
 | `dynamic-group-sync` | Synchronize a dynamic group from a JSON rule. |
 | `expand-group` | Expand nested SCIM group membership. |
 | `manager-chain` | Resolve a user's manager chain. |
+
+`hr-import` accepts a JSON array of lifecycle records. An `external_id` may
+appear only once per batch; repeated keys and identities matching multiple
+realm users fail during preflight before writes. Missing leaver targets are
+also rejected before the first write. For mover records, an omitted or `null`
+`department` or `manager_external_id` clears the stored organizational
+attribute; non-null values set it. On joiner/leaver records, omitted or `null`
+values preserve the stored attribute. Preflight prevents deterministic input
+errors from causing prefix writes, but storage failures after preflight are not
+transactional and may leave earlier writes applied.
 
 Each `deprovision-sla` input element is a JSON object such as:
 

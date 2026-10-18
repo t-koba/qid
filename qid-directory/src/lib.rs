@@ -187,6 +187,30 @@ fn find_deprovision_user<'a>(
     }
 }
 
+/// Resolve the single realm user an HR record refers to.
+///
+/// HR records carry no provider identity, so a shared raw `external_id` is
+/// ambiguous even when matches have different server-owned directory owners.
+/// `enterprise_json` is never consulted. Returns `Ok(None)` when nothing
+/// matches and fails closed with `Conflict` for multiple matches; repository
+/// order never selects the target.
+fn find_hr_user<'a>(users: &'a [ScimUser], external_id: &str) -> QidResult<Option<&'a ScimUser>> {
+    let mut candidates = users
+        .iter()
+        .filter(|user| user.external_id.as_deref() == Some(external_id));
+    let Some(user) = candidates.next() else {
+        return Ok(None);
+    };
+    if candidates.next().is_some() {
+        return Err(QidError::Conflict {
+            message: format!(
+                "multiple users share HR external_id '{external_id}'; import target is ambiguous"
+            ),
+        });
+    }
+    Ok(Some(user))
+}
+
 /// Audit leaver deprovisioning SLA without order-dependent user selection.
 ///
 /// Provider-scoped LDAP sync permits identical raw DNs across providers, so
@@ -746,7 +770,8 @@ fn apply_hr_record(user: &mut ScimUser, record: &HrRecord) {
     user.active = true;
     // Any reactivation clears the authoritative timestamp and stale marker so
     // a later disable gets a fresh timestamp. Limited to lifecycle metadata;
-    // mover department/manager handling stays unchanged.
+    // department/manager clearing follows the mover-clear contract in
+    // `mark_hr_source` (Mover `None` clears, other events preserve).
     clear_deprovisioned(user);
     user.name_json = record
         .display_name
@@ -761,23 +786,43 @@ fn apply_hr_record(user: &mut ScimUser, record: &HrRecord) {
     mark_hr_source(user, record);
 }
 
+/// Project HR organizational fields into stored enterprise attributes.
+///
+/// A `Mover` record with `department`/`manager_external_id` set to `None`
+/// clears that previously stored enterprise field, so former organizational
+/// attributes do not linger. `Joiner`/`Leaver` records with `None` preserve
+/// the stored value. `Some` always sets. Unrelated enterprise attributes are
+/// preserved.
 fn mark_hr_source(user: &mut ScimUser, record: &HrRecord) {
     let mut enterprise = user
         .enterprise_json
         .as_object()
         .cloned()
         .unwrap_or_default();
-    if let Some(department) = &record.department {
-        enterprise.insert(
-            "department".to_string(),
-            serde_json::Value::String(department.clone()),
-        );
+    let clears_on_none = matches!(record.event, LifecycleEvent::Mover);
+    match &record.department {
+        Some(department) => {
+            enterprise.insert(
+                "department".to_string(),
+                serde_json::Value::String(department.clone()),
+            );
+        }
+        None if clears_on_none => {
+            enterprise.remove("department");
+        }
+        None => {}
     }
-    if let Some(manager) = &record.manager_external_id {
-        enterprise.insert(
-            "manager".to_string(),
-            serde_json::json!({ "externalId": manager }),
-        );
+    match &record.manager_external_id {
+        Some(manager) => {
+            enterprise.insert(
+                "manager".to_string(),
+                serde_json::json!({ "externalId": manager }),
+            );
+        }
+        None if clears_on_none => {
+            enterprise.remove("manager");
+        }
+        None => {}
     }
     enterprise.insert(
         "source".to_string(),

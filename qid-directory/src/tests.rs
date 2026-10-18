@@ -1524,6 +1524,476 @@ fn find_deprovision_user_is_order_independent_for_shared_dn() {
     );
 }
 
+#[tokio::test]
+async fn hr_import_rejects_duplicate_joiners_before_any_write() {
+    let state = setup().await;
+    let err = import_hr_records(
+        &state,
+        "corp",
+        vec![
+            HrRecord {
+                external_id: "hr-dup".to_string(),
+                user_name: "dup-one@example.com".to_string(),
+                email: Some("dup-one@example.com".to_string()),
+                display_name: None,
+                department: Some("Engineering".to_string()),
+                manager_external_id: None,
+                event: LifecycleEvent::Joiner,
+            },
+            HrRecord {
+                external_id: "hr-dup".to_string(),
+                user_name: "dup-two@example.com".to_string(),
+                email: Some("dup-two@example.com".to_string()),
+                display_name: None,
+                department: Some("Sales".to_string()),
+                manager_external_id: None,
+                event: LifecycleEvent::Joiner,
+            },
+        ],
+    )
+    .await
+    .expect_err("repeated HR key must conflict");
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    assert!(users.is_empty(), "preflight must leave storage unchanged");
+}
+
+#[tokio::test]
+async fn hr_import_rejects_joiner_leaver_repeated_key_before_any_create() {
+    let state = setup().await;
+    let err = import_hr_records(
+        &state,
+        "corp",
+        vec![
+            HrRecord {
+                external_id: "hr-flap".to_string(),
+                user_name: "flap@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: None,
+                manager_external_id: None,
+                event: LifecycleEvent::Joiner,
+            },
+            HrRecord {
+                external_id: "hr-flap".to_string(),
+                user_name: "flap@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: None,
+                manager_external_id: None,
+                event: LifecycleEvent::Leaver,
+            },
+        ],
+    )
+    .await
+    .expect_err("repeated key across joiner/leaver must conflict");
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    assert!(
+        users.is_empty(),
+        "joiner prefix must not be created before the repeated-key conflict"
+    );
+
+    // A missing leaver later in the batch also fails before earlier writes.
+    let err = import_hr_records(
+        &state,
+        "corp",
+        vec![
+            HrRecord {
+                external_id: "hr-new".to_string(),
+                user_name: "new@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: None,
+                manager_external_id: None,
+                event: LifecycleEvent::Joiner,
+            },
+            HrRecord {
+                external_id: "hr-missing".to_string(),
+                user_name: "missing@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: None,
+                manager_external_id: None,
+                event: LifecycleEvent::Leaver,
+            },
+        ],
+    )
+    .await
+    .expect_err("missing leaver target must fail before writes");
+    assert!(
+        matches!(err, QidError::NotFound { .. }),
+        "expected not found, got {err:?}"
+    );
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    assert!(
+        users.is_empty(),
+        "valid prefix must not be written before the missing-target failure"
+    );
+}
+
+#[tokio::test]
+async fn hr_import_leaver_conflicts_on_provider_owned_duplicates_without_mutation() {
+    let state = setup().await;
+    for (id, provider) in [
+        ("user-shared-a", "provider-a"),
+        ("user-shared-b", "provider-b"),
+    ] {
+        state
+            .repo
+            .create_scim_user(&ScimUser {
+                id: id.to_string(),
+                realm_id: "corp".to_string(),
+                external_id: Some("hr-shared".to_string()),
+                user_name: format!("{id}@example.com"),
+                name_json: serde_json::json!({}),
+                emails_json: serde_json::json!([]),
+                enterprise_json: serde_json::json!({}),
+                directory_provider_id: Some(provider.to_string()),
+                deprovisioned_at: None,
+                active: true,
+            })
+            .await
+            .unwrap();
+    }
+    state
+        .repo
+        .create_scim_user(&ScimUser {
+            id: "user-ok".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some("hr-ok".to_string()),
+            user_name: "ok@example.com".to_string(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({ "department": "Engineering" }),
+            directory_provider_id: None,
+            deprovisioned_at: None,
+            active: true,
+        })
+        .await
+        .unwrap();
+
+    // A single ambiguous leaver fails closed and changes neither duplicate.
+    let err = import_hr_records(
+        &state,
+        "corp",
+        vec![HrRecord {
+            external_id: "hr-shared".to_string(),
+            user_name: "shared@example.com".to_string(),
+            email: None,
+            display_name: None,
+            department: None,
+            manager_external_id: None,
+            event: LifecycleEvent::Leaver,
+        }],
+    )
+    .await
+    .expect_err("shared external_id must conflict");
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+    for id in ["user-shared-a", "user-shared-b"] {
+        let user = state.repo.get_scim_user(id).await.unwrap().unwrap();
+        assert!(user.active, "{id} must stay active");
+        assert_eq!(user.deprovisioned_at, None, "{id} must stay unmarked");
+    }
+
+    // A later ambiguous key also blocks an earlier deterministic prefix write.
+    let err = import_hr_records(
+        &state,
+        "corp",
+        vec![
+            HrRecord {
+                external_id: "hr-ok".to_string(),
+                user_name: "ok@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: Some("Platform".to_string()),
+                manager_external_id: None,
+                event: LifecycleEvent::Mover,
+            },
+            HrRecord {
+                external_id: "hr-shared".to_string(),
+                user_name: "shared@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: None,
+                manager_external_id: None,
+                event: LifecycleEvent::Leaver,
+            },
+        ],
+    )
+    .await
+    .expect_err("ambiguous suffix must block prefix writes");
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+    let ok = state.repo.get_scim_user("user-ok").await.unwrap().unwrap();
+    assert_eq!(
+        ok.enterprise_json
+            .get("department")
+            .and_then(|v| v.as_str()),
+        Some("Engineering"),
+        "deterministic prefix must not be written before the conflict"
+    );
+    for id in ["user-shared-a", "user-shared-b"] {
+        let user = state.repo.get_scim_user(id).await.unwrap().unwrap();
+        assert!(user.active, "{id} must stay active");
+    }
+}
+
+#[test]
+fn find_hr_user_is_order_independent_for_shared_external_id() {
+    let shared = "hr-shared".to_string();
+    let user_a = ScimUser {
+        id: "user-shared-a".to_string(),
+        realm_id: "corp".to_string(),
+        external_id: Some(shared.clone()),
+        user_name: "shared-a@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({}),
+        directory_provider_id: Some("provider-a".to_string()),
+        deprovisioned_at: None,
+        active: true,
+    };
+    let user_b = ScimUser {
+        id: "user-shared-b".to_string(),
+        realm_id: "corp".to_string(),
+        external_id: Some(shared.clone()),
+        user_name: "shared-b@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({
+            "ldap_dn": shared.clone(),
+            "source": LDAP_SOURCE_SCHEMA,
+        }),
+        directory_provider_id: Some("provider-b".to_string()),
+        deprovisioned_at: None,
+        active: true,
+    };
+    let forward = vec![user_a.clone(), user_b.clone()];
+    let mut reversed = forward.clone();
+    reversed.reverse();
+    for users in [&forward, &reversed] {
+        let err = find_hr_user(users, &shared).expect_err("shared key must conflict");
+        assert!(
+            matches!(err, QidError::Conflict { .. }),
+            "expected conflict, got {err:?}"
+        );
+    }
+    // A unique target resolves the same way in either order, and forged
+    // enterprise markers never create a match on their own.
+    let forged_only = ScimUser {
+        id: "user-forged".to_string(),
+        realm_id: "corp".to_string(),
+        external_id: Some("hr-other".to_string()),
+        user_name: "forged@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({ "ldap_dn": shared.clone() }),
+        directory_provider_id: None,
+        deprovisioned_at: None,
+        active: true,
+    };
+    assert!(
+        find_hr_user(std::slice::from_ref(&forged_only), &shared)
+            .unwrap()
+            .is_none()
+    );
+    for users in [
+        vec![user_a.clone(), forged_only.clone()],
+        vec![forged_only.clone(), user_a.clone()],
+    ] {
+        let resolved = find_hr_user(&users, &shared)
+            .unwrap()
+            .expect("unique target must resolve");
+        assert_eq!(resolved.id, "user-shared-a");
+    }
+}
+
+#[tokio::test]
+async fn hr_mover_none_clears_department_and_manager_with_group_and_chain_effects() {
+    let state = setup().await;
+    import_hr_records(
+        &state,
+        "corp",
+        vec![
+            HrRecord {
+                external_id: "hr-manager".to_string(),
+                user_name: "manager@example.com".to_string(),
+                email: Some("manager@example.com".to_string()),
+                display_name: None,
+                department: Some("Engineering".to_string()),
+                manager_external_id: None,
+                event: LifecycleEvent::Joiner,
+            },
+            HrRecord {
+                external_id: "hr-alice".to_string(),
+                user_name: "alice@example.com".to_string(),
+                email: Some("alice@example.com".to_string()),
+                display_name: None,
+                department: Some("Engineering".to_string()),
+                manager_external_id: Some("hr-manager".to_string()),
+                event: LifecycleEvent::Joiner,
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    let alice_id = users
+        .iter()
+        .find(|user| user.external_id.as_deref() == Some("hr-alice"))
+        .unwrap()
+        .id
+        .clone();
+    // Unrelated enterprise data must survive mover clearing.
+    let mut alice = state.repo.get_scim_user(&alice_id).await.unwrap().unwrap();
+    alice.enterprise_json["costCenter"] = serde_json::json!("CC-42");
+    state.repo.update_scim_user(&alice).await.unwrap();
+
+    state
+        .repo
+        .create_scim_group(&ScimGroup {
+            id: "group-eng".to_string(),
+            realm_id: "corp".to_string(),
+            display_name: "eng".to_string(),
+            members_json: serde_json::json!([]),
+        })
+        .await
+        .unwrap();
+    let eng_rule = DynamicGroupRule {
+        match_mode: DynamicGroupMatchMode::All,
+        conditions: vec![DynamicGroupCondition {
+            field: DynamicGroupField::Department,
+            operator: DynamicGroupOperator::Eq,
+            value: Some("Engineering".to_string()),
+        }],
+    };
+    let first = sync_dynamic_group_members(&state, "group-eng", &eng_rule)
+        .await
+        .unwrap();
+    assert!(first.matched_user_ids.contains(&alice_id));
+    let chain = resolve_manager_chain(&state, &alice_id).await.unwrap();
+    assert!(
+        !chain.manager_user_ids.is_empty(),
+        "manager must resolve before clearing"
+    );
+
+    import_hr_records(
+        &state,
+        "corp",
+        vec![HrRecord {
+            external_id: "hr-alice".to_string(),
+            user_name: "alice@example.com".to_string(),
+            email: Some("alice@example.com".to_string()),
+            display_name: None,
+            department: None,
+            manager_external_id: None,
+            event: LifecycleEvent::Mover,
+        }],
+    )
+    .await
+    .unwrap();
+    let cleared = state.repo.get_scim_user(&alice_id).await.unwrap().unwrap();
+    assert!(
+        cleared.enterprise_json.get("department").is_none(),
+        "mover None must clear department"
+    );
+    assert!(
+        cleared.enterprise_json.get("manager").is_none(),
+        "mover None must clear manager"
+    );
+    assert_eq!(
+        cleared.enterprise_json.get("costCenter"),
+        Some(&serde_json::json!("CC-42")),
+        "unrelated enterprise data must survive"
+    );
+
+    let second = sync_dynamic_group_members(&state, "group-eng", &eng_rule)
+        .await
+        .unwrap();
+    assert!(
+        !second.matched_user_ids.contains(&alice_id),
+        "cleared user must leave the department group"
+    );
+    assert!(second.removed_user_ids.contains(&alice_id));
+    let chain = resolve_manager_chain(&state, &alice_id).await.unwrap();
+    assert!(
+        chain.manager_user_ids.is_empty(),
+        "cleared manager must not resolve the former manager"
+    );
+    assert_eq!(chain.unresolved_manager_external_id, None);
+
+    // `Some` still sets after clearing.
+    import_hr_records(
+        &state,
+        "corp",
+        vec![HrRecord {
+            external_id: "hr-alice".to_string(),
+            user_name: "alice@example.com".to_string(),
+            email: Some("alice@example.com".to_string()),
+            display_name: None,
+            department: Some("Research".to_string()),
+            manager_external_id: Some("hr-manager".to_string()),
+            event: LifecycleEvent::Mover,
+        }],
+    )
+    .await
+    .unwrap();
+    let reset = state.repo.get_scim_user(&alice_id).await.unwrap().unwrap();
+    assert_eq!(reset.enterprise_json["department"], "Research");
+    assert_eq!(reset.enterprise_json["manager"]["externalId"], "hr-manager");
+
+    // Joiner `None` preserves instead of clearing.
+    import_hr_records(
+        &state,
+        "corp",
+        vec![HrRecord {
+            external_id: "hr-alice".to_string(),
+            user_name: "alice-renamed@example.com".to_string(),
+            email: Some("alice@example.com".to_string()),
+            display_name: None,
+            department: None,
+            manager_external_id: None,
+            event: LifecycleEvent::Joiner,
+        }],
+    )
+    .await
+    .unwrap();
+    let preserved = state.repo.get_scim_user(&alice_id).await.unwrap().unwrap();
+    assert_eq!(preserved.enterprise_json["department"], "Research");
+    assert_eq!(
+        preserved.enterprise_json["manager"]["externalId"],
+        "hr-manager"
+    );
+}
+
 mod directory_http_truthfulness {
     use super::*;
     use axum::{

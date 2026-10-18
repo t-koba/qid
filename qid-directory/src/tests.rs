@@ -481,7 +481,9 @@ async fn nested_group_expansion_flattens_users_and_stops_cycles() {
             display_name: "root".to_string(),
             members_json: serde_json::json!([
                 {"value":"user-a"},
-                {"value":"group-child", "type":"Group"}
+                {"value":"group-child", "type":"Group"},
+                {"value":"group-missing", "type":"Group"},
+                {"value":"group-other-realm", "type":"Group"}
             ]),
         })
         .await
@@ -496,6 +498,16 @@ async fn nested_group_expansion_flattens_users_and_stops_cycles() {
                 {"value":"user-b"},
                 {"value":"group-root", "type":"Group"}
             ]),
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_scim_group(&ScimGroup {
+            id: "group-other-realm".to_string(),
+            realm_id: "other".to_string(),
+            display_name: "outside".to_string(),
+            members_json: serde_json::json!([{"value":"user-outside"}]),
         })
         .await
         .unwrap();

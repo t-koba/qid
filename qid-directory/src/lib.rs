@@ -330,18 +330,17 @@ fn expand_group(
         let Some(value) = member.get("value").and_then(|v| v.as_str()) else {
             continue;
         };
+        let is_group_member = member
+            .get("type")
+            .and_then(|v| v.as_str())
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("Group"));
         let member_group = all_groups.iter().find(|candidate| {
-            candidate.id == value
-                || member
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|kind| kind.eq_ignore_ascii_case("Group"))
-                    && candidate.display_name == value
+            candidate.id == value || is_group_member && candidate.display_name == value
         });
         if let Some(child_group) = member_group {
             nested_groups.insert(child_group.id.clone());
             expand_group(child_group, all_groups, visited, nested_groups, users);
-        } else {
+        } else if !is_group_member {
             users.insert(value.to_string());
         }
     }

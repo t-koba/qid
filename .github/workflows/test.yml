@@ -136,6 +136,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: llvm-tools-preview
+      - name: Test coverage gate
+        run: bash ./scripts/test-coverage.sh
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
       - name: Check coverage

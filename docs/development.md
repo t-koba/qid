@@ -142,6 +142,7 @@ Install prerequisites:
 ```sh
 cargo install cargo-llvm-cov
 rustup component add llvm-tools-preview
+# python3 is also required: scripts/coverage.sh parses and validates the report with it.
 ```
 
 Run coverage:
@@ -151,7 +152,7 @@ scripts/coverage.sh
 cargo run -p xtask -- coverage --min-pct 50.0
 ```
 
-`scripts/coverage.sh` currently treats `cargo-llvm-cov` failure as non-blocking and exits successfully after printing a warning. Keep that behavior in mind when using it as a release gate.
+`scripts/coverage.sh` is a blocking gate: a `cargo-llvm-cov` failure, an invalid `MIN_LINE_COVERAGE` threshold, a malformed coverage report, or line coverage below the threshold all exit nonzero with a `FAIL` message. `MIN_LINE_COVERAGE` must be a finite decimal in `[0, 100]`; the report must contain nonnegative integer line `count`/`covered` values with `covered <= count`. The gate compares the unrounded coverage ratio against the threshold and displays the percentage rounded to two decimals.
 
 ## Fuzzing
 

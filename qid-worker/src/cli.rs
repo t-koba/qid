@@ -216,7 +216,11 @@ pub(crate) enum Command {
         now: Option<u64>,
         #[arg(long, default_value_t = true)]
         record_audit_event: bool,
-        #[arg(long, default_value_t = false)]
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Refuse execution; non-mutating directory sync plans are not supported"
+        )]
         dry_run: bool,
     },
     /// Plan key rotation actions and record an operational audit event.
@@ -933,7 +937,7 @@ impl WormArchiveTransport for LocalWormArchive {
 mod tests {
     use super::*;
     use qid_core::{
-        models::{AuditEvent, AuditRetentionConfig},
+        models::{AuditEvent, AuditRetentionConfig, ScimUser},
         tenant::RealmId,
     };
     use qid_storage::prelude::*;
@@ -965,6 +969,70 @@ realms:
         )
         .expect("config file");
         (config, store)
+    }
+
+    #[tokio::test]
+    async fn directory_sync_dry_run_is_rejected_without_changing_users_or_audit() {
+        let dir = temp_dir("directory-sync-dry-run");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let (config, store) = write_config(&dir);
+        let initial_user = ScimUser {
+            id: "user-before-dry-run".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some("uid=existing,dc=example,dc=com".to_string()),
+            user_name: "before@example.com".to_string(),
+            name_json: serde_json::json!({"givenName": "Before"}),
+            emails_json: serde_json::json!([{"value": "before@example.com"}]),
+            enterprise_json: serde_json::json!({}),
+            active: true,
+        };
+        let repo = AnyRepository::connect(store.to_str().expect("store path"))
+            .await
+            .expect("repository");
+        repo.create_scim_user(&initial_user)
+            .await
+            .expect("seed user");
+        drop(repo);
+
+        let result = run(Args {
+            config,
+            command: Command::DirectorySync {
+                realm: "corp".to_string(),
+                provider_id: "missing-provider".to_string(),
+                actor: "qid-worker".to_string(),
+                reason: "dry-run safety regression".to_string(),
+                now: Some(100),
+                record_audit_event: true,
+                dry_run: true,
+            },
+        })
+        .await;
+        let error = result.expect_err("dry-run must be rejected before directory lookup");
+        assert!(
+            error
+                .to_string()
+                .contains("directory sync dry-run is not supported")
+        );
+
+        let refreshed = AnyRepository::connect(store.to_str().expect("store path"))
+            .await
+            .expect("repository");
+        let users = refreshed
+            .list_scim_users(&RealmId::from("corp".to_string()))
+            .await
+            .expect("SCIM users");
+        assert_eq!(
+            serde_json::to_value(users).expect("serialize SCIM users"),
+            serde_json::to_value(vec![initial_user]).expect("serialize initial user")
+        );
+        assert!(
+            refreshed
+                .list_audit_events(Some(&RealmId::from("corp".to_string())), 10)
+                .await
+                .expect("audit events")
+                .is_empty()
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     async fn append_audit_event(repo: &AnyRepository, id: &str, created_at: u64) {

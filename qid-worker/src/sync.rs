@@ -195,6 +195,12 @@ pub async fn run_directory_sync_job(
     qid_config: &QidConfig,
     config: DirectorySyncJobConfig,
 ) -> QidResult<DirectorySyncJobReport> {
+    if config.dry_run {
+        return Err(QidError::BadRequest {
+            message: "directory sync dry-run is not supported; refusing to run because sync can mutate user state".to_string(),
+        });
+    }
+
     let provider = match find_directory_provider(qid_config, &config.realm_id, &config.provider_id)
     {
         Ok(provider) => provider,

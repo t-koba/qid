@@ -228,7 +228,7 @@ ops:
 
 ## Directory Synchronization
 
-For scheduled directory jobs, prefer `qid-worker directory-sync` when operating from configured providers:
+For scheduled directory jobs, prefer `qid-worker directory-sync` when operating from configured providers. A non-mutating directory sync plan is not yet supported; `--dry-run` is refused before provider lookup or storage writes rather than risking a mutating preview:
 
 ```sh
 cargo run --bin qid-worker -- --config /etc/qid/qid.yaml directory-sync \

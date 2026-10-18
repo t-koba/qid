@@ -178,18 +178,13 @@ pub(crate) async fn admin_dashboard<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::PlatformAdmin,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match build_admin_dashboard(&state).await {
         Ok(dashboard) => (StatusCode::OK, Json(dashboard)).into_response(),
         Err(e) => qid_http::error_response(e),
@@ -247,18 +242,13 @@ pub(crate) async fn simulate_policy<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<PolicySimulationRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match run_policy_simulation(&state, &realm, req).await {
         Ok(response) => {
             if let Err(e) = append_admin_audit(

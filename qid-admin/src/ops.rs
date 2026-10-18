@@ -103,18 +103,13 @@ pub(crate) async fn plan_key_rotation_admin<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<KeyRotationPlanRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     if req.requirements.is_empty() {
         return qid_http::error_response(QidError::BadRequest {
             message: "key rotation plan requires at least one requirement".to_string(),

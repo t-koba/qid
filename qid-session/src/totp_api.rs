@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
 };
@@ -316,21 +316,15 @@ async fn totp_authenticate<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    let cookie_value = format!(
-        "{}={}; HttpOnly; Secure; Path=/; SameSite={}",
-        session_config.cookie_name, session.id, session_config.same_site,
-    );
-
     let mut headers = HeaderMap::new();
-    let cookie_value = match HeaderValue::from_str(&cookie_value) {
-        Ok(value) => value,
-        Err(e) => {
-            return qid_http::error_response(QidError::Internal {
-                message: format!("failed to build TOTP session cookie header: {e}"),
-            });
-        }
-    };
-    headers.insert(header::SET_COOKIE, cookie_value);
+    if let Err(error) = crate::api::set_session_cookie(
+        &mut headers,
+        session_config,
+        &session.id,
+        "failed to build TOTP session cookie header",
+    ) {
+        return qid_http::error_response(error);
+    }
 
     let body = Json(TotpAuthenticateResponse {
         session_id: session.id,

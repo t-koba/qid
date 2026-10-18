@@ -2,7 +2,7 @@ use anyhow::Context;
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
 };
 use http_body_util::BodyExt;
 use qid_core::{models::User, state::SharedState, test_helpers, util::now_seconds};
@@ -90,7 +90,7 @@ async fn post(
     uri: &str,
     cookie: &str,
     body: Value,
-) -> anyhow::Result<(StatusCode, Value)> {
+) -> anyhow::Result<(StatusCode, Value, HeaderMap)> {
     let response = app
         .oneshot(
             Request::builder()
@@ -102,14 +102,15 @@ async fn post(
         )
         .await?;
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = response.into_body().collect().await?.to_bytes();
-    Ok((status, serde_json::from_slice(&bytes)?))
+    Ok((status, serde_json::from_slice(&bytes)?, headers))
 }
 
 #[tokio::test]
 async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyhow::Result<()> {
     let (app, cookie, repo) = setup().await?;
-    let (status, body) = post(
+    let (status, body, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/enroll",
         &cookie,
@@ -129,7 +130,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
     let confirm_code = verifier.generate_code(&secret, now)?;
     let next_code = verifier.generate_code(&secret, now + 30)?;
 
-    let (status, _) = post(
+    let (status, _, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/verify",
         &cookie,
@@ -139,7 +140,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
     assert_eq!(status, StatusCode::OK);
 
     // The confirmation code must not create a session afterwards.
-    let (status, _) = post(
+    let (status, _, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/authenticate",
         &cookie,
@@ -149,7 +150,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // A fresh code from an adjacent window still authenticates exactly once.
-    let (status, body) = post(
+    let (status, body, headers) = post(
         app.clone(),
         "/api/v1/test/auth/totp/authenticate",
         &cookie,
@@ -157,12 +158,19 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
+    let set_cookie = headers
+        .get("set-cookie")
+        .context("authentication must set a session cookie")?
+        .to_str()
+        .context("session cookie must be valid header text")?;
+    assert!(set_cookie.contains("; HttpOnly; Secure; Path=/; SameSite=Lax"));
     // TOTP-only sessions carry their own non-phishing-resistant ACR with an
     // accurate method claim; exact-match essential-ACR enforcement elsewhere
     // then refuses phishing-resistant requests for them.
     let session_id = body["session_id"]
         .as_str()
         .context("authenticate must return session")?;
+    assert!(set_cookie.starts_with(&format!("__Host-qid={session_id};")));
     let session = repo
         .get_session(session_id)
         .await?
@@ -170,7 +178,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
     assert_eq!(session.acr.as_deref(), Some("urn:qid:acr:totp"));
     assert_eq!(session.amr, vec!["totp".to_string()]);
 
-    let (status, _) = post(
+    let (status, _, _) = post(
         app,
         "/api/v1/test/auth/totp/authenticate",
         &cookie,
@@ -185,7 +193,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
 async fn totp_pending_credential_rejects_authentication_and_bad_confirmation() -> anyhow::Result<()>
 {
     let (app, cookie, _repo) = setup().await?;
-    let (status, body) = post(
+    let (status, body, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/enroll",
         &cookie,
@@ -200,7 +208,7 @@ async fn totp_pending_credential_rejects_authentication_and_bad_confirmation() -
 
     // Pending credentials cannot authenticate, even with a valid code.
     let valid = TotpVerifier::default().generate_code(&secret, now_seconds())?;
-    let (status, _) = post(
+    let (status, _, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/authenticate",
         &cookie,
@@ -211,7 +219,7 @@ async fn totp_pending_credential_rejects_authentication_and_bad_confirmation() -
 
     // A non-numeric code is deterministically invalid and leaves the
     // credential disabled for the later valid confirmation.
-    let (status, _) = post(
+    let (status, _, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/verify",
         &cookie,
@@ -220,7 +228,7 @@ async fn totp_pending_credential_rejects_authentication_and_bad_confirmation() -
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let (status, _) = post(
+    let (status, _, _) = post(
         app,
         "/api/v1/test/auth/totp/verify",
         &cookie,

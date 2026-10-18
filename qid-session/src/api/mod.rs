@@ -1,9 +1,13 @@
 use axum::{
     Extension, Router,
-    http::{HeaderMap, header},
+    http::{HeaderMap, HeaderValue, header},
     routing::post,
 };
-use qid_core::{config::ServerPaths, error::QidError, state::SharedState};
+use qid_core::{
+    config::{BrowserSessionConfig, ServerPaths},
+    error::QidError,
+    state::SharedState,
+};
 
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -14,6 +18,23 @@ use self::email_magic_api::email_magic_routes;
 use self::push_api::push_routes;
 use crate::auth::Authenticator;
 use crate::webauthn::{WebAuthnService, WebAuthnState};
+
+pub(crate) fn set_session_cookie(
+    headers: &mut HeaderMap,
+    config: &BrowserSessionConfig,
+    session_id: &str,
+    error_context: &str,
+) -> Result<(), QidError> {
+    let value = format!(
+        "{}={}; HttpOnly; Secure; Path=/; SameSite={}",
+        config.cookie_name, session_id, config.same_site,
+    );
+    let value = HeaderValue::from_str(&value).map_err(|error| QidError::Internal {
+        message: format!("{error_context}: {error}"),
+    })?;
+    headers.insert(header::SET_COOKIE, value);
+    Ok(())
+}
 
 pub fn auth_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
     Router::new()

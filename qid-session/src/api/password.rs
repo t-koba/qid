@@ -3,7 +3,7 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use qid_core::{error::QidError, state::SharedState, tenant::RealmId};
@@ -101,21 +101,15 @@ pub async fn password_auth<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    let cookie_value = format!(
-        "{}={}; HttpOnly; Secure; Path=/; SameSite={}",
-        session_config.cookie_name, session.id, session_config.same_site,
-    );
-
     let mut headers = HeaderMap::new();
-    let cookie_value = match HeaderValue::from_str(&cookie_value) {
-        Ok(value) => value,
-        Err(err) => {
-            return qid_http::error_response(QidError::Internal {
-                message: format!("failed to build session cookie header: {err}"),
-            });
-        }
-    };
-    headers.insert(header::SET_COOKIE, cookie_value);
+    if let Err(error) = super::set_session_cookie(
+        &mut headers,
+        session_config,
+        &session.id,
+        "failed to build session cookie header",
+    ) {
+        return qid_http::error_response(error);
+    }
 
     let body = Json(PasswordAuthResponse {
         session: session.id,

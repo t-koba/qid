@@ -13,6 +13,16 @@ use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+macro_rules! error_response_or_return {
+    ($result:expr) => {
+        match ($result) {
+            Ok(value) => value,
+            Err(error) => return qid_http::error_response(error),
+        }
+    };
+}
+pub(crate) use error_response_or_return;
+
 /// Add OAuth endpoint routes with configurable paths.
 pub fn routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
     signed_routes::<R>(paths).merge(unsigned_routes::<R>(paths))

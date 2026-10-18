@@ -167,10 +167,9 @@ pub async fn introspect<R: Repository>(
     // RFC 7662 section 2.1: the caller must be authenticated before the token
     // is examined, so valid and invalid tokens share the same unauthenticated
     // outcome and cannot be used as a scanning oracle.
-    let caller = match authenticate_introspection_client(&state, &headers, &req).await {
-        Ok(caller) => caller,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let caller = super::error_response_or_return!(
+        authenticate_introspection_client(&state, &headers, &req).await
+    );
 
     let result = decode_access_token(&state, &req.token).await;
     match result {

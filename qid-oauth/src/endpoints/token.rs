@@ -43,10 +43,7 @@ pub async fn token<R: Repository>(
         .iter()
         .any(|realm| realm.protocols.oauth.mtls.enabled)
     {
-        match crate::mtls::extract_mtls_x5t_s256(&headers, &state) {
-            Ok(value) => value,
-            Err(e) => return qid_http::error_response(e),
-        }
+        super::error_response_or_return!(crate::mtls::extract_mtls_x5t_s256(&headers, &state))
     } else {
         None
     };

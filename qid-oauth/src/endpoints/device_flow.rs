@@ -50,10 +50,9 @@ pub async fn device_authorization<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Form(req): Form<DeviceAuthorizationRequest>,
 ) -> Response {
-    let client = match super::find_client_across_realms(&state, &req.client_id).await {
-        Ok(client) => client,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let client = super::error_response_or_return!(
+        super::find_client_across_realms(&state, &req.client_id).await
+    );
     let realm = match state.realm(&client.realm_id) {
         Some(realm) => realm,
         None => {
@@ -157,18 +156,18 @@ pub async fn device_verification_page<R: Repository>(
 ) -> Response {
     let grant = match query.user_code.as_deref() {
         None => None,
-        Some(code) => match state
-            .repo
-            .get_device_authorization_grant_by_user_code(code)
-            .await
-        {
-            Ok(Some(grant)) if grant.expires_at > qid_core::util::now_seconds() => Some(grant),
-            Ok(_) => {
+        Some(code) => match super::error_response_or_return!(
+            state
+                .repo
+                .get_device_authorization_grant_by_user_code(code)
+                .await
+        ) {
+            Some(grant) if grant.expires_at > qid_core::util::now_seconds() => Some(grant),
+            _ => {
                 return qid_http::error_response(QidError::NotFound {
                     resource: "device authorization grant".to_string(),
                 });
             }
-            Err(e) => return qid_http::error_response(e),
         },
     };
     let page = match grant {

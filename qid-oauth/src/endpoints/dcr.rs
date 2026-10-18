@@ -214,10 +214,7 @@ pub async fn dynamic_client_registration<R: Repository>(
             }
         }
     };
-    let metadata = match validate_dynamic_client_metadata(&req) {
-        Ok(metadata) => metadata,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let metadata = super::error_response_or_return!(validate_dynamic_client_metadata(&req));
     let client_id = req
         .client_id
         .clone()
@@ -647,10 +644,9 @@ pub async fn dynamic_client_registration_get<R: Repository>(
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    let (realm_id, issuer) = match dynamic_client_registration_context(&state, &client_id).await {
-        Ok(context) => context,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let (realm_id, issuer) = super::error_response_or_return!(
+        dynamic_client_registration_context(&state, &client_id).await
+    );
     if !oauth_feature_enabled(&state, &realm_id, |oauth| {
         oauth.dynamic_client_registration.enabled
     }) {
@@ -717,14 +713,10 @@ pub async fn dynamic_client_registration_update<R: Repository>(
             message: "client_id in request body must match management path".to_string(),
         });
     }
-    let metadata = match validate_dynamic_client_metadata(&req) {
-        Ok(metadata) => metadata,
-        Err(e) => return qid_http::error_response(e),
-    };
-    let (realm_id, issuer) = match dynamic_client_registration_context(&state, &client_id).await {
-        Ok(context) => context,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let metadata = super::error_response_or_return!(validate_dynamic_client_metadata(&req));
+    let (realm_id, issuer) = super::error_response_or_return!(
+        dynamic_client_registration_context(&state, &client_id).await
+    );
     if !oauth_feature_enabled(&state, &realm_id, |oauth| {
         oauth.dynamic_client_registration.enabled
     }) {
@@ -737,18 +729,18 @@ pub async fn dynamic_client_registration_update<R: Repository>(
     {
         return qid_http::error_response(e);
     }
-    let existing = match state
-        .repo
-        .get_client_by_client_id(&RealmId::from(realm_id.clone()), &client_id)
-        .await
-    {
-        Ok(Some(client)) => client,
-        Ok(None) => {
+    let existing = match super::error_response_or_return!(
+        state
+            .repo
+            .get_client_by_client_id(&RealmId::from(realm_id.clone()), &client_id)
+            .await
+    ) {
+        Some(client) => client,
+        None => {
             return qid_http::error_response(QidError::NotFound {
                 resource: format!("client {client_id}"),
             });
         }
-        Err(e) => return qid_http::error_response(e),
     };
     let generated_secret = (metadata.client_type == ClientType::Confidential
         && matches!(
@@ -853,18 +845,18 @@ pub async fn dynamic_client_registration_delete<R: Repository>(
     {
         return qid_http::error_response(e);
     }
-    let client = match state
-        .repo
-        .get_client_by_client_id(&RealmId::from(realm_id), &client_id)
-        .await
-    {
-        Ok(Some(client)) => client,
-        Ok(None) => {
+    let client = match super::error_response_or_return!(
+        state
+            .repo
+            .get_client_by_client_id(&RealmId::from(realm_id), &client_id)
+            .await
+    ) {
+        Some(client) => client,
+        None => {
             return qid_http::error_response(QidError::NotFound {
                 resource: format!("client {client_id}"),
             });
         }
-        Err(e) => return qid_http::error_response(e),
     };
     match state.repo.delete_client(&client.id).await {
         Ok(()) => axum::http::StatusCode::NO_CONTENT.into_response(),

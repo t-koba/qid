@@ -161,38 +161,37 @@ pub async fn backchannel_authentication_approve<R: Repository>(
     Json(req): Json<BackchannelAuthenticationApprovalRequest>,
 ) -> Response {
     let auth_req_id_hash = qid_core::util::sha256_base64url(&req.auth_req_id);
-    let grant = match state
-        .repo
-        .get_backchannel_authentication_grant(&auth_req_id_hash)
-        .await
-    {
-        Ok(Some(grant)) => grant,
-        Ok(None) => {
+    let grant = match super::error_response_or_return!(
+        state
+            .repo
+            .get_backchannel_authentication_grant(&auth_req_id_hash)
+            .await
+    ) {
+        Some(grant) => grant,
+        None => {
             return qid_http::error_response(QidError::NotFound {
                 resource: "backchannel authentication grant".to_string(),
             });
         }
-        Err(e) => return qid_http::error_response(e),
     };
     if grant.user_id.as_deref() != Some(req.user_id.as_str()) {
         return qid_http::error_response(QidError::Unauthorized {
             message: "approval subject does not match login_hint".to_string(),
         });
     }
-    match state.repo.get_user_by_id(&req.user_id).await {
-        Ok(Some(user)) => {
-            if user.realm_id != grant.realm_id {
-                return qid_http::error_response(QidError::Unauthorized {
-                    message: "approval user realm does not match CIBA grant".to_string(),
-                });
-            }
-        }
-        Ok(None) => {
+    let user = match super::error_response_or_return!(state.repo.get_user_by_id(&req.user_id).await)
+    {
+        Some(user) => user,
+        None => {
             return qid_http::error_response(QidError::NotFound {
                 resource: "user".to_string(),
             });
         }
-        Err(e) => return qid_http::error_response(e),
+    };
+    if user.realm_id != grant.realm_id {
+        return qid_http::error_response(QidError::Unauthorized {
+            message: "approval user realm does not match CIBA grant".to_string(),
+        });
     }
     // Require an active session for CIBA approval.
     let realm_cfg = state.plan.realms.iter().find(|r| r.id == grant.realm_id);
@@ -203,49 +202,45 @@ pub async fn backchannel_authentication_approve<R: Repository>(
     };
     let cookie_name = &realm_cfg.browser_session.cookie_name;
     if let Some(session_id) = extract_cookie(&headers, cookie_name) {
-        match state.repo.get_session(session_id).await {
-            Ok(Some(session)) => {
-                if !qid_session::browser::session_is_active(&session, qid_core::util::now_seconds())
-                {
+        let session =
+            match super::error_response_or_return!(state.repo.get_session(session_id).await) {
+                Some(session) => session,
+                None => {
                     return qid_http::error_response(QidError::Unauthorized {
-                        message: "session is no longer active".to_string(),
+                        message: "invalid or expired session".to_string(),
                     });
                 }
-                if session.user_id != req.user_id {
-                    return qid_http::error_response(QidError::Unauthorized {
-                        message: "session user does not match approval user".to_string(),
-                    });
-                }
-                if session.realm_id != grant.realm_id {
-                    return qid_http::error_response(QidError::Unauthorized {
-                        message: "session realm does not match CIBA grant".to_string(),
-                    });
-                }
-            }
-            Ok(None) => {
-                return qid_http::error_response(QidError::Unauthorized {
-                    message: "invalid or expired session".to_string(),
-                });
-            }
-            Err(e) => return qid_http::error_response(e),
+            };
+        if !qid_session::browser::session_is_active(&session, qid_core::util::now_seconds()) {
+            return qid_http::error_response(QidError::Unauthorized {
+                message: "session is no longer active".to_string(),
+            });
+        }
+        if session.user_id != req.user_id {
+            return qid_http::error_response(QidError::Unauthorized {
+                message: "session user does not match approval user".to_string(),
+            });
+        }
+        if session.realm_id != grant.realm_id {
+            return qid_http::error_response(QidError::Unauthorized {
+                message: "session realm does not match CIBA grant".to_string(),
+            });
         }
     } else {
         return qid_http::error_response(QidError::Unauthorized {
             message: "authentication required: missing session cookie".to_string(),
         });
     }
-    match state
-        .repo
-        .approve_backchannel_authentication_grant(
-            &auth_req_id_hash,
-            &req.user_id,
-            qid_core::util::now_seconds(),
-        )
-        .await
-    {
-        Ok(()) => {}
-        Err(e) => return qid_http::error_response(e),
-    }
+    super::error_response_or_return!(
+        state
+            .repo
+            .approve_backchannel_authentication_grant(
+                &auth_req_id_hash,
+                &req.user_id,
+                qid_core::util::now_seconds(),
+            )
+            .await
+    );
     // In Ping mode, notify the client's backchannel notification endpoint asynchronously.
     let ciba_mode = state
         .config

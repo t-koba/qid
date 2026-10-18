@@ -130,27 +130,19 @@ pub(crate) async fn delete_realm<R: Repository>(
         &state.config.admin.security,
         Some(&realm),
     ));
-    match state.repo.delete_realm(&RealmId(realm.clone())).await {
-        Ok(()) => {
-            if let Err(e) = append_admin_audit(
-                &state,
-                &headers,
-                &_admin,
-                &_elevation,
-                Some(realm.clone()),
-                "realm.delete",
-                "realm",
-                &realm,
-                serde_json::json!({}),
-            )
-            .await
-            {
-                return qid_http::error_response(e);
-            }
-            (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    audit_no_content(
+        state.repo.delete_realm(&RealmId(realm.clone())).await,
+        &state,
+        &headers,
+        &_admin,
+        &_elevation,
+        Some(realm.clone()),
+        "realm.delete",
+        "realm",
+        &realm,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 // ── User handlers ─────────────────────────────────────────────────────────────
@@ -427,27 +419,19 @@ pub(crate) async fn delete_user<R: Repository>(
             resource: format!("user {user_id}"),
         });
     }
-    match state.repo.delete_user(&user_id).await {
-        Ok(()) => {
-            if let Err(e) = append_admin_audit(
-                &state,
-                &headers,
-                &_admin,
-                &_elevation,
-                Some(realm),
-                "user.delete",
-                "user",
-                &user_id,
-                serde_json::json!({}),
-            )
-            .await
-            {
-                return qid_http::error_response(e);
-            }
-            (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    audit_no_content(
+        state.repo.delete_user(&user_id).await,
+        &state,
+        &headers,
+        &_admin,
+        &_elevation,
+        Some(realm),
+        "user.delete",
+        "user",
+        &user_id,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 // ── Client handlers ───────────────────────────────────────────────────────────
@@ -624,25 +608,17 @@ pub(crate) async fn delete_client<R: Repository>(
         }
         Err(e) => return qid_http::error_response(e),
     };
-    match state.repo.delete_client(&client.id).await {
-        Ok(()) => {
-            if let Err(e) = append_admin_audit(
-                &state,
-                &headers,
-                &_admin,
-                &_elevation,
-                Some(realm),
-                "client.delete",
-                "client",
-                &client_id,
-                serde_json::json!({ "client_internal_id": client.id }),
-            )
-            .await
-            {
-                return qid_http::error_response(e);
-            }
-            (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    audit_no_content(
+        state.repo.delete_client(&client.id).await,
+        &state,
+        &headers,
+        &_admin,
+        &_elevation,
+        Some(realm),
+        "client.delete",
+        "client",
+        &client_id,
+        serde_json::json!({ "client_internal_id": client.id }),
+    )
+    .await
 }

@@ -49,6 +49,40 @@ pub(crate) async fn append_admin_audit<R: Repository>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn audit_no_content<R: Repository>(
+    operation: QidResult<()>,
+    state: &SharedState<R>,
+    headers: &HeaderMap,
+    admin: &Admin,
+    elevation: &AdminElevation,
+    realm_id: Option<String>,
+    action: &str,
+    target_type: &str,
+    target_id: &str,
+    metadata_json: serde_json::Value,
+) -> axum::response::Response {
+    if let Err(error) = operation {
+        return qid_http::error_response(error);
+    }
+    if let Err(error) = append_admin_audit(
+        state,
+        headers,
+        admin,
+        elevation,
+        realm_id,
+        action,
+        target_type,
+        target_id,
+        metadata_json,
+    )
+    .await
+    {
+        return qid_http::error_response(error);
+    }
+    (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
+}
+
 /// Append an admin audit event, degrading to a warning unless fail-closed is configured.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn record_admin_audit_or_warn<R: Repository>(

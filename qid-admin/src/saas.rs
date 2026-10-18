@@ -248,27 +248,19 @@ pub(super) async fn delete_custom_domain<R: Repository>(
             &state.config.admin.security,
             &tenant,
         ));
-    match state.repo.delete_custom_domain(&tenant, &domain_id).await {
-        Ok(()) => {
-            if let Err(e) = append_admin_audit(
-                &state,
-                &headers,
-                &_admin,
-                &_elevation,
-                None,
-                "custom_domain.delete",
-                "custom_domain",
-                &domain_id,
-                serde_json::json!({ "tenant_id": tenant }),
-            )
-            .await
-            {
-                return qid_http::error_response(e);
-            }
-            (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    audit_no_content(
+        state.repo.delete_custom_domain(&tenant, &domain_id).await,
+        &state,
+        &headers,
+        &_admin,
+        &_elevation,
+        None,
+        "custom_domain.delete",
+        "custom_domain",
+        &domain_id,
+        serde_json::json!({ "tenant_id": tenant }),
+    )
+    .await
 }
 
 pub(super) async fn list_app_catalog_entries<R: Repository>(
@@ -389,31 +381,22 @@ pub(super) async fn delete_app_catalog_entry<R: Repository>(
             &state.config.admin.security,
             &tenant,
         ));
-    match state
-        .repo
-        .delete_app_catalog_entry(&tenant, &entry_id)
-        .await
-    {
-        Ok(()) => {
-            if let Err(e) = append_admin_audit(
-                &state,
-                &headers,
-                &_admin,
-                &_elevation,
-                None,
-                "app_catalog_entry.delete",
-                "app_catalog_entry",
-                &entry_id,
-                serde_json::json!({ "tenant_id": tenant }),
-            )
-            .await
-            {
-                return qid_http::error_response(e);
-            }
-            (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    audit_no_content(
+        state
+            .repo
+            .delete_app_catalog_entry(&tenant, &entry_id)
+            .await,
+        &state,
+        &headers,
+        &_admin,
+        &_elevation,
+        None,
+        "app_catalog_entry.delete",
+        "app_catalog_entry",
+        &entry_id,
+        serde_json::json!({ "tenant_id": tenant }),
+    )
+    .await
 }
 
 pub(super) async fn list_ciam_brands<R: Repository>(
@@ -493,27 +476,19 @@ pub(super) async fn delete_ciam_brand<R: Repository>(
             &state.config.admin.security,
             &tenant,
         ));
-    match state.repo.delete_ciam_brand(&tenant, &brand_id).await {
-        Ok(()) => {
-            if let Err(e) = append_admin_audit(
-                &state,
-                &headers,
-                &_admin,
-                &_elevation,
-                None,
-                "ciam_brand.delete",
-                "ciam_brand",
-                &brand_id,
-                serde_json::json!({ "tenant_id": tenant }),
-            )
-            .await
-            {
-                return qid_http::error_response(e);
-            }
-            (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    audit_no_content(
+        state.repo.delete_ciam_brand(&tenant, &brand_id).await,
+        &state,
+        &headers,
+        &_admin,
+        &_elevation,
+        None,
+        "ciam_brand.delete",
+        "ciam_brand",
+        &brand_id,
+        serde_json::json!({ "tenant_id": tenant }),
+    )
+    .await
 }
 
 pub(super) async fn list_marketplace_connectors<R: Repository>(
@@ -594,31 +569,22 @@ pub(super) async fn delete_marketplace_connector<R: Repository>(
             &state.config.admin.security,
             &tenant,
         ));
-    match state
-        .repo
-        .delete_marketplace_connector(&tenant, &connector_id)
-        .await
-    {
-        Ok(()) => {
-            if let Err(e) = append_admin_audit(
-                &state,
-                &headers,
-                &_admin,
-                &_elevation,
-                None,
-                "marketplace_connector.delete",
-                "marketplace_connector",
-                &connector_id,
-                serde_json::json!({ "tenant_id": tenant }),
-            )
-            .await
-            {
-                return qid_http::error_response(e);
-            }
-            (StatusCode::NO_CONTENT, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    audit_no_content(
+        state
+            .repo
+            .delete_marketplace_connector(&tenant, &connector_id)
+            .await,
+        &state,
+        &headers,
+        &_admin,
+        &_elevation,
+        None,
+        "marketplace_connector.delete",
+        "marketplace_connector",
+        &connector_id,
+        serde_json::json!({ "tenant_id": tenant }),
+    )
+    .await
 }
 
 pub(super) async fn list_usage_billing_events<R: Repository>(

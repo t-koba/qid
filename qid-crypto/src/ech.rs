@@ -33,9 +33,16 @@ pub fn parse_ech_config_list(data: &[u8]) -> QidResult<Vec<EchConfig>> {
         let config_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
         offset += 2;
         if offset + config_len > data.len() {
-            break;
+            return Err(QidError::BadRequest {
+                message: "ECH config entry truncated".to_string(),
+            });
         }
         let config_data = &data[offset..offset + config_len];
+        if config_data.len() < 3 {
+            return Err(QidError::BadRequest {
+                message: "ECH config entry too short".to_string(),
+            });
+        }
         let version = u16::from_be_bytes([config_data[0], config_data[1]]);
         let public_key_start = 6; // version(2) + length(1) + key_type(1) + cipher(2)
         let public_key_len = config_data[2] as usize;
@@ -107,5 +114,25 @@ mod tests {
     fn parse_ech_config_empty() {
         let configs = parse_ech_config_list(&[0x00, 0x00]).unwrap();
         assert!(configs.is_empty());
+    }
+
+    #[test]
+    fn parse_ech_config_rejects_short_and_truncated_entries() {
+        // Minimal valid entry: length prefix plus version plus one length byte.
+        let valid = parse_ech_config_list(&[0x00, 0x05, 0x00, 0x03, 0x13, 0x01, 0x00]).unwrap();
+        assert_eq!(valid.len(), 1);
+        assert_eq!(valid[0].version, 0x1301);
+        // Entries shorter than version plus length byte fail closed, never panic.
+        for truncated in [
+            vec![0x00, 0x04, 0x00, 0x01, 0xAA, 0xBB],
+            vec![0x00, 0x04, 0x00, 0x02, 0xAA, 0xBB],
+            vec![0x00, 0x04, 0x00, 0x00, 0xAA, 0xBB],
+            vec![0x00, 0x05, 0x00, 0x03, 0x13, 0x01],
+        ] {
+            assert!(
+                parse_ech_config_list(&truncated).is_err(),
+                "{truncated:?} must fail"
+            );
+        }
     }
 }

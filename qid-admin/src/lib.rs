@@ -26,6 +26,16 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use ulid::Ulid;
 
+macro_rules! authorize_admin_or_return {
+    ($authorization:expr) => {
+        match ($authorization).await {
+            Ok(context) => context,
+            Err(error) => return qid_http::error_response(error),
+        }
+    };
+}
+pub(crate) use authorize_admin_or_return;
+
 mod identity;
 mod ops;
 mod policy;

@@ -128,18 +128,13 @@ pub(crate) async fn list_global_audit<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::PlatformAuditRead,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state
         .repo
         .list_audit_events(None, audit_limit(query.limit))
@@ -163,18 +158,13 @@ pub(crate) async fn list_realm_audit<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::AuditRead,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state
         .repo
         .list_audit_events(Some(&RealmId(realm)), audit_limit(query.limit))
@@ -197,18 +187,13 @@ pub(crate) async fn export_global_audit<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::PlatformAuditRead,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state
         .repo
         .list_audit_events(None, audit_limit(query.limit))
@@ -235,18 +220,13 @@ pub(crate) async fn export_realm_audit<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::AuditRead,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state
         .repo
         .list_audit_events(Some(&RealmId(realm)), audit_limit(query.limit))
@@ -271,18 +251,13 @@ pub(crate) async fn verify_global_audit<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::PlatformAuditRead,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state.repo.verify_audit_chain(None).await {
         Ok(verification) => (StatusCode::OK, Json(verification)).into_response(),
         Err(e) => qid_http::error_response(e),
@@ -294,18 +269,13 @@ pub(crate) async fn verify_realm_audit<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::AuditRead,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state.repo.verify_audit_chain(Some(&RealmId(realm))).await {
         Ok(verification) => (StatusCode::OK, Json(verification)).into_response(),
         Err(e) => qid_http::error_response(e),
@@ -316,18 +286,13 @@ pub(crate) async fn get_global_audit_retention<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::PlatformSecurityAdmin,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state.repo.get_audit_retention_config(None).await {
         Ok(Some(config)) => (StatusCode::OK, Json(config)).into_response(),
         Ok(None) => (
@@ -344,18 +309,13 @@ pub(crate) async fn get_realm_audit_retention<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state
         .repo
         .get_audit_retention_config(Some(&RealmId(realm)))
@@ -392,18 +352,13 @@ pub(crate) async fn plan_global_audit_retention<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::PlatformSecurityAdmin,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state
         .repo
         .plan_audit_retention(None, qid_core::util::now_seconds())
@@ -424,18 +379,13 @@ pub(crate) async fn plan_realm_audit_retention<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::SecurityAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state
         .repo
         .plan_audit_retention(Some(&RealmId(realm)), qid_core::util::now_seconds())
@@ -462,18 +412,13 @@ async fn put_audit_retention<R: Repository>(
     } else {
         AdminPermission::PlatformSecurityAdmin
     };
-    let (admin, elevation) = match authorize_admin_mutation(
+    let (admin, elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         permission,
         &state.config.admin.security,
         realm_id.as_deref(),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     if req.retention_days > 36_500 {
         return qid_http::error_response(QidError::BadRequest {
             message: "retention_days must be at most 36500".to_string(),

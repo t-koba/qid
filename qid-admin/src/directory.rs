@@ -1,19 +1,10 @@
 use super::*;
 
-macro_rules! authorize_admin_or_return {
-    ($authorization:expr) => {
-        match ($authorization).await {
-            Ok(context) => context,
-            Err(error) => return qid_http::error_response(error),
-        }
-    };
-}
-
 pub(crate) async fn list_realms<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
@@ -44,7 +35,7 @@ pub(crate) async fn create_realm<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CreateRealmRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
@@ -93,7 +84,7 @@ pub(crate) async fn get_realm<R: Repository>(
     headers: HeaderMap,
     Path(realm): Path<String>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
@@ -132,7 +123,7 @@ pub(crate) async fn delete_realm<R: Repository>(
     headers: HeaderMap,
     Path(realm): Path<String>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
@@ -183,7 +174,7 @@ pub(crate) async fn list_users<R: Repository>(
     Path(realm): Path<String>,
     Query(query): Query<DirectoryListQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
@@ -228,7 +219,7 @@ pub(crate) async fn create_user<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CreateUserRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
@@ -284,7 +275,7 @@ pub(crate) async fn get_user<R: Repository>(
     headers: HeaderMap,
     Path((realm, user_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
@@ -332,7 +323,7 @@ pub(crate) async fn update_user<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<UpdateUserRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
@@ -413,7 +404,7 @@ pub(crate) async fn delete_user<R: Repository>(
     Path((realm, user_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
@@ -467,7 +458,7 @@ pub(crate) async fn list_clients<R: Repository>(
     Path(realm): Path<String>,
     Query(query): Query<DirectoryListQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::TenantAdmin,
@@ -515,7 +506,7 @@ pub(crate) async fn create_client<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CreateClientRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::AppAdmin,
@@ -611,7 +602,7 @@ pub(crate) async fn delete_client<R: Repository>(
     Path((realm, client_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
+    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::AppAdmin,

@@ -40,6 +40,11 @@ pub fn parse_diameter_header(data: &[u8]) -> QidResult<DiameterHeader> {
 }
 
 pub fn parse_diameter_avps(data: &[u8]) -> QidResult<Vec<DiameterAvp>> {
+    if data.len() < 20 {
+        return Err(QidError::BadRequest {
+            message: "Diameter message too short".to_string(),
+        });
+    }
     let mut avps = Vec::new();
     let mut offset = 20;
     while offset + 8 <= data.len() {
@@ -100,6 +105,11 @@ pub fn parse_diameter_avps(data: &[u8]) -> QidResult<Vec<DiameterAvp>> {
             data: data[data_start..data_end].to_vec(),
         });
         offset = end;
+    }
+    if offset != data.len() {
+        return Err(QidError::BadRequest {
+            message: "Diameter message has trailing bytes".to_string(),
+        });
     }
     Ok(avps)
 }
@@ -163,6 +173,13 @@ mod tests {
         let mut cut = avp_bytes(1, None, &[0xAA, 0xBB]);
         cut.pop();
         assert!(parse_diameter_avps(&avp_message(&[cut])).is_err());
+        // Inputs that cannot contain a Diameter message are not empty AVP lists.
+        assert!(parse_diameter_avps(&[]).is_err());
+        assert!(parse_diameter_avps(&[0u8; 19]).is_err());
+        // Trailing bytes too short for an AVP are not silently dropped.
+        let mut trailing = avp_message(&[avp_bytes(1, None, &[0xAA, 0xBB, 0xCC, 0xDD])]);
+        trailing.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        assert!(parse_diameter_avps(&trailing).is_err());
     }
 
     #[test]

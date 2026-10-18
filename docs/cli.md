@@ -282,7 +282,7 @@ The `xtask` package exposes repository maintenance commands through the `cargo-x
 | Command | Purpose |
 | --- | --- |
 | `structure` | Verify workspace package layout. |
-| `budget` | Enforce per-crate and total Rust line-count budgets. |
+| `budget` | Enforce configured per-crate and total product-source line budgets; report test lines separately without capping them. |
 | `gate <suite>` | Run quality/conformance/assurance/preflight/release gates. |
 | `coverage` | Run the coverage gate through `scripts/coverage.sh`. |
 
@@ -302,3 +302,10 @@ cargo run -p xtask -- gate baseline
 cargo run -p xtask -- structure
 cargo run -p xtask -- budget
 ```
+
+`budget` reads the documented defaults and per-crate overrides from
+`[workspace.metadata.budget]` in the workspace `Cargo.toml`. It applies limits to
+product source and reports recognized test files separately as uncapped; mixed source
+files with inline `#[cfg(test)]` modules remain in the source count. See
+[development budget policy](development.md#repository-gates) for the counting
+rules and change process.

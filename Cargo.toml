@@ -37,6 +37,27 @@ members = [
 resolver = "3"
 exclude = ["vendor/rustls"]
 
+# Product-source line limits; test code is reported separately and is not capped.
+# Inline #[cfg(test)] modules in mixed source files remain in source counts.
+[workspace.metadata.budget]
+total = 103000
+default_per_crate = 4000
+
+[workspace.metadata.budget.per_crate]
+qid-admin = 6000
+qid-core = 14000
+qid-crypto = 5600
+qid-storage = 13000
+qid-oidc = 6000
+qid-oauth = 12000
+qid-saml = 7200
+qid-directory = 4000
+qid-federation = 5000
+qid-iga = 6300
+qid-resource = 5200
+qid-scim = 4600
+qid-worker = 5200
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

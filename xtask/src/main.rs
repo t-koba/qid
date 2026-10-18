@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -741,43 +741,158 @@ fn cmd_structure() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn count_rs_lines(dir: &Path) -> io::Result<usize> {
-    let mut total = 0;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RsLineCounts {
+    product: usize,
+    tests: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BudgetConfig {
+    total: usize,
+    default_per_crate: usize,
+    per_crate: BTreeMap<String, usize>,
+}
+
+impl BudgetConfig {
+    fn from_metadata(metadata: &serde_json::Value) -> anyhow::Result<Self> {
+        let config = metadata
+            .get("metadata")
+            .and_then(|value| value.get("budget"))
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| anyhow::anyhow!("workspace.metadata.budget is missing or invalid"))?;
+        if config.len() != 3
+            || !config.contains_key("total")
+            || !config.contains_key("default_per_crate")
+            || !config.contains_key("per_crate")
+        {
+            anyhow::bail!(
+                "workspace.metadata.budget must define only total, default_per_crate, and per_crate"
+            );
+        }
+        let total = positive_budget(config.get("total"), "total")?;
+        let default_per_crate =
+            positive_budget(config.get("default_per_crate"), "default_per_crate")?;
+        let overrides = config
+            .get("per_crate")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                anyhow::anyhow!("workspace.metadata.budget.per_crate must be a table")
+            })?;
+        let mut per_crate = BTreeMap::new();
+        for (name, value) in overrides {
+            if name.trim().is_empty() {
+                anyhow::bail!("workspace.metadata.budget.per_crate contains an empty crate name");
+            }
+            per_crate.insert(
+                name.clone(),
+                positive_budget(Some(value), &format!("per_crate.{name}"))?,
+            );
+        }
+        Ok(Self {
+            total,
+            default_per_crate,
+            per_crate,
+        })
+    }
+
+    fn crate_limit(&self, name: &str) -> usize {
+        self.per_crate
+            .get(name)
+            .copied()
+            .unwrap_or(self.default_per_crate)
+    }
+}
+
+fn positive_budget(value: Option<&serde_json::Value>, name: &str) -> anyhow::Result<usize> {
+    let amount = value
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            anyhow::anyhow!("workspace.metadata.budget.{name} must be a positive integer")
+        })?;
+    Ok(amount)
+}
+
+fn is_test_rs_file(package_name: &str, path: &Path) -> bool {
+    if package_name.ends_with("-tests")
+        || path
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+    {
+        return true;
+    }
+
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    stem == "test"
+        || stem == "tests"
+        || stem == "test_helpers"
+        || stem.starts_with("test_")
+        || stem.ends_with("_test")
+        || stem.ends_with("_tests")
+        || stem.contains("_test_")
+}
+
+fn count_rs_lines(dir: &Path, package_name: &str) -> io::Result<RsLineCounts> {
+    let mut counts = RsLineCounts::default();
     for entry in WalkDir::new(dir) {
         let entry = entry?;
-        if entry.file_type().is_file() && entry.path().extension().is_some_and(|ext| ext == "rs") {
-            let content = fs::read_to_string(entry.path())?;
-            total += content.lines().count();
+        let path = entry.path();
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "target")
+        {
+            continue;
+        }
+        if entry.file_type().is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+            let content = fs::read_to_string(path)?;
+            let lines = content.lines().count();
+            if is_test_rs_file(package_name, path) {
+                counts.tests += lines;
+            } else {
+                counts.product += lines;
+            }
         }
     }
-    Ok(total)
+    Ok(counts)
 }
 
 fn cmd_budget() -> anyhow::Result<()> {
+    let metadata = cargo_metadata()?;
+    let config = BudgetConfig::from_metadata(&metadata)?;
     let packages = packages_in_workspace()?;
 
-    let default_crate_budget: usize = 4000;
-    let total_budget: usize = 125000;
-
-    let mut grand_total = 0;
+    let mut product_total = 0;
+    let mut test_total = 0;
     let mut failures = 0;
 
-    println!("Line counts per crate:");
-    println!("{:-<60}", "");
+    println!("Product source line counts per crate (tests are reported, not capped):");
+    println!("{:-<88}", "");
 
     for (name, manifest_path) in &packages {
         let crate_dir = manifest_path
             .parent()
             .expect("manifest_path should have a parent");
-        match count_rs_lines(crate_dir) {
-            Ok(count) => {
-                grand_total += count;
-                let crate_budget = budget_for_crate(name, default_crate_budget);
-                if count > crate_budget {
-                    println!("  {name:30} {count:>6} lines  FAIL (exceeds {crate_budget})");
+        match count_rs_lines(crate_dir, name) {
+            Ok(counts) => {
+                product_total += counts.product;
+                test_total += counts.tests;
+                let crate_budget = config.crate_limit(name);
+                if counts.product > crate_budget {
+                    println!(
+                        "  {name:30} {:>6} source lines  FAIL (exceeds {crate_budget}); {:>6} test lines (uncapped)",
+                        counts.product, counts.tests
+                    );
                     failures += 1;
                 } else {
-                    println!("  {name:30} {count:>6} lines  PASS");
+                    println!(
+                        "  {name:30} {:>6} source lines  PASS (limit {crate_budget}); {:>6} test lines (uncapped)",
+                        counts.product, counts.tests
+                    );
                 }
             }
             Err(e) => {
@@ -787,14 +902,24 @@ fn cmd_budget() -> anyhow::Result<()> {
         }
     }
 
-    println!("{:-<60}", "");
-    println!("  {:<30} {:>6} lines", "Total", grand_total);
+    println!("{:-<88}", "");
+    println!(
+        "  {:<30} {:>6} product source lines (limit {})",
+        "Total", product_total, config.total
+    );
+    println!("  {:<30} {:>6} test lines (uncapped)", "Tests", test_total);
 
-    if grand_total > total_budget {
-        println!("FAIL: total exceeds budget of {total_budget} lines");
+    if product_total > config.total {
+        println!(
+            "FAIL: product source exceeds total budget of {} lines",
+            config.total
+        );
         failures += 1;
     } else {
-        println!("PASS: within total budget of {total_budget} lines");
+        println!(
+            "PASS: product source is within total budget of {} lines",
+            config.total
+        );
     }
 
     if failures > 0 {
@@ -803,25 +928,6 @@ fn cmd_budget() -> anyhow::Result<()> {
 
     println!("\nbudget check passed");
     Ok(())
-}
-
-fn budget_for_crate(name: &str, default_budget: usize) -> usize {
-    match name {
-        "qid-admin" => 6000,
-        "qid-core" => 14000,
-        "qid-crypto" => 5600,
-        "qid-storage" => 13000,
-        "qid-oidc" => 6000,
-        "qid-oauth" => 12000,
-        "qid-saml" => 7200,
-        "qid-directory" => 4000,
-        "qid-federation" => 5000,
-        "qid-iga" => 6300,
-        "qid-resource" => 5200,
-        "qid-scim" => 4600,
-        "qid-worker" => 5200,
-        _ => default_budget,
-    }
 }
 
 fn cmd_coverage(min_pct: f64) -> anyhow::Result<()> {
@@ -949,10 +1055,48 @@ mod tests {
     }
 
     #[test]
-    fn budget_uses_explicit_limits_for_large_protocol_crates() {
-        assert_eq!(budget_for_crate("qid-core", 4000), 14000);
-        assert_eq!(budget_for_crate("qid-storage", 4000), 13000);
-        assert_eq!(budget_for_crate("qid-oauth", 4000), 12000);
-        assert_eq!(budget_for_crate("qid-policy", 4000), 4000);
+    fn budget_config_reads_workspace_metadata_and_falls_back_to_default() {
+        let metadata = serde_json::json!({
+            "metadata": {
+                "budget": {
+                    "total": 103000,
+                    "default_per_crate": 4000,
+                    "per_crate": {"qid-core": 14000}
+                }
+            }
+        });
+        let config = BudgetConfig::from_metadata(&metadata).unwrap();
+        assert_eq!(config.total, 103000);
+        assert_eq!(config.crate_limit("qid-core"), 14000);
+        assert_eq!(config.crate_limit("qid-policy"), 4000);
+    }
+
+    #[test]
+    fn budget_config_rejects_missing_or_nonpositive_limits() {
+        let metadata = serde_json::json!({"metadata": {"budget": {
+            "total": 0,
+            "default_per_crate": 4000,
+            "per_crate": {}
+        }}});
+        assert!(BudgetConfig::from_metadata(&metadata).is_err());
+        assert!(BudgetConfig::from_metadata(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn budget_reports_test_paths_and_standalone_test_files_separately() {
+        assert!(is_test_rs_file("qid-core", Path::new("tests/property.rs")));
+        assert!(is_test_rs_file(
+            "qid-core",
+            Path::new("src/config/tests.rs")
+        ));
+        assert!(is_test_rs_file(
+            "qid-core",
+            Path::new("src/property_tests.rs")
+        ));
+        assert!(is_test_rs_file(
+            "qid-oauth-token-tests",
+            Path::new("src/lib.rs")
+        ));
+        assert!(!is_test_rs_file("qid-core", Path::new("src/config.rs")));
     }
 }

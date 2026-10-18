@@ -57,6 +57,17 @@ pub(crate) async fn require_admin_session<R: Repository>(
     Ok(admin)
 }
 
+pub(crate) async fn require_admin_tenant_context<R: Repository>(
+    headers: &HeaderMap,
+    state: &Arc<SharedState<R>>,
+    explicit: Option<&str>,
+) -> Result<(Admin, String), axum::response::Response> {
+    let admin = require_admin_session(headers, state).await?;
+    let tenant_id =
+        resolve_admin_tenant_id(explicit, state, &admin).map_err(|response| *response)?;
+    Ok((admin, tenant_id))
+}
+
 pub(crate) fn resolve_admin_tenant_id<R>(
     explicit: Option<&str>,
     state: &SharedState<R>,

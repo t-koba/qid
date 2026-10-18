@@ -654,11 +654,9 @@ pub async fn dynamic_client_registration_get<R: Repository>(
             message: "dynamic client registration is disabled".to_string(),
         });
     }
-    if let Err(e) =
+    super::error_response_or_return!(
         authenticate_dcr_management_client(&state, &headers, &realm_id, &client_id).await
-    {
-        return qid_http::error_response(e);
-    }
+    );
     match state
         .repo
         .get_client_by_client_id(&RealmId::from(realm_id), &client_id)
@@ -724,11 +722,9 @@ pub async fn dynamic_client_registration_update<R: Repository>(
             message: "dynamic client registration is disabled".to_string(),
         });
     }
-    if let Err(e) =
+    super::error_response_or_return!(
         authenticate_dcr_management_client(&state, &headers, &realm_id, &client_id).await
-    {
-        return qid_http::error_response(e);
-    }
+    );
     let existing = match super::error_response_or_return!(
         state
             .repo
@@ -840,11 +836,9 @@ pub async fn dynamic_client_registration_delete<R: Repository>(
             message: "dynamic client registration is disabled".to_string(),
         });
     }
-    if let Err(e) =
+    super::error_response_or_return!(
         authenticate_dcr_management_client(&state, &headers, &realm_id, &client_id).await
-    {
-        return qid_http::error_response(e);
-    }
+    );
     let client = match super::error_response_or_return!(
         state
             .repo

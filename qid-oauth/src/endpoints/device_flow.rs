@@ -106,9 +106,7 @@ pub async fn device_authorization<R: Repository>(
         poll_interval_seconds: 5,
         created_at: now,
     };
-    if let Err(e) = state.repo.store_device_authorization_grant(&grant).await {
-        return qid_http::error_response(e);
-    }
+    super::error_response_or_return!(state.repo.store_device_authorization_grant(&grant).await);
     Json(DeviceAuthorizationResponse {
         device_code,
         user_code,

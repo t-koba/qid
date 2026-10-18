@@ -116,17 +116,7 @@ pub async fn authorization_code_grant<R: Repository>(
     )
     .await?;
 
-    let event = AuditEvent {
-        r#type: "token.issued".to_string(),
-        time: qid_core::util::now_seconds().to_string(),
-        tenant: None,
-        realm: Some(auth_code.realm_id.clone()),
-        subject: Some(user.id.clone()),
-        decision: Some("issued".to_string()),
-        decision_id: None,
-        extra: HashMap::new(),
-    };
-    tracing::info!(target: "audit", "{:?}", event);
+    log_token_issued(&auth_code.realm_id, &user.id);
 
     let client = state
         .repo
@@ -294,17 +284,7 @@ pub async fn client_credentials_grant<R: Repository>(
     )
     .await?;
 
-    let event = AuditEvent {
-        r#type: "token.issued".to_string(),
-        time: qid_core::util::now_seconds().to_string(),
-        tenant: None,
-        realm: Some(realm_id.clone()),
-        subject: Some(sa.id.clone()),
-        decision: Some("issued".to_string()),
-        decision_id: None,
-        extra: HashMap::new(),
-    };
-    tracing::info!(target: "audit", "{:?}", event);
+    log_token_issued(&realm_id, &sa.id);
 
     Ok(TokenResponse {
         access_token,
@@ -639,6 +619,20 @@ pub async fn refresh_token_grant<R: Repository>(
         scope: Some(scopes.join(" ")),
         issued_token_type: None,
     })
+}
+
+fn log_token_issued(realm_id: &str, subject_id: &str) {
+    let event = AuditEvent {
+        r#type: "token.issued".to_string(),
+        time: qid_core::util::now_seconds().to_string(),
+        tenant: None,
+        realm: Some(realm_id.to_string()),
+        subject: Some(subject_id.to_string()),
+        decision: Some("issued".to_string()),
+        decision_id: None,
+        extra: HashMap::new(),
+    };
+    tracing::info!(target: "audit", "{:?}", event);
 }
 
 #[cfg(test)]

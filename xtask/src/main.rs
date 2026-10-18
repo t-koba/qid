@@ -23,7 +23,7 @@ enum Command {
     Structure,
     /// Verify line-count budget.
     Budget,
-    /// Verify documented HTTP routes match axum route literals.
+    /// Verify documented HTTP routes match Axum route literals and shared path constants.
     DocsRoutes,
     /// Run CI quality and conformance gates.
     Gate {
@@ -599,14 +599,14 @@ fn cmd_docs_routes() -> anyhow::Result<()> {
         anyhow::bail!("docs/http-api.md is missing {} route(s)", missing.len());
     }
     println!(
-        "PASS: docs/http-api.md covers {} literal axum route(s)",
+        "PASS: docs/http-api.md covers {} literal/shared Axum route(s)",
         routes.len()
     );
     Ok(())
 }
 
 fn collect_axum_route_literals(root: &Path) -> anyhow::Result<BTreeSet<String>> {
-    let mut routes = BTreeSet::new();
+    let mut sources = Vec::new();
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         let path = entry.path();
         if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
@@ -632,13 +632,39 @@ fn collect_axum_route_literals(root: &Path) -> anyhow::Result<BTreeSet<String>> 
         if is_test_rs_file(&first_component, path) {
             continue;
         }
-        let content = fs::read_to_string(path)?;
-        routes.extend(extract_route_literals_from_source(&content));
+        sources.push(fs::read_to_string(path)?);
     }
-    Ok(routes)
+    let path_constants = sources
+        .iter()
+        .flat_map(|source| extract_path_constants(source))
+        .collect::<BTreeMap<_, _>>();
+    Ok(sources
+        .iter()
+        .flat_map(|source| extract_route_literals_from_source(source, &path_constants))
+        .collect())
 }
 
-fn extract_route_literals_from_source(source: &str) -> BTreeSet<String> {
+fn extract_path_constants(source: &str) -> BTreeMap<String, String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let declaration = line.trim().strip_prefix("pub const ")?;
+            let (name_and_type, value) = declaration.split_once('=')?;
+            let name = name_and_type.split(':').next()?.trim();
+            if !name.ends_with("_PATH") {
+                return None;
+            }
+            let value = value.trim().strip_suffix(';')?.trim();
+            let value = value.strip_prefix('"')?.strip_suffix('"')?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn extract_route_literals_from_source(
+    source: &str,
+    path_constants: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
     let lines = source.lines().collect::<Vec<_>>();
     let mut routes = BTreeSet::new();
     for (idx, line) in lines.iter().enumerate() {
@@ -649,17 +675,32 @@ fn extract_route_literals_from_source(source: &str) -> BTreeSet<String> {
         let Some(route_call) = fragment.find(".route(") else {
             continue;
         };
-        let after_route = &fragment[route_call + ".route(".len()..];
-        let Some(quote_start) = after_route.find('"') else {
-            continue;
+        let after_route = fragment[route_call + ".route(".len()..].trim_start();
+        let route = if let Some(after_quote) = after_route.strip_prefix('"') {
+            let Some(quote_end) = after_quote.find('"') else {
+                continue;
+            };
+            after_quote[..quote_end].to_string()
+        } else {
+            let name = after_route
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or_default();
+            if let Some(route) = path_constants.get(name) {
+                route.clone()
+            } else {
+                let Some(quote_start) = after_route.find('"') else {
+                    continue;
+                };
+                let after_quote = &after_route[quote_start + 1..];
+                let Some(quote_end) = after_quote.find('"') else {
+                    continue;
+                };
+                after_quote[..quote_end].to_string()
+            }
         };
-        let after_quote = &after_route[quote_start + 1..];
-        let Some(quote_end) = after_quote.find('"') else {
-            continue;
-        };
-        let route = &after_quote[..quote_end];
         if route.starts_with('/') {
-            routes.insert(route.to_string());
+            routes.insert(route);
         }
     }
     routes
@@ -953,6 +994,18 @@ mod tests {
 
     fn names(plan: &[GateCommand]) -> Vec<&'static str> {
         plan.iter().map(|command| command.name).collect()
+    }
+
+    #[test]
+    fn docs_routes_resolve_shared_path_constants() {
+        let constants = extract_path_constants(
+            r#"pub const CAPPORT_BIND_PATH: &str = "/api/v1/:realm/captive-portal/bind";"#,
+        );
+        let routes = extract_route_literals_from_source(
+            "Router::new().route(CAPPORT_BIND_PATH, post(handler))",
+            &constants,
+        );
+        assert!(routes.contains("/api/v1/:realm/captive-portal/bind"));
     }
 
     #[test]

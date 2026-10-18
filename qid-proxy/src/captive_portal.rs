@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use qid_core::{
-    config::{QidConfig, ServerPaths},
+    config::{CAPPORT_BIND_PATH, CAPPORT_LOOKUP_PATH, CAPPORT_UNBIND_PATH, QidConfig, ServerPaths},
     error::{QidError, QidResult},
     state::SharedState,
     util::now_seconds,
@@ -174,18 +174,9 @@ fn require_capport_realm<R: Repository>(state: &SharedState<R>, realm_id: &str) 
 
 pub fn captive_portal_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
     Router::new()
-        .route(
-            "/api/v1/:realm/captive-portal/bind",
-            post(captive_portal_bind::<R>),
-        )
-        .route(
-            "/api/v1/:realm/captive-portal/unbind",
-            post(captive_portal_unbind::<R>),
-        )
-        .route(
-            "/api/v1/:realm/captive-portal/lookup",
-            get(captive_portal_lookup::<R>),
-        )
+        .route(CAPPORT_BIND_PATH, post(captive_portal_bind::<R>))
+        .route(CAPPORT_UNBIND_PATH, post(captive_portal_unbind::<R>))
+        .route(CAPPORT_LOOKUP_PATH, get(captive_portal_lookup::<R>))
         // RFC 8908 §4.1 CAPPORT API path (configurable via server.paths).
         .route(&paths.capport_details, get(captive_portal_details::<R>))
 }

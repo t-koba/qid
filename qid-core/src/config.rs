@@ -9,6 +9,13 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{QidError, QidResult};
 
+/// Fixed CAPPORT route for binding a captive portal session.
+pub const CAPPORT_BIND_PATH: &str = "/api/v1/:realm/captive-portal/bind";
+/// Fixed CAPPORT route for unbinding a captive portal session.
+pub const CAPPORT_UNBIND_PATH: &str = "/api/v1/:realm/captive-portal/unbind";
+/// Fixed CAPPORT route for looking up a captive portal binding.
+pub const CAPPORT_LOOKUP_PATH: &str = "/api/v1/:realm/captive-portal/lookup";
+
 /// Top-level configuration for qid.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

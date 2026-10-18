@@ -80,7 +80,7 @@ Important subkeys:
 - `paths`: configurable canonical paths for health, discovery, OAuth, session auth, WebAuthn, PEP, logout, email magic link, CAPPORT details, and related endpoints.
 - `quic`: opt-in QUIC listener, disabled by default. When `enabled`, `bind` (default `[::]:4433`) must be a valid socket address, `certificate_path` and `private_key_path` must point at readable certificate/key material, and `max_bidi_streams` must be positive. `qidd` only serves QUIC when built with its `quic` cargo feature; otherwise enabling `server.quic` fails startup. This remains a helper-level transport: it accepts and drains bidirectional streams and makes no mdoc/OID4VP interoperability claim.
 
-Path values must start with `/`, must not be empty, and must be unique. `paths.capport_details` must additionally contain an Axum `:realm` segment.
+Path values must start with `/`, must not be empty, and must be unique. `paths.capport_details` must additionally contain an Axum `:realm` segment and must not reuse the fixed CAPPORT bind, unbind, or lookup path.
 
 OAuth clients using `tls_client_auth` or `self_signed_tls_client_auth` can authenticate directly to `qidd` when `tls.client_ca` is configured. The TLS layer validates the certificate path before the OAuth layer binds the SHA-256 leaf thumbprint. Authenticated PEP-provided mTLS metadata remains available for deployments that terminate client TLS at a registered enforcement point.
 

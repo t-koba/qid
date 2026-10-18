@@ -1167,6 +1167,13 @@ fn server_paths_capport_details_default_and_validation() {
     config.server.paths.capport_details = config.server.paths.health.clone();
     let err = config.validate().unwrap_err();
     assert!(err.message().contains("duplicate"));
+
+    for reserved in [CAPPORT_BIND_PATH, CAPPORT_UNBIND_PATH, CAPPORT_LOOKUP_PATH] {
+        let mut config = minimal_config();
+        config.server.paths.capport_details = reserved.to_string();
+        let err = config.validate().unwrap_err();
+        assert!(err.message().contains("fixed CAPPORT control route"));
+    }
 }
 
 #[test]

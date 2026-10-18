@@ -797,6 +797,15 @@ impl ServerPaths {
                 message: "server.paths.capport_details must contain a ':realm' segment".to_string(),
             });
         }
+        if [CAPPORT_BIND_PATH, CAPPORT_UNBIND_PATH, CAPPORT_LOOKUP_PATH]
+            .contains(&self.capport_details.as_str())
+        {
+            return Err(QidError::Config {
+                message:
+                    "server.paths.capport_details must not overlap a fixed CAPPORT control route"
+                        .to_string(),
+            });
+        }
         Ok(())
     }
 }

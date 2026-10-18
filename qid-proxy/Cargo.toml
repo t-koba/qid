@@ -37,3 +37,4 @@ jsonwebtoken = { workspace = true }
 [dev-dependencies]
 qid-core = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true }
+tower = { workspace = true, features = ["util"] }

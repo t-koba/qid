@@ -1,6 +1,12 @@
-use qid_core::config::ServerPaths;
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
+use qid_core::{config::ServerPaths, state::SharedState};
 use qid_proxy::{capport_routes_enabled, captive_portal_routes};
-use qid_storage::AnyRepository;
+use qid_storage::FileRepository;
+use std::sync::Arc;
+use tower::ServiceExt;
 
 fn config_with_capport(realms: &[(&str, bool)]) -> qid_core::config::QidConfig {
     let mut config = qid_core::test_helpers::test_config();
@@ -10,6 +16,11 @@ fn config_with_capport(realms: &[(&str, bool)]) -> qid_core::config::QidConfig {
         .map(|(id, capport)| {
             let mut realm = template.clone();
             realm.id = (*id).to_string();
+            realm.issuer = format!(
+                "{}/realms/{}",
+                config.server.public_base_url.trim_end_matches('/'),
+                realm.id
+            );
             realm.protocols.network_aaa.capport = *capport;
             realm
         })
@@ -43,11 +54,70 @@ fn captive_portal_routes_accept_default_and_custom_details_paths() {
         default_paths.capport_details,
         "/api/v1/:realm/captive-portal/api/v1/details"
     );
-    let _default_router = captive_portal_routes::<AnyRepository>(&default_paths);
+    let _default_router = captive_portal_routes::<FileRepository>(&default_paths);
 
     let custom_paths = ServerPaths {
         capport_details: "/capport/:realm/status".to_string(),
         ..ServerPaths::default()
     };
-    let _custom_router = captive_portal_routes::<AnyRepository>(&custom_paths);
+    let _custom_router = captive_portal_routes::<FileRepository>(&custom_paths);
+}
+
+#[tokio::test]
+async fn capport_details_rejects_disabled_realms_on_default_and_custom_paths() {
+    for route in [
+        "/api/v1/:realm/captive-portal/api/v1/details",
+        "/capport/:realm/status",
+    ] {
+        let mut config = config_with_capport(&[("disabled", false), ("enabled", true)]);
+        config.server.paths.capport_details = route.to_string();
+        config.validate().expect("valid CAPPORT test config");
+
+        let path =
+            std::env::temp_dir().join(format!("qid-capport-isolation-{}.json", ulid::Ulid::new()));
+        let repo = Arc::new(
+            FileRepository::new(path.to_str().expect("valid temp path"))
+                .await
+                .expect("file repository"),
+        );
+        repo.migrate().await.expect("file repository migration");
+        let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
+            "capport-test",
+            b"capport realm isolation test key",
+        ));
+        let state = Arc::new(
+            SharedState::new(
+                config.clone(),
+                Arc::clone(&repo),
+                signer,
+                serde_json::json!({}),
+            )
+            .expect("shared state"),
+        );
+        let app = captive_portal_routes::<FileRepository>(&config.server.paths)
+            .with_state(Arc::clone(&state));
+
+        for (realm, expected) in [
+            ("disabled", StatusCode::NOT_FOUND),
+            ("enabled", StatusCode::OK),
+        ] {
+            let uri = route.replace(":realm", realm);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("GET request"),
+                )
+                .await
+                .expect("CAPPORT response");
+            assert_eq!(response.status(), expected, "realm {realm} at {route}");
+        }
+
+        drop(app);
+        drop(state);
+        drop(repo);
+        let _ = std::fs::remove_file(path);
+    }
 }

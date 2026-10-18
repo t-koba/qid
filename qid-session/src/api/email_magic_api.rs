@@ -83,13 +83,9 @@ async fn email_magic_link_send<R: Repository>(
         });
     }
 
-    let _realm_config = match state.realm(&realm) {
-        Some(cfg) => cfg,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let _realm_config = match state.require_realm(&realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let realm_id = RealmId(realm);
@@ -143,7 +139,7 @@ async fn email_magic_link_verify<R: Repository>(
         });
     }
 
-    let realm_config = match super::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };

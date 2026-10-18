@@ -631,11 +631,7 @@ async fn dynamic_client_registration_context<R: Repository>(
         .map_err(|_| QidError::NotFound {
             resource: format!("client {client_id}"),
         })?;
-    let realm = state
-        .realm(&client.realm_id)
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("realm {}", client.realm_id),
-        })?;
+    let realm = state.require_realm(&client.realm_id)?;
     Ok((client.realm_id, realm.issuer.clone()))
 }
 

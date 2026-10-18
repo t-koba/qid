@@ -132,12 +132,7 @@ async fn issue_jwt_svid<R: Repository>(
     }
     let now = qid_core::util::now_seconds();
     let ttl = query.ttl_seconds.unwrap_or(3600).min(24 * 3600);
-    let issuer = state
-        .realm(&realm)
-        .map(|realm_config| realm_config.issuer.clone())
-        .ok_or_else(|| qid_core::error::QidError::NotFound {
-            resource: format!("realm {realm}"),
-        })?;
+    let issuer = state.require_realm(&realm)?.issuer.clone();
     let claims = qid_core::jwt::JwtClaims {
         iss: Some(issuer),
         sub: Some(query.spiffe_id.clone()),

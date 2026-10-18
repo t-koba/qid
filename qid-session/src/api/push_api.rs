@@ -69,11 +69,9 @@ async fn get_session_user_id<R: Repository>(
     realm: &str,
     headers: &HeaderMap,
 ) -> Result<String, Response> {
-    let realm_config = state.realm(realm).ok_or_else(|| {
-        qid_http::error_response(QidError::NotFound {
-            resource: format!("realm {}", realm),
-        })
-    })?;
+    let realm_config = state
+        .require_realm(realm)
+        .map_err(qid_http::error_response)?;
     let cookie_name = &realm_config.browser_session.cookie_name;
     let session_id = super::extract_cookie(headers, cookie_name).ok_or_else(|| {
         qid_http::error_response(QidError::Unauthorized {

@@ -367,11 +367,7 @@ pub(crate) async fn device_code_grant<R: Repository>(
             message: "user realm does not match device authorization grant realm".to_string(),
         });
     }
-    let realm = state
-        .realm(&grant.realm_id)
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("realm {}", grant.realm_id),
-        })?;
+    let realm = state.require_realm(&grant.realm_id)?;
     if !oauth_feature_enabled(state, &grant.realm_id, |oauth| {
         oauth.device_authorization.enabled
     }) {

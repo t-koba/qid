@@ -64,7 +64,7 @@ async fn totp_enroll<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match crate::api::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };
@@ -146,7 +146,7 @@ async fn totp_verify<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<TotpVerifyRequest>,
 ) -> Response {
-    let realm_config = match crate::api::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };
@@ -237,7 +237,7 @@ async fn totp_authenticate<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<TotpAuthenticateRequest>,
 ) -> Response {
-    let realm_config = match crate::api::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };

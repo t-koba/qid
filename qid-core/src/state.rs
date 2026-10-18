@@ -2,7 +2,7 @@
 
 use crate::cache::{DecisionCacheEntry, DpopState, MemoryCache, SessionCache, SharedCache};
 use crate::config::{QidConfig, ServerPaths};
-use crate::error::QidResult;
+use crate::error::{QidError, QidResult};
 use crate::plan::RuntimePlan;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -115,6 +115,13 @@ impl<Repository> SharedState<Repository> {
 
     pub fn realm(&self, id: &str) -> Option<&crate::plan::RuntimeRealm> {
         self.plan.realm(id)
+    }
+
+    /// Resolve an active runtime realm or return the standard not-found error.
+    pub fn require_realm(&self, id: &str) -> QidResult<&crate::plan::RuntimeRealm> {
+        self.realm(id).ok_or_else(|| QidError::NotFound {
+            resource: format!("realm {id}"),
+        })
     }
 
     pub fn first_realm(&self) -> Option<&crate::plan::RuntimeRealm> {
@@ -301,6 +308,16 @@ mod tests {
         )
         .expect("test state")
         .with_shared_cache(cache)
+    }
+
+    #[test]
+    fn require_realm_returns_runtime_realm_or_standard_not_found() {
+        let state = state_with_cache(Arc::new(MemoryCache::new()));
+        assert_eq!(state.require_realm("corp").unwrap().id, "corp");
+        assert!(matches!(
+            state.require_realm("missing"),
+            Err(QidError::NotFound { resource }) if resource == "realm missing"
+        ));
     }
 
     #[test]

@@ -426,11 +426,7 @@ pub async fn refresh_token_grant<R: Repository>(
         });
     }
 
-    let realm = state
-        .realm(&family.realm_id)
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("realm {}", family.realm_id),
-        })?;
+    let realm = state.require_realm(&family.realm_id)?;
 
     let issuer = realm.issuer.clone();
     // RFC 6749 section 6: refresh preserves the original scope ceiling.

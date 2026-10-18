@@ -53,20 +53,11 @@ pub fn auth_routes_with_push<R: Repository>(paths: &ServerPaths) -> Router<Arc<S
         .merge(email_magic_routes::<R>(paths))
 }
 
-pub(crate) fn require_realm<'a, R>(
-    state: &'a SharedState<R>,
-    realm: &str,
-) -> Result<&'a qid_core::plan::RuntimeRealm, QidError> {
-    state.realm(realm).ok_or_else(|| QidError::NotFound {
-        resource: format!("realm {}", realm),
-    })
-}
-
 pub(crate) fn build_webauthn_service<R: Repository>(
     state: &Arc<SharedState<R>>,
     realm: &str,
 ) -> Result<WebAuthnService, QidError> {
-    let realm_config = require_realm(state, realm)?;
+    let realm_config = state.require_realm(realm)?;
     let passkey_config = &realm_config.passkeys;
     if !passkey_config.enabled {
         return Err(QidError::BadRequest {

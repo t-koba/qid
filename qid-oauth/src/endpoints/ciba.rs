@@ -345,11 +345,7 @@ pub(crate) async fn ciba_grant<R: Repository>(
             message: "CIBA grant user realm mismatch".to_string(),
         });
     }
-    let realm = state
-        .realm(&grant.realm_id)
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("realm {}", grant.realm_id),
-        })?;
+    let realm = state.require_realm(&grant.realm_id)?;
     if !oauth_feature_enabled(state, &grant.realm_id, |oauth| oauth.ciba.enabled) {
         return Err(QidError::BadRequest {
             message: "CIBA is disabled".to_string(),

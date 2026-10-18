@@ -17,7 +17,7 @@ pub async fn session_refresh<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match super::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };
@@ -71,7 +71,7 @@ pub async fn session_revoke<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match super::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };

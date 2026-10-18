@@ -147,13 +147,9 @@ pub async fn generate_fedcm_token<R: Repository>(
     extra.insert("client_id".to_string(), serde_json::json!(req.client_id));
     extra.insert("realm_id".to_string(), serde_json::json!(realm));
     extra.insert("typ".to_string(), serde_json::json!("fedcm"));
-    let issuer = match state.realm(&realm) {
-        Some(realm_config) => realm_config.issuer.clone(),
-        None => {
-            return qid_http::error_response(qid_core::error::QidError::NotFound {
-                resource: format!("realm {realm}"),
-            });
-        }
+    let issuer = match state.require_realm(&realm) {
+        Ok(realm_config) => realm_config.issuer.clone(),
+        Err(error) => return qid_http::error_response(error),
     };
     let claims = JwtClaims {
         iss: Some(issuer),

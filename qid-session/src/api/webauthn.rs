@@ -184,11 +184,9 @@ async fn require_webauthn_registration_session<R: Repository>(
     realm: &str,
     headers: &HeaderMap,
 ) -> Result<String, Response> {
-    let realm_config = state.realm(realm).ok_or_else(|| {
-        qid_http::error_response(QidError::NotFound {
-            resource: format!("realm {realm}"),
-        })
-    })?;
+    let realm_config = state
+        .require_realm(realm)
+        .map_err(qid_http::error_response)?;
     let cookie_name = &realm_config.browser_session.cookie_name;
     let session_id = extract_cookie(headers, cookie_name).ok_or_else(|| {
         qid_http::error_response(QidError::Unauthorized {
@@ -280,7 +278,7 @@ pub async fn webauthn_auth_finish<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<WebAuthnAuthFinishRequest>,
 ) -> Response {
-    let realm_config = match super::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };
@@ -396,13 +394,9 @@ pub async fn webauthn_discoverable_auth_start<R: Repository>(
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
     Path(realm): Path<String>,
 ) -> Response {
-    let _realm_config = match state.realm(&realm) {
-        Some(r) => r,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
+    let _realm_config = match state.require_realm(&realm) {
+        Ok(config) => config,
+        Err(error) => return qid_http::error_response(error),
     };
 
     let webauthn = match build_webauthn_service(&state, &realm) {
@@ -432,7 +426,7 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<WebAuthnDiscoverableFinishRequest>,
 ) -> Response {
-    let realm_config = match super::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };

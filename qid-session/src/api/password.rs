@@ -32,7 +32,7 @@ pub async fn password_auth<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<PasswordAuthRequest>,
 ) -> Response {
-    let realm_config = match super::require_realm(&state, &realm) {
+    let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };

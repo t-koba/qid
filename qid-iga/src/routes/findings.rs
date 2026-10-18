@@ -13,14 +13,11 @@ pub(super) async fn list_findings<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<FindingQuery>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(query.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, query.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let finding_type = query
         .finding_type
         .as_deref()
@@ -50,14 +47,11 @@ pub(super) async fn detect_findings<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<FindingDetectionRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let now = now_seconds();
     let mut findings = Vec::new();
     let catalog = match catalog_for_tenant(&state, &tenant_id).await {
@@ -126,14 +120,11 @@ pub(super) async fn resolve_finding<R: Repository>(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<ResolveFindingRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let existing = match state.repo.list_iga_findings(&tenant_id, None).await {
         Ok(findings) => findings.into_iter().find(|finding| finding.id == id),
         Err(error) => return storage_error_response("list_iga_findings", error),
@@ -165,14 +156,11 @@ pub(super) async fn export_iga_evidence<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<EvidenceQuery>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(query.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, query.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let campaigns = match state
         .repo
         .list_iga_access_review_campaigns(&tenant_id)

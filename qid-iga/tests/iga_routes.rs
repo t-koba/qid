@@ -1310,6 +1310,23 @@ async fn certification_routes_record_attestations_and_export_iga_evidence() {
 }
 
 #[tokio::test]
+async fn finding_routes_reject_foreign_admin_tenant_scope() {
+    let (app, _repo, session_id) = setup_with_repo().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/iga/v1/findings?tenant_id=other")
+                .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn finding_routes_detect_resolve_and_export_sod_conflicts_from_grants() {
     let (app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;

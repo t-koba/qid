@@ -629,6 +629,9 @@ fn collect_axum_route_literals(root: &Path) -> anyhow::Result<BTreeSet<String>> 
         if first_component != "qidd" && !first_component.starts_with("qid-") {
             continue;
         }
+        if is_test_rs_file(&first_component, path) {
+            continue;
+        }
         let content = fs::read_to_string(path)?;
         routes.extend(extract_route_literals_from_source(&content));
     }
@@ -830,11 +833,9 @@ fn is_test_rs_file(package_name: &str, path: &Path) -> bool {
         .unwrap_or("");
     stem == "test"
         || stem == "tests"
-        || stem == "test_helpers"
         || stem.starts_with("test_")
         || stem.ends_with("_test")
         || stem.ends_with("_tests")
-        || stem.contains("_test_")
 }
 
 fn count_rs_lines(dir: &Path, package_name: &str) -> io::Result<RsLineCounts> {
@@ -1092,6 +1093,14 @@ mod tests {
         assert!(is_test_rs_file(
             "qid-core",
             Path::new("src/property_tests.rs")
+        ));
+        assert!(!is_test_rs_file(
+            "qid-core",
+            Path::new("src/foo_test_bar.rs")
+        ));
+        assert!(!is_test_rs_file(
+            "qid-core",
+            Path::new("src/my_test_helper.rs")
         ));
         assert!(is_test_rs_file(
             "qid-oauth-token-tests",

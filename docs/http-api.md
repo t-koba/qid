@@ -145,7 +145,11 @@ qid only authenticates the PEP through credential-bound registration. Request bo
 | `POST` | `/api/v1/:realm/captive-portal/bind` | Bind captive portal session. |
 | `POST` | `/api/v1/:realm/captive-portal/unbind` | Unbind captive portal session. |
 | `GET` | `/api/v1/:realm/captive-portal/lookup` | Lookup captive portal binding. |
-| `GET` | `/api/v1/:realm/captive-portal/api/v1/details` | CAPPORT details. |
+| `GET` | configurable `capport_details`, default `/api/v1/:realm/captive-portal/api/v1/details` | CAPPORT details. |
+
+CAPPORT routes are mounted only when at least one realm enables
+`network_aaa.capport` (default `false`), and every CAPPORT handler rejects
+realms without the flag, so enabling one realm never enables another.
 
 ## SCIM
 

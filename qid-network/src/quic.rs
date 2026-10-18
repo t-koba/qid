@@ -31,8 +31,16 @@ impl Default for QuicListenerConfig {
 }
 
 /// A QUIC listener that accepts mdoc / OID4VP connections.
+///
+/// Helper-level only: the listener accepts connections and drains streams
+/// without claiming protocol interoperability.
 pub struct QuicListener {
     config: QuicListenerConfig,
+}
+
+/// A bound QUIC endpoint that has completed TLS and socket setup.
+pub struct BoundQuicListener {
+    endpoint: quinn::Endpoint,
 }
 
 impl QuicListener {
@@ -40,7 +48,11 @@ impl QuicListener {
         Self { config }
     }
 
-    pub async fn listen(&self) -> QidResult<()> {
+    /// Validate configuration and bind the UDP socket plus TLS state.
+    ///
+    /// Binding is synchronous with startup reporting: a returned endpoint
+    /// means `serve` can accept connections immediately.
+    pub fn bind(&self) -> QidResult<BoundQuicListener> {
         if self.config.certificate_der.is_empty() || self.config.private_key_der.is_empty() {
             return Err(QidError::Config {
                 message: "QUIC is not configured: certificate and private key are required"
@@ -84,32 +96,89 @@ impl QuicListener {
             self.config.max_concurrent_bidi_streams,
         );
 
-        loop {
-            match endpoint.accept().await {
-                Some(incoming) => {
-                    let remote = incoming.remote_address();
-                    tracing::debug!("QUIC connection attempt from {remote}");
-                    match incoming.accept() {
-                        Ok(connecting) => {
-                            tokio::spawn(async move {
-                                if let Err(e) = handle_connection(connecting).await {
-                                    tracing::warn!("QUIC connection from {remote} failed: {e}");
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            tracing::warn!("QUIC connection from {remote} rejected: {e}");
-                        }
+        Ok(BoundQuicListener { endpoint })
+    }
+
+    /// Bind, then serve until the endpoint closes.
+    pub async fn listen(&self) -> QidResult<()> {
+        let bound = self.bind()?;
+        bound.serve().await
+    }
+
+    /// Bind, then serve until `shutdown` resolves or the endpoint closes.
+    pub async fn listen_with_shutdown(
+        &self,
+        shutdown: tokio::sync::oneshot::Receiver<()>,
+    ) -> QidResult<()> {
+        let bound = self.bind()?;
+        bound.serve_with_shutdown(shutdown).await
+    }
+}
+
+impl BoundQuicListener {
+    /// Serve until the endpoint closes.
+    pub async fn serve(self) -> QidResult<()> {
+        run_accept_loop(self.endpoint, None).await
+    }
+
+    /// Serve until `shutdown` resolves or the endpoint closes.
+    pub async fn serve_with_shutdown(
+        self,
+        shutdown: tokio::sync::oneshot::Receiver<()>,
+    ) -> QidResult<()> {
+        run_accept_loop(self.endpoint, Some(shutdown)).await
+    }
+}
+
+async fn run_accept_loop(
+    endpoint: quinn::Endpoint,
+    shutdown: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> QidResult<()> {
+    let mut shutdown = shutdown;
+    loop {
+        if let Some(receiver) = shutdown.as_mut() {
+            tokio::select! {
+                _ = receiver => {
+                    tracing::info!("QUIC listener shutdown requested, closing endpoint");
+                    endpoint.close(0u32.into(), b"shutdown");
+                    return Ok(());
+                }
+                incoming = endpoint.accept() => {
+                    if !accept_incoming(incoming).await {
+                        return Ok(());
                     }
                 }
-                None => {
-                    tracing::info!("QUIC endpoint closed, terminating listener");
-                    break;
+            }
+        } else if !accept_incoming(endpoint.accept().await).await {
+            return Ok(());
+        }
+    }
+}
+
+/// Accept one incoming connection; returns false when the endpoint closed.
+async fn accept_incoming(incoming: Option<quinn::Incoming>) -> bool {
+    match incoming {
+        Some(incoming) => {
+            let remote = incoming.remote_address();
+            tracing::debug!("QUIC connection attempt from {remote}");
+            match incoming.accept() {
+                Ok(connecting) => {
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_connection(connecting).await {
+                            tracing::warn!("QUIC connection from {remote} failed: {e}");
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("QUIC connection from {remote} rejected: {e}");
                 }
             }
+            true
         }
-
-        Ok(())
+        None => {
+            tracing::info!("QUIC endpoint closed, terminating listener");
+            false
+        }
     }
 }
 
@@ -216,5 +285,30 @@ mod tests {
         let listener = QuicListener::new(config);
         let err = listener.listen().await.unwrap_err();
         assert!(err.message().contains("QUIC is not configured"));
+    }
+
+    #[test]
+    fn bind_fails_fast_without_certificates() {
+        let listener = QuicListener::new(QuicListenerConfig::default());
+        let err = match listener.bind() {
+            Ok(_) => panic!("bind must fail without certificates"),
+            Err(err) => err,
+        };
+        assert!(err.message().contains("QUIC is not configured"));
+    }
+
+    #[test]
+    fn bind_rejects_invalid_bind_address() {
+        let listener = QuicListener::new(QuicListenerConfig {
+            bind_address: "not-a-socket-address".to_string(),
+            certificate_der: vec![0x30, 0x82, 0x01],
+            private_key_der: vec![0x30, 0x82, 0x01],
+            max_concurrent_bidi_streams: 100,
+        });
+        let err = match listener.bind() {
+            Ok(_) => panic!("bind must fail with an invalid bind address"),
+            Err(err) => err,
+        };
+        assert!(err.message().contains("invalid QUIC bind address"));
     }
 }

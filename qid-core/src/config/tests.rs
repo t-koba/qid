@@ -12,6 +12,7 @@ fn minimal_config() -> QidConfig {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -149,6 +150,7 @@ fn test_minimal_config_validation() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -404,6 +406,7 @@ fn test_duplicate_realm_rejected() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -453,6 +456,7 @@ fn test_config_validation_no_realms() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -478,6 +482,7 @@ fn test_issuer_url_validation() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -544,6 +549,7 @@ fn ops_config_rejects_incomplete_cache_and_multi_region() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -981,6 +987,7 @@ fn saml_service_provider_config_validates_trust_material() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -1055,6 +1062,7 @@ fn saml_service_provider_config_rejects_duplicates_and_missing_encryption() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),
@@ -1121,4 +1129,100 @@ fn oauth_protocol_defaults() {
     assert!(!oauth.dynamic_client_registration.enabled);
     assert!(!oauth.private_key_jwt.enabled);
     assert_eq!(oauth.default_scope, "api");
+}
+
+#[test]
+fn server_paths_capport_details_default_and_validation() {
+    let paths = ServerPaths::default();
+    assert_eq!(
+        paths.capport_details,
+        "/api/v1/:realm/captive-portal/api/v1/details"
+    );
+
+    let mut config = minimal_config();
+    config.server.paths.capport_details = "/capport/custom/:realm/details".to_string();
+    assert!(config.validate().is_ok());
+
+    let mut config = minimal_config();
+    config.server.paths.capport_details = "/capport/without-realm/details".to_string();
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("capport_details"));
+
+    let mut config = minimal_config();
+    config.server.paths.capport_details = "/capport/foo:realm/details".to_string();
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("capport_details"));
+
+    let mut config = minimal_config();
+    config.server.paths.capport_details = String::new();
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("must not be empty"));
+
+    let mut config = minimal_config();
+    config.server.paths.capport_details = "no-leading-slash/:realm".to_string();
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("must start with '/'"));
+
+    let mut config = minimal_config();
+    config.server.paths.capport_details = config.server.paths.health.clone();
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("duplicate"));
+}
+
+#[test]
+fn server_quic_defaults_to_disabled() {
+    let quic = QuicConfig::default();
+    assert!(!quic.enabled);
+    assert_eq!(quic.bind, "[::]:4433");
+    assert!(quic.certificate_path.is_none());
+    assert!(quic.private_key_path.is_none());
+    assert_eq!(quic.max_bidi_streams, 100);
+
+    let config = minimal_config();
+    assert!(!config.server.quic.enabled);
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn server_quic_enabled_config_validates_fail_closed() {
+    let mut config = minimal_config();
+    config.server.quic.enabled = true;
+    config.server.quic.certificate_path = Some("/etc/qid/quic-cert.pem".to_string());
+    config.server.quic.private_key_path = Some("/etc/qid/quic-key.pem".to_string());
+    assert!(config.validate().is_ok());
+
+    let mut config = minimal_config();
+    config.server.quic.enabled = true;
+    config.server.quic.certificate_path = Some("/etc/qid/quic-cert.pem".to_string());
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("private_key_path"));
+
+    let mut config = minimal_config();
+    config.server.quic.enabled = true;
+    config.server.quic.private_key_path = Some("/etc/qid/quic-key.pem".to_string());
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("certificate_path"));
+
+    let mut config = minimal_config();
+    config.server.quic.enabled = true;
+    config.server.quic.certificate_path = Some("  ".to_string());
+    config.server.quic.private_key_path = Some("/etc/qid/quic-key.pem".to_string());
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("certificate_path"));
+
+    let mut config = minimal_config();
+    config.server.quic.enabled = true;
+    config.server.quic.bind = "not-a-socket-address".to_string();
+    config.server.quic.certificate_path = Some("/etc/qid/quic-cert.pem".to_string());
+    config.server.quic.private_key_path = Some("/etc/qid/quic-key.pem".to_string());
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("server.quic.bind"));
+
+    let mut config = minimal_config();
+    config.server.quic.enabled = true;
+    config.server.quic.certificate_path = Some("/etc/qid/quic-cert.pem".to_string());
+    config.server.quic.private_key_path = Some("/etc/qid/quic-key.pem".to_string());
+    config.server.quic.max_bidi_streams = 0;
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("max_bidi_streams"));
 }

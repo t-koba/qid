@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use qid_core::{
-    config::ServerPaths,
+    config::{QidConfig, ServerPaths},
     error::{QidError, QidResult},
     state::SharedState,
     util::now_seconds,
@@ -138,7 +138,41 @@ struct LookupQuery {
     src_ip: String,
 }
 
-pub fn captive_portal_routes<R: Repository>(_paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
+/// Returns true when at least one realm enables `network_aaa.capport`.
+///
+/// Mount `captive_portal_routes` only when this returns true; the default
+/// deployment behavior stays off.
+pub fn capport_routes_enabled(config: &QidConfig) -> bool {
+    config
+        .realms
+        .iter()
+        .any(|realm| realm.protocols.network_aaa.capport)
+}
+
+/// Reject realms that do not exist or do not enable `network_aaa.capport`.
+///
+/// Route mounting is global per process, so each handler re-checks the
+/// requested realm: enabling CAPPORT for one realm must not enable another.
+fn require_capport_realm<R: Repository>(state: &SharedState<R>, realm_id: &str) -> QidResult<()> {
+    let Some(realm) = state
+        .config
+        .realms
+        .iter()
+        .find(|realm| realm.id == realm_id)
+    else {
+        return Err(QidError::NotFound {
+            resource: format!("realm {realm_id}"),
+        });
+    };
+    if !realm.protocols.network_aaa.capport {
+        return Err(QidError::NotFound {
+            resource: format!("capport disabled for realm {realm_id}"),
+        });
+    }
+    Ok(())
+}
+
+pub fn captive_portal_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
     Router::new()
         .route(
             "/api/v1/:realm/captive-portal/bind",
@@ -152,11 +186,8 @@ pub fn captive_portal_routes<R: Repository>(_paths: &ServerPaths) -> Router<Arc<
             "/api/v1/:realm/captive-portal/lookup",
             get(captive_portal_lookup::<R>),
         )
-        // RFC 8908 §4.1 CAPPORT API path.
-        .route(
-            "/api/v1/:realm/captive-portal/api/v1/details",
-            get(captive_portal_details::<R>),
-        )
+        // RFC 8908 §4.1 CAPPORT API path (configurable via server.paths).
+        .route(&paths.capport_details, get(captive_portal_details::<R>))
 }
 
 async fn captive_portal_bind<R: Repository>(
@@ -168,14 +199,9 @@ async fn captive_portal_bind<R: Repository>(
     if let Err(error) = authenticate_capport_control_adapter(&headers, &state, &realm) {
         return qid_http::error_response(error);
     }
-    let _realm_config = match state.realm(&realm) {
-        Some(cfg) => cfg,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("realm {}", realm),
-            });
-        }
-    };
+    if let Err(error) = require_capport_realm(&state, &realm) {
+        return qid_http::error_response(error);
+    }
 
     let session = match state.session_cache_get(&req.session_id) {
         Some(cached) => match decode_cached_session(&cached, now_seconds()) {
@@ -240,6 +266,9 @@ async fn captive_portal_unbind<R: Repository>(
     if let Err(error) = authenticate_capport_control_adapter(&headers, &state, &realm) {
         return qid_http::error_response(error);
     }
+    if let Err(error) = require_capport_realm(&state, &realm) {
+        return qid_http::error_response(error);
+    }
     let src_ip = req.get("src_ip").and_then(|v| v.as_str()).unwrap_or("");
     if src_ip.is_empty() {
         return qid_http::error_response(QidError::BadRequest {
@@ -269,6 +298,9 @@ async fn captive_portal_lookup<R: Repository>(
     Query(query): Query<LookupQuery>,
 ) -> Response {
     if let Err(error) = authenticate_capport_control_adapter(&headers, &state, &realm) {
+        return qid_http::error_response(error);
+    }
+    if let Err(error) = require_capport_realm(&state, &realm) {
         return qid_http::error_response(error);
     }
     match get_binding(&realm, &query.src_ip) {
@@ -350,10 +382,8 @@ async fn captive_portal_details<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
 ) -> Response {
-    if state.realm(&realm).is_none() {
-        return qid_http::error_response(QidError::NotFound {
-            resource: format!("realm {}", realm),
-        });
+    if let Err(error) = require_capport_realm(&state, &realm) {
+        return qid_http::error_response(error);
     }
     let body = CaptivePortalApiResponse {
         captive: false,

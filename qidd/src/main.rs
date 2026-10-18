@@ -25,7 +25,9 @@ use qid_oauth::{
 };
 use qid_oidc::routes as oidc_routes;
 use qid_policy::NativePolicyEngine;
-use qid_proxy::{captive_portal_routes, issue_assertion, pep_decision_routes};
+use qid_proxy::{
+    capport_routes_enabled, captive_portal_routes, issue_assertion, pep_decision_routes,
+};
 use qid_session::auth_routes_with_push;
 use qid_storage::prelude::*;
 use qid_storage::{AnyRepository, FileFlushMode};
@@ -288,8 +290,12 @@ async fn main() -> anyhow::Result<()> {
         .merge(qid_session::totp_api::totp_routes::<AnyRepository>(paths))
         .merge(qid_directory::directory_routes::<AnyRepository>())
         .merge(qid_risk::risk_routes::<AnyRepository>())
-        .merge(qid_iga::iga_routes::<AnyRepository>())
-        .merge(captive_portal_routes::<AnyRepository>(paths));
+        .merge(qid_iga::iga_routes::<AnyRepository>());
+
+    // CAPPORT stays off unless at least one realm enables network_aaa.capport.
+    if capport_routes_enabled(&config) {
+        app = app.merge(captive_portal_routes::<AnyRepository>(paths));
+    }
 
     app = merge_optional_protocol_routes(app, &config, &state);
 
@@ -336,11 +342,16 @@ async fn main() -> anyhow::Result<()> {
         }
     })?;
 
+    let quic_listener = start_quic_listener(&config)
+        .await
+        .context("failed to start QUIC listener")?;
+
     let shutdown = async move {
         shutdown_signal().await;
         for sender in network_aaa_shutdown {
             let _ = sender.send(());
         }
+        stop_quic_listener(quic_listener).await;
     };
 
     if let Some(tls) = &config.server.tls {
@@ -472,6 +483,69 @@ async fn shutdown_signal_unix() {
 async fn shutdown_signal_portable() {
     if tokio::signal::ctrl_c().await.is_ok() {
         info!("received interrupt signal, shutting down");
+    }
+}
+
+/// Shutdown handle for the opt-in QUIC listener.
+#[derive(Debug)]
+struct QuicListenerShutdown {
+    shutdown: oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<QidResult<()>>,
+}
+
+/// Start the opt-in QUIC listener after config validation (fail-closed).
+///
+/// Without the `quic` feature an enabled `server.quic` is a startup error,
+/// never a silent no-op. With the feature, TLS/socket setup binds
+/// synchronously so startup reports failures, and the serve task is stopped
+/// (not detached) during shutdown.
+#[cfg(not(feature = "quic"))]
+async fn start_quic_listener(config: &QidConfig) -> anyhow::Result<Option<QuicListenerShutdown>> {
+    if config.server.quic.enabled {
+        bail!("server.quic is enabled but qidd was built without the `quic` feature");
+    }
+    Ok(None)
+}
+
+/// Start the opt-in QUIC listener after config validation (fail-closed).
+#[cfg(feature = "quic")]
+async fn start_quic_listener(config: &QidConfig) -> anyhow::Result<Option<QuicListenerShutdown>> {
+    if !config.server.quic.enabled {
+        return Ok(None);
+    }
+    let quic = &config.server.quic;
+    let certificate_path = quic.certificate_path.as_deref().unwrap_or_default();
+    let private_key_path = quic.private_key_path.as_deref().unwrap_or_default();
+    let certificate_der = tokio::fs::read(certificate_path).await.with_context(|| {
+        format!("failed to read server.quic.certificate_path: {certificate_path}")
+    })?;
+    let private_key_der = tokio::fs::read(private_key_path).await.with_context(|| {
+        format!("failed to read server.quic.private_key_path: {private_key_path}")
+    })?;
+    let listener = qid_network::quic::QuicListener::new(qid_network::quic::QuicListenerConfig {
+        bind_address: quic.bind.clone(),
+        certificate_der,
+        private_key_der,
+        max_concurrent_bidi_streams: quic.max_bidi_streams,
+    });
+    let bound = listener
+        .bind()
+        .map_err(|error| anyhow::anyhow!("failed to bind QUIC listener: {}", error.message()))?;
+    info!(bind = %quic.bind, "starting QUIC listener");
+    let (shutdown, receiver) = oneshot::channel();
+    let task = tokio::spawn(async move { bound.serve_with_shutdown(receiver).await });
+    Ok(Some(QuicListenerShutdown { shutdown, task }))
+}
+
+async fn stop_quic_listener(handle: Option<QuicListenerShutdown>) {
+    let Some(handle) = handle else {
+        return;
+    };
+    let _ = handle.shutdown.send(());
+    match handle.task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => warn!(error = %error.message(), "QUIC listener stopped with error"),
+        Err(error) => warn!(%error, "QUIC listener task failed"),
     }
 }
 
@@ -1559,6 +1633,7 @@ mod tests {
                 cors: CorsConfig::default(),
                 paths: ServerPaths::default(),
                 hsts: Default::default(),
+                quic: Default::default(),
             },
             admin: AdminConfig::default(),
             storage: StorageConfig::default(),
@@ -2073,5 +2148,42 @@ mod tests {
             qid_network::server::RadiusAccessDecision::Reject { .. }
         ));
         std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[test]
+    fn capport_routes_stay_off_without_opt_in() {
+        let config = minimal_config();
+        assert!(!capport_routes_enabled(&config));
+
+        let mut enabled = minimal_config();
+        enabled.realms[0].protocols.network_aaa.capport = true;
+        assert!(capport_routes_enabled(&enabled));
+    }
+
+    #[tokio::test]
+    async fn quic_listener_stays_disabled_by_default() {
+        let config = minimal_config();
+        assert!(!config.server.quic.enabled);
+        assert!(start_quic_listener(&config).await.unwrap().is_none());
+    }
+
+    #[cfg(not(feature = "quic"))]
+    #[tokio::test]
+    async fn quic_listener_enabled_without_feature_is_startup_error() {
+        let mut config = minimal_config();
+        config.server.quic.enabled = true;
+        let err = start_quic_listener(&config).await.unwrap_err();
+        assert!(err.to_string().contains("without the `quic` feature"));
+    }
+
+    #[cfg(feature = "quic")]
+    #[tokio::test]
+    async fn quic_listener_enabled_with_missing_material_fails_early() {
+        let mut config = minimal_config();
+        config.server.quic.enabled = true;
+        config.server.quic.certificate_path = Some("/nonexistent/qid-quic-cert.pem".to_string());
+        config.server.quic.private_key_path = Some("/nonexistent/qid-quic-key.pem".to_string());
+        let err = start_quic_listener(&config).await.unwrap_err();
+        assert!(err.to_string().contains("certificate_path"));
     }
 }

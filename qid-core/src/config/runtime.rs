@@ -323,6 +323,8 @@ pub struct ServerConfig {
     pub paths: ServerPaths,
     #[serde(default)]
     pub hsts: HstsConfig,
+    #[serde(default)]
+    pub quic: QuicConfig,
 }
 
 impl ServerConfig {
@@ -338,6 +340,7 @@ impl ServerConfig {
         self.cors.validate()?;
         self.http_message_signatures.validate()?;
         self.paths.validate()?;
+        self.quic.validate()?;
         if let Some(tls) = &self.tls {
             tls.validate()?;
         }
@@ -681,6 +684,8 @@ pub struct ServerPaths {
     pub auth_email_magic_link_send: String,
     #[serde(default = "default_auth_email_magic_link_verify_path")]
     pub auth_email_magic_link_verify: String,
+    #[serde(default = "default_capport_details_path")]
+    pub capport_details: String,
 }
 
 impl Default for ServerPaths {
@@ -721,6 +726,7 @@ impl Default for ServerPaths {
             auth_webauthn_discoverable_finish: default_auth_webauthn_discoverable_finish_path(),
             auth_email_magic_link_send: default_auth_email_magic_link_send_path(),
             auth_email_magic_link_verify: default_auth_email_magic_link_verify_path(),
+            capport_details: default_capport_details_path(),
         }
     }
 }
@@ -763,6 +769,7 @@ impl ServerPaths {
             &self.auth_webauthn_discoverable_finish,
             &self.auth_email_magic_link_send,
             &self.auth_email_magic_link_verify,
+            &self.capport_details,
         ];
         for p in &paths {
             if p.is_empty() {
@@ -780,6 +787,15 @@ impl ServerPaths {
                     message: format!("server.paths contains duplicate value: {p}"),
                 });
             }
+        }
+        if !self
+            .capport_details
+            .split('/')
+            .any(|segment| segment == ":realm")
+        {
+            return Err(QidError::Config {
+                message: "server.paths.capport_details must contain a ':realm' segment".to_string(),
+            });
         }
         Ok(())
     }
@@ -887,6 +903,88 @@ fn default_auth_email_magic_link_send_path() -> String {
 }
 fn default_auth_email_magic_link_verify_path() -> String {
     "/api/v1/:realm/auth/email-magic-link/verify".to_string()
+}
+fn default_capport_details_path() -> String {
+    "/api/v1/:realm/captive-portal/api/v1/details".to_string()
+}
+
+/// QUIC transport for qidd (helper-level listener, opt-in).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct QuicConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_quic_bind")]
+    pub bind: String,
+    #[serde(default)]
+    pub certificate_path: Option<String>,
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+    #[serde(default = "default_quic_max_bidi_streams")]
+    pub max_bidi_streams: u32,
+}
+
+impl Default for QuicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_quic_bind(),
+            certificate_path: None,
+            private_key_path: None,
+            max_bidi_streams: default_quic_max_bidi_streams(),
+        }
+    }
+}
+
+fn default_quic_bind() -> String {
+    "[::]:4433".to_string()
+}
+
+fn default_quic_max_bidi_streams() -> u32 {
+    100
+}
+
+impl QuicConfig {
+    pub(crate) fn validate(&self) -> QidResult<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        self.bind
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| QidError::Config {
+                message: format!("server.quic.bind must be a valid socket address: {e}"),
+            })?;
+        if self
+            .certificate_path
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(QidError::Config {
+                message: "server.quic.certificate_path is required when QUIC is enabled"
+                    .to_string(),
+            });
+        }
+        if self
+            .private_key_path
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(QidError::Config {
+                message: "server.quic.private_key_path is required when QUIC is enabled"
+                    .to_string(),
+            });
+        }
+        if self.max_bidi_streams == 0 {
+            return Err(QidError::Config {
+                message: "server.quic.max_bidi_streams must be greater than zero".to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -24,6 +24,7 @@ pub fn test_config() -> QidConfig {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),

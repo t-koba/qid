@@ -14,6 +14,10 @@ rust-version.workspace = true
 name = "qidd"
 path = "src/main.rs"
 
+[features]
+default = []
+quic = ["qid-network/quic"]
+
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }

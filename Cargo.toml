@@ -39,11 +39,15 @@ exclude = ["vendor/rustls"]
 
 # Product-source line limits; test code is reported separately and is not capped.
 # Inline #[cfg(test)] modules in mixed source files remain in source counts.
+# Headroom covers the configurable CAPPORT/QUIC wiring (server.paths.capport_details,
+# server.quic, qid-network listener split, per-realm gating).
 [workspace.metadata.budget]
-total = 103000
+total = 104000
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
+# Headroom for QUIC bind/serve startup and shutdown code/tests in qid-network.
+qid-network = 4500
 qid-admin = 6000
 qid-core = 14000
 qid-crypto = 5600

@@ -21,6 +21,7 @@ fn minimal_config() -> QidConfig {
             cors: qid_core::config::CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            quic: Default::default(),
         },
         admin: AdminConfig::default(),
         storage: StorageConfig::default(),

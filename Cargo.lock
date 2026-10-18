@@ -4375,6 +4375,7 @@ dependencies = [
  "metrics",
  "qid-core",
  "qid-crypto",
+ "qid-directory",
  "qid-http",
  "qid-storage",
  "reqwest 0.12.28",

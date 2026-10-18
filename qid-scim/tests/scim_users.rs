@@ -50,7 +50,7 @@ fn custom_schema(
     }
 }
 
-fn test_app<R: Repository>(repo: Arc<R>) -> Router {
+fn scim_test_config() -> qid_core::config::QidConfig {
     let mut config = test_helpers::test_config();
     config.realms[0].id = "corp".to_string();
     config.realms[0].protocols.scim.custom_schemas = vec![
@@ -68,10 +68,17 @@ fn test_app<R: Repository>(repo: Arc<R>) -> Router {
         custom_schema("urn:example:Shared", "SharedOther", "otherSharedAttr"),
     ];
     config.realms.push(other);
+    config
+}
+
+fn scim_test_state<R: Repository>(repo: Arc<R>) -> Arc<SharedState<R>> {
+    let config = scim_test_config();
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
-    let state =
-        Arc::new(SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap());
-    qid_scim::scim_routes().with_state(state)
+    Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap())
+}
+
+fn test_app<R: Repository>(repo: Arc<R>) -> Router {
+    qid_scim::scim_routes().with_state(scim_test_state(repo))
 }
 
 async fn response_json(response: axum::response::Response) -> serde_json::Value {
@@ -864,7 +871,7 @@ async fn scim_schema_discovery_is_scoped_to_authenticated_realm() {
 }
 
 #[tokio::test]
-async fn scim_owned_external_id_is_immutable_via_put_and_patch() {
+async fn scim_owned_external_id_is_immutable_and_reconciles_with_directory_sync() {
     let (app, repo, _store_path) = setup_with_store().await;
     const DN: &str = "uid=alice,ou=people,dc=example,dc=com";
     const OWNER: &str = "provider-a";
@@ -1072,11 +1079,37 @@ async fn scim_owned_external_id_is_immutable_via_put_and_patch() {
     assert_eq!(missing_stored.directory_provider_id.as_deref(), Some(OWNER));
     repo.delete_scim_user(&missing_id).await.unwrap();
 
-    // The provider reconciliation key is intact: a sync lookup by
-    // (directory_provider_id, external_id) still finds this same row, and no
-    // duplicate owned row was created by the rejected mutations.
-    // This mirrors `sync_ldap_entries`' `owned_by_dn` map and its preflight
-    // requirement of a non-blank owner plus raw-DN external_id.
+    // Provider reconciliation still resolves the same owned row: run the real
+    // directory sync after the rejected SCIM mutations and the allowed
+    // unchanged/equal round trips.
+    let sync_state = scim_test_state(repo.clone());
+    let sync_result = qid_directory::sync_ldap_entries(
+        &sync_state,
+        "corp",
+        OWNER,
+        &[qid_directory::LdapDirectoryEntry {
+            dn: DN.to_string(),
+            uid: "alice@example.com".to_string(),
+            mail: Some("alice@example.com".to_string()),
+            display_name: Some("Alice Example".to_string()),
+            department: Some("Platform".to_string()),
+            manager_dn: None,
+            enabled: true,
+        }],
+        qid_directory::LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 2_000,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(sync_result.created_user_ids.is_empty());
+    assert_eq!(sync_result.updated_user_ids, vec![id.clone()]);
+    assert!(sync_result.unchanged_user_ids.is_empty());
+    let reconciled = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(reconciled.external_id.as_deref(), Some(DN));
+    assert_eq!(reconciled.directory_provider_id.as_deref(), Some(OWNER));
+    assert_eq!(reconciled.user_name, "alice@example.com");
     let users = repo.list_scim_users(&"corp".into()).await.unwrap();
     let owned_matches: Vec<_> = users
         .iter()
@@ -1114,7 +1147,7 @@ async fn scim_unowned_external_id_remains_mutable() {
         ))
         .unwrap();
     let put_response = app.clone().oneshot(put_request).await.unwrap();
-
+    assert_eq!(put_response.status(), StatusCode::OK);
     assert_eq!(response_json(put_response).await["externalId"], "hr-2");
 
     // Unowned PATCH may change and then clear externalId.

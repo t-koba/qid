@@ -305,9 +305,10 @@ Workload and SPIFFE routes are only merged in the `workload` profile.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/directory/v1/providers` | List directory providers. |
-| `GET, PATCH` | `/directory/v1/providers/:id` | Get/update provider status. |
-| `POST` | `/directory/v1/providers/:id/sync` | Trigger sync. |
-| `GET` | `/directory/v1/providers/:id/sync/status` | Sync status. |
+| `GET` | `/directory/v1/providers/:id` | Read provider configuration; connection and sync settings are managed through QID configuration. |
+| `PATCH` | `/directory/v1/providers/:id` | Unsupported (`501` for configured providers, `404` for unknown IDs); no provider status is asserted or changed. |
+| `POST` | `/directory/v1/providers/:id/sync` | Unsupported over HTTP (`501` for configured providers, `404` for unknown IDs); no job is scheduled. Use `qid-worker directory-sync --realm <realm> --provider-id <id>`. |
+| `GET` | `/directory/v1/providers/:id/sync/status` | Unsupported (`501` for configured providers, `404` for unknown IDs); the HTTP API does not track sync-job state. |
 | `POST` | `/risk/v1/evaluate` | Evaluate risk. |
 | `GET` | `/.well-known/ssf-configuration` | SSF config. |
 | `GET` | `/realms/:realm/.well-known/ssf-configuration` | Realm SSF config. |

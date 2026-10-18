@@ -24,6 +24,8 @@ ulid = { workspace = true }
 ldap3 = { workspace = true }
 
 [dev-dependencies]
+http-body-util = { workspace = true }
 qid-core = { workspace = true, features = ["test-utils"] }
 qid-crypto = { workspace = true }
 tokio = { workspace = true }
+tower = { workspace = true }

@@ -4,7 +4,7 @@
 use axum::{Json, Router, response::IntoResponse};
 use qid_core::{
     error::{QidError, QidResult},
-    models::{AuditEvent, ScimGroup, ScimUser},
+    models::{ScimGroup, ScimUser},
     state::SharedState,
     tenant::RealmId,
     util::now_seconds,

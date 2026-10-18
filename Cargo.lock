@@ -3997,6 +3997,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "http-body-util",
  "ldap3",
  "qid-core",
  "qid-crypto",
@@ -4005,6 +4006,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower 0.5.3",
  "tracing",
  "ulid",
 ]

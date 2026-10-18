@@ -117,16 +117,23 @@ async fn update_provider_status<R: Repository>(
         Ok(admin) => admin,
         Err(response) => return response,
     };
-    if let Err(error) = resolve_directory_realm(&state, query.realm.as_deref(), &admin) {
-        return error.into_response();
+    let realm = match resolve_directory_realm(&state, query.realm.as_deref(), &admin) {
+        Ok(realm) => realm,
+        Err(error) => return error.into_response(),
+    };
+    if realm
+        .protocols
+        .directory
+        .providers
+        .iter()
+        .all(|p| p.id != id)
+    {
+        return directory_provider_not_found(&id);
     }
-    let status = "connected";
-    Json(serde_json::json!({
-        "id": id,
-        "status": status,
-        "updated_at": qid_core::util::now_seconds(),
-    }))
-    .into_response()
+    directory_http_unsupported(
+        &id,
+        "provider configuration is managed through qid configuration; HTTP status updates are not implemented".to_string(),
+    )
 }
 
 async fn trigger_sync<R: Repository>(
@@ -151,45 +158,14 @@ async fn trigger_sync<R: Repository>(
         .find(|p| p.id == id);
 
     match provider {
-        Some(provider) => {
-            let _ = state
-                .repo
-                .append_audit_event(&AuditEvent {
-                    id: ulid::Ulid::new().to_string(),
-                    realm_id: Some(realm.id.clone()),
-                    actor: "directory-api".to_string(),
-                    action: "directory.sync.trigger".to_string(),
-                    target_type: "directory_provider".to_string(),
-                    target_id: id.clone(),
-                    reason: "API trigger".to_string(),
-                    metadata_json: serde_json::json!({
-                        "provider_id": id,
-                        "provider_type": provider.provider_type,
-                    }),
-                    created_at: qid_core::util::now_seconds(),
-                    previous_hash: None,
-                    event_hash: None,
-                })
-                .await;
-
-            (
-                StatusCode::ACCEPTED,
-                Json(serde_json::json!({
-                    "status": "sync_triggered",
-                    "provider_id": id,
-                    "message": "Sync has been triggered.",
-                })),
-            )
-                .into_response()
-        }
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "provider not found",
-                "id": id,
-            })),
-        )
-            .into_response(),
+        Some(_) => directory_http_unsupported(
+            &id,
+            format!(
+                "the HTTP API does not schedule directory sync work; run `qid-worker directory-sync --realm {} --provider-id {id}` to execute a sync",
+                realm.id
+            ),
+        ),
+        None => directory_provider_not_found(&id),
     }
 }
 
@@ -203,16 +179,49 @@ async fn get_sync_status<R: Repository>(
         Ok(admin) => admin,
         Err(response) => return response,
     };
-    if let Err(error) = resolve_directory_realm(&state, query.realm.as_deref(), &admin) {
-        return error.into_response();
+    let realm = match resolve_directory_realm(&state, query.realm.as_deref(), &admin) {
+        Ok(realm) => realm,
+        Err(error) => return error.into_response(),
+    };
+    if realm
+        .protocols
+        .directory
+        .providers
+        .iter()
+        .all(|p| p.id != id)
+    {
+        return directory_provider_not_found(&id);
     }
-    Json(serde_json::json!({
-        "provider_id": id,
-        "status": "idle",
-        "last_sync_at": null,
-        "last_sync_result": null,
-    }))
-    .into_response()
+    directory_http_unsupported(
+        &id,
+        format!(
+            "the HTTP API does not track directory sync status; run `qid-worker directory-sync --realm {} --provider-id {id}` and inspect its report",
+            realm.id
+        ),
+    )
+}
+
+fn directory_provider_not_found(id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": "provider not found",
+            "id": id,
+        })),
+    )
+        .into_response()
+}
+
+fn directory_http_unsupported(id: &str, detail: String) -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "unsupported",
+            "id": id,
+            "detail": detail,
+        })),
+    )
+        .into_response()
 }
 
 async fn require_directory_admin<R: Repository>(

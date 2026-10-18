@@ -651,3 +651,208 @@ async fn dynamic_group_any_mode_requires_at_least_one_condition() {
         &user
     ));
 }
+
+mod directory_http_truthfulness {
+    use super::*;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Method, Request, StatusCode},
+    };
+    use http_body_util::BodyExt;
+    use qid_core::config::{DirectoryConnectionConfig, DirectoryProviderConfig};
+    use qid_core::models::{Admin, AdminElevation};
+    use tower::ServiceExt;
+
+    const ADMIN_SESSION_ID_HEADER: &str = "x-qid-admin-session-id";
+    const CONFIGURED_PROVIDER_ID: &str = "ad-main";
+    const UNKNOWN_PROVIDER_ID: &str = "missing-provider";
+
+    async fn setup_routes() -> (Router, Arc<FileRepository>, String) {
+        let path =
+            std::env::temp_dir().join(format!("qid-directory-routes-{}.json", ulid::Ulid::new()));
+        let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
+        repo.migrate().await.unwrap();
+        let mut config = test_helpers::test_config();
+        config.realms[0].tenant_id = Some("test".to_string());
+        config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+            id: CONFIGURED_PROVIDER_ID.to_string(),
+            provider_type: "active-directory".to_string(),
+            enabled: true,
+            connection: DirectoryConnectionConfig {
+                url: "ldap://ad.example.com".to_string(),
+                base_dn: Some("dc=example,dc=com".to_string()),
+                ..Default::default()
+            },
+            sync: Default::default(),
+            attribute_mapping: Default::default(),
+        }];
+        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
+        let state =
+            Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
+        let repo = state.repo.clone();
+        let now = qid_core::util::now_seconds();
+        let admin = Admin {
+            id: "directory-admin-id".to_string(),
+            tenant_id: "test".to_string(),
+            subject: "directory-admin".to_string(),
+            roles: vec!["directory.admin".to_string()],
+            created_at: now,
+        };
+        repo.upsert_admin(&admin).await.unwrap();
+        let elevation = AdminElevation {
+            id: format!("admin-session-{}", ulid::Ulid::new()),
+            tenant_id: "test".to_string(),
+            admin_id: admin.id.clone(),
+            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+            amr: vec!["hwk".to_string()],
+            elevation_expires_at: now + 300,
+            created_at: now,
+        };
+        repo.store_admin_elevation(&elevation).await.unwrap();
+        let app = directory_routes::<FileRepository>().with_state(state);
+        (app, repo, elevation.id)
+    }
+
+    async fn directory_call(
+        app: Router,
+        method: Method,
+        uri: &str,
+        session: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(session) = session {
+            builder = builder.header(ADMIN_SESSION_ID_HEADER, session);
+        }
+        let response = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn patch_known_provider_returns_501_without_fabricated_status() {
+        let (app, _repo, session) = setup_routes().await;
+        let (status, body) = directory_call(
+            app,
+            Method::PATCH,
+            &format!("/directory/v1/providers/{CONFIGURED_PROVIDER_ID}"),
+            Some(&session),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(body["error"], "unsupported");
+        assert_eq!(body["id"], CONFIGURED_PROVIDER_ID);
+        assert!(
+            body["detail"].as_str().unwrap().contains("configuration"),
+            "501 detail must explain configuration-managed provider state: {body}"
+        );
+        assert!(
+            !body.to_string().contains("connected"),
+            "must not fabricate provider status: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trigger_sync_known_provider_returns_501_and_records_no_audit_event() {
+        let (app, repo, session) = setup_routes().await;
+        let (status, body) = directory_call(
+            app,
+            Method::POST,
+            &format!("/directory/v1/providers/{CONFIGURED_PROVIDER_ID}/sync"),
+            Some(&session),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(body["error"], "unsupported");
+        assert!(
+            body.to_string().contains("qid-worker directory-sync"),
+            "501 detail must identify the supported CLI path: {body}"
+        );
+        assert!(
+            !body.to_string().contains("sync_triggered"),
+            "must not claim a sync was triggered: {body}"
+        );
+        let events = repo.list_audit_events(None, 100).await.unwrap();
+        assert!(
+            events.is_empty(),
+            "unsupported sync must not record an audit event"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_status_known_provider_returns_501_without_idle_state() {
+        let (app, _repo, session) = setup_routes().await;
+        let (status, body) = directory_call(
+            app,
+            Method::GET,
+            &format!("/directory/v1/providers/{CONFIGURED_PROVIDER_ID}/sync/status"),
+            Some(&session),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(body["error"], "unsupported");
+        assert!(
+            body["detail"].as_str().unwrap().contains("does not track"),
+            "501 detail must explain that no HTTP status is tracked: {body}"
+        );
+        assert!(
+            !body.to_string().contains("idle"),
+            "must not invent idle sync state: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_returns_404_for_unsupported_operations() {
+        for (method, uri) in [
+            (
+                Method::PATCH,
+                format!("/directory/v1/providers/{UNKNOWN_PROVIDER_ID}"),
+            ),
+            (
+                Method::POST,
+                format!("/directory/v1/providers/{UNKNOWN_PROVIDER_ID}/sync"),
+            ),
+            (
+                Method::GET,
+                format!("/directory/v1/providers/{UNKNOWN_PROVIDER_ID}/sync/status"),
+            ),
+        ] {
+            let (app, _repo, session) = setup_routes().await;
+            let (status, body) = directory_call(app, method, &uri, Some(&session)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "for {uri}");
+            assert_eq!(body["error"], "provider not found", "for {uri}");
+            assert_eq!(body["id"], UNKNOWN_PROVIDER_ID, "for {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_provider_config_and_auth_boundaries_stay_intact() {
+        let (app, _repo, session) = setup_routes().await;
+        let (status, body) = directory_call(
+            app,
+            Method::GET,
+            &format!("/directory/v1/providers/{CONFIGURED_PROVIDER_ID}"),
+            Some(&session),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], CONFIGURED_PROVIDER_ID);
+        assert_eq!(body["type"], "active-directory");
+        assert_eq!(body["url"], "ldap://ad.example.com");
+
+        let (app, _, _) = setup_routes().await;
+        let (status, _) = directory_call(
+            app,
+            Method::POST,
+            &format!("/directory/v1/providers/{CONFIGURED_PROVIDER_ID}/sync"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}

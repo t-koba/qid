@@ -1037,6 +1037,78 @@ realms:
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn directory_sync_honors_realm_level_kill_switch_before_connect() {
+        let dir = temp_dir("directory-sync-disabled");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let (config, store) = write_config(&dir);
+        let base_config = std::fs::read_to_string(&config).expect("base config");
+        let disabled_directory_config = base_config.replace(
+            "    issuer: \"https://id.example.com/realms/corp\"\n",
+            "    issuer: \"https://id.example.com/realms/corp\"\n    protocols:\n      directory:\n        enabled: false\n        providers:\n          - id: corp-ldap\n            type: ldap\n            enabled: true\n            connection:\n              url: \"not-an-ldap-url\"\n",
+        );
+        std::fs::write(&config, disabled_directory_config).expect("disabled directory config");
+
+        let initial_user = ScimUser {
+            id: "user-before-disabled-sync".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some("uid=keep,dc=example,dc=com".to_string()),
+            user_name: "keep@example.com".to_string(),
+            name_json: serde_json::json!({"givenName": "Keep"}),
+            emails_json: serde_json::json!([{"value": "keep@example.com"}]),
+            enterprise_json: serde_json::json!({}),
+            directory_provider_id: Some("corp-ldap".to_string()),
+            deprovisioned_at: None,
+            active: true,
+        };
+        let repo = AnyRepository::connect(store.to_str().expect("store path"))
+            .await
+            .expect("repository");
+        repo.create_scim_user(&initial_user)
+            .await
+            .expect("seed user");
+        drop(repo);
+
+        let result = run(Args {
+            config,
+            command: Command::DirectorySync {
+                realm: "corp".to_string(),
+                provider_id: "corp-ldap".to_string(),
+                actor: "qid-worker".to_string(),
+                reason: "disabled kill-switch regression".to_string(),
+                now: Some(100),
+                record_audit_event: true,
+                dry_run: false,
+            },
+        })
+        .await
+        .expect("disabled directory sync should report instead of failing");
+        assert_eq!(result["command"], "directory_sync");
+        assert_eq!(result["report"]["status"], "skipped_disabled");
+        assert_eq!(result["report"]["provider_id"], "corp-ldap");
+        assert!(result["report"]["audit_event_id"].is_null());
+
+        let refreshed = AnyRepository::connect(store.to_str().expect("store path"))
+            .await
+            .expect("repository");
+        let users = refreshed
+            .list_scim_users(&RealmId::from("corp".to_string()))
+            .await
+            .expect("SCIM users");
+        assert_eq!(
+            serde_json::to_value(users).expect("serialize SCIM users"),
+            serde_json::to_value(vec![initial_user]).expect("serialize initial user")
+        );
+        assert!(
+            refreshed
+                .list_audit_events(Some(&RealmId::from("corp".to_string())), 10)
+                .await
+                .expect("audit events")
+                .is_empty()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     async fn append_audit_event(repo: &AnyRepository, id: &str, created_at: u64) {
         repo.append_audit_event(&AuditEvent {
             id: id.to_string(),

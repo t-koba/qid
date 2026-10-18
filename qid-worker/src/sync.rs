@@ -247,10 +247,6 @@ pub async fn run_directory_sync_job(
     };
     let sync_config = provider.sync.clone();
     let mapping = provider.attribute_mapping.clone();
-    // Honour `directory.enabled` to give operators a kill switch. The
-    // default of `true` is what INTEROP §3 expects for enterprise
-    // deployments; set to `false` only when a realm is intentionally
-    // operated without a directory backend.
 
     let entries = match connector.fetch_users(&sync_config, &mapping).await {
         Ok(entries) => entries,
@@ -351,6 +347,13 @@ fn find_directory_provider<'a>(
         .ok_or_else(|| QidError::NotFound {
             resource: format!("realm {realm_id}"),
         })?;
+    // Realm-level kill switch: when `directory.enabled` is false, report
+    // `SkippedDisabled` before any provider connection, fetch, sync, or audit.
+    if !realm.protocols.directory.enabled {
+        return Err(QidError::Config {
+            message: format!("directory sync is disabled in realm {realm_id}"),
+        });
+    }
     let provider = realm
         .protocols
         .directory

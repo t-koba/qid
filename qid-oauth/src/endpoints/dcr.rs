@@ -625,26 +625,31 @@ fn validate_dcr_registration_access_token<R: Repository>(
     Ok(())
 }
 
+async fn dynamic_client_registration_context<R: Repository>(
+    state: &SharedState<R>,
+    client_id: &str,
+) -> QidResult<(String, String)> {
+    let client = super::find_client_across_realms(state, client_id)
+        .await
+        .map_err(|_| QidError::NotFound {
+            resource: format!("client {client_id}"),
+        })?;
+    let realm = state
+        .realm(&client.realm_id)
+        .ok_or_else(|| QidError::NotFound {
+            resource: format!("realm {}", client.realm_id),
+        })?;
+    Ok((client.realm_id, realm.issuer.clone()))
+}
+
 pub async fn dynamic_client_registration_get<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    let (realm_id, issuer) = match super::find_client_across_realms(&state, &client_id).await {
-        Ok(c) => {
-            let realm = state.realm(&c.realm_id).ok_or_else(|| QidError::NotFound {
-                resource: format!("realm {}", c.realm_id),
-            });
-            match realm {
-                Ok(r) => (c.realm_id.clone(), r.issuer.clone()),
-                Err(e) => return qid_http::error_response(e),
-            }
-        }
-        Err(_) => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("client {client_id}"),
-            });
-        }
+    let (realm_id, issuer) = match dynamic_client_registration_context(&state, &client_id).await {
+        Ok(context) => context,
+        Err(e) => return qid_http::error_response(e),
     };
     if !oauth_feature_enabled(&state, &realm_id, |oauth| {
         oauth.dynamic_client_registration.enabled
@@ -716,21 +721,9 @@ pub async fn dynamic_client_registration_update<R: Repository>(
         Ok(metadata) => metadata,
         Err(e) => return qid_http::error_response(e),
     };
-    let (realm_id, issuer) = match super::find_client_across_realms(&state, &client_id).await {
-        Ok(c) => {
-            let realm = state.realm(&c.realm_id).ok_or_else(|| QidError::NotFound {
-                resource: format!("realm {}", c.realm_id),
-            });
-            match realm {
-                Ok(r) => (c.realm_id.clone(), r.issuer.clone()),
-                Err(e) => return qid_http::error_response(e),
-            }
-        }
-        Err(_) => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: format!("client {client_id}"),
-            });
-        }
+    let (realm_id, issuer) = match dynamic_client_registration_context(&state, &client_id).await {
+        Ok(context) => context,
+        Err(e) => return qid_http::error_response(e),
     };
     if !oauth_feature_enabled(&state, &realm_id, |oauth| {
         oauth.dynamic_client_registration.enabled

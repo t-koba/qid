@@ -11,25 +11,7 @@ pub use key_rotation::*;
 pub use notification::*;
 pub use sync::*;
 
-use sha2::{Digest, Sha256};
-
-pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        out.push(hex_nibble(byte >> 4));
-        out.push(hex_nibble(byte & 0x0f));
-    }
-    out
-}
-
-fn hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        10..=15 => (b'a' + value - 10) as char,
-        _ => '0',
-    }
-}
+pub(crate) use qid_core::util::sha256_hex as hex_sha256;
 
 #[cfg(test)]
 mod tests {

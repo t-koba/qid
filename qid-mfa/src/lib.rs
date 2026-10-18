@@ -292,7 +292,7 @@ impl RecoveryCodeBatch {
 pub fn hash_recovery_code(code: &str) -> String {
     let normalized = normalize_recovery_code(code);
     let digest = Sha256::digest(normalized.as_bytes());
-    hex_encode(&digest)
+    qid_core::util::hex_encode_lower(&digest)
 }
 
 fn build_otpauth_url(
@@ -350,23 +350,6 @@ fn percent_encode(value: &str) -> String {
             }
         })
         .collect()
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(hex_nibble(byte >> 4));
-        out.push(hex_nibble(byte & 0x0f));
-    }
-    out
-}
-
-fn hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        10..=15 => (b'a' + value - 10) as char,
-        _ => '0',
-    }
 }
 
 #[cfg(test)]

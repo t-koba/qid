@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// Immutable administrative audit event.
@@ -75,7 +74,7 @@ impl AuditEvent {
         fields.insert("target_type", serde_json::json!(self.target_type));
 
         let bytes = serde_json::to_vec(&fields).unwrap_or_default();
-        hex_sha256(&bytes)
+        crate::util::sha256_hex(&bytes)
     }
 }
 
@@ -354,22 +353,5 @@ fn canonical_json_value(value: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Object(sorted)
         }
         value => value.clone(),
-    }
-}
-
-fn hex_sha256(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        out.push(hex_nibble(byte >> 4));
-        out.push(hex_nibble(byte & 0x0f));
-    }
-    out
-}
-
-fn hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        _ => (b'a' + (value - 10)) as char,
     }
 }

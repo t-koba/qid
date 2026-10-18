@@ -317,7 +317,7 @@ pub fn evaluate_passkey_inventory(
 
 pub fn ceremony_state_key(realm_id: &str, user_id: &str, ceremony_id: &str) -> String {
     let digest = Sha256::digest(format!("{realm_id}:{user_id}:{ceremony_id}").as_bytes());
-    hex_encode(&digest)
+    qid_core::util::hex_encode_lower(&digest)
 }
 
 pub fn challenge_is_fresh(issued_at: u64, now: u64, ttl_seconds: u64) -> bool {
@@ -360,7 +360,7 @@ fn normalize_aaguid(raw: &[u8]) -> Option<String> {
     if raw.is_empty() {
         return None;
     }
-    Some(hex_encode(raw))
+    Some(qid_core::util::hex_encode_lower(raw))
 }
 
 fn infer_binding(
@@ -427,23 +427,6 @@ fn string_field(value: &serde_json::Value, names: &[&str]) -> Option<String> {
             })
             .map(str::to_string)
     })
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(hex_nibble(byte >> 4));
-        out.push(hex_nibble(byte & 0x0f));
-    }
-    out
-}
-
-fn hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        10..=15 => (b'a' + value - 10) as char,
-        _ => '0',
-    }
 }
 
 #[cfg(test)]

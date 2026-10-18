@@ -127,7 +127,7 @@ async fn migration_plan_for_pool(
                 migration.version,
                 (
                     migration.description.to_string(),
-                    bytes_to_hex(&migration.checksum),
+                    qid_core::util::hex_encode_lower(&migration.checksum),
                 ),
             )
         })
@@ -217,25 +217,13 @@ async fn load_applied_migrations(
     .map_err(storage_to_qid_error)?;
     Ok(rows
         .into_iter()
-        .map(|(version, description, checksum)| (version, (description, bytes_to_hex(&checksum))))
+        .map(|(version, description, checksum)| {
+            (
+                version,
+                (description, qid_core::util::hex_encode_lower(&checksum)),
+            )
+        })
         .collect())
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(hex_nibble(byte >> 4));
-        out.push(hex_nibble(byte & 0x0f));
-    }
-    out
-}
-
-fn hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        10..=15 => (b'a' + value - 10) as char,
-        _ => '0',
-    }
 }
 
 fn ensure_sqlite_file_exists(url: &str) {

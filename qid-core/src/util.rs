@@ -30,6 +30,22 @@ pub fn sha256_base64url(input: impl AsRef<[u8]>) -> String {
     base64_url_encode(&hash)
 }
 
+/// Encode bytes as lowercase hexadecimal.
+pub fn hex_encode_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// SHA-256 digest of `input`, encoded as lowercase hexadecimal.
+pub fn sha256_hex(input: impl AsRef<[u8]>) -> String {
+    hex_encode_lower(&Sha256::digest(input.as_ref()))
+}
+
 /// HMAC-SHA-256 digest of `input`, encoded as unpadded base64url.
 #[allow(clippy::expect_used)]
 pub fn hmac_sha256_base64url(key: &[u8], input: impl AsRef<[u8]>) -> String {
@@ -85,4 +101,25 @@ pub fn sector_identifier_for_client(client: &crate::models::Client) -> String {
 /// Accepts any type implementing `AsRef<[u8]>` (e.g. `&str`, `String`, `&[u8]`).
 pub fn constant_time_eq<T: AsRef<[u8]>, U: AsRef<[u8]>>(left: T, right: U) -> bool {
     left.as_ref().ct_eq(right.as_ref()).into()
+}
+
+#[cfg(test)]
+mod hex_tests {
+    use super::{hex_encode_lower, sha256_hex};
+
+    #[test]
+    fn hex_encoding_is_lowercase_and_byte_complete() {
+        assert_eq!(
+            hex_encode_lower(&[0x00, 0x0f, 0x10, 0xab, 0xff]),
+            "000f10abff"
+        );
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        assert_eq!(
+            sha256_hex("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

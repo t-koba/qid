@@ -231,7 +231,7 @@ pub async fn run_directory_sync_job(
         }
     };
     let mut connector: Box<dyn DirectoryConnector> = match provider.provider_type.as_str() {
-        "ldap" | "ldaps" | "ad" => {
+        "ldap" | "active-directory" => {
             let mut ldap = LdapDirectoryConnector::new();
             ldap.connect(&provider.connection).await?;
             Box::new(ldap)

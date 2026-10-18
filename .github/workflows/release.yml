@@ -157,7 +157,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qid-sbom
-          path: ./*.json
+          path: "**/*.cdx.json"
+          if-no-files-found: error
 
   github-release:
     name: GitHub Release
@@ -173,6 +174,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Verify downloaded SBOM
+        run: test -n "$(find dist -type f -name '*.cdx.json' -print -quit)"
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:

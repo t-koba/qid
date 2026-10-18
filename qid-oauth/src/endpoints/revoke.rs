@@ -9,7 +9,6 @@ use qid_core::{
     jwt::JwtClaims,
     models::{Client, ClientType},
     state::SharedState,
-    tenant::RealmId,
 };
 use qid_storage::prelude::*;
 use std::sync::Arc;
@@ -115,7 +114,13 @@ async fn authenticate_revocation_client<R: Repository>(
             message: "multiple client authentication methods are not allowed".to_string(),
         });
     }
-    let client = find_revocation_client_across_realms(state, client_id).await?;
+    let client = super::find_client_across_realms_with_messages(
+        state,
+        client_id,
+        "revocation client realm is ambiguous",
+        "unknown client",
+    )
+    .await?;
     match client.client_type {
         ClientType::Public => {
             if used_auth_method != "none" || client.token_endpoint_auth_method != "none" {
@@ -146,30 +151,6 @@ async fn authenticate_revocation_client<R: Repository>(
         }
     }
     Ok(client)
-}
-
-async fn find_revocation_client_across_realms<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<Client> {
-    let mut found = None;
-    for realm in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "revocation client realm is ambiguous".to_string(),
-                });
-            }
-            found = Some(client);
-        }
-    }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
-    })
 }
 
 async fn revoke_access_token_if_owned<R: Repository>(

@@ -152,6 +152,21 @@ pub(crate) async fn find_client_across_realms<R: Repository>(
     state: &SharedState<R>,
     client_id: &str,
 ) -> QidResult<Client> {
+    find_client_across_realms_with_messages(
+        state,
+        client_id,
+        "client realm is ambiguous",
+        "unknown client",
+    )
+    .await
+}
+
+pub(crate) async fn find_client_across_realms_with_messages<R: Repository>(
+    state: &SharedState<R>,
+    client_id: &str,
+    ambiguous_message: &str,
+    unknown_message: &str,
+) -> QidResult<Client> {
     let mut found = None;
     for realm_config in &state.config.realms {
         if let Some(client) = state
@@ -161,14 +176,14 @@ pub(crate) async fn find_client_across_realms<R: Repository>(
         {
             if found.is_some() {
                 return Err(QidError::Unauthorized {
-                    message: "client realm is ambiguous".to_string(),
+                    message: ambiguous_message.to_string(),
                 });
             }
             found = Some(client);
         }
     }
     found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
+        message: unknown_message.to_string(),
     })
 }
 

@@ -12,7 +12,6 @@ use qid_core::{
     jwt::{Audience, JwtClaims},
     models::{Client, ClientType, TokenFormat},
     state::SharedState,
-    tenant::RealmId,
 };
 use qid_http::ratelimit::{RateLimitConfig, RateLimiter};
 use qid_storage::prelude::*;
@@ -281,35 +280,17 @@ async fn authenticate_introspection_client<R: Repository>(
             message: "multiple client authentication methods are not allowed".to_string(),
         });
     }
-    let client = find_introspection_client_across_realms(state, client_id).await?;
+    let client = super::find_client_across_realms_with_messages(
+        state,
+        client_id,
+        "introspection client realm is ambiguous",
+        "unknown introspection client for token realm",
+    )
+    .await?;
     verify_introspection_client_secret(&client, used_auth_method, presented_secret)?;
     Ok(IntrospectionCaller {
         client_id: client.client_id,
         realm_id: client.realm_id,
-    })
-}
-
-async fn find_introspection_client_across_realms<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<Client> {
-    let mut found = None;
-    for realm in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "introspection client realm is ambiguous".to_string(),
-                });
-            }
-            found = Some(client);
-        }
-    }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown introspection client for token realm".to_string(),
     })
 }
 

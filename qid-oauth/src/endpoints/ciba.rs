@@ -7,7 +7,7 @@ use axum::{
 use qid_core::{
     config::CibaMode,
     error::{QidError, QidResult},
-    models::{BackchannelAuthenticationGrant, Client, ClientType},
+    models::{BackchannelAuthenticationGrant, ClientType},
     state::SharedState,
     tenant::RealmId,
 };
@@ -61,7 +61,13 @@ async fn create_backchannel_authentication_grant<R: Repository>(
     state: &SharedState<R>,
     req: BackchannelAuthenticationRequest,
 ) -> QidResult<BackchannelAuthenticationResponse> {
-    let client = find_ciba_client(state, &req.client_id).await?;
+    let client = super::find_client_across_realms_with_messages(
+        state,
+        &req.client_id,
+        "CIBA client realm is ambiguous",
+        "unknown client",
+    )
+    .await?;
     let realm = state
         .realm(&client.realm_id)
         .ok_or_else(|| QidError::Config {
@@ -135,30 +141,6 @@ async fn create_backchannel_authentication_grant<R: Repository>(
         auth_req_id,
         expires_in: 600,
         interval: 5,
-    })
-}
-
-async fn find_ciba_client<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<Client> {
-    let mut found = None;
-    for realm in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "CIBA client realm is ambiguous".to_string(),
-                });
-            }
-            found = Some(client);
-        }
-    }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown client".to_string(),
     })
 }
 

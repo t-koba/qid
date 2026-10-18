@@ -137,6 +137,66 @@ pub fn dynamic_group_rule_matches(rule: &DynamicGroupRule, user: &ScimUser) -> b
     }
 }
 
+/// Resolve the single realm user an SLA event refers to.
+///
+/// Matches only the server-owned `ScimUser.directory_provider_id` and raw
+/// `external_id`; `enterprise_json` is never consulted. Returns `Ok(None)` when
+/// nothing matches, and fails closed with `Conflict` when an `external_id`
+/// (or a provider-scoped pair) matches more than one user, or with
+/// `BadRequest` when `provider_id` is present but blank.
+fn find_deprovision_user<'a>(
+    users: &'a [ScimUser],
+    event: &DeprovisionEvent,
+) -> QidResult<Option<&'a ScimUser>> {
+    let candidates: Vec<&'a ScimUser> = users
+        .iter()
+        .filter(|user| user.external_id.as_deref() == Some(event.external_id.as_str()))
+        .collect();
+    match event.provider_id.as_deref() {
+        Some(provider_id) => {
+            if provider_id.trim().is_empty() {
+                return Err(QidError::BadRequest {
+                    message: "deprovision event provider_id must not be blank".to_string(),
+                });
+            }
+            let scoped: Vec<&'a ScimUser> = candidates
+                .into_iter()
+                .filter(|user| user.directory_provider_id.as_deref() == Some(provider_id))
+                .collect();
+            if scoped.len() > 1 {
+                return Err(QidError::Conflict {
+                    message: format!(
+                        "multiple users share external_id '{}' for provider '{}'; data requires explicit migration",
+                        event.external_id, provider_id
+                    ),
+                });
+            }
+            Ok(scoped.into_iter().next())
+        }
+        None => {
+            if candidates.len() > 1 {
+                return Err(QidError::Conflict {
+                    message: format!(
+                        "multiple users share external_id '{}'; provide provider_id to disambiguate",
+                        event.external_id
+                    ),
+                });
+            }
+            Ok(candidates.into_iter().next())
+        }
+    }
+}
+
+/// Audit leaver deprovisioning SLA without order-dependent user selection.
+///
+/// Provider-scoped LDAP sync permits identical raw DNs across providers, so
+/// `DeprovisionEvent.provider_id`, when present, selects the single realm user
+/// whose server-owned `ScimUser.directory_provider_id` plus `external_id`
+/// both match. A blank `provider_id` is rejected. A legacy event without
+/// `provider_id` is reported only when exactly one realm user carries the
+/// `external_id`; multiple matches (including duplicates within one provider)
+/// fail closed with `QidError::Conflict` telling the caller to provide
+/// `provider_id`. Ownership is never inferred from `enterprise_json`.
 pub async fn audit_deprovision_sla<R: Repository>(
     state: &SharedState<R>,
     realm_id: &str,
@@ -151,9 +211,7 @@ pub async fn audit_deprovision_sla<R: Repository>(
     let mut findings = Vec::with_capacity(leaver_events.len());
     for event in leaver_events {
         let due_at = event.occurred_at.saturating_add(sla_seconds);
-        let user = users
-            .iter()
-            .find(|user| user.external_id.as_deref() == Some(event.external_id.as_str()));
+        let user = find_deprovision_user(&users, event)?;
         let finding = match user {
             Some(user) => {
                 let deprovisioned_at = user_deprovisioned_at(user);

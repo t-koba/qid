@@ -185,18 +185,22 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
             DeprovisionEvent {
                 external_id: "hr-met".to_string(),
                 occurred_at: 1_000,
+                provider_id: None,
             },
             DeprovisionEvent {
                 external_id: "hr-pending".to_string(),
                 occurred_at: 2_000,
+                provider_id: None,
             },
             DeprovisionEvent {
                 external_id: "hr-violated".to_string(),
                 occurred_at: 1_000,
+                provider_id: None,
             },
             DeprovisionEvent {
                 external_id: "hr-missing".to_string(),
                 occurred_at: 1_000,
+                provider_id: None,
             },
         ],
         100,
@@ -1192,6 +1196,7 @@ async fn ldap_disabled_snapshot_stamps_preserves_clears_and_restamps() {
         &[DeprovisionEvent {
             external_id: dn.clone(),
             occurred_at: 1_000,
+            provider_id: None,
         }],
         100,
         2_000,
@@ -1321,6 +1326,7 @@ async fn audit_deprovision_sla_ignores_forged_enterprise_marker() {
         &[DeprovisionEvent {
             external_id: "hr-forged".to_string(),
             occurred_at: 1_000,
+            provider_id: None,
         }],
         100,
         2_000,
@@ -1329,6 +1335,193 @@ async fn audit_deprovision_sla_ignores_forged_enterprise_marker() {
     .unwrap();
     assert_eq!(findings[0].status, DeprovisionSlaStatus::Violated);
     assert_eq!(findings[0].deprovisioned_at, None);
+}
+
+#[tokio::test]
+async fn audit_deprovision_sla_disambiguates_shared_dn_by_provider_id() {
+    let state = setup().await;
+    let dn = "uid=shared,ou=people,dc=example,dc=com".to_string();
+    let mut user_a = ScimUser {
+        id: "user-shared-a".to_string(),
+        realm_id: "corp".to_string(),
+        external_id: Some(dn.clone()),
+        user_name: "shared-a@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({}),
+        directory_provider_id: Some("provider-a".to_string()),
+        deprovisioned_at: None,
+        active: false,
+    };
+    mark_deprovisioned(&mut user_a, 1_050);
+    state.repo.create_scim_user(&user_a).await.unwrap();
+    state
+        .repo
+        .create_scim_user(&ScimUser {
+            id: "user-shared-b".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some(dn.clone()),
+            user_name: "shared-b@example.com".to_string(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({}),
+            directory_provider_id: Some("provider-b".to_string()),
+            deprovisioned_at: None,
+            active: true,
+        })
+        .await
+        .unwrap();
+
+    // Legacy provider-less events fail closed instead of selecting the first match.
+    let legacy = DeprovisionEvent {
+        external_id: dn.clone(),
+        occurred_at: 1_000,
+        provider_id: None,
+    };
+    let err = audit_deprovision_sla(&state, "corp", std::slice::from_ref(&legacy), 100, 2_000)
+        .await
+        .expect_err("ambiguous legacy event must conflict");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("provider_id"),
+        "conflict must tell caller to provide provider_id: {err}"
+    );
+
+    // Explicit provider scope reports each owner's actual SLA.
+    let finding_a = audit_deprovision_sla(
+        &state,
+        "corp",
+        &[DeprovisionEvent {
+            external_id: dn.clone(),
+            occurred_at: 1_000,
+            provider_id: Some("provider-a".to_string()),
+        }],
+        100,
+        2_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(finding_a.len(), 1);
+    assert_eq!(finding_a[0].user_id.as_deref(), Some("user-shared-a"));
+    assert_eq!(finding_a[0].status, DeprovisionSlaStatus::Met);
+    assert_eq!(finding_a[0].deprovisioned_at, Some(1_050));
+
+    let finding_b = audit_deprovision_sla(
+        &state,
+        "corp",
+        &[DeprovisionEvent {
+            external_id: dn.clone(),
+            occurred_at: 1_000,
+            provider_id: Some("provider-b".to_string()),
+        }],
+        100,
+        2_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(finding_b.len(), 1);
+    assert_eq!(finding_b[0].user_id.as_deref(), Some("user-shared-b"));
+    assert_eq!(finding_b[0].status, DeprovisionSlaStatus::Violated);
+    assert_eq!(finding_b[0].deprovisioned_at, None);
+
+    // Blank provider scope is rejected, never treated as legacy.
+    let blank_err = audit_deprovision_sla(
+        &state,
+        "corp",
+        &[DeprovisionEvent {
+            external_id: dn.clone(),
+            occurred_at: 1_000,
+            provider_id: Some("  ".to_string()),
+        }],
+        100,
+        2_000,
+    )
+    .await
+    .expect_err("blank provider_id must be rejected");
+    assert!(
+        matches!(blank_err, qid_core::error::QidError::BadRequest { .. }),
+        "expected bad request, got {blank_err:?}"
+    );
+
+    // Old JSON without provider_id remains parseable as a legacy event.
+    let legacy_json: DeprovisionEvent =
+        serde_json::from_value(serde_json::json!({ "external_id": dn, "occurred_at": 1_000 }))
+            .unwrap();
+    assert_eq!(legacy_json.provider_id, None);
+}
+
+#[test]
+fn find_deprovision_user_is_order_independent_for_shared_dn() {
+    let dn = "uid=shared,ou=people,dc=example,dc=com".to_string();
+    let user_a = ScimUser {
+        id: "user-shared-a".to_string(),
+        realm_id: "corp".to_string(),
+        external_id: Some(dn.clone()),
+        user_name: "shared-a@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({}),
+        directory_provider_id: Some("provider-a".to_string()),
+        deprovisioned_at: Some(1_050),
+        active: false,
+    };
+    let user_b = ScimUser {
+        id: "user-shared-b".to_string(),
+        realm_id: "corp".to_string(),
+        external_id: Some(dn.clone()),
+        user_name: "shared-b@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({}),
+        directory_provider_id: Some("provider-b".to_string()),
+        deprovisioned_at: None,
+        active: true,
+    };
+    let forward = vec![user_a.clone(), user_b.clone()];
+    let mut reversed = forward.clone();
+    reversed.reverse();
+    for users in [&forward, &reversed] {
+        let legacy = DeprovisionEvent {
+            external_id: dn.clone(),
+            occurred_at: 1_000,
+            provider_id: None,
+        };
+        let err = find_deprovision_user(users, &legacy).expect_err("legacy must conflict");
+        assert!(
+            matches!(err, qid_core::error::QidError::Conflict { .. }),
+            "expected conflict, got {err:?}"
+        );
+        for (provider, expected_id) in [
+            ("provider-a", "user-shared-a"),
+            ("provider-b", "user-shared-b"),
+        ] {
+            let event = DeprovisionEvent {
+                external_id: dn.clone(),
+                occurred_at: 1_000,
+                provider_id: Some(provider.to_string()),
+            };
+            let resolved = find_deprovision_user(users, &event)
+                .unwrap()
+                .expect("scoped event must resolve");
+            assert_eq!(resolved.id, expected_id);
+        }
+    }
+
+    // Duplicate rows within one provider fail closed even when scoped.
+    let duplicated = vec![user_a.clone(), user_a.clone()];
+    let scoped = DeprovisionEvent {
+        external_id: dn.clone(),
+        occurred_at: 1_000,
+        provider_id: Some("provider-a".to_string()),
+    };
+    let err = find_deprovision_user(&duplicated, &scoped).expect_err("duplicate must conflict");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
 }
 
 mod directory_http_truthfulness {

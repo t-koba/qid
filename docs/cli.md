@@ -229,10 +229,24 @@ cargo run --bin qid-worker -- --config target/qid-dev/qid.yaml key-rotation-exec
 | --- | --- |
 | `hr-import` | Import HR joiner/mover/leaver records from JSON. |
 | `ldap-sync` | Synchronize LDAP/AD directory entries from JSON (requires `--provider-id`; IDs must stay stable, `externalId` remains the raw DN). |
-| `deprovision-sla` | Audit leaver deprovisioning SLA from JSON events. |
+| `deprovision-sla` | Audit leaver deprovisioning SLA from JSON events (optional `provider_id` disambiguates shared DNs; ambiguous legacy events conflict). |
 | `dynamic-group-sync` | Synchronize a dynamic group from a JSON rule. |
 | `expand-group` | Expand nested SCIM group membership. |
 | `manager-chain` | Resolve a user's manager chain. |
+
+Each `deprovision-sla` input element is a JSON object such as:
+
+```json
+{ "external_id": "uid=leaver,ou=people,dc=example,dc=com", "occurred_at": 1710000000, "provider_id": "ad-main" }
+```
+
+`provider_id` is optional for backward compatibility: old event files without
+it still parse and audit uniquely-owned identities unchanged. When several
+realm users share one raw `external_id` across directory providers, a legacy
+event without `provider_id` fails with a conflict telling the caller to repeat
+the audit with an explicit `provider_id`; scoped events match only the
+server-owned `directory_provider_id` plus `external_id` (blank IDs are
+rejected).
 
 ## qid-agent
 

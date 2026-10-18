@@ -151,10 +151,24 @@ pub struct DynamicGroupSyncResult {
     pub removed_user_ids: Vec<String>,
 }
 
+/// A leaver event used to audit deprovisioning SLA.
+///
+/// `external_id` holds the raw DN (or HR external id). `provider_id` may
+/// identify the server-owned directory provider that owns the user. When
+/// present it is matched exactly against `ScimUser.directory_provider_id`; when
+/// absent the event is legacy and only unambiguous single-match realms are
+/// reported, otherwise auditing fails closed with a conflict asking the
+/// caller to provide `provider_id`. Ownership is never inferred from
+/// `enterprise_json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeprovisionEvent {
     pub external_id: String,
     pub occurred_at: u64,
+    /// Optional directory provider that owns the user for this event.
+    /// Old JSON without this field remains parseable and is treated as a
+    /// legacy provider-less event.
+    #[serde(default)]
+    pub provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -56,7 +56,7 @@ impl From<ScimEventSubscriptionRow> for ScimEventSubscriptionRecord {
 impl ScimRepository for SqlRepository {
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO scim_users (id, realm_id, external_id, user_name, name_json, emails_json, enterprise_json, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scim_users (id, realm_id, external_id, user_name, name_json, emails_json, enterprise_json, directory_provider_id, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&user.id)
         .bind(&user.realm_id)
@@ -65,6 +65,7 @@ impl ScimRepository for SqlRepository {
         .bind(user.name_json.to_string())
         .bind(user.emails_json.to_string())
         .bind(user.enterprise_json.to_string())
+        .bind(&user.directory_provider_id)
         .bind(user.active as i64)
         .execute(&self.pool)
         .await
@@ -113,12 +114,13 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        sqlx::query("UPDATE scim_users SET external_id = ?, user_name = ?, name_json = ?, emails_json = ?, enterprise_json = ?, active = ?, updated_at = strftime('%s', 'now') WHERE id = ?")
+        sqlx::query("UPDATE scim_users SET external_id = ?, user_name = ?, name_json = ?, emails_json = ?, enterprise_json = ?, directory_provider_id = ?, active = ?, updated_at = strftime('%s', 'now') WHERE id = ?")
             .bind(&user.external_id)
             .bind(&user.user_name)
             .bind(user.name_json.to_string())
             .bind(user.emails_json.to_string())
             .bind(user.enterprise_json.to_string())
+            .bind(&user.directory_provider_id)
             .bind(user.active as i64)
             .bind(&user.id)
             .execute(&self.pool)

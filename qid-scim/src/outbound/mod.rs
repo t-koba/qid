@@ -223,6 +223,7 @@ mod tests {
                 "department": "Platform",
                 "costCenter": "RND"
             }),
+            directory_provider_id: None,
             active: true,
         }
     }

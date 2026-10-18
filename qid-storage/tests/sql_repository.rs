@@ -1358,6 +1358,7 @@ async fn test_scim_user_enterprise_extension_crud() {
             "department": "Engineering",
             "employeeNumber": "E42"
         }),
+        directory_provider_id: Some("ad-main".to_string()),
         active: true,
     };
     repo.create_scim_user(&user)
@@ -1370,14 +1371,20 @@ async fn test_scim_user_enterprise_extension_crud() {
         .expect("scim user not found");
     assert_eq!(fetched.external_id, Some("hr-42".to_string()));
     assert_eq!(fetched.enterprise_json["department"], "Engineering");
+    assert_eq!(fetched.directory_provider_id, Some("ad-main".to_string()));
 
     let mut updated = fetched;
     updated.enterprise_json = serde_json::json!({"department":"Platform"});
+    updated.directory_provider_id = Some("ad-replica".to_string());
     repo.update_scim_user(&updated)
         .await
         .expect("update scim user failed");
     let fetched = repo.get_scim_user("scim-user-1").await.unwrap().unwrap();
     assert_eq!(fetched.enterprise_json["department"], "Platform");
+    assert_eq!(
+        fetched.directory_provider_id,
+        Some("ad-replica".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1402,6 +1409,7 @@ async fn sql_scim_pages_and_counts_are_stable() {
             name_json: serde_json::json!({}),
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({}),
+            directory_provider_id: None,
             active: true,
         })
         .await

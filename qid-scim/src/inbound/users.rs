@@ -194,6 +194,8 @@ pub(crate) async fn create_user_record<R: Repository>(
         name_json: req.name.unwrap_or_else(|| serde_json::json!({})),
         emails_json: req.emails.unwrap_or_else(|| serde_json::json!([])),
         enterprise_json: req.enterprise.unwrap_or_else(|| serde_json::json!({})),
+        // Server-owned: SCIM clients can neither set nor clear ownership.
+        directory_provider_id: None,
         active: req.active.unwrap_or(true),
     };
     state.repo.create_scim_user(&user).await?;
@@ -283,14 +285,31 @@ pub(crate) async fn replace_user_record<R: Repository>(
         .ok_or_else(|| QidError::NotFound {
             resource: "scim user".to_string(),
         })?;
+    // Provider-owned rows keep the server-owned raw-DN `external_id`: PUT
+    // preserves it and rejects any supplied different value. Omitted or
+    // identical round-trips are allowed so existing clients keep working.
+    if existing.directory_provider_id.is_some()
+        && let Some(supplied) = req.external_id.as_deref()
+        && existing.external_id.as_deref() != Some(supplied)
+    {
+        return Err(owned_external_id_conflict("changed"));
+    }
+    let external_id = if existing.directory_provider_id.is_some() {
+        existing.external_id.clone()
+    } else {
+        req.external_id.or(existing.external_id)
+    };
     let user = ScimUser {
         id: id.to_string(),
         realm_id: req.realm,
-        external_id: req.external_id.or(existing.external_id),
+        external_id,
         user_name: req.user_name,
         name_json: req.name.unwrap_or(existing.name_json),
         emails_json: req.emails.unwrap_or(existing.emails_json),
         enterprise_json: req.enterprise.unwrap_or(existing.enterprise_json),
+        // Server-owned: PUT never accepts ownership; preserve the stored value
+        // so enterprise_json from the client cannot forge or clear it.
+        directory_provider_id: existing.directory_provider_id,
         active: req.active.unwrap_or(existing.active),
     };
     state.repo.update_scim_user(&user).await?;
@@ -348,6 +367,8 @@ pub(crate) async fn patch_user_record<R: Repository>(
     id: &str,
     req: PatchRequest,
 ) -> QidResult<ScimUser> {
+    // PATCH starts from the stored user so the server-owned
+    // `directory_provider_id` is preserved; enterprise edits stay informational.
     let mut user = state
         .repo
         .get_scim_user(id)
@@ -373,6 +394,14 @@ pub(crate) async fn patch_user_record<R: Repository>(
     Ok(user)
 }
 
+/// 409 for SCIM attempts to mutate the provider-owned raw-DN `external_id`.
+/// Ownership lives in `directory_provider_id`; directory sync is the only writer.
+fn owned_external_id_conflict(action: &str) -> QidError {
+    QidError::Conflict {
+        message: format!("externalId is managed by directory sync and cannot be {action} via SCIM"),
+    }
+}
+
 fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidError> {
     let op_name = op.op.to_ascii_lowercase();
     let path = op.path.unwrap_or_default();
@@ -381,7 +410,17 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
             user.user_name = string_value(op.value, "userName")?;
         }
         ("add" | "replace", "externalId") => {
-            user.external_id = Some(string_value(op.value, "externalId")?);
+            let new_value = string_value(op.value, "externalId")?;
+            if user.directory_provider_id.is_some() {
+                // Provider-owned `external_id` is the raw DN used for
+                // reconciliation: only an identical round-trip is allowed.
+                // A different value, or a missing stored value, fails closed.
+                if user.external_id.as_deref() != Some(new_value.as_str()) {
+                    return Err(owned_external_id_conflict("changed"));
+                }
+            } else {
+                user.external_id = Some(new_value);
+            }
         }
         ("add" | "replace", "active") => {
             user.active = bool_value(op.value, "active")?;
@@ -396,6 +435,9 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
             user.enterprise_json = op.value.unwrap_or_else(|| serde_json::json!({}));
         }
         ("remove", "externalId") => {
+            if user.directory_provider_id.is_some() {
+                return Err(owned_external_id_conflict("removed"));
+            }
             user.external_id = None;
         }
         ("remove", "active") => {

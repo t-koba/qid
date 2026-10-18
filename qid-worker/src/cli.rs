@@ -984,6 +984,7 @@ realms:
             name_json: serde_json::json!({"givenName": "Before"}),
             emails_json: serde_json::json!([{"value": "before@example.com"}]),
             enterprise_json: serde_json::json!({}),
+            directory_provider_id: None,
             active: true,
         };
         let repo = AnyRepository::connect(store.to_str().expect("store path"))

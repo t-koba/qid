@@ -228,7 +228,7 @@ cargo run --bin qid-worker -- --config target/qid-dev/qid.yaml key-rotation-exec
 | Command | Purpose |
 | --- | --- |
 | `hr-import` | Import HR joiner/mover/leaver records from JSON. |
-| `ldap-sync` | Synchronize LDAP/AD directory entries from JSON. |
+| `ldap-sync` | Synchronize LDAP/AD directory entries from JSON (requires `--provider-id`; IDs must stay stable, `externalId` remains the raw DN). |
 | `deprovision-sla` | Audit leaver deprovisioning SLA from JSON events. |
 | `dynamic-group-sync` | Synchronize a dynamic group from a JSON rule. |
 | `expand-group` | Expand nested SCIM group membership. |

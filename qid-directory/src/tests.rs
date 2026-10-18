@@ -111,6 +111,7 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
         name_json: serde_json::json!({}),
         emails_json: serde_json::json!([]),
         enterprise_json: serde_json::json!({}),
+        directory_provider_id: None,
         active: false,
     };
     mark_deprovisioned(&mut met_user, 1_050);
@@ -125,6 +126,7 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
             name_json: serde_json::json!({}),
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({}),
+            directory_provider_id: None,
             active: true,
         })
         .await
@@ -139,6 +141,7 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
             name_json: serde_json::json!({}),
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({}),
+            directory_provider_id: None,
             active: true,
         })
         .await
@@ -184,6 +187,7 @@ async fn ldap_sync_creates_updates_deactivates_missing_and_tracks_unchanged() {
     let first = sync_ldap_entries(
         &state,
         "corp",
+        "provider-a",
         &[
             LdapDirectoryEntry {
                 dn: "uid=alice,ou=people,dc=example,dc=com".to_string(),
@@ -217,6 +221,7 @@ async fn ldap_sync_creates_updates_deactivates_missing_and_tracks_unchanged() {
     let second = sync_ldap_entries(
         &state,
         "corp",
+        "provider-a",
         &[LdapDirectoryEntry {
             dn: "uid=alice,ou=people,dc=example,dc=com".to_string(),
             uid: "alice@example.com".to_string(),
@@ -265,6 +270,7 @@ async fn ldap_sync_creates_updates_deactivates_missing_and_tracks_unchanged() {
     let third = sync_ldap_entries(
         &state,
         "corp",
+        "provider-a",
         &[LdapDirectoryEntry {
             dn: "uid=alice,ou=people,dc=example,dc=com".to_string(),
             uid: "alice@example.com".to_string(),
@@ -298,6 +304,7 @@ async fn ldap_sync_skips_break_glass_accounts_when_deactivating_missing_users() 
             "source": LDAP_SOURCE_SCHEMA,
             "ldap_dn": "uid=local-admin,ou=people,dc=example,dc=com"
         }),
+        directory_provider_id: Some("provider-a".to_string()),
         active: true,
     };
     mark_break_glass(&mut user);
@@ -306,6 +313,7 @@ async fn ldap_sync_skips_break_glass_accounts_when_deactivating_missing_users() 
     let result = sync_ldap_entries(
         &state,
         "corp",
+        "provider-a",
         &[],
         LdapSyncOptions {
             deactivate_missing: true,
@@ -339,6 +347,7 @@ async fn manager_chain_resolves_managers_and_reports_cycles() {
     sync_ldap_entries(
         &state,
         "corp",
+        "provider-a",
         &[
             LdapDirectoryEntry {
                 dn: "uid=alice,ou=people,dc=example,dc=com".to_string(),
@@ -424,6 +433,7 @@ async fn ldap_sync_rejects_duplicate_dns() {
     let err = sync_ldap_entries(
         &state,
         "corp",
+        "provider-a",
         &[
             LdapDirectoryEntry {
                 dn: "uid=alice,ou=people,dc=example,dc=com".to_string(),
@@ -468,6 +478,7 @@ async fn nested_group_expansion_flattens_users_and_stops_cycles() {
                 name_json: serde_json::json!({}),
                 emails_json: serde_json::json!([]),
                 enterprise_json: serde_json::json!({}),
+                directory_provider_id: None,
                 active: true,
             })
             .await
@@ -536,6 +547,7 @@ async fn dynamic_group_sync_replaces_user_members_and_preserves_nested_groups() 
                 "department": "Platform",
                 "manager": { "externalId": "hr-manager" }
             }),
+            directory_provider_id: None,
             active: true,
         })
         .await
@@ -550,6 +562,7 @@ async fn dynamic_group_sync_replaces_user_members_and_preserves_nested_groups() 
             name_json: serde_json::json!({}),
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({ "department": "Sales" }),
+            directory_provider_id: None,
             active: true,
         })
         .await
@@ -631,6 +644,7 @@ async fn dynamic_group_any_mode_requires_at_least_one_condition() {
             "department": "Engineering",
             "employment_state": "active"
         }),
+        directory_provider_id: None,
         active: true,
     };
     assert!(!dynamic_group_rule_matches(
@@ -662,6 +676,412 @@ async fn dynamic_group_any_mode_requires_at_least_one_condition() {
         },
         &user
     ));
+}
+
+#[tokio::test]
+async fn ldap_sync_is_provider_scoped_with_shared_dn() {
+    let state = setup().await;
+    let dn = "uid=shared,ou=people,dc=example,dc=com".to_string();
+    let first_a = sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[LdapDirectoryEntry {
+            dn: dn.clone(),
+            uid: "shared-a@example.com".to_string(),
+            mail: None,
+            display_name: None,
+            department: Some("Engineering".to_string()),
+            manager_dn: None,
+            enabled: true,
+        }],
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 10,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_a.created_user_ids.len(), 1);
+    let first_b = sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-b",
+        &[LdapDirectoryEntry {
+            dn: dn.clone(),
+            uid: "shared-b@example.com".to_string(),
+            mail: None,
+            display_name: None,
+            department: Some("Sales".to_string()),
+            manager_dn: None,
+            enabled: true,
+        }],
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 11,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_b.created_user_ids.len(), 1);
+    assert_ne!(first_a.created_user_ids, first_b.created_user_ids);
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(users.len(), 2);
+    for user in &users {
+        assert_eq!(user.external_id.as_deref(), Some(dn.as_str()));
+        assert_eq!(user.enterprise_json["source"], LDAP_SOURCE_SCHEMA);
+    }
+
+    let user_a_id = first_a.created_user_ids[0].clone();
+    let user_b_id = first_b.created_user_ids[0].clone();
+    let update_a = sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[LdapDirectoryEntry {
+            dn: dn.clone(),
+            uid: "shared-a@example.com".to_string(),
+            mail: None,
+            display_name: None,
+            department: Some("Platform".to_string()),
+            manager_dn: None,
+            enabled: true,
+        }],
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 20,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(update_a.updated_user_ids, vec![user_a_id.clone()]);
+    let user_b = state.repo.get_scim_user(&user_b_id).await.unwrap().unwrap();
+    assert_eq!(user_b.user_name, "shared-b@example.com");
+    assert_eq!(user_b.enterprise_json["department"], "Sales");
+    assert!(user_b.active);
+
+    let deactivate_a = sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[],
+        LdapSyncOptions {
+            deactivate_missing: true,
+            synced_at: 30,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(deactivate_a.deactivated_user_ids, vec![user_a_id.clone()]);
+    let user_a = state.repo.get_scim_user(&user_a_id).await.unwrap().unwrap();
+    assert!(!user_a.active);
+    let user_b = state.repo.get_scim_user(&user_b_id).await.unwrap().unwrap();
+    assert!(user_b.active);
+    assert_eq!(user_b.enterprise_json["department"], "Sales");
+}
+
+#[tokio::test]
+async fn ldap_manager_chain_resolves_only_within_owning_provider() {
+    let state = setup().await;
+    let shared_manager_dn = "uid=manager,ou=people,dc=example,dc=com".to_string();
+    let mut user_ids = Vec::new();
+    let mut manager_ids = Vec::new();
+
+    for (provider_id, user_dn, user_name, manager_name) in [
+        (
+            "provider-a",
+            "uid=alice,ou=people,dc=example,dc=com",
+            "alice@example.com",
+            "manager-a@example.com",
+        ),
+        (
+            "provider-b",
+            "uid=bob,ou=people,dc=example,dc=com",
+            "bob@example.com",
+            "manager-b@example.com",
+        ),
+    ] {
+        let result = sync_ldap_entries(
+            &state,
+            "corp",
+            provider_id,
+            &[
+                LdapDirectoryEntry {
+                    dn: user_dn.to_string(),
+                    uid: user_name.to_string(),
+                    mail: None,
+                    display_name: None,
+                    department: None,
+                    manager_dn: Some(shared_manager_dn.clone()),
+                    enabled: true,
+                },
+                LdapDirectoryEntry {
+                    dn: shared_manager_dn.clone(),
+                    uid: manager_name.to_string(),
+                    mail: None,
+                    display_name: None,
+                    department: None,
+                    manager_dn: None,
+                    enabled: true,
+                },
+            ],
+            LdapSyncOptions {
+                deactivate_missing: false,
+                synced_at: 70,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.created_user_ids.len(), 2);
+        user_ids.push(result.created_user_ids[0].clone());
+        manager_ids.push(result.created_user_ids[1].clone());
+    }
+
+    let chain_a = resolve_manager_chain(&state, &user_ids[0]).await.unwrap();
+    let chain_b = resolve_manager_chain(&state, &user_ids[1]).await.unwrap();
+    assert_eq!(chain_a.manager_user_ids, vec![manager_ids[0].clone()]);
+    assert_eq!(chain_b.manager_user_ids, vec![manager_ids[1].clone()]);
+}
+
+#[tokio::test]
+async fn ldap_sync_ignores_unrelated_ownerless_fake_marker() {
+    let state = setup().await;
+    // Forged enterprise keys on an ownerless row must not confer ownership and
+    // must not block an unrelated sync.
+    let forged = ScimUser {
+        id: "ghost-user".to_string(),
+        realm_id: "corp".to_string(),
+        external_id: Some("uid=ghost,ou=people,dc=example,dc=com".to_string()),
+        user_name: "ghost@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({
+            "source": LDAP_SOURCE_SCHEMA,
+            "ldap_provider_id": "provider-a",
+            "ldap_dn": "uid=ghost,ou=people,dc=example,dc=com"
+        }),
+        directory_provider_id: None,
+        active: true,
+    };
+    let forged_before = forged.clone();
+    state.repo.create_scim_user(&forged).await.unwrap();
+    let result = sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[LdapDirectoryEntry {
+            dn: "uid=alice,ou=people,dc=example,dc=com".to_string(),
+            uid: "alice@example.com".to_string(),
+            mail: None,
+            display_name: None,
+            department: Some("Platform".to_string()),
+            manager_dn: None,
+            enabled: true,
+        }],
+        LdapSyncOptions {
+            deactivate_missing: true,
+            synced_at: 40,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.created_user_ids.len(), 1);
+    let ghost = state
+        .repo
+        .get_scim_user("ghost-user")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ghost.external_id, forged_before.external_id);
+    assert_eq!(ghost.user_name, forged_before.user_name);
+    assert_eq!(ghost.enterprise_json, forged_before.enterprise_json);
+    assert_eq!(ghost.directory_provider_id, None);
+    assert!(ghost.active);
+    let alice = state
+        .repo
+        .get_scim_user(&result.created_user_ids[0])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice.directory_provider_id, Some("provider-a".to_string()));
+    assert_eq!(
+        alice.external_id.as_deref(),
+        Some("uid=alice,ou=people,dc=example,dc=com")
+    );
+}
+
+#[tokio::test]
+async fn ldap_sync_rejects_colliding_unowned_dn_before_any_write() {
+    let state = setup().await;
+    state
+        .repo
+        .create_scim_user(&ScimUser {
+            id: "ghost-user".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some("uid=clash,ou=people,dc=example,dc=com".to_string()),
+            user_name: "ghost@example.com".to_string(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({
+                "source": LDAP_SOURCE_SCHEMA,
+                "ldap_provider_id": "provider-a",
+                "ldap_dn": "uid=clash,ou=people,dc=example,dc=com"
+            }),
+            directory_provider_id: None,
+            active: true,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_scim_user(&ScimUser {
+            id: "owned-user".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some("uid=owned,ou=people,dc=example,dc=com".to_string()),
+            user_name: "owned@example.com".to_string(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({
+                "source": LDAP_SOURCE_SCHEMA,
+                "ldap_dn": "uid=owned,ou=people,dc=example,dc=com"
+            }),
+            directory_provider_id: Some("provider-a".to_string()),
+            active: true,
+        })
+        .await
+        .unwrap();
+    let err = sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[
+            LdapDirectoryEntry {
+                dn: "uid=clash,ou=people,dc=example,dc=com".to_string(),
+                uid: "clash@example.com".to_string(),
+                mail: None,
+                display_name: None,
+                department: None,
+                manager_dn: None,
+                enabled: true,
+            },
+            LdapDirectoryEntry {
+                dn: "uid=owned,ou=people,dc=example,dc=com".to_string(),
+                uid: "owned@example.com".to_string(),
+                mail: None,
+                display_name: None,
+                department: Some("Platform".to_string()),
+                manager_dn: None,
+                enabled: true,
+            },
+        ],
+        LdapSyncOptions {
+            deactivate_missing: true,
+            synced_at: 41,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+    // No writes happened: no clash user was created, the owned user is untouched.
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(users.len(), 2);
+    let owned = state
+        .repo
+        .get_scim_user("owned-user")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(owned.active);
+    assert!(owned.enterprise_json.get("department").is_none());
+    let ghost = state
+        .repo
+        .get_scim_user("ghost-user")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ghost.directory_provider_id, None);
+    assert!(ghost.active);
+}
+
+#[tokio::test]
+async fn ldap_sync_rejects_duplicate_owned_keys() {
+    let state = setup().await;
+    for id in ["dup-one", "dup-two"] {
+        state
+            .repo
+            .create_scim_user(&ScimUser {
+                id: id.to_string(),
+                realm_id: "corp".to_string(),
+                external_id: Some("uid=dup,ou=people,dc=example,dc=com".to_string()),
+                user_name: format!("{id}@example.com"),
+                name_json: serde_json::json!({}),
+                emails_json: serde_json::json!([]),
+                enterprise_json: serde_json::json!({
+                    "source": LDAP_SOURCE_SCHEMA,
+                    "ldap_dn": "uid=dup,ou=people,dc=example,dc=com"
+                }),
+                directory_provider_id: Some("provider-a".to_string()),
+                active: true,
+            })
+            .await
+            .unwrap();
+    }
+    let err = sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[],
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 50,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn ldap_sync_rejects_blank_provider_id() {
+    let state = setup().await;
+    for provider_id in ["", "   "] {
+        let err = sync_ldap_entries(
+            &state,
+            "corp",
+            provider_id,
+            &[],
+            LdapSyncOptions {
+                deactivate_missing: false,
+                synced_at: 60,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, QidError::BadRequest { .. }),
+            "expected bad request for {provider_id:?}, got {err:?}"
+        );
+    }
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    assert!(users.is_empty());
 }
 
 mod directory_http_truthfulness {

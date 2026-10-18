@@ -187,12 +187,29 @@ pub async fn audit_deprovision_sla<R: Repository>(
     Ok(findings)
 }
 
+/// Reconcile one provider's LDAP snapshot into a realm.
+///
+/// `provider_id` is a stable, non-empty directory-provider identity stored in
+/// the server-owned `ScimUser.directory_provider_id`. Ownership is never read
+/// from `enterprise_json` (which SCIM clients can forge). Matching,
+/// deactivation, and manager resolution use `(directory_provider_id,
+/// external_id)` only, with `external_id` holding the raw DN. Rows without an
+/// owner are never adopted, updated, or deactivated; a colliding unowned DN
+/// fails the whole sync before any write, while unrelated ownerless rows do
+/// not block it. Legacy rows need explicit internal migration, never inferred
+/// ownership.
 pub async fn sync_ldap_entries<R: Repository>(
     state: &SharedState<R>,
     realm_id: &str,
+    provider_id: &str,
     entries: &[LdapDirectoryEntry],
     options: LdapSyncOptions,
 ) -> QidResult<LdapSyncResult> {
+    if provider_id.trim().is_empty() {
+        return Err(QidError::BadRequest {
+            message: "LDAP provider_id is required".to_string(),
+        });
+    }
     let mut seen_dns = BTreeSet::new();
     for entry in entries {
         validate_ldap_entry(entry)?;
@@ -204,12 +221,32 @@ pub async fn sync_ldap_entries<R: Repository>(
     }
     let realm = RealmId::from(realm_id.to_string());
     let existing = state.repo.list_scim_users(&realm).await?;
-    let mut by_external_id = existing
+    preflight_directory_ownership(&existing)?;
+    // Unowned rows (no `directory_provider_id`) never match: a colliding DN
+    // fails closed before any write, unrelated ownerless rows are ignored.
+    // Forged `enterprise_json.source`/`ldap_dn` markers are not consulted.
+    let unowned_dns = existing
         .iter()
+        .filter(|user| user.directory_provider_id.is_none())
+        .filter_map(|user| user.external_id.as_deref())
+        .collect::<BTreeSet<_>>();
+    for entry in entries {
+        if unowned_dns.contains(entry.dn.as_str()) {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "LDAP dn {} collides with an unowned user; explicit migration is required",
+                    entry.dn
+                ),
+            });
+        }
+    }
+    let mut owned_by_dn = existing
+        .iter()
+        .filter(|user| user.directory_provider_id.as_deref() == Some(provider_id))
         .filter_map(|user| {
             user.external_id
-                .as_ref()
-                .map(|external_id| (external_id.clone(), user.clone()))
+                .as_deref()
+                .map(|dn| (dn.to_string(), user.clone()))
         })
         .collect::<BTreeMap<_, _>>();
     let mut result = LdapSyncResult {
@@ -220,11 +257,11 @@ pub async fn sync_ldap_entries<R: Repository>(
         break_glass_skipped_user_ids: Vec::new(),
     };
     for entry in entries {
-        let previous = by_external_id.remove(&entry.dn);
+        let previous = owned_by_dn.remove(entry.dn.as_str());
         match previous {
             Some(mut user) => {
                 let before = user.clone();
-                apply_ldap_entry(&mut user, entry, options.synced_at);
+                apply_ldap_entry(&mut user, provider_id, entry, options.synced_at);
                 if scim_user_semantic_eq(&before, &user) {
                     result.unchanged_user_ids.push(user.id);
                 } else {
@@ -233,17 +270,15 @@ pub async fn sync_ldap_entries<R: Repository>(
                 }
             }
             None => {
-                let user = scim_user_from_ldap_entry(realm_id, entry, options.synced_at);
+                let user =
+                    scim_user_from_ldap_entry(realm_id, provider_id, entry, options.synced_at);
                 state.repo.create_scim_user(&user).await?;
                 result.created_user_ids.push(user.id);
             }
         }
     }
     if options.deactivate_missing {
-        for mut user in by_external_id
-            .into_values()
-            .filter(|user| ldap_source_dn(user).is_some())
-        {
+        for mut user in owned_by_dn.into_values() {
             if user.active {
                 if is_break_glass_user(&user) {
                     result.break_glass_skipped_user_ids.push(user.id);
@@ -257,6 +292,51 @@ pub async fn sync_ldap_entries<R: Repository>(
         }
     }
     Ok(result)
+}
+
+/// Fail closed before any write when owned rows are ambiguous. Every row with
+/// a trusted `directory_provider_id` must carry a non-blank owner and a
+/// non-blank raw-DN `external_id`; duplicate `(provider_id, external_id)`
+/// keys are rejected. `enterprise_json` is never consulted here. Rows without
+/// an owner are skipped by this check and handled as unowned by the caller.
+fn preflight_directory_ownership(existing: &[ScimUser]) -> QidResult<()> {
+    let mut seen_keys = BTreeSet::new();
+    for user in existing
+        .iter()
+        .filter(|user| user.directory_provider_id.is_some())
+    {
+        let owner = user.directory_provider_id.as_deref().unwrap_or_default();
+        if owner.trim().is_empty() {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "LDAP user {} has blank provider ownership; explicit migration is required",
+                    user.id
+                ),
+            });
+        }
+        let Some(dn) = user.external_id.as_deref() else {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "LDAP user {} owned by '{owner}' is missing raw-DN external_id",
+                    user.id
+                ),
+            });
+        };
+        if dn.trim().is_empty() {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "LDAP user {} owned by '{owner}' has blank raw-DN external_id",
+                    user.id
+                ),
+            });
+        }
+        if !seen_keys.insert((owner.to_string(), dn.to_string())) {
+            return Err(QidError::Conflict {
+                message: format!("duplicate LDAP ownership for provider '{owner}' dn {dn}"),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub async fn resolve_manager_chain<R: Repository>(
@@ -274,8 +354,26 @@ pub async fn resolve_manager_chain<R: Repository>(
         .repo
         .list_scim_users(&RealmId::from(user.realm_id.clone()))
         .await?;
+    // Manager scope follows the trusted owner only; forged enterprise markers
+    // are never consulted. Ownerless users fall back to the full realm.
+    let ldap_provider_id = match user.directory_provider_id.as_deref() {
+        Some(provider_id) if !provider_id.trim().is_empty() => Some(provider_id.to_string()),
+        Some(_) => {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "LDAP user {} has no provider ownership for manager resolution",
+                    user.id
+                ),
+            });
+        }
+        None => None,
+    };
     let by_external_id = users
         .iter()
+        .filter(|candidate| match ldap_provider_id.as_deref() {
+            Some(provider_id) => candidate.directory_provider_id.as_deref() == Some(provider_id),
+            None => true,
+        })
         .filter_map(|candidate| {
             candidate
                 .external_id
@@ -449,6 +547,7 @@ fn validate_ldap_entry(entry: &LdapDirectoryEntry) -> QidResult<()> {
 
 fn scim_user_from_ldap_entry(
     realm_id: &str,
+    provider_id: &str,
     entry: &LdapDirectoryEntry,
     synced_at: u64,
 ) -> ScimUser {
@@ -460,13 +559,20 @@ fn scim_user_from_ldap_entry(
         name_json: serde_json::json!({}),
         emails_json: serde_json::json!([]),
         enterprise_json: serde_json::json!({}),
+        directory_provider_id: Some(provider_id.to_string()),
         active: entry.enabled,
     };
-    apply_ldap_entry(&mut user, entry, synced_at);
+    apply_ldap_entry(&mut user, provider_id, entry, synced_at);
     user
 }
 
-fn apply_ldap_entry(user: &mut ScimUser, entry: &LdapDirectoryEntry, synced_at: u64) {
+fn apply_ldap_entry(
+    user: &mut ScimUser,
+    provider_id: &str,
+    entry: &LdapDirectoryEntry,
+    synced_at: u64,
+) {
+    user.directory_provider_id = Some(provider_id.to_string());
     user.external_id = Some(entry.dn.clone());
     user.user_name = entry.uid.clone();
     user.active = entry.enabled;
@@ -489,6 +595,9 @@ fn mark_ldap_source(user: &mut ScimUser, entry: &LdapDirectoryEntry, synced_at: 
         .as_object()
         .cloned()
         .unwrap_or_default();
+    // Informational only: ownership lives in `directory_provider_id` and raw
+    // `external_id`. SCIM clients can forge these enterprise keys, so the
+    // reconciler never reads them as authority.
     enterprise.insert(
         "source".to_string(),
         serde_json::Value::String(LDAP_SOURCE_SCHEMA.to_string()),
@@ -528,14 +637,10 @@ fn mark_ldap_source(user: &mut ScimUser, entry: &LdapDirectoryEntry, synced_at: 
     user.enterprise_json = serde_json::Value::Object(enterprise);
 }
 
-fn ldap_source_dn(user: &ScimUser) -> Option<&str> {
-    user.enterprise_json
-        .get("source")
-        .and_then(|value| value.as_str())
-        .filter(|source| *source == LDAP_SOURCE_SCHEMA)
-        .and_then(|_| user.enterprise_json.get("ldap_dn"))
-        .and_then(|value| value.as_str())
-}
+// Ownership helpers deliberately read only the server-owned
+// `directory_provider_id` and raw `external_id`. `enterprise_json` keys such
+// as `source`, `ldap_dn`, or `ldap_provider_id` are informational and may be
+// forged through SCIM, so they are never used as authority here.
 
 fn scim_user_semantic_eq(left: &ScimUser, right: &ScimUser) -> bool {
     left.external_id == right.external_id
@@ -543,6 +648,7 @@ fn scim_user_semantic_eq(left: &ScimUser, right: &ScimUser) -> bool {
         && left.name_json == right.name_json
         && left.emails_json == right.emails_json
         && left.enterprise_json == right.enterprise_json
+        && left.directory_provider_id == right.directory_provider_id
         && left.active == right.active
 }
 
@@ -555,6 +661,7 @@ fn scim_user_from_hr_record(realm_id: &str, record: &HrRecord) -> ScimUser {
         name_json: serde_json::json!({}),
         emails_json: serde_json::json!([]),
         enterprise_json: serde_json::json!({}),
+        directory_provider_id: None,
         active: true,
     };
     apply_hr_record(&mut user, record);

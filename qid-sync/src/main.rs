@@ -39,6 +39,8 @@ enum Command {
         #[arg(long)]
         realm: String,
         #[arg(long)]
+        provider_id: String,
+        #[arg(long)]
         input: PathBuf,
         #[arg(long)]
         deactivate_missing: bool,
@@ -97,6 +99,7 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
         }
         Command::LdapSync {
             realm,
+            provider_id,
             input,
             deactivate_missing,
             synced_at,
@@ -105,6 +108,7 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             let result = sync_ldap_entries(
                 &state,
                 &realm,
+                &provider_id,
                 &entries,
                 LdapSyncOptions {
                     deactivate_missing,

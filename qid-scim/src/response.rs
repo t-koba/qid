@@ -211,3 +211,32 @@ pub(crate) fn weak_etag(value: &serde_json::Value) -> String {
         qid_core::util::sha256_base64url(value.to_string())
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scim_user_response_never_exposes_directory_provider_id() {
+        let user = ScimUser {
+            id: "user-1".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some("uid=alice,dc=example,dc=com".to_string()),
+            user_name: "alice@example.com".to_string(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({
+                "source": "urn:qid:directory:ldap",
+                "department": "Platform",
+            }),
+            directory_provider_id: Some("ad-main".to_string()),
+            active: true,
+        };
+        let body = scim_user(user);
+        assert_eq!(body["userName"], "alice@example.com");
+        // Server-owned ownership stays out of the wire projection, even when set.
+        assert!(body.get("directory_provider_id").is_none());
+        assert!(body.get("directoryProviderId").is_none());
+        assert_eq!(body[ENTERPRISE_USER_SCHEMA]["department"], "Platform");
+    }
+}

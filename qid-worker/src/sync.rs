@@ -140,6 +140,7 @@ fn user_to_scim_user(user: &User) -> ScimUser {
             "primary": true,
         }]),
         enterprise_json: serde_json::json!({}),
+        directory_provider_id: None,
         active: true,
     }
 }
@@ -283,6 +284,7 @@ pub async fn run_directory_sync_job(
     let result = qid_directory::sync_ldap_entries(
         &state,
         &config.realm_id,
+        &provider.id,
         &entries,
         qid_directory::LdapSyncOptions {
             deactivate_missing: provider.sync.deactivate_missing,

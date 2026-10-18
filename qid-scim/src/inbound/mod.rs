@@ -63,6 +63,9 @@ pub(crate) struct PatchOperation {
     pub(crate) value: Option<serde_json::Value>,
 }
 
+/// SCIM user create/replace payload. There is intentionally no
+/// `directory_provider_id` field: ownership is server-owned and never
+/// accepted from clients (including inside `enterprise`).
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateUser {
     #[serde(default = "default_realm")]

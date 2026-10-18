@@ -236,11 +236,11 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml directory-sync \
   --provider-id ad-main
 ```
 
-For JSON-based lifecycle testing or one-off sync:
+For JSON-based lifecycle testing or one-off sync, `--provider-id` must remain stable for the directory provider. LDAP rows retain the raw DN as SCIM `externalId` and record ownership in the internal server-owned `directory_provider_id` (never in `enterprise_json`, which SCIM clients can forge). Existing rows without an owner need explicit internal migration; ownership is never inferred from `enterprise_json`, even with a single provider. SCIM clients cannot change or remove `externalId` on provider-owned users. An unowned row whose `externalId` collides with an incoming DN fails the sync with a conflict before any write; unrelated ownerless rows do not block sync.
 
 ```sh
 cargo run --bin qid-sync -- --config /etc/qid/qid.yaml hr-import --realm corp --input hr.json
-cargo run --bin qid-sync -- --config /etc/qid/qid.yaml ldap-sync --realm corp --input ldap.json --deactivate-missing
+cargo run --bin qid-sync -- --config /etc/qid/qid.yaml ldap-sync --realm corp --provider-id ad-main --input ldap.json --deactivate-missing
 ```
 
 ## Network AAA

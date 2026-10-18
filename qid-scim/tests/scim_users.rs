@@ -862,3 +862,286 @@ async fn scim_schema_discovery_is_scoped_to_authenticated_realm() {
         serde_json::json!([{"schema": ENTERPRISE_USER_SCHEMA, "required": false}])
     );
 }
+
+#[tokio::test]
+async fn scim_owned_external_id_is_immutable_via_put_and_patch() {
+    let (app, repo, _store_path) = setup_with_store().await;
+    const DN: &str = "uid=alice,ou=people,dc=example,dc=com";
+    const OWNER: &str = "provider-a";
+
+    // Create an unowned user, then mark it provider-owned like directory sync would.
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"realm":"corp","externalId":"{DN}","userName":"alice@example.com"}}"#,
+        )))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert!(created.get("directory_provider_id").is_none());
+    assert!(created.get("directoryProviderId").is_none());
+
+    let mut owned = repo.get_scim_user(&id).await.unwrap().unwrap();
+    owned.directory_provider_id = Some(OWNER.to_string());
+    repo.update_scim_user(&owned).await.unwrap();
+
+    // PUT with a different externalId must fail closed with 409 and change nothing.
+    let put_changed = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","externalId":"uid=eve,ou=people,dc=example,dc=com","userName":"alice@example.com"}"#,
+        ))
+        .unwrap();
+    let put_changed_response = app.clone().oneshot(put_changed).await.unwrap();
+    assert_eq!(put_changed_response.status(), StatusCode::CONFLICT);
+    let put_changed_body = response_json(put_changed_response).await;
+    assert!(
+        put_changed_body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("conflict:"),
+        "unexpected error body: {put_changed_body}"
+    );
+    assert!(
+        !put_changed_body["error"].as_str().unwrap().contains(OWNER),
+        "internal provider ownership must not be disclosed: {put_changed_body}"
+    );
+
+    // PATCH replace/add with a different externalId must fail closed.
+    for op in ["add", "replace"] {
+        let patch_changed = Request::builder()
+            .method(Method::PATCH)
+            .uri(format!("/scim/v2/Users/{id}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"Operations":[{{"op":"{op}","path":"externalId","value":"uid=eve,ou=people,dc=example,dc=com"}}]}}"#,
+            )))
+            .unwrap();
+        let patch_response = app.clone().oneshot(patch_changed).await.unwrap();
+        assert_eq!(patch_response.status(), StatusCode::CONFLICT, "op {op}");
+        let patch_body = response_json(patch_response).await;
+        assert!(
+            patch_body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("conflict:"),
+            "unexpected error body for {op}: {patch_body}"
+        );
+        assert!(
+            !patch_body["error"].as_str().unwrap().contains(OWNER),
+            "internal provider ownership must not be disclosed: {patch_body}"
+        );
+    }
+
+    // PATCH remove must fail closed.
+    let patch_remove = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"remove","path":"externalId"}]}"#,
+        ))
+        .unwrap();
+    let patch_remove_response = app.clone().oneshot(patch_remove).await.unwrap();
+    assert_eq!(patch_remove_response.status(), StatusCode::CONFLICT);
+    let patch_remove_body = response_json(patch_remove_response).await;
+    assert!(
+        patch_remove_body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("conflict:")
+    );
+    assert!(
+        !patch_remove_body["error"].as_str().unwrap().contains(OWNER),
+        "internal provider ownership must not be disclosed: {patch_remove_body}"
+    );
+
+    // Rejections must not mutate the stored row.
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.external_id.as_deref(), Some(DN));
+    assert_eq!(stored.directory_provider_id.as_deref(), Some(OWNER));
+    assert_eq!(stored.user_name, "alice@example.com");
+
+    // Identical round-trips are allowed and keep the stored DN.
+    let put_equal = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"realm":"corp","externalId":"{DN}","userName":"alice@example.com"}}"#,
+        )))
+        .unwrap();
+    let put_equal_response = app.clone().oneshot(put_equal).await.unwrap();
+    assert_eq!(put_equal_response.status(), StatusCode::OK);
+    let put_equal_body = response_json(put_equal_response).await;
+    assert_eq!(put_equal_body["externalId"], DN);
+    assert!(put_equal_body.get("directory_provider_id").is_none());
+    assert!(put_equal_body.get("directoryProviderId").is_none());
+
+    for op in ["add", "replace"] {
+        let patch_equal = Request::builder()
+            .method(Method::PATCH)
+            .uri(format!("/scim/v2/Users/{id}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"Operations":[{{"op":"{op}","path":"externalId","value":"{DN}"}}]}}"#,
+            )))
+            .unwrap();
+        let patch_equal_response = app.clone().oneshot(patch_equal).await.unwrap();
+        assert_eq!(patch_equal_response.status(), StatusCode::OK, "op {op}");
+        let patch_equal_body = response_json(patch_equal_response).await;
+        assert_eq!(patch_equal_body["externalId"], DN);
+    }
+
+    // PUT with omitted externalId preserves the owned DN and still allows
+    // unrelated attribute updates.
+    let put_omitted = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"alice-new@example.com"}"#,
+        ))
+        .unwrap();
+    let put_omitted_response = app.clone().oneshot(put_omitted).await.unwrap();
+    assert_eq!(put_omitted_response.status(), StatusCode::OK);
+    let put_omitted_body = response_json(put_omitted_response).await;
+    assert_eq!(put_omitted_body["externalId"], DN);
+    assert_eq!(put_omitted_body["userName"], "alice-new@example.com");
+    assert!(put_omitted_body.get("directory_provider_id").is_none());
+    assert!(put_omitted_body.get("directoryProviderId").is_none());
+
+    // Restore the original userName so the reconciliation check below sees the
+    // owned sync key only.
+    let put_restore = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"alice@example.com"}"#,
+        ))
+        .unwrap();
+    let put_restore_response = app.clone().oneshot(put_restore).await.unwrap();
+    assert_eq!(put_restore_response.status(), StatusCode::OK);
+
+    // An owned row with a missing stored external_id must also fail closed:
+    // SCIM cannot supply the missing raw DN.
+    let missing_create = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"nodn@example.com"}"#,
+        ))
+        .unwrap();
+    let missing_response = app.clone().oneshot(missing_create).await.unwrap();
+    assert_eq!(missing_response.status(), StatusCode::CREATED);
+    let missing_created = response_json(missing_response).await;
+    let missing_id = missing_created["id"].as_str().unwrap().to_string();
+    let mut missing_owned = repo.get_scim_user(&missing_id).await.unwrap().unwrap();
+    missing_owned.directory_provider_id = Some(OWNER.to_string());
+    repo.update_scim_user(&missing_owned).await.unwrap();
+    let missing_patch = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{missing_id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"Operations":[{{"op":"replace","path":"externalId","value":"{DN}"}}]}}"#,
+        )))
+        .unwrap();
+    let missing_patch_response = app.clone().oneshot(missing_patch).await.unwrap();
+    assert_eq!(missing_patch_response.status(), StatusCode::CONFLICT);
+    let missing_put = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{missing_id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"realm":"corp","externalId":"{DN}","userName":"nodn@example.com"}}"#,
+        )))
+        .unwrap();
+    let missing_put_response = app.clone().oneshot(missing_put).await.unwrap();
+    assert_eq!(missing_put_response.status(), StatusCode::CONFLICT);
+    let missing_stored = repo.get_scim_user(&missing_id).await.unwrap().unwrap();
+    assert_eq!(missing_stored.external_id, None);
+    assert_eq!(missing_stored.directory_provider_id.as_deref(), Some(OWNER));
+    repo.delete_scim_user(&missing_id).await.unwrap();
+
+    // The provider reconciliation key is intact: a sync lookup by
+    // (directory_provider_id, external_id) still finds this same row, and no
+    // duplicate owned row was created by the rejected mutations.
+    // This mirrors `sync_ldap_entries`' `owned_by_dn` map and its preflight
+    // requirement of a non-blank owner plus raw-DN external_id.
+    let users = repo.list_scim_users(&"corp".into()).await.unwrap();
+    let owned_matches: Vec<_> = users
+        .iter()
+        .filter(|user| user.directory_provider_id.as_deref() == Some(OWNER))
+        .filter(|user| user.external_id.as_deref() == Some(DN))
+        .collect();
+    assert_eq!(owned_matches.len(), 1);
+    assert_eq!(owned_matches[0].id, id);
+    assert_eq!(users.len(), 1);
+}
+
+#[tokio::test]
+async fn scim_unowned_external_id_remains_mutable() {
+    let (app, repo, _store_path) = setup_with_store().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","externalId":"hr-1","userName":"bob@example.com"}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Unowned PUT may change externalId (existing merge behavior).
+    let put_request = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","externalId":"hr-2","userName":"bob@example.com"}"#,
+        ))
+        .unwrap();
+    let put_response = app.clone().oneshot(put_request).await.unwrap();
+    assert_eq!(put_response.status(), StatusCode::OK);
+    assert_eq!(response_json(put_response).await["externalId"], "hr-2");
+
+    // Unowned PATCH may change and then clear externalId.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"replace","path":"externalId","value":"hr-3"}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    assert_eq!(response_json(patch_response).await["externalId"], "hr-3");
+
+    let remove_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"remove","path":"externalId"}]}"#,
+        ))
+        .unwrap();
+    let remove_response = app.clone().oneshot(remove_request).await.unwrap();
+    assert_eq!(remove_response.status(), StatusCode::OK);
+
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.external_id, None);
+    assert_eq!(stored.directory_provider_id, None);
+}

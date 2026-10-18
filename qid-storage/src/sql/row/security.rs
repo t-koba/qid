@@ -235,6 +235,7 @@ pub(in crate::sql) struct ScimUserRow {
     name_json: String,
     emails_json: String,
     enterprise_json: String,
+    directory_provider_id: Option<String>,
     active: i64,
 }
 
@@ -249,6 +250,7 @@ impl From<ScimUserRow> for ScimUser {
             emails_json: serde_json::from_str(&row.emails_json).unwrap_or_default(),
             enterprise_json: serde_json::from_str(&row.enterprise_json)
                 .unwrap_or_else(|_| serde_json::json!({})),
+            directory_provider_id: row.directory_provider_id,
             active: row.active != 0,
         }
     }

@@ -43,9 +43,10 @@ exclude = ["vendor/rustls"]
 # server.quic, qid-network listener split, per-realm gating).
 # Ratchet: 12 edge-PEP, 41 OAuth, 64 IGA tenant-context, 256 admin error-mapping,
 # and 6 OAuth token-audit, 7 DCR-context, 16 OAuth response-mapping, 95 session-cookie,
-# 29 session realm-resolution, 29 shared runtime-realm lookup, and 45 lowercase-hex utility lines.
+# 29 session realm-resolution, 29 shared runtime-realm lookup, 45 lowercase-hex utility, and 17
+# session-config mapping lines.
 [workspace.metadata.budget]
-total = 103400
+total = 103383
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

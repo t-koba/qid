@@ -152,11 +152,7 @@ async fn email_magic_link_verify<R: Repository>(
 
     let session_config = &realm_config.browser_session;
     let old_session_id = super::extract_cookie(&headers, &session_config.cookie_name);
-    let manager = SessionManager::new(
-        state.repo.clone(),
-        session_config.idle_timeout_minutes,
-        session_config.absolute_timeout_hours,
-    );
+    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
 
     let session = match manager
         .create_with_regeneration(

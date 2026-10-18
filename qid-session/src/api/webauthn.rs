@@ -193,10 +193,9 @@ async fn require_webauthn_registration_session<R: Repository>(
             message: "missing session cookie".to_string(),
         })
     })?;
-    let manager = SessionManager::new(
+    let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
-        realm_config.browser_session.idle_timeout_minutes,
-        realm_config.browser_session.absolute_timeout_hours,
+        &realm_config.browser_session,
     );
     let session = manager
         .get(&session_id)
@@ -342,11 +341,7 @@ pub async fn webauthn_auth_finish<R: Repository>(
 
     let session_config = &realm_config.browser_session;
     let old_session_id = super::extract_cookie(&headers, &session_config.cookie_name);
-    let manager = SessionManager::new(
-        state.repo.clone(),
-        session_config.idle_timeout_minutes,
-        session_config.absolute_timeout_hours,
-    );
+    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
 
     let session = match manager
         .create_with_regeneration(
@@ -507,11 +502,7 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
 
     let session_config = &realm_config.browser_session;
     let old_session_id = super::extract_cookie(&headers, &session_config.cookie_name);
-    let manager = SessionManager::new(
-        state.repo.clone(),
-        session_config.idle_timeout_minutes,
-        session_config.absolute_timeout_hours,
-    );
+    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
 
     let session = match manager
         .create_with_regeneration(

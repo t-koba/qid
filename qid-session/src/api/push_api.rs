@@ -78,10 +78,9 @@ async fn get_session_user_id<R: Repository>(
             message: "missing session cookie".to_string(),
         })
     })?;
-    let manager = SessionManager::new(
+    let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
-        realm_config.browser_session.idle_timeout_minutes,
-        realm_config.browser_session.absolute_timeout_hours,
+        &realm_config.browser_session,
     );
     let session = manager
         .get(&session_id)

@@ -1,5 +1,6 @@
 //! Browser session management.
 
+use qid_core::config::BrowserSessionConfig;
 use qid_core::error::QidResult;
 use qid_core::models::Session;
 use qid_ops::{CacheKey, CachePut};
@@ -24,6 +25,14 @@ pub struct SessionManager<R: Repository> {
 }
 
 impl<R: Repository> SessionManager<R> {
+    pub(crate) fn from_browser_session_config(repo: Arc<R>, config: &BrowserSessionConfig) -> Self {
+        Self::new(
+            repo,
+            config.idle_timeout_minutes,
+            config.absolute_timeout_hours,
+        )
+    }
+
     pub fn new(repo: Arc<R>, idle_timeout_minutes: u64, absolute_timeout_hours: u64) -> Self {
         Self {
             repo,

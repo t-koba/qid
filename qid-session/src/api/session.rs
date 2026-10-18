@@ -32,10 +32,9 @@ pub async fn session_refresh<R: Repository>(
         }
     };
 
-    let manager = SessionManager::new(
+    let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
-        realm_config.browser_session.idle_timeout_minutes,
-        realm_config.browser_session.absolute_timeout_hours,
+        &realm_config.browser_session,
     );
 
     let session = match manager.get(&session_id).await {
@@ -86,10 +85,9 @@ pub async fn session_revoke<R: Repository>(
         }
     };
 
-    let manager = SessionManager::new(
+    let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
-        realm_config.browser_session.idle_timeout_minutes,
-        realm_config.browser_session.absolute_timeout_hours,
+        &realm_config.browser_session,
     );
 
     let session = match manager.get(&session_id).await {

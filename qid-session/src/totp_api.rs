@@ -79,10 +79,9 @@ async fn totp_enroll<R: Repository>(
         }
     };
 
-    let manager = SessionManager::new(
+    let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
-        realm_config.browser_session.idle_timeout_minutes,
-        realm_config.browser_session.absolute_timeout_hours,
+        &realm_config.browser_session,
     );
 
     let session = match manager.get(&session_id).await {
@@ -161,10 +160,9 @@ async fn totp_verify<R: Repository>(
         }
     };
 
-    let manager = SessionManager::new(
+    let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
-        realm_config.browser_session.idle_timeout_minutes,
-        realm_config.browser_session.absolute_timeout_hours,
+        &realm_config.browser_session,
     );
 
     let session = match manager.get(&session_id).await {
@@ -300,11 +298,7 @@ async fn totp_authenticate<R: Repository>(
 
     let session_config = &realm_config.browser_session;
     let old_session_id = extract_cookie(&headers, &session_config.cookie_name);
-    let manager = SessionManager::new(
-        state.repo.clone(),
-        session_config.idle_timeout_minutes,
-        session_config.absolute_timeout_hours,
-    );
+    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
 
     let session = match manager
         .create_with_regeneration(

@@ -3983,6 +3983,7 @@ name = "qid-diagnostics"
 version = "0.1.0"
 dependencies = [
  "qid-core",
+ "qid-policy",
  "qid-storage",
  "serde",
  "serde_json",

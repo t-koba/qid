@@ -159,7 +159,21 @@ async fn storage_saas_audit_reports_broken_oidc_client_reference() {
 fn check_report_covers_policy_pep_metrics_and_keyrings() {
     let dir = temp_config_dir("ok");
     std::fs::create_dir_all(dir.join("policies")).expect("temp dir");
-    std::fs::write(dir.join("policies/authenticated-read.json"), "{}").expect("policy file");
+    std::fs::write(
+        dir.join("policies/authenticated-read.json"),
+        serde_json::json!({
+            "version": "1",
+            "default_decision": "deny",
+            "rules": [{
+                "name": "allow-authenticated-read",
+                "type": "allow",
+                "action": "read",
+                "resource_host": "*"
+            }]
+        })
+        .to_string(),
+    )
+    .expect("policy file");
     let mut config = minimal_config();
     config.realms[0].policy.bundles = vec![PolicyBundleConfig {
         name: "authenticated-read".to_string(),
@@ -607,4 +621,138 @@ fn high_risk_mfa_requires_enabled_factor_not_allowed_label() {
         message.contains("client-certificate"),
         "unexpected message: {message}"
     );
+}
+
+fn minimal_native_bundle(name: &str) -> String {
+    serde_json::json!({
+        "version": "1",
+        "default_decision": "deny",
+        "rules": [{
+            "name": name,
+            "type": "allow",
+            "action": "read",
+            "resource_host": "*"
+        }]
+    })
+    .to_string()
+}
+
+fn policy_check_for(
+    dir: &std::path::Path,
+    source: &str,
+    content: Option<(&str, &str)>,
+) -> CheckItem {
+    if let Some((rel, body)) = content {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("policy parent");
+        }
+        std::fs::write(&path, body).expect("policy file");
+    }
+    let mut config = minimal_config();
+    config.realms[0].policy.bundles = vec![PolicyBundleConfig {
+        name: "bundle".to_string(),
+        source: source.to_string(),
+        mode: "enforce".to_string(),
+    }];
+    check_policy_bundles(&config, &dir.join("qid.yaml"))
+        .into_iter()
+        .find(|check| check.name == "policy_bundle.corp.bundle")
+        .expect("policy bundle check")
+}
+
+#[test]
+fn policy_bundles_reject_structurally_invalid_json() {
+    let dir = temp_config_dir("policy-invalid-shape");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let check = policy_check_for(
+        &dir,
+        "file://policies/bundle.json",
+        Some(("policies/bundle.json", r#"{"version": "1"}"#)),
+    );
+    assert_eq!(check.status, CheckStatus::Error, "{check:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn policy_bundles_reject_non_json_content_with_plausible_extension() {
+    let dir = temp_config_dir("policy-non-json");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    for (source, path, content) in [
+        (
+            "file://policies/bundle.yaml",
+            "policies/bundle.yaml",
+            "version: 1\ndefault_decision: deny\nrules: []\n",
+        ),
+        (
+            "file://policies/bundle.rego",
+            "policies/bundle.rego",
+            "package authz\nallow = true\n",
+        ),
+    ] {
+        let check = policy_check_for(&dir, source, Some((path, content)));
+        assert_eq!(check.status, CheckStatus::Error, "{check:?}");
+        assert!(
+            check.message.contains("not valid JSON") || check.message.contains("invalid policy"),
+            "unexpected message: {}",
+            check.message
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn policy_bundles_report_remote_sources_as_errors() {
+    let dir = temp_config_dir("policy-remote");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    for source in [
+        "https://example.com/bundle.json",
+        "http://example.com/bundle.json",
+    ] {
+        let check = policy_check_for(&dir, source, None);
+        assert_eq!(check.status, CheckStatus::Error, "{check:?}");
+        assert!(
+            check.message.contains("not supported at startup"),
+            "unexpected message: {}",
+            check.message
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn policy_bundles_resolve_relative_file_and_bare_paths_from_config_dir() {
+    let dir = temp_config_dir("policy-relative");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let bundle = minimal_native_bundle("allow-read");
+    let file_check = policy_check_for(
+        &dir,
+        "file://policies/bundle.json",
+        Some(("policies/bundle.json", &bundle)),
+    );
+    assert_eq!(file_check.status, CheckStatus::Ok, "{file_check:?}");
+
+    let dir2 = temp_config_dir("policy-relative-bare");
+    std::fs::create_dir_all(&dir2).expect("temp dir");
+    let bare_check = policy_check_for(
+        &dir2,
+        "policies/bundle.json",
+        Some(("policies/bundle.json", &bundle)),
+    );
+    assert_eq!(bare_check.status, CheckStatus::Ok, "{bare_check:?}");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&dir2).ok();
+}
+
+#[test]
+fn policy_bundles_accept_absolute_paths() {
+    let dir = temp_config_dir("policy-absolute");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let target = dir.join("policies/bundle.json");
+    std::fs::create_dir_all(target.parent().expect("parent")).expect("temp dir");
+    std::fs::write(&target, minimal_native_bundle("allow-read")).expect("policy file");
+    let absolute = target.to_str().expect("utf-8 path").to_string();
+    let check = policy_check_for(&dir, &absolute, None);
+    assert_eq!(check.status, CheckStatus::Ok, "{check:?}");
+    std::fs::remove_dir_all(&dir).ok();
 }

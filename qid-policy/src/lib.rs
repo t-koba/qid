@@ -7,6 +7,7 @@ pub mod cedar_embedded;
 pub mod models;
 pub mod native;
 pub mod rego;
+pub mod source;
 
 pub use cedar::CedarPolicyEngine;
 #[cfg(feature = "cedar-embedded")]
@@ -17,6 +18,7 @@ pub use models::{
 };
 pub use native::NativePolicyEngine;
 pub use rego::RegoPolicyEngine;
+pub use source::{parse_native_policy_bundle, resolve_policy_bundle_path};
 
 /// Create a policy engine by kind string ("native", "cedar", "rego", "cedar-embedded").
 pub fn create_policy_engine(kind: &str) -> Box<dyn PolicyEngine> {

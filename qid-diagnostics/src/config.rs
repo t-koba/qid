@@ -137,8 +137,8 @@ pub(crate) fn check_policy_bundles(config: &QidConfig, config_path: &Path) -> Ve
                                     );
                                 }
                             };
-                            let compile_check = try_compile_policy_bundle(&path, &content);
-                            match compile_check {
+                            let validation = validate_native_policy_bundle(&content);
+                            match validation {
                                 Ok(msg) => check_ok(
                                     format!("policy_bundle.{}.{}", realm.id, bundle.name),
                                     format!(
@@ -159,13 +159,9 @@ pub(crate) fn check_policy_bundles(config: &QidConfig, config_path: &Path) -> Ve
                             format!("policy_bundle.{}.{}", realm.id, bundle.name),
                             format!("policy bundle source is missing: {}", path.display()),
                         ),
-                        PolicyBundleSourceStatus::External(source) => check_ok(
+                        PolicyBundleSourceStatus::Unsupported(reason) => check_error(
                             format!("policy_bundle.{}.{}", realm.id, bundle.name),
-                            format!("policy bundle source is external: {source}"),
-                        ),
-                        PolicyBundleSourceStatus::Unsupported(source) => check_warning(
-                            format!("policy_bundle.{}.{}", realm.id, bundle.name),
-                            format!("policy bundle source scheme is not recognized: {source}"),
+                            reason,
                         ),
                     }
                 })
@@ -177,7 +173,6 @@ pub(crate) fn check_policy_bundles(config: &QidConfig, config_path: &Path) -> Ve
 pub(crate) enum PolicyBundleSourceStatus {
     Readable(PathBuf),
     Missing(PathBuf),
-    External(String),
     Unsupported(String),
 }
 
@@ -185,76 +180,22 @@ pub(crate) fn policy_bundle_source_status(
     config_path: &Path,
     source: &str,
 ) -> PolicyBundleSourceStatus {
-    if source.starts_with("https://") || source.starts_with("http://") {
-        PolicyBundleSourceStatus::External(source.to_string())
-    } else if let Some(raw_path) = source.strip_prefix("file://") {
-        resolved_policy_source_status(config_path, PathBuf::from(raw_path))
-    } else {
-        resolved_policy_source_status(config_path, PathBuf::from(source))
-    }
-}
-
-pub(crate) fn resolved_policy_source_status(
-    config_path: &Path,
-    path: PathBuf,
-) -> PolicyBundleSourceStatus {
-    if path.components().next().is_none() {
-        return PolicyBundleSourceStatus::Unsupported(String::new());
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::Prefix(_)))
-    {
-        return PolicyBundleSourceStatus::Unsupported(path.display().to_string());
-    }
-    let resolved = if path.is_absolute() {
-        path
-    } else {
-        config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(path)
-    };
-    if resolved.is_file() {
-        PolicyBundleSourceStatus::Readable(resolved)
-    } else {
-        PolicyBundleSourceStatus::Missing(resolved)
-    }
-}
-
-/// Try to compile/parse a policy bundle file to validate its contents.
-/// Supports JSON-based native policy bundles.
-fn try_compile_policy_bundle(path: &Path, content: &str) -> Result<String, String> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    match ext {
-        "json" => {
-            let trimmed = content.trim();
-            if trimmed.is_empty() {
-                return Err("policy bundle file is empty".to_string());
-            }
-            serde_json::from_str::<serde_json::Value>(trimmed)
-                .map_err(|e| format!("policy bundle is not valid JSON: {e}"))?;
-            Ok("JSON policy parsed successfully".to_string())
-        }
-        "rego" | "r" | "yaml" | "yml" => {
-            if content.trim().is_empty() {
-                return Err("policy bundle file is empty".to_string());
-            }
-            // For Rego, basic syntactic check: must contain "package" keyword
-            if ext == "rego" && !content.contains("package ") {
-                return Err("Rego policy file does not contain 'package' declaration".to_string());
-            }
-            Ok(format!("{ext} bundle content is non-empty"))
-        }
-        _ => {
-            // Unknown extension: just verify non-empty
-            if content.trim().is_empty() {
-                Err("policy bundle file is empty".to_string())
+    match qid_policy::resolve_policy_bundle_path(config_path, source) {
+        Err(reason) => PolicyBundleSourceStatus::Unsupported(reason),
+        Ok(resolved) => {
+            if resolved.is_file() {
+                PolicyBundleSourceStatus::Readable(resolved)
             } else {
-                Ok("bundle content is non-empty".to_string())
+                PolicyBundleSourceStatus::Missing(resolved)
             }
         }
     }
+}
+
+/// Validate bundle content with the shared native parser used by startup.
+fn validate_native_policy_bundle(content: &str) -> Result<String, String> {
+    qid_policy::parse_native_policy_bundle(content)?;
+    Ok("native policy bundle parsed successfully".to_string())
 }
 
 pub(crate) fn check_pep_registrations(config: &QidConfig) -> Vec<CheckItem> {

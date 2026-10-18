@@ -21,9 +21,11 @@ be loaded with `qidc --config <file> check`.
   deployments.
 - Keep `observability.metrics.listen` on loopback unless the daemon is protected
   by a separate network boundary.
-- Keep policy bundle paths relative to the config file location, or use
-  `https://` / `http://` when bundles are fetched by an external deployment
-  process.
+- `qidd` consumes local native JSON policy bundles only. Keep bundle sources
+  as paths relative to the config file location (bare or `file://`) or as
+  absolute paths; an external fetcher must materialize any remote bundle to a
+  local file before startup because `http(s)` sources are rejected at startup
+  and reported as errors by `qidc check`.
 
 The current validator accepts production profiles only. Use `oidc` for the
 smallest interoperable OIDC authorization-code deployment, then move to

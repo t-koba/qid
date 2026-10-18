@@ -12,6 +12,7 @@ rust-version.workspace = true
 
 [dependencies]
 qid-core = { workspace = true }
+qid-policy = { workspace = true }
 qid-storage = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

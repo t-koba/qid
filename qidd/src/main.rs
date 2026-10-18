@@ -1128,29 +1128,14 @@ async fn read_policy_bundle_source(
     config_path: &Path,
     source: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    if source.starts_with("http://") || source.starts_with("https://") {
-        bail!("remote policy bundle sources are not supported at startup: {source}");
-    }
-    let path = if let Some(path) = source.strip_prefix("file://") {
-        PathBuf::from(path)
-    } else {
-        let path = PathBuf::from(source);
-        if path.is_absolute() {
-            path
-        } else {
-            config_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(path)
-        }
-    };
+    let path = qid_policy::resolve_policy_bundle_path(config_path, source)
+        .map_err(|e| anyhow::anyhow!(e))?;
     let raw = tokio::fs::read_to_string(&path)
         .await
         .with_context(|| format!("failed to read policy bundle {}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
+    let value = qid_policy::parse_native_policy_bundle(&raw)
+        .map_err(anyhow::Error::msg)
         .with_context(|| format!("failed to parse policy bundle {}", path.display()))?;
-    serde_json::from_value::<qid_policy::PolicyBundle>(value.clone())
-        .with_context(|| format!("invalid policy bundle {}", path.display()))?;
     Ok(value)
 }
 
@@ -2027,7 +2012,7 @@ mod tests {
         .expect("policy file");
         config.realms[0].policy.bundles = vec![qid_core::config::PolicyBundleConfig {
             name: "authenticated-read".to_string(),
-            source: "policies/authenticated-read.json".to_string(),
+            source: "file://policies/authenticated-read.json".to_string(),
             mode: "enforce".to_string(),
         }];
 

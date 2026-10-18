@@ -12,7 +12,7 @@ use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::api::extract_cookie;
+use crate::api::{BrowserSessionContext, extract_cookie, load_browser_session};
 use crate::browser::SessionManager;
 
 pub fn totp_routes<R: Repository>(_paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
@@ -64,39 +64,14 @@ async fn totp_enroll<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match state.require_realm(&realm) {
-        Ok(config) => config,
-        Err(error) => return qid_http::error_response(error),
+    let BrowserSessionContext {
+        realm_config,
+        session,
+        ..
+    } = match load_browser_session(&state, &realm, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
-
-    let cookie_name = &realm_config.browser_session.cookie_name;
-    let session_id = match extract_cookie(&headers, cookie_name) {
-        Some(id) => id,
-        None => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "missing session cookie".to_string(),
-            });
-        }
-    };
-
-    let manager = SessionManager::from_browser_session_config(
-        state.repo.clone(),
-        &realm_config.browser_session,
-    );
-
-    let session = match manager.get(&session_id).await {
-        Ok(Some(s)) => s,
-        _ => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "invalid or expired session".to_string(),
-            });
-        }
-    };
-    if session.realm_id != realm {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "session realm does not match request realm".to_string(),
-        });
-    }
 
     let user = match state.repo.get_user_by_id(&session.user_id).await {
         Ok(Some(u)) => u,
@@ -145,39 +120,11 @@ async fn totp_verify<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<TotpVerifyRequest>,
 ) -> Response {
-    let realm_config = match state.require_realm(&realm) {
-        Ok(config) => config,
-        Err(error) => return qid_http::error_response(error),
-    };
-
-    let cookie_name = &realm_config.browser_session.cookie_name;
-    let session_id = match extract_cookie(&headers, cookie_name) {
-        Some(id) => id,
-        None => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "missing session cookie".to_string(),
-            });
-        }
-    };
-
-    let manager = SessionManager::from_browser_session_config(
-        state.repo.clone(),
-        &realm_config.browser_session,
-    );
-
-    let session = match manager.get(&session_id).await {
-        Ok(Some(s)) => s,
-        _ => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "invalid or expired session".to_string(),
-            });
-        }
-    };
-    if session.realm_id != realm {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "session realm does not match request realm".to_string(),
-        });
-    }
+    let BrowserSessionContext { session, .. } =
+        match load_browser_session(&state, &realm, &headers).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
 
     let mut cred = match state.repo.get_totp_credential(&session.user_id).await {
         Ok(Some(c)) => c,

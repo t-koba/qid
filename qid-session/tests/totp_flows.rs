@@ -108,6 +108,30 @@ async fn post(
 }
 
 #[tokio::test]
+async fn totp_enroll_rejects_a_session_from_another_realm() -> anyhow::Result<()> {
+    let (app, cookie, repo) = setup().await?;
+    let cookie_name = cookie
+        .split_once('=')
+        .context("session cookie must contain a name and value")?
+        .0;
+    let foreign_session = SessionManager::new(Arc::clone(&repo), 30, 8)
+        .create("other", "totp-user", "phr", &[])
+        .await?;
+    let foreign_cookie = format!("{cookie_name}={}", foreign_session.id);
+
+    let (status, _, _) = post(
+        app,
+        "/api/v1/test/auth/totp/enroll",
+        &foreign_cookie,
+        json!({}),
+    )
+    .await?;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+#[tokio::test]
 async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyhow::Result<()> {
     let (app, cookie, repo) = setup().await?;
     let (status, body, _) = post(

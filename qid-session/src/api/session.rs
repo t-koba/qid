@@ -9,47 +9,21 @@ use qid_core::{error::QidError, state::SharedState};
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
-use super::extract_cookie;
-use crate::browser::SessionManager;
+use super::{BrowserSessionContext, load_browser_session};
 
 pub async fn session_refresh<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match state.require_realm(&realm) {
-        Ok(config) => config,
-        Err(error) => return qid_http::error_response(error),
+    let BrowserSessionContext {
+        realm_config,
+        session_id,
+        ..
+    } = match load_browser_session(&state, &realm, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
-
-    let cookie_name = &realm_config.browser_session.cookie_name;
-    let session_id = match extract_cookie(&headers, cookie_name) {
-        Some(id) => id,
-        None => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "missing session cookie".to_string(),
-            });
-        }
-    };
-
-    let manager = SessionManager::from_browser_session_config(
-        state.repo.clone(),
-        &realm_config.browser_session,
-    );
-
-    let session = match manager.get(&session_id).await {
-        Ok(Some(s)) => s,
-        _ => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "invalid or expired session".to_string(),
-            });
-        }
-    };
-    if session.realm_id != realm {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "session realm does not match request realm".to_string(),
-        });
-    }
 
     let new_idle =
         qid_core::util::now_seconds() + realm_config.browser_session.idle_timeout_minutes * 60;
@@ -70,39 +44,16 @@ pub async fn session_revoke<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let realm_config = match state.require_realm(&realm) {
-        Ok(config) => config,
-        Err(error) => return qid_http::error_response(error),
+    let BrowserSessionContext {
+        realm_config,
+        session_id,
+        manager,
+        ..
+    } = match load_browser_session(&state, &realm, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
-
     let cookie_name = &realm_config.browser_session.cookie_name;
-    let session_id = match extract_cookie(&headers, cookie_name) {
-        Some(id) => id,
-        None => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "missing session cookie".to_string(),
-            });
-        }
-    };
-
-    let manager = SessionManager::from_browser_session_config(
-        state.repo.clone(),
-        &realm_config.browser_session,
-    );
-
-    let session = match manager.get(&session_id).await {
-        Ok(Some(s)) => s,
-        _ => {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "invalid or expired session".to_string(),
-            });
-        }
-    };
-    if session.realm_id != realm {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "session realm does not match request realm".to_string(),
-        });
-    }
 
     if let Err(e) = manager.revoke(&session_id).await {
         return qid_http::error_response(e);

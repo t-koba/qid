@@ -6,6 +6,8 @@ use axum::{
 use qid_core::{
     config::{BrowserSessionConfig, ServerPaths},
     error::QidError,
+    models::Session,
+    plan::RuntimeRealm,
     state::SharedState,
 };
 
@@ -17,6 +19,7 @@ use url::Url;
 use self::email_magic_api::email_magic_routes;
 use self::push_api::push_routes;
 use crate::auth::Authenticator;
+use crate::browser::SessionManager;
 use crate::webauthn::{WebAuthnService, WebAuthnState};
 
 pub(crate) fn set_session_cookie(
@@ -157,4 +160,51 @@ pub(crate) fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> 
         }
     }
     None
+}
+
+pub(crate) struct BrowserSessionContext<'a, R: Repository> {
+    pub(crate) realm_config: &'a RuntimeRealm,
+    pub(crate) session_id: String,
+    pub(crate) session: Session,
+    pub(crate) manager: SessionManager<R>,
+}
+
+pub(crate) async fn load_browser_session<'a, R: Repository>(
+    state: &'a Arc<SharedState<R>>,
+    realm: &str,
+    headers: &HeaderMap,
+) -> Result<BrowserSessionContext<'a, R>, axum::response::Response> {
+    let realm_config = state
+        .require_realm(realm)
+        .map_err(qid_http::error_response)?;
+    let session_id = extract_cookie(headers, &realm_config.browser_session.cookie_name)
+        .ok_or_else(|| {
+            qid_http::error_response(QidError::Unauthorized {
+                message: "missing session cookie".to_string(),
+            })
+        })?;
+    let manager = SessionManager::from_browser_session_config(
+        state.repo.clone(),
+        &realm_config.browser_session,
+    );
+    let session = match manager.get(&session_id).await {
+        Ok(Some(session)) => session,
+        _ => {
+            return Err(qid_http::error_response(QidError::Unauthorized {
+                message: "invalid or expired session".to_string(),
+            }));
+        }
+    };
+    if session.realm_id != realm {
+        return Err(qid_http::error_response(QidError::Unauthorized {
+            message: "session realm does not match request realm".to_string(),
+        }));
+    }
+
+    Ok(BrowserSessionContext {
+        realm_config,
+        session_id,
+        session,
+        manager,
+    })
 }

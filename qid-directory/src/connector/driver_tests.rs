@@ -1,6 +1,6 @@
 //! A tiny loopback LDAP peer, not a connector mock. Only tests may supply
 //! non-TLS settings to the private session helper; production enforces TLS.
-use super::with_ldap_session;
+use super::{ensure_ldap_bind_success, ensure_ldap_search_success, with_ldap_session};
 use qid_core::error::QidError;
 use std::time::Duration;
 use tokio::{
@@ -33,6 +33,10 @@ async fn request(socket: &mut TcpStream, expected_op: u8) -> (u8, Vec<u8>) {
 }
 
 async fn bind(socket: &mut TcpStream) {
+    bind_with_code(socket, 0).await;
+}
+
+async fn bind_with_code(socket: &mut TcpStream, result_code: u8) {
     let (id, body) = request(socket, 0x60).await;
     assert_eq!(
         body,
@@ -43,9 +47,9 @@ async fn bind(socket: &mut TcpStream) {
         ]
         .concat()
     );
-    // BindResponse: success, empty matched DN and diagnostic message.
+    // BindResponse with the requested result code and empty diagnostics.
     socket
-        .write_all(&message(id, ber(0x61, &[0x0a, 1, 0, 4, 0, 4, 0])))
+        .write_all(&message(id, ber(0x61, &[0x0a, 1, result_code, 4, 0, 4, 0])))
         .await
         .unwrap();
 }
@@ -107,6 +111,84 @@ async fn ldap_driver_bind_search_round_trip() {
     })
     .await
     .expect("LDAP round trip stalled (driver not running or not closed)");
+}
+
+#[tokio::test]
+async fn ldap_bind_protocol_failure_is_rejected_before_search() {
+    tokio::time::timeout(DEADLINE, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ldap://{}", listener.local_addr().unwrap());
+        let server = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            bind_with_code(&mut socket, 49).await;
+            request(&mut socket, 0x42).await;
+            assert_closed(&mut socket).await;
+        };
+        let client = with_ldap_session(ldap3::LdapConnSettings::new(), &url, 1, async |ldap| {
+            let result =
+                ldap.simple_bind("cn=test", "test")
+                    .await
+                    .map_err(|e| QidError::Internal {
+                        message: format!("LDAP bind transport failed: {e}"),
+                    })?;
+            ensure_ldap_bind_success(result)?;
+            Ok(())
+        });
+        let ((), result) = tokio::join!(server, client);
+        assert!(result.unwrap_err().to_string().contains("rc=49"));
+    })
+    .await
+    .expect("bind protocol failure cleanup stalled");
+}
+
+#[tokio::test]
+async fn ldap_partial_search_result_is_rejected_and_discarded() {
+    tokio::time::timeout(DEADLINE, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ldap://{}", listener.local_addr().unwrap());
+        let server = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            bind(&mut socket).await;
+            let (id, _) = request(&mut socket, 0x63).await;
+            let attr = ber(
+                0x30,
+                &[ber(0x04, b"uid"), ber(0x31, &ber(0x04, b"alice"))].concat(),
+            );
+            let entry = ber(
+                0x64,
+                &[ber(0x04, b"uid=alice,dc=test"), ber(0x30, &attr)].concat(),
+            );
+            socket.write_all(&message(id, entry)).await.unwrap();
+            // sizeLimitExceeded after a partial entry must make the whole search fail.
+            socket
+                .write_all(&message(id, ber(0x65, &[0x0a, 1, 4, 4, 0, 4, 0])))
+                .await
+                .unwrap();
+            request(&mut socket, 0x42).await;
+            assert_closed(&mut socket).await;
+        };
+        let client = with_ldap_session(ldap3::LdapConnSettings::new(), &url, 1, async |ldap| {
+            let bind_result =
+                ldap.simple_bind("cn=test", "test")
+                    .await
+                    .map_err(|e| QidError::Internal {
+                        message: format!("LDAP bind transport failed: {e}"),
+                    })?;
+            ensure_ldap_bind_success(bind_result)?;
+            let search_result = ldap
+                .search("dc=test", ldap3::Scope::Subtree, "(uid=alice)", vec!["uid"])
+                .await
+                .map_err(|e| QidError::Internal {
+                    message: format!("LDAP search transport failed: {e}"),
+                })?;
+            let _entries = ensure_ldap_search_success(search_result)?;
+            Ok(())
+        });
+        let ((), result) = tokio::join!(server, client);
+        assert!(result.unwrap_err().to_string().contains("rc=4"));
+    })
+    .await
+    .expect("partial search failure cleanup stalled");
 }
 
 #[tokio::test]

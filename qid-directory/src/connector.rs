@@ -270,6 +270,24 @@ async fn with_ldap_session<T>(
     }
 }
 
+fn ensure_ldap_bind_success(result: ldap3::LdapResult) -> QidResult<()> {
+    result
+        .success()
+        .map(|_| ())
+        .map_err(|e| QidError::Internal {
+            message: format!("LDAP bind returned a non-success protocol result: {e}"),
+        })
+}
+
+fn ensure_ldap_search_success(result: ldap3::SearchResult) -> QidResult<ldap3::SearchResult> {
+    result
+        .success()
+        .map(|(entries, response)| ldap3::SearchResult(entries, response))
+        .map_err(|e| QidError::Internal {
+            message: format!("LDAP search returned a non-success protocol result: {e}"),
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_ldap_search(
     url: &str,
@@ -299,15 +317,16 @@ fn run_ldap_search(
             .set_no_tls_verify(tls_insecure);
         with_ldap_session(settings, &url, timeout_secs, async |ldap| {
             if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
-                ldap.simple_bind(dn, pw).await.map_err(|e| {
+                let result = ldap.simple_bind(dn, pw).await.map_err(|e| {
                     qid_core::error::QidError::Internal {
                         message: format!("LDAP bind failed: {e}"),
                     }
                 })?;
+                ensure_ldap_bind_success(result)?;
             }
 
-            let ldap3::SearchResult(entries, _res) = ldap
-                .search(
+            let ldap3::SearchResult(entries, _res) = ensure_ldap_search_success(
+                ldap.search(
                     search_base,
                     ldap3::Scope::Subtree,
                     search_filter,
@@ -316,7 +335,8 @@ fn run_ldap_search(
                 .await
                 .map_err(|e| qid_core::error::QidError::Internal {
                     message: format!("LDAP search failed: {e}"),
-                })?;
+                })?,
+            )?;
 
             let result: Vec<LdapDirectoryEntry> = entries
                 .into_iter()
@@ -764,11 +784,12 @@ pub fn run_ldap_search_with_options(
                         })?;
                 }
             } else if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
-                ldap.simple_bind(dn, pw).await.map_err(|e| {
+                let result = ldap.simple_bind(dn, pw).await.map_err(|e| {
                     qid_core::error::QidError::Internal {
                         message: format!("LDAP bind failed: {e}"),
                     }
                 })?;
+                ensure_ldap_bind_success(result)?;
             }
 
             let page_size = options.page_size.unwrap_or(0);
@@ -782,8 +803,8 @@ pub fn run_ldap_search_with_options(
                         cookie: cookie.clone(),
                     });
                 }
-                let ldap3::SearchResult(entries, res) = ldap
-                    .search(
+                let ldap3::SearchResult(entries, res) = ensure_ldap_search_success(
+                    ldap.search(
                         search_base,
                         ldap3::Scope::Subtree,
                         search_filter,
@@ -792,7 +813,8 @@ pub fn run_ldap_search_with_options(
                     .await
                     .map_err(|e| qid_core::error::QidError::Internal {
                         message: format!("LDAP search failed: {e}"),
-                    })?;
+                    })?,
+                )?;
                 if page_size > 0 {
                     let raw = res.ctrls.iter().find_map(|ctrl| {
                         if let Control(Some(ControlType::PagedResults), raw) = ctrl {
@@ -835,10 +857,11 @@ pub async fn ldap_sasl_scram_sha256_bind(
     username: &str,
     password: &str,
 ) -> Result<(), String> {
-    ldap.simple_bind(username, password)
+    let result = ldap
+        .simple_bind(username, password)
         .await
         .map_err(|e| format!("SCRAM fallback bind failed: {e}"))?;
-    Ok(())
+    ensure_ldap_bind_success(result).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

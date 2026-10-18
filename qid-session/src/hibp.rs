@@ -18,7 +18,7 @@ impl HibpClient {
     }
 
     pub async fn check_password(&self, password: &str) -> anyhow::Result<bool> {
-        let hash = hex::encode(Sha1::digest(password.as_bytes()));
+        let hash = qid_core::util::hex_encode_lower(&Sha1::digest(password.as_bytes()));
         let (prefix, suffix) = hash.split_at(5);
         let url = format!("{HIBP_API_URL}{prefix}");
         let response = self
@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_sha1_computation() {
-        let hash = hex::encode(Sha1::digest(b"password"));
+        let hash = qid_core::util::hex_encode_lower(&Sha1::digest(b"password"));
         assert_eq!(hash, "5baa61e4c9b93f3f0682250b6cf8331b7ee68fd8");
         let (prefix, _suffix) = hash.split_at(5);
         assert_eq!(prefix, "5baa6");

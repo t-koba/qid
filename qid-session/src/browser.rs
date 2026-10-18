@@ -100,7 +100,7 @@ impl<R: Repository> SessionManager<R> {
 fn generate_session_id() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    format!("sid_{}", hex::encode(bytes))
+    format!("sid_{}", qid_core::util::hex_encode_lower(&bytes))
 }
 
 pub fn session_is_active(session: &Session, now_epoch: u64) -> bool {

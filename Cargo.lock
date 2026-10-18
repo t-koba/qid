@@ -4394,7 +4394,6 @@ dependencies = [
  "base64 0.22.1",
  "caden",
  "ciborium",
- "hex",
  "http-body-util",
  "metrics",
  "qid-core",

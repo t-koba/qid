@@ -16,6 +16,21 @@ pub const CAPPORT_UNBIND_PATH: &str = "/api/v1/:realm/captive-portal/unbind";
 /// Fixed CAPPORT route for looking up a captive portal binding.
 pub const CAPPORT_LOOKUP_PATH: &str = "/api/v1/:realm/captive-portal/lookup";
 
+/// Required PEP capability effects for the edge-pep deployment profile.
+pub const EDGE_PEP_REQUIRED_CAPABILITY_EFFECTS: &[&str] = &[
+    "challenge",
+    "inject_headers",
+    "local_response",
+    "override_upstream",
+    "cache_bypass",
+    "mirror_upstreams",
+    "force_inspect",
+    "force_tunnel",
+    "rate_limit",
+    "rate_limit_profile",
+    "policy_tags",
+];
+
 /// Top-level configuration for qid.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -293,20 +308,7 @@ fn validate_edge_pep_profile(config: &QidConfig) -> QidResult<()> {
                 });
             }
             for registration in &realm.pep_registrations.registrations {
-                let required_capabilities = [
-                    "challenge",
-                    "inject_headers",
-                    "local_response",
-                    "override_upstream",
-                    "cache_bypass",
-                    "mirror_upstreams",
-                    "force_inspect",
-                    "force_tunnel",
-                    "rate_limit",
-                    "rate_limit_profile",
-                    "policy_tags",
-                ];
-                for capability in required_capabilities {
+                for &capability in EDGE_PEP_REQUIRED_CAPABILITY_EFFECTS {
                     if !registration
                         .capabilities
                         .iter()

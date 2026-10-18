@@ -1,19 +1,5 @@
 use super::*;
 
-const EDGE_PEP_REQUIRED_CAPABILITY_EFFECTS: &[&str] = &[
-    "challenge",
-    "inject_headers",
-    "local_response",
-    "override_upstream",
-    "cache_bypass",
-    "mirror_upstreams",
-    "force_inspect",
-    "force_tunnel",
-    "rate_limit",
-    "rate_limit_profile",
-    "policy_tags",
-];
-
 fn push_fapi_profile_checks(checks: &mut Vec<CheckItem>, config: &QidConfig, profile_name: &str) {
     checks.push(if config.server.http_message_signatures.enabled {
         check_ok(
@@ -192,7 +178,7 @@ pub(crate) fn check_profile_obligations(config: &QidConfig) -> Vec<CheckItem> {
                                 ),
                             )
                         });
-                        for capability in EDGE_PEP_REQUIRED_CAPABILITY_EFFECTS {
+                        for capability in qid_core::config::EDGE_PEP_REQUIRED_CAPABILITY_EFFECTS {
                             let capability_name = format!(
                                 "profile.edge-pep.capability.realm.{}.{}.{}",
                                 realm.id, registration.name, capability

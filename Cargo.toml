@@ -41,8 +41,9 @@ exclude = ["vendor/rustls"]
 # Inline #[cfg(test)] modules in mixed source files remain in source counts.
 # Headroom covers the configurable CAPPORT/QUIC wiring (server.paths.capport_details,
 # server.quic, qid-network listener split, per-realm gating).
+# Ratcheted down 12 lines after consolidating edge-PEP capability requirements.
 [workspace.metadata.budget]
-total = 104000
+total = 103988
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

@@ -13,12 +13,31 @@ use super::parse_jwt_unverified;
 /// `client_id` - the expected client identifier.
 /// `token_url` - the token endpoint URL (expected `aud` claim).
 /// `client_jwks` - the client's registered public JWK set.
+/// `replay_cache` - assertion replay cache (kept separate from DPoP proofs).
 pub fn extract_private_key_jwt(
     client_assertion: &str,
     client_id: &str,
     token_url: &str,
     client_jwks: &serde_json::Value,
     replay_cache: &DpopState,
+) -> QidResult<()> {
+    extract_private_key_jwt_at(
+        client_assertion,
+        client_id,
+        token_url,
+        client_jwks,
+        replay_cache,
+        now_seconds(),
+    )
+}
+
+pub(crate) fn extract_private_key_jwt_at(
+    client_assertion: &str,
+    client_id: &str,
+    token_url: &str,
+    client_jwks: &serde_json::Value,
+    replay_cache: &DpopState,
+    now: u64,
 ) -> QidResult<()> {
     let (header, payload) = parse_jwt_unverified(client_assertion)?;
     verify_client_assertion_signature(client_assertion, &header, client_jwks)?;
@@ -64,8 +83,7 @@ pub fn extract_private_key_jwt(
             message: "client_assertion missing or invalid exp claim".to_string(),
         })?;
 
-    let now = now_seconds();
-    if exp < now {
+    if exp <= now {
         return Err(QidError::BadRequest {
             message: "client_assertion has expired".to_string(),
         });
@@ -79,7 +97,14 @@ pub fn extract_private_key_jwt(
             message: "client_assertion missing jti claim".to_string(),
         })?;
 
-    replay_cache.record_jti(jti, now, now)?;
+    replay_cache.record_assertion_jti(
+        qid_core::cache::ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT,
+        client_id,
+        jti,
+        exp,
+        now,
+        "client_assertion jti already used (replay detected)",
+    )?;
 
     Ok(())
 }

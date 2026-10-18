@@ -11,6 +11,8 @@ mod private_key_jwt;
 mod validate;
 
 pub use private_key_jwt::extract_private_key_jwt;
+#[cfg(test)]
+pub(crate) use private_key_jwt::extract_private_key_jwt_at;
 pub use validate::{validate_dpop_proof, validate_dpop_proof_with_cache};
 
 /// Parse a JWT into its header and payload JSON values without cryptographic verification.

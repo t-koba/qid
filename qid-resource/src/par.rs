@@ -187,7 +187,7 @@ async fn authenticate_par_client<R: Repository>(
                     message: "unsupported PAR client_assertion_type".to_string(),
                 });
             }
-            verify_par_private_key_jwt(state, &client, assertion)?;
+            verify_par_private_key_jwt(state, &client, assertion, qid_core::util::now_seconds())?;
         }
         "tls_client_auth" | "self_signed_tls_client_auth" => {
             let presented_thumbprint = extract_par_mtls_x5t_s256(headers, state)?;
@@ -318,6 +318,7 @@ fn verify_par_private_key_jwt<R: Repository>(
     state: &SharedState<R>,
     client: &qid_core::models::Client,
     assertion: &str,
+    now: u64,
 ) -> qid_core::error::QidResult<()> {
     let (header, payload) = parse_jwt_unverified(assertion)?;
     verify_registered_jwk_signature(assertion, &header, &client.jwks, "client_assertion")?;
@@ -344,7 +345,6 @@ fn verify_par_private_key_jwt<R: Repository>(
             message: "PAR client_assertion audience mismatch".to_string(),
         });
     }
-    let now = qid_core::util::now_seconds();
     let exp = payload
         .get("exp")
         .and_then(|value| value.as_u64())
@@ -362,7 +362,14 @@ fn verify_par_private_key_jwt<R: Repository>(
         .ok_or_else(|| QidError::Unauthorized {
             message: "PAR client_assertion missing jti claim".to_string(),
         })?;
-    state.assertion_replay_cache.record_jti(jti, now, now)?;
+    state.assertion_replay_cache.record_assertion_jti(
+        qid_core::cache::ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT,
+        &client.client_id,
+        jti,
+        exp,
+        now,
+        "PAR client_assertion jti already used (replay detected)",
+    )?;
     Ok(())
 }
 

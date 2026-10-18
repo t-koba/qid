@@ -390,8 +390,13 @@ async fn advanced_subject_grant<R: Repository>(
                 inherited_amr = decoded.amr;
             }
             "urn:ietf:params:oauth:token-type:jwt" => {
-                let assertion =
-                    validate_jwt_bearer_assertion(state, client, &realm.issuer, subject_material)?;
+                let assertion = validate_jwt_bearer_assertion(
+                    state,
+                    client,
+                    &realm.issuer,
+                    subject_material,
+                    qid_core::util::now_seconds(),
+                )?;
                 subject_user = User {
                     id: oauth_jwt_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
                     realm_id: realm.id.clone(),
@@ -450,8 +455,13 @@ async fn advanced_subject_grant<R: Repository>(
                 message: "only jwt subject_token_type is supported for jwt bearer".to_string(),
             });
         }
-        let assertion =
-            validate_jwt_bearer_assertion(state, client, &realm.issuer, subject_material)?;
+        let assertion = validate_jwt_bearer_assertion(
+            state,
+            client,
+            &realm.issuer,
+            subject_material,
+            qid_core::util::now_seconds(),
+        )?;
         subject_user = User {
             id: oauth_jwt_subject_id(&realm.id, &assertion.issuer, &assertion.subject),
             realm_id: realm.id.clone(),
@@ -648,6 +658,7 @@ fn validate_jwt_bearer_assertion<R: Repository>(
     client: &Client,
     issuer: &str,
     assertion: &str,
+    now: u64,
 ) -> QidResult<ValidatedJwtBearerAssertion> {
     let (header, claims) = parse_jwt_unverified(assertion)?;
     verify_registered_jwk_signature(assertion, &header, &client.jwks, "jwt bearer assertion")?;
@@ -671,7 +682,6 @@ fn validate_jwt_bearer_assertion<R: Repository>(
             message: "jwt bearer assertion audience mismatch".to_string(),
         });
     }
-    let now = qid_core::util::now_seconds();
     let exp = claims
         .get("exp")
         .and_then(|value| value.as_u64())
@@ -700,7 +710,14 @@ fn validate_jwt_bearer_assertion<R: Repository>(
     let jti = json_string_claim(&claims, "jti").ok_or_else(|| QidError::Unauthorized {
         message: "jwt bearer assertion missing jti claim".to_string(),
     })?;
-    state.assertion_replay_cache.record_jti(&jti, now, now)?;
+    state.assertion_replay_cache.record_assertion_jti(
+        qid_core::cache::ASSERTION_SCOPE_OAUTH_JWT_BEARER,
+        &client.client_id,
+        &jti,
+        exp,
+        now,
+        "jwt bearer assertion jti already used (replay detected)",
+    )?;
     let acr = claims
         .get("acr")
         .and_then(|value| value.as_str())

@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use super::{
-    extract_dpop_jkt, extract_private_key_jwt, validate_dpop_proof, validate_dpop_proof_with_cache,
+    extract_dpop_jkt, extract_private_key_jwt_at as extract_private_key_jwt, validate_dpop_proof,
+    validate_dpop_proof_with_cache,
 };
 
 fn test_signer() -> LocalSigner {
@@ -604,6 +605,7 @@ fn valid_private_key_jwt_succeeds() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &DpopState::new(),
+        now,
     );
     assert!(
         result.is_ok(),
@@ -628,6 +630,7 @@ fn private_key_jwt_wrong_iss_fails() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &DpopState::new(),
+        now,
     );
     assert!(result.is_err(), "wrong iss should fail");
 }
@@ -648,6 +651,7 @@ fn private_key_jwt_wrong_sub_fails() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &DpopState::new(),
+        now,
     );
     assert!(result.is_err(), "wrong sub should fail");
 }
@@ -668,13 +672,15 @@ fn private_key_jwt_wrong_aud_fails() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &DpopState::new(),
+        now,
     );
     assert!(result.is_err(), "wrong aud should fail");
 }
 
 #[test]
 fn private_key_jwt_expired_fails() {
-    let old_exp = qid_core::util::now_seconds() - 10;
+    let now = qid_core::util::now_seconds();
+    let old_exp = now - 10;
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
@@ -688,6 +694,7 @@ fn private_key_jwt_expired_fails() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &DpopState::new(),
+        now,
     );
     assert!(result.is_err(), "expired assertion should fail");
 }
@@ -707,6 +714,7 @@ fn private_key_jwt_missing_iss_fails() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &DpopState::new(),
+        now,
     );
     assert!(result.is_err(), "missing iss should fail");
 }
@@ -744,6 +752,7 @@ fn private_key_jwt_tampered_payload_signature_fails() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &DpopState::new(),
+        now,
     );
     assert!(
         result.is_err(),
@@ -771,6 +780,7 @@ fn private_key_jwt_jti_replay_detected() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &state,
+        now,
     );
     assert!(r1.is_ok(), "first use with fresh jti should succeed");
 
@@ -780,6 +790,7 @@ fn private_key_jwt_jti_replay_detected() {
         "https://id.example.com/token",
         &private_key_jwt_jwks(),
         &state,
+        now,
     );
     assert!(
         r2.is_err(),
@@ -821,4 +832,146 @@ fn dpop_nonce_concurrent_consumption_detected() {
 
     assert!(r1.is_ok(), "first nonce consumption should succeed");
     assert!(r2.is_err(), "concurrent nonce replay must be rejected");
+}
+
+#[test]
+fn private_key_jwt_replay_lives_until_verified_exp() {
+    use qid_core::cache::{MemoryCache, SharedCache};
+    use std::sync::{Arc, Mutex};
+
+    struct TtlRecordingCache {
+        inner: MemoryCache,
+        ttls: Mutex<Vec<(String, u64)>>,
+    }
+
+    impl TtlRecordingCache {
+        fn new() -> Self {
+            Self {
+                inner: MemoryCache::new(),
+                ttls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SharedCache for TtlRecordingCache {
+        fn get(&self, key: &str) -> Option<Vec<u8>> {
+            self.inner.get(key)
+        }
+
+        fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) {
+            self.inner.set(key, value, ttl_seconds);
+        }
+
+        fn set_if_absent(
+            &self,
+            key: &str,
+            value: Vec<u8>,
+            ttl_seconds: u64,
+        ) -> qid_core::error::QidResult<bool> {
+            self.ttls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((key.to_string(), ttl_seconds));
+            self.inner.set_if_absent(key, value, ttl_seconds)
+        }
+
+        fn delete(&self, key: &str) {
+            self.inner.delete(key);
+        }
+
+        fn take(&self, key: &str) -> Option<Vec<u8>> {
+            self.inner.take(key)
+        }
+    }
+
+    const T: u64 = 1_700_000_000;
+    const EXP: u64 = T + 3600;
+    let payload = serde_json::json!({
+        "iss": "my-client",
+        "sub": "my-client",
+        "aud": "https://id.example.com/token",
+        "exp": EXP,
+        "iat": T,
+        "jti": "exp-scoped-jti-1",
+    });
+    let jwt = build_jwt(&private_key_jwt_header(), &payload);
+    let cache = Arc::new(TtlRecordingCache::new());
+    let state = DpopState::assertion_replay(cache.clone());
+
+    let first = extract_private_key_jwt(
+        &jwt,
+        "my-client",
+        "https://id.example.com/token",
+        &private_key_jwt_jwks(),
+        &state,
+        T,
+    );
+    assert!(first.is_ok(), "first use at T should succeed: {first:?}");
+    // Replay TTL must cover the verified exp, not the 60s DPoP window.
+    let ttls = cache.ttls.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(ttls.len(), 1, "expected one replay entry, got {ttls:?}");
+    assert_eq!(
+        ttls[0].1, 3600,
+        "replay TTL must equal exp-now, got {ttls:?}"
+    );
+    drop(ttls);
+
+    let replay = extract_private_key_jwt(
+        &jwt,
+        "my-client",
+        "https://id.example.com/token",
+        &private_key_jwt_jwks(),
+        &state,
+        T + 61,
+    );
+    assert!(replay.is_err(), "replay at T+61 must fail");
+    assert!(
+        replay.unwrap_err().message().contains("already used"),
+        "replay error must be protocol-appropriate"
+    );
+
+    let other_payload = serde_json::json!({
+        "iss": "my-client",
+        "sub": "my-client",
+        "aud": "https://id.example.com/token",
+        "exp": EXP,
+        "iat": T,
+        "jti": "exp-scoped-jti-2",
+    });
+    let other_jwt = build_jwt(&private_key_jwt_header(), &other_payload);
+    let other = extract_private_key_jwt(
+        &other_jwt,
+        "my-client",
+        "https://id.example.com/token",
+        &private_key_jwt_jwks(),
+        &state,
+        T + 61,
+    );
+    assert!(
+        other.is_ok(),
+        "distinct JTI at T+61 should succeed: {other:?}"
+    );
+}
+
+#[test]
+fn private_key_jwt_rejects_exp_at_now_boundary() {
+    const T: u64 = 1_700_000_000;
+    let payload = serde_json::json!({
+        "iss": "my-client",
+        "sub": "my-client",
+        "aud": "https://id.example.com/token",
+        "exp": T,
+        "iat": T,
+        "jti": "boundary-jti",
+    });
+    let jwt = build_jwt(&private_key_jwt_header(), &payload);
+    let result = extract_private_key_jwt(
+        &jwt,
+        "my-client",
+        "https://id.example.com/token",
+        &private_key_jwt_jwks(),
+        &DpopState::new(),
+        T,
+    );
+    assert!(result.is_err(), "exp == now must be rejected");
 }

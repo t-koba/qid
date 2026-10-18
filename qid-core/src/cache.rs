@@ -204,6 +204,29 @@ pub mod redis_cache {
 const JTI_CACHE_TTL_SECS: u64 = 60;
 const NONCE_CACHE_TTL_SECS: u64 = 300;
 
+/// Protocol scope for OAuth token-endpoint `private_key_jwt` assertion replay keys.
+pub const ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT: &str = "oauth-private-key-jwt";
+/// Protocol scope for OAuth JWT-bearer / token-exchange assertion replay keys.
+pub const ASSERTION_SCOPE_OAUTH_JWT_BEARER: &str = "oauth-jwt-bearer";
+/// Protocol scope for PAR `private_key_jwt` assertion replay keys.
+pub const ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT: &str = "par-private-key-jwt";
+
+/// Build an assertion replay key scoped by protocol and client identity.
+///
+/// Length-prefixing keeps the encoding unambiguous even when the protocol,
+/// client id, or JTI contain separator characters.
+fn assertion_replay_key(protocol: &str, client_id: &str, jti: &str) -> String {
+    format!(
+        "assertion:{}:{}:{}:{}:{}:{}",
+        protocol.len(),
+        protocol,
+        client_id.len(),
+        client_id,
+        jti.len(),
+        jti
+    )
+}
+
 /// Injected DPoP state for replay detection.
 pub struct DpopState {
     cache: Arc<dyn SharedCache>,
@@ -252,6 +275,30 @@ impl DpopState {
             });
         }
         Ok(())
+    }
+
+    /// Record a JWT client-assertion JTI until its verified `exp`.
+    ///
+    /// Callers must pass the verified assertion `exp` as `expires_at` and the
+    /// same injected `now` used for expiry validation. The `protocol` scope
+    /// keeps OAuth `private_key_jwt`, OAuth JWT-bearer/token-exchange, and PAR
+    /// `private_key_jwt` entries distinct from each other; the
+    /// `assertion:jti` namespace keeps all of them distinct from DPoP proofs.
+    pub fn record_assertion_jti(
+        &self,
+        protocol: &str,
+        client_id: &str,
+        jti: &str,
+        expires_at: u64,
+        now: u64,
+        replay_message: &str,
+    ) -> QidResult<()> {
+        self.record_replay_key(
+            &assertion_replay_key(protocol, client_id, jti),
+            expires_at,
+            now,
+            replay_message,
+        )
     }
 
     /// Record a replay key until its protocol expiry time.
@@ -386,7 +433,10 @@ impl SessionCache {
 
 #[cfg(test)]
 mod tests {
-    use super::{DpopState, MemoryCache};
+    use super::{
+        ASSERTION_SCOPE_OAUTH_JWT_BEARER, ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT,
+        ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT, DpopState, MemoryCache, assertion_replay_key,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -447,5 +497,51 @@ mod tests {
         let replay = second.record_jti("shared-jti", 1_000, 1_001).unwrap_err();
 
         assert!(replay.message().contains("already used"));
+    }
+
+    #[test]
+    fn assertion_replay_keys_are_scoped_and_unambiguous() {
+        // Same JTI/client under different protocols must not collide.
+        let oauth_pkj =
+            assertion_replay_key(ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT, "client-a", "jti-1");
+        let oauth_bearer =
+            assertion_replay_key(ASSERTION_SCOPE_OAUTH_JWT_BEARER, "client-a", "jti-1");
+        let par_pkj =
+            assertion_replay_key(ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT, "client-a", "jti-1");
+        assert_ne!(oauth_pkj, oauth_bearer);
+        assert_ne!(oauth_pkj, par_pkj);
+        assert_ne!(oauth_bearer, par_pkj);
+
+        // Same JTI under different clients must not collide.
+        assert_ne!(
+            assertion_replay_key(ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT, "client-a", "jti-1"),
+            assertion_replay_key(ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT, "client-b", "jti-1"),
+        );
+
+        // Length-prefixing keeps separators unambiguous.
+        assert_ne!(
+            assertion_replay_key("a:b", "c", "d"),
+            assertion_replay_key("a", "b:c", "d"),
+        );
+        assert_ne!(
+            assertion_replay_key("proto", "client:x", "jti-1"),
+            assertion_replay_key("proto", "client", "x:jti-1"),
+        );
+
+        // Assertion keys must not collide with a bare DPoP JTI entry.
+        let cache = Arc::new(MemoryCache::new());
+        let dpop = DpopState::with_cache(cache.clone());
+        let assertions = DpopState::assertion_replay(cache);
+        dpop.record_jti("jti-1", 1_000, 1_000).unwrap();
+        assertions
+            .record_assertion_jti(
+                ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT,
+                "client-a",
+                "jti-1",
+                1_000 + 3600,
+                1_000,
+                "client_assertion jti already used (replay detected)",
+            )
+            .unwrap();
     }
 }

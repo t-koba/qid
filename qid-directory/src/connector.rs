@@ -376,7 +376,7 @@ fn run_ldap_search(
                     }
                     map_ldap_entry(&se.dn, &attrs, mapping, true)
                 })
-                .collect();
+                .collect::<QidResult<Vec<_>>>()?;
 
             Ok(result)
         })
@@ -739,41 +739,57 @@ pub fn evaluate_enabled_expression(_expr: &str, _user_account_control: Option<&s
 }
 
 /// Map raw LDAP attribute values into a canonical `LdapDirectoryEntry`.
+///
+/// LDAP attribute descriptions are case-insensitive; ambiguous case-variant
+/// duplicates are rejected rather than selecting a value arbitrarily.
 pub fn map_ldap_entry(
     dn: &str,
     attrs: &std::collections::BTreeMap<String, Vec<String>>,
     mapping: &DirectoryAttributeMapping,
     default_enabled: bool,
-) -> LdapDirectoryEntry {
+) -> QidResult<LdapDirectoryEntry> {
     let uid_attr = mapping.uid.as_deref().unwrap_or("sAMAccountName");
-    let uid = get_first_attr(attrs, uid_attr).unwrap_or_else(|| dn.to_string());
+    let uid = get_first_attr(attrs, uid_attr)?.unwrap_or_else(|| dn.to_string());
 
     let enabled = if let Some(enabled_expr) = &mapping.enabled {
-        let uac = get_first_attr(attrs, "userAccountControl");
+        let uac = get_first_attr(attrs, "userAccountControl")?;
         evaluate_enabled_expression(enabled_expr, uac.as_deref())
     } else {
         default_enabled
     };
 
-    LdapDirectoryEntry {
+    Ok(LdapDirectoryEntry {
         dn: dn.to_string(),
         uid,
-        mail: get_first_attr(attrs, mapping.mail.as_deref().unwrap_or("mail")),
+        mail: get_first_attr(attrs, mapping.mail.as_deref().unwrap_or("mail"))?,
         display_name: get_first_attr(
             attrs,
             mapping.display_name.as_deref().unwrap_or("displayName"),
-        ),
-        department: get_first_attr(attrs, mapping.department.as_deref().unwrap_or("department")),
-        manager_dn: get_first_attr(attrs, mapping.manager_dn.as_deref().unwrap_or("manager")),
+        )?,
+        department: get_first_attr(attrs, mapping.department.as_deref().unwrap_or("department"))?,
+        manager_dn: get_first_attr(attrs, mapping.manager_dn.as_deref().unwrap_or("manager"))?,
         enabled,
-    }
+    })
 }
 
 fn get_first_attr(
     attrs: &std::collections::BTreeMap<String, Vec<String>>,
     key: &str,
-) -> Option<String> {
-    attrs.get(key).and_then(|values| values.first()).cloned()
+) -> QidResult<Option<String>> {
+    let mut matches = attrs
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(key));
+    let Some((_, values)) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(qid_core::error::QidError::Internal {
+            message: format!(
+                "LDAP entry contains duplicate equivalent attribute descriptions for '{key}'"
+            ),
+        });
+    }
+    Ok(values.first().cloned())
 }
 
 pub fn run_ldap_search_with_options(
@@ -856,7 +872,7 @@ pub fn run_ldap_search_with_options(
                     for (k, v) in se.attrs {
                         attrs.insert(k, v);
                     }
-                    all_entries.push(map_ldap_entry(&se.dn, &attrs, mapping, true));
+                    all_entries.push(map_ldap_entry(&se.dn, &attrs, mapping, true)?);
                 }
                 if page_size == 0 || cookie.is_empty() {
                     break;
@@ -936,7 +952,8 @@ mod tests {
             &attrs,
             &mapping,
             true,
-        );
+        )
+        .unwrap();
 
         assert_eq!(entry.uid, "alice");
         assert_eq!(entry.mail, Some("alice@example.com".to_string()));
@@ -947,6 +964,59 @@ mod tests {
             Some("CN=Bob,OU=Users,DC=example,DC=com".to_string())
         );
         assert!(entry.enabled);
+    }
+
+    #[test]
+    fn maps_ldap_attribute_descriptions_case_insensitively() {
+        let attrs = std::collections::BTreeMap::from([
+            ("SAMACCOUNTNAME".to_string(), vec!["alice".to_string()]),
+            ("MAIL".to_string(), vec!["alice@example.com".to_string()]),
+            ("DISPLAYNAME".to_string(), vec!["Alice Example".to_string()]),
+            ("DEPARTMENT".to_string(), vec!["Engineering".to_string()]),
+            (
+                "MANAGER".to_string(),
+                vec!["CN=Bob,OU=Users,DC=example,DC=com".to_string()],
+            ),
+            ("USERACCOUNTCONTROL".to_string(), vec!["514".to_string()]),
+        ]);
+
+        let entry = map_ldap_entry(
+            "CN=Alice,OU=Users,DC=example,DC=com",
+            &attrs,
+            &DirectoryAttributeMapping::default(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(entry.uid, "alice");
+        assert_eq!(entry.mail.as_deref(), Some("alice@example.com"));
+        assert_eq!(entry.display_name.as_deref(), Some("Alice Example"));
+        assert_eq!(entry.department.as_deref(), Some("Engineering"));
+        assert_eq!(
+            entry.manager_dn.as_deref(),
+            Some("CN=Bob,OU=Users,DC=example,DC=com")
+        );
+        assert!(!entry.enabled);
+    }
+
+    #[test]
+    fn rejects_duplicate_case_insensitive_ldap_attribute_descriptions() {
+        let attrs = std::collections::BTreeMap::from([
+            ("sAMAccountName".to_string(), vec!["alice".to_string()]),
+            ("SAMACCOUNTNAME".to_string(), vec!["mallory".to_string()]),
+        ]);
+        let error = map_ldap_entry(
+            "CN=Alice,OU=Users,DC=example,DC=com",
+            &attrs,
+            &DirectoryAttributeMapping::default(),
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("duplicate equivalent attribute descriptions")
+        );
     }
 
     #[test]
@@ -968,7 +1038,8 @@ mod tests {
             &attrs,
             &mapping,
             true,
-        );
+        )
+        .unwrap();
 
         assert!(!entry.enabled);
         assert_eq!(entry.uid, "disabled-user");
@@ -984,7 +1055,8 @@ mod tests {
             &attrs,
             &mapping,
             true,
-        );
+        )
+        .unwrap();
 
         assert!(entry.enabled);
     }
@@ -1004,7 +1076,8 @@ mod tests {
             ..Default::default()
         };
 
-        let entry = map_ldap_entry("CN=Bob,OU=Users,DC=example,DC=com", &attrs, &mapping, true);
+        let entry =
+            map_ldap_entry("CN=Bob,OU=Users,DC=example,DC=com", &attrs, &mapping, true).unwrap();
 
         assert_eq!(entry.uid, "bob");
         assert_eq!(entry.mail, Some("bob@example.com".to_string()));

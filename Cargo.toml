@@ -41,9 +41,9 @@ exclude = ["vendor/rustls"]
 # Inline #[cfg(test)] modules in mixed source files remain in source counts.
 # Headroom covers the configurable CAPPORT/QUIC wiring (server.paths.capport_details,
 # server.quic, qid-network listener split, per-realm gating).
-# Ratchet: 12 edge-PEP, 41 OAuth, and 46 IGA tenant-context lines.
+# Ratchet: 12 edge-PEP, 41 OAuth, and 64 IGA tenant-context lines.
 [workspace.metadata.budget]
-total = 103901
+total = 103883
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

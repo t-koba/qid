@@ -288,14 +288,11 @@ pub(super) async fn validate_approvals<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Json(req): Json<ApprovalValidationRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(response) => return response,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (admin, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let request_id = req
         .request_id
         .as_deref()
@@ -546,14 +543,11 @@ pub(super) async fn list_access_grants<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<AccessGrantQuery>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(query.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, query.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let subject = query
         .subject
         .as_deref()
@@ -584,14 +578,11 @@ pub(super) async fn revoke_access_grant<R: Repository>(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<AccessGrantRevokeRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let existing = match state.repo.list_iga_access_grants(&tenant_id, None).await {
         Ok(grants) => grants.into_iter().find(|grant| grant.id == id),
         Err(error) => return storage_error_response("list_iga_access_grants", error),
@@ -626,14 +617,11 @@ pub(super) async fn list_jit_privileges<R: Repository>(
     headers: HeaderMap,
     Query(query): Query<JitPrivilegeQuery>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(query.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, query.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let subject = query
         .subject
         .as_deref()
@@ -672,14 +660,11 @@ pub(super) async fn issue_jit_privilege<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<JitPrivilegeRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (admin, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let stored_request = match state
         .repo
         .get_iga_access_request(&tenant_id, &req.request_id)
@@ -793,14 +778,11 @@ pub(super) async fn revoke_jit_privilege<R: Repository>(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<JitPrivilegeRevokeRequest>,
 ) -> impl IntoResponse {
-    let admin = match require_admin_session(&headers, &state).await {
-        Ok(admin) => admin,
-        Err(e) => return e,
-    };
-    let tenant_id = match resolve_admin_tenant_id(req.tenant_id.as_deref(), &state, &admin) {
-        Ok(tenant_id) => tenant_id,
-        Err(e) => return *e,
-    };
+    let (_, tenant_id) =
+        match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let existing = match state
         .repo
         .list_iga_jit_privilege_grants(&tenant_id, None)

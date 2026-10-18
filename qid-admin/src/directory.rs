@@ -1,21 +1,25 @@
 use super::*;
 
+macro_rules! authorize_admin_or_return {
+    ($authorization:expr) => {
+        match ($authorization).await {
+            Ok(context) => context,
+            Err(error) => return qid_http::error_response(error),
+        }
+    };
+}
+
 pub(crate) async fn list_realms<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state.repo.list_realms().await {
         Ok(realms) => {
             let items: Vec<serde_json::Value> = realms
@@ -40,18 +44,13 @@ pub(crate) async fn create_realm<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CreateRealmRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
         &state.config.admin.security,
         None,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let realm_id = RealmId(req.id.clone());
     match state
         .repo
@@ -94,18 +93,13 @@ pub(crate) async fn get_realm<R: Repository>(
     headers: HeaderMap,
     Path(realm): Path<String>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state.repo.get_realm_issuer(&RealmId(realm.clone())).await {
         Ok(Some(issuer)) => {
             let display_name = state
@@ -138,18 +132,13 @@ pub(crate) async fn delete_realm<R: Repository>(
     headers: HeaderMap,
     Path(realm): Path<String>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::RealmAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state.repo.delete_realm(&RealmId(realm.clone())).await {
         Ok(()) => {
             if let Err(e) = append_admin_audit(
@@ -194,18 +183,13 @@ pub(crate) async fn list_users<R: Repository>(
     Path(realm): Path<String>,
     Query(query): Query<DirectoryListQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let (offset, limit) = directory_page(&query);
     match state
         .repo
@@ -244,18 +228,13 @@ pub(crate) async fn create_user<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CreateUserRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let user_id = req.id.unwrap_or_else(|| Ulid::new().to_string());
     let user = User {
         id: user_id.clone(),
@@ -305,18 +284,13 @@ pub(crate) async fn get_user<R: Repository>(
     headers: HeaderMap,
     Path((realm, user_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     match state.repo.get_user_by_id(&user_id).await {
         Ok(Some(u)) => {
             if u.realm_id != realm {
@@ -358,18 +332,13 @@ pub(crate) async fn update_user<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<UpdateUserRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let existing = match state.repo.get_user_by_id(&user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
@@ -444,18 +413,13 @@ pub(crate) async fn delete_user<R: Repository>(
     Path((realm, user_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::DirectoryAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let existing = match state.repo.get_user_by_id(&user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
@@ -503,18 +467,13 @@ pub(crate) async fn list_clients<R: Repository>(
     Path(realm): Path<String>,
     Query(query): Query<DirectoryListQuery>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin(
         &state,
         &headers,
         AdminPermission::TenantAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let (offset, limit) = directory_page(&query);
     match state
         .repo
@@ -556,18 +515,13 @@ pub(crate) async fn create_client<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CreateClientRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::AppAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let token_endpoint_auth_method = match req.client_type {
         ClientType::Public => "none".to_string(),
         ClientType::Confidential => qid_core::models::default_token_endpoint_auth_method(),
@@ -657,18 +611,13 @@ pub(crate) async fn delete_client<R: Repository>(
     Path((realm, client_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = match authorize_admin_mutation(
+    let (_admin, _elevation) = authorize_admin_or_return!(authorize_admin_mutation(
         &state,
         &headers,
         AdminPermission::AppAdmin,
         &state.config.admin.security,
         Some(&realm),
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return qid_http::error_response(e),
-    };
+    ));
     let client = match state
         .repo
         .get_client_by_client_id(&RealmId(realm.clone()), &client_id)

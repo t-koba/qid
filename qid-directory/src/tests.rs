@@ -93,10 +93,38 @@ async fn hr_import_creates_moves_and_deprovisions_scim_user() {
         user_employment_state(&deprovisioned),
         Some(EmploymentState::Inactive)
     );
+    assert!(deprovisioned.deprovisioned_at.is_some());
+    assert_eq!(
+        deprovisioned.enterprise_json["deprovisioned_at"],
+        serde_json::Value::from(deprovisioned.deprovisioned_at.unwrap())
+    );
+
+    // A later HR reactivation starts a new lifecycle and clears the old
+    // authoritative timestamp without depending on mover attribute semantics.
+    let results = import_hr_records(
+        &state,
+        "corp",
+        vec![HrRecord {
+            external_id: "hr-1".to_string(),
+            user_name: "alice@example.com".to_string(),
+            email: Some("alice@example.com".to_string()),
+            display_name: Some("Alice Example".to_string()),
+            department: Some("Research".to_string()),
+            manager_external_id: Some("hr-manager-2".to_string()),
+            event: LifecycleEvent::Mover,
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(results[0].action, HrImportAction::Updated);
+    let reactivated = state.repo.get_scim_user(&user_id).await.unwrap().unwrap();
+    assert!(reactivated.active);
+    assert_eq!(reactivated.deprovisioned_at, None);
     assert!(
-        deprovisioned.enterprise_json["deprovisioned_at"]
-            .as_u64()
-            .is_some()
+        reactivated
+            .enterprise_json
+            .get("deprovisioned_at")
+            .is_none()
     );
 }
 
@@ -112,6 +140,7 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
         emails_json: serde_json::json!([]),
         enterprise_json: serde_json::json!({}),
         directory_provider_id: None,
+        deprovisioned_at: None,
         active: false,
     };
     mark_deprovisioned(&mut met_user, 1_050);
@@ -127,6 +156,7 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({}),
             directory_provider_id: None,
+            deprovisioned_at: None,
             active: true,
         })
         .await
@@ -142,6 +172,7 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({}),
             directory_provider_id: None,
+            deprovisioned_at: None,
             active: true,
         })
         .await
@@ -264,6 +295,7 @@ async fn ldap_sync_creates_updates_deactivates_missing_and_tracks_unchanged() {
     assert!(alice.active);
     assert!(!bob.active);
     assert_eq!(user_employment_state(bob), Some(EmploymentState::Inactive));
+    assert_eq!(bob.deprovisioned_at, Some(20));
     assert_eq!(bob.enterprise_json["deprovisioned_at"], 20);
     let alice_id = alice.id.clone();
 
@@ -305,6 +337,7 @@ async fn ldap_sync_skips_break_glass_accounts_when_deactivating_missing_users() 
             "ldap_dn": "uid=local-admin,ou=people,dc=example,dc=com"
         }),
         directory_provider_id: Some("provider-a".to_string()),
+        deprovisioned_at: None,
         active: true,
     };
     mark_break_glass(&mut user);
@@ -479,6 +512,7 @@ async fn nested_group_expansion_flattens_users_and_stops_cycles() {
                 emails_json: serde_json::json!([]),
                 enterprise_json: serde_json::json!({}),
                 directory_provider_id: None,
+                deprovisioned_at: None,
                 active: true,
             })
             .await
@@ -548,6 +582,7 @@ async fn dynamic_group_sync_replaces_user_members_and_preserves_nested_groups() 
                 "manager": { "externalId": "hr-manager" }
             }),
             directory_provider_id: None,
+            deprovisioned_at: None,
             active: true,
         })
         .await
@@ -563,6 +598,7 @@ async fn dynamic_group_sync_replaces_user_members_and_preserves_nested_groups() 
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({ "department": "Sales" }),
             directory_provider_id: None,
+            deprovisioned_at: None,
             active: true,
         })
         .await
@@ -645,6 +681,7 @@ async fn dynamic_group_any_mode_requires_at_least_one_condition() {
             "employment_state": "active"
         }),
         directory_provider_id: None,
+        deprovisioned_at: None,
         active: true,
     };
     assert!(!dynamic_group_rule_matches(
@@ -865,6 +902,7 @@ async fn ldap_sync_ignores_unrelated_ownerless_fake_marker() {
             "ldap_dn": "uid=ghost,ou=people,dc=example,dc=com"
         }),
         directory_provider_id: None,
+        deprovisioned_at: None,
         active: true,
     };
     let forged_before = forged.clone();
@@ -932,6 +970,7 @@ async fn ldap_sync_rejects_colliding_unowned_dn_before_any_write() {
                 "ldap_dn": "uid=clash,ou=people,dc=example,dc=com"
             }),
             directory_provider_id: None,
+            deprovisioned_at: None,
             active: true,
         })
         .await
@@ -950,6 +989,7 @@ async fn ldap_sync_rejects_colliding_unowned_dn_before_any_write() {
                 "ldap_dn": "uid=owned,ou=people,dc=example,dc=com"
             }),
             directory_provider_id: Some("provider-a".to_string()),
+            deprovisioned_at: None,
             active: true,
         })
         .await
@@ -1032,6 +1072,7 @@ async fn ldap_sync_rejects_duplicate_owned_keys() {
                     "ldap_dn": "uid=dup,ou=people,dc=example,dc=com"
                 }),
                 directory_provider_id: Some("provider-a".to_string()),
+                deprovisioned_at: None,
                 active: true,
             })
             .await
@@ -1082,6 +1123,212 @@ async fn ldap_sync_rejects_blank_provider_id() {
         .await
         .unwrap();
     assert!(users.is_empty());
+}
+
+#[tokio::test]
+async fn ldap_disabled_snapshot_stamps_preserves_clears_and_restamps() {
+    let state = setup().await;
+    let dn = "uid=carol,ou=people,dc=example,dc=com".to_string();
+    let enabled = LdapDirectoryEntry {
+        dn: dn.clone(),
+        uid: "carol@example.com".to_string(),
+        mail: None,
+        display_name: None,
+        department: None,
+        manager_dn: None,
+        enabled: true,
+    };
+    sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        std::slice::from_ref(&enabled),
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 1_000,
+        },
+    )
+    .await
+    .unwrap();
+    let user = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|user| user.external_id.as_deref() == Some(dn.as_str()))
+        .unwrap();
+    assert!(user.active);
+    assert_eq!(user.deprovisioned_at, None);
+    assert!(user.enterprise_json.get("deprovisioned_at").is_none());
+
+    let disabled = LdapDirectoryEntry {
+        enabled: false,
+        ..enabled.clone()
+    };
+    sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        std::slice::from_ref(&disabled),
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 1_050,
+        },
+    )
+    .await
+    .unwrap();
+    let user = state.repo.get_scim_user(&user.id).await.unwrap().unwrap();
+    assert!(!user.active);
+    assert_eq!(user.deprovisioned_at, Some(1_050));
+    assert_eq!(user.enterprise_json["deprovisioned_at"], 1_050);
+    assert_eq!(
+        user_employment_state(&user),
+        Some(EmploymentState::Inactive)
+    );
+    let findings = audit_deprovision_sla(
+        &state,
+        "corp",
+        &[DeprovisionEvent {
+            external_id: dn.clone(),
+            occurred_at: 1_000,
+        }],
+        100,
+        2_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(findings[0].status, DeprovisionSlaStatus::Met);
+    assert_eq!(findings[0].deprovisioned_at, Some(1_050));
+
+    // Repeated disabled snapshots preserve the first timestamp.
+    sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        std::slice::from_ref(&disabled),
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 1_080,
+        },
+    )
+    .await
+    .unwrap();
+    let user = state.repo.get_scim_user(&user.id).await.unwrap().unwrap();
+    assert_eq!(user.deprovisioned_at, Some(1_050));
+    assert_eq!(user.enterprise_json["deprovisioned_at"], 1_050);
+
+    // Reactivation clears the authoritative timestamp and stale marker.
+    sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        std::slice::from_ref(&enabled),
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 1_100,
+        },
+    )
+    .await
+    .unwrap();
+    let user = state.repo.get_scim_user(&user.id).await.unwrap().unwrap();
+    assert!(user.active);
+    assert_eq!(user.deprovisioned_at, None);
+    assert!(user.enterprise_json.get("deprovisioned_at").is_none());
+
+    // A later disable gets a fresh timestamp.
+    sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[disabled],
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 1_200,
+        },
+    )
+    .await
+    .unwrap();
+    let user = state.repo.get_scim_user(&user.id).await.unwrap().unwrap();
+    assert!(!user.active);
+    assert_eq!(user.deprovisioned_at, Some(1_200));
+    assert_eq!(user.enterprise_json["deprovisioned_at"], 1_200);
+}
+
+#[tokio::test]
+async fn ldap_first_seen_disabled_user_gets_transition_timestamp() {
+    let state = setup().await;
+    let dn = "uid=first-disabled,ou=people,dc=example,dc=com".to_string();
+    sync_ldap_entries(
+        &state,
+        "corp",
+        "provider-a",
+        &[LdapDirectoryEntry {
+            dn: dn.clone(),
+            uid: "first-disabled@example.com".to_string(),
+            mail: None,
+            display_name: None,
+            department: None,
+            manager_dn: None,
+            enabled: false,
+        }],
+        LdapSyncOptions {
+            deactivate_missing: false,
+            synced_at: 1_050,
+        },
+    )
+    .await
+    .unwrap();
+    let user = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|user| user.external_id.as_deref() == Some(dn.as_str()))
+        .unwrap();
+    assert!(!user.active);
+    assert_eq!(user.deprovisioned_at, Some(1_050));
+    assert_eq!(user.enterprise_json["deprovisioned_at"], 1_050);
+    assert_eq!(
+        user_employment_state(&user),
+        Some(EmploymentState::Inactive)
+    );
+}
+
+#[tokio::test]
+async fn audit_deprovision_sla_ignores_forged_enterprise_marker() {
+    let state = setup().await;
+    state
+        .repo
+        .create_scim_user(&ScimUser {
+            id: "user-forged".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: Some("hr-forged".to_string()),
+            user_name: "forged@example.com".to_string(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({ "deprovisioned_at": 1_050 }),
+            directory_provider_id: None,
+            deprovisioned_at: None,
+            active: false,
+        })
+        .await
+        .unwrap();
+    let findings = audit_deprovision_sla(
+        &state,
+        "corp",
+        &[DeprovisionEvent {
+            external_id: "hr-forged".to_string(),
+            occurred_at: 1_000,
+        }],
+        100,
+        2_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(findings[0].status, DeprovisionSlaStatus::Violated);
+    assert_eq!(findings[0].deprovisioned_at, None);
 }
 
 mod directory_http_truthfulness {

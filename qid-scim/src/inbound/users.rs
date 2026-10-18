@@ -186,6 +186,11 @@ pub(crate) async fn create_user_record<R: Repository>(
     state: &SharedState<R>,
     req: CreateUser,
 ) -> QidResult<ScimUser> {
+    let mut enterprise_json = req.enterprise.unwrap_or_else(|| serde_json::json!({}));
+    // The authoritative timestamp is server-owned: strip any client-supplied
+    // marker so storage never persists a forged value. SCIM create never
+    // stamps a deprovision.
+    crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
     let user = ScimUser {
         id: ulid::Ulid::new().to_string(),
         realm_id: req.realm,
@@ -193,9 +198,10 @@ pub(crate) async fn create_user_record<R: Repository>(
         user_name: req.user_name,
         name_json: req.name.unwrap_or_else(|| serde_json::json!({})),
         emails_json: req.emails.unwrap_or_else(|| serde_json::json!([])),
-        enterprise_json: req.enterprise.unwrap_or_else(|| serde_json::json!({})),
+        enterprise_json,
         // Server-owned: SCIM clients can neither set nor clear ownership.
         directory_provider_id: None,
+        deprovisioned_at: None,
         active: req.active.unwrap_or(true),
     };
     state.repo.create_scim_user(&user).await?;
@@ -299,6 +305,11 @@ pub(crate) async fn replace_user_record<R: Repository>(
     } else {
         req.external_id.or(existing.external_id)
     };
+    let mut enterprise_json = req.enterprise.unwrap_or(existing.enterprise_json);
+    // Preserve the server-owned lifecycle timestamp across PUT: SCIM can
+    // neither forge nor clear it, and the stored enterprise marker is
+    // stripped so forged values never persist.
+    crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
     let user = ScimUser {
         id: id.to_string(),
         realm_id: req.realm,
@@ -306,10 +317,11 @@ pub(crate) async fn replace_user_record<R: Repository>(
         user_name: req.user_name,
         name_json: req.name.unwrap_or(existing.name_json),
         emails_json: req.emails.unwrap_or(existing.emails_json),
-        enterprise_json: req.enterprise.unwrap_or(existing.enterprise_json),
+        enterprise_json,
         // Server-owned: PUT never accepts ownership; preserve the stored value
         // so enterprise_json from the client cannot forge or clear it.
         directory_provider_id: existing.directory_provider_id,
+        deprovisioned_at: existing.deprovisioned_at,
         active: req.active.unwrap_or(existing.active),
     };
     state.repo.update_scim_user(&user).await?;
@@ -376,9 +388,14 @@ pub(crate) async fn patch_user_record<R: Repository>(
         .ok_or_else(|| QidError::NotFound {
             resource: "scim user".to_string(),
         })?;
+    let trusted_deprovisioned_at = user.deprovisioned_at;
     for op in req.operations {
         apply_user_patch(&mut user, op)?;
     }
+    // SCIM PATCH can neither forge, change, nor remove the authoritative
+    // timestamp; unrelated enterprise attributes still apply.
+    user.deprovisioned_at = trusted_deprovisioned_at;
+    crate::response::strip_stored_enterprise_marker(&mut user.enterprise_json);
     state.repo.update_scim_user(&user).await?;
     GLOBAL_EVENT_BUS.publish(Event {
         kind: EventKind::ScimProvisioned,

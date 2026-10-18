@@ -224,6 +224,7 @@ mod tests {
                 "costCenter": "RND"
             }),
             directory_provider_id: None,
+            deprovisioned_at: None,
             active: true,
         }
     }

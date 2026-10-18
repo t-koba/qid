@@ -1359,6 +1359,7 @@ async fn test_scim_user_enterprise_extension_crud() {
             "employeeNumber": "E42"
         }),
         directory_provider_id: Some("ad-main".to_string()),
+        deprovisioned_at: None,
         active: true,
     };
     repo.create_scim_user(&user)
@@ -1373,9 +1374,11 @@ async fn test_scim_user_enterprise_extension_crud() {
     assert_eq!(fetched.enterprise_json["department"], "Engineering");
     assert_eq!(fetched.directory_provider_id, Some("ad-main".to_string()));
 
+    assert_eq!(fetched.deprovisioned_at, None);
     let mut updated = fetched;
     updated.enterprise_json = serde_json::json!({"department":"Platform"});
     updated.directory_provider_id = Some("ad-replica".to_string());
+    updated.deprovisioned_at = Some(1_050);
     repo.update_scim_user(&updated)
         .await
         .expect("update scim user failed");
@@ -1385,6 +1388,7 @@ async fn test_scim_user_enterprise_extension_crud() {
         fetched.directory_provider_id,
         Some("ad-replica".to_string())
     );
+    assert_eq!(fetched.deprovisioned_at, Some(1_050));
 }
 
 #[tokio::test]
@@ -1410,6 +1414,7 @@ async fn sql_scim_pages_and_counts_are_stable() {
             emails_json: serde_json::json!([]),
             enterprise_json: serde_json::json!({}),
             directory_provider_id: None,
+            deprovisioned_at: None,
             active: true,
         })
         .await
@@ -2543,4 +2548,47 @@ async fn sql_refresh_rotation_revoked_stays_revoked() {
         result.is_err(),
         "no successful consumption after revocation"
     );
+}
+
+#[tokio::test]
+async fn sql_scim_deprovisioned_at_persists_and_defaults_to_none() {
+    let repo = sql_repo().await;
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"realm-scim-deprov".into(),
+        "https://id.example.com/realms/scim-deprov",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_scim_user(&ScimUser {
+        id: "scim-user-deprov".to_string(),
+        realm_id: "realm-scim-deprov".to_string(),
+        external_id: Some("hr-deprov".to_string()),
+        user_name: "deprov@example.com".to_string(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({"department": "Engineering"}),
+        directory_provider_id: None,
+        deprovisioned_at: Some(1_050),
+        active: false,
+    })
+    .await
+    .unwrap();
+    let fetched = repo
+        .get_scim_user("scim-user-deprov")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched.deprovisioned_at, Some(1_050));
+
+    let mut cleared = fetched;
+    cleared.deprovisioned_at = None;
+    repo.update_scim_user(&cleared).await.unwrap();
+    let fetched = repo
+        .get_scim_user("scim-user-deprov")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched.deprovisioned_at, None);
 }

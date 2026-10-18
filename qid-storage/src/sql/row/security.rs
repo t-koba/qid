@@ -236,6 +236,7 @@ pub(in crate::sql) struct ScimUserRow {
     emails_json: String,
     enterprise_json: String,
     directory_provider_id: Option<String>,
+    deprovisioned_at: Option<i64>,
     active: i64,
 }
 
@@ -251,6 +252,12 @@ impl From<ScimUserRow> for ScimUser {
             enterprise_json: serde_json::from_str(&row.enterprise_json)
                 .unwrap_or_else(|_| serde_json::json!({})),
             directory_provider_id: row.directory_provider_id,
+            // Legacy rows predate the server-owned column and read as `None`;
+            // legacy `enterprise_json.deprovisioned_at` markers are not trusted
+            // and are never backfilled here.
+            deprovisioned_at: row
+                .deprovisioned_at
+                .and_then(|value| u64::try_from(value).ok()),
             active: row.active != 0,
         }
     }

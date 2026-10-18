@@ -141,6 +141,7 @@ fn user_to_scim_user(user: &User) -> ScimUser {
         }]),
         enterprise_json: serde_json::json!({}),
         directory_provider_id: None,
+        deprovisioned_at: None,
         active: true,
     }
 }

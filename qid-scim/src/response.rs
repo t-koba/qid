@@ -140,8 +140,42 @@ pub(crate) fn precondition_failed(detail: &str) -> axum::response::Response {
         .into_response()
 }
 
+/// Sanitized enterprise projection for SCIM responses and ETags.
+///
+/// `enterprise_json` is SCIM client-writable and must never act as authority
+/// for the deprovision timestamp. Strip any client-supplied or legacy
+/// `deprovisioned_at` marker, then project the server-owned
+/// `ScimUser.deprovisioned_at` when present. When the authority is `None`,
+/// no forged or legacy value is exposed.
+pub(crate) fn projected_enterprise_json(user: &ScimUser) -> serde_json::Value {
+    let mut enterprise = user.enterprise_json.clone();
+    if !enterprise.is_object() {
+        enterprise = serde_json::json!({});
+    }
+    if let Some(object) = enterprise.as_object_mut() {
+        object.remove("deprovisioned_at");
+        if let Some(deprovisioned_at) = user.deprovisioned_at {
+            object.insert(
+                "deprovisioned_at".to_string(),
+                serde_json::Value::Number(deprovisioned_at.into()),
+            );
+        }
+    }
+    enterprise
+}
+
+/// Remove a client-supplied or legacy `deprovisioned_at` marker from stored
+/// `enterprise_json`. The authoritative timestamp lives only in
+/// `ScimUser.deprovisioned_at`; storage must never persist a forged value.
+pub(crate) fn strip_stored_enterprise_marker(enterprise_json: &mut serde_json::Value) {
+    if let Some(object) = enterprise_json.as_object_mut() {
+        object.remove("deprovisioned_at");
+    }
+}
+
 pub(crate) fn scim_user(user: ScimUser) -> serde_json::Value {
     let version = scim_user_version(&user);
+    let enterprise = projected_enterprise_json(&user);
     let mut value = serde_json::json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
         "id": user.id,
@@ -154,18 +188,14 @@ pub(crate) fn scim_user(user: ScimUser) -> serde_json::Value {
     if let Some(external_id) = user.external_id {
         value["externalId"] = serde_json::Value::String(external_id);
     }
-    if user
-        .enterprise_json
-        .as_object()
-        .is_some_and(|obj| !obj.is_empty())
-    {
+    if enterprise.as_object().is_some_and(|obj| !obj.is_empty()) {
         value["schemas"]
             .as_array_mut()
             .expect("schemas must be an array")
             .push(serde_json::Value::String(
                 ENTERPRISE_USER_SCHEMA.to_string(),
             ));
-        value[ENTERPRISE_USER_SCHEMA] = user.enterprise_json;
+        value[ENTERPRISE_USER_SCHEMA] = enterprise;
     }
     value
 }
@@ -189,7 +219,7 @@ pub(crate) fn scim_user_version(user: &ScimUser) -> String {
         "user_name": user.user_name,
         "name": user.name_json,
         "emails": user.emails_json,
-        "enterprise": user.enterprise_json,
+        "enterprise": projected_enterprise_json(user),
         "active": user.active
     });
     weak_etag(&material)
@@ -230,6 +260,7 @@ mod tests {
                 "department": "Platform",
             }),
             directory_provider_id: Some("ad-main".to_string()),
+            deprovisioned_at: None,
             active: true,
         };
         let body = scim_user(user);
@@ -238,5 +269,64 @@ mod tests {
         assert!(body.get("directory_provider_id").is_none());
         assert!(body.get("directoryProviderId").is_none());
         assert_eq!(body[ENTERPRISE_USER_SCHEMA]["department"], "Platform");
+    }
+
+    fn lifecycle_user(deprovisioned_at: Option<u64>, enterprise: serde_json::Value) -> ScimUser {
+        ScimUser {
+            id: "user-1".to_string(),
+            realm_id: "corp".to_string(),
+            external_id: None,
+            user_name: "alice@example.com".to_string(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: enterprise,
+            directory_provider_id: None,
+            deprovisioned_at,
+            active: true,
+        }
+    }
+
+    #[test]
+    fn enterprise_projection_hides_forged_marker_when_authority_is_none() {
+        let user = lifecycle_user(
+            None,
+            serde_json::json!({ "department": "Platform", "deprovisioned_at": 1_050 }),
+        );
+        let body = scim_user(user);
+        let enterprise = &body[ENTERPRISE_USER_SCHEMA];
+        assert_eq!(enterprise["department"], "Platform");
+        assert!(enterprise.get("deprovisioned_at").is_none());
+        // Forged marker must not affect the version either.
+        let forged_version = scim_user_version(&lifecycle_user(
+            None,
+            serde_json::json!({ "department": "Platform", "deprovisioned_at": 9_999 }),
+        ));
+        let clean_version = scim_user_version(&lifecycle_user(
+            None,
+            serde_json::json!({ "department": "Platform" }),
+        ));
+        assert_eq!(forged_version, clean_version);
+    }
+
+    #[test]
+    fn enterprise_projection_uses_trusted_timestamp_when_authority_is_some() {
+        let user = lifecycle_user(
+            Some(1_050),
+            serde_json::json!({ "department": "Platform", "deprovisioned_at": 9_999 }),
+        );
+        let body = scim_user(user);
+        let enterprise = &body[ENTERPRISE_USER_SCHEMA];
+        assert_eq!(enterprise["department"], "Platform");
+        assert_eq!(enterprise["deprovisioned_at"], 1_050);
+        // Trusted value is part of the version, distinct from None.
+        let some_version = scim_user_version(&lifecycle_user(
+            Some(1_050),
+            serde_json::json!({ "department": "Platform" }),
+        ));
+        let none_version = scim_user_version(&lifecycle_user(
+            None,
+            serde_json::json!({ "department": "Platform" }),
+        ));
+        assert_ne!(some_version, none_version);
     }
 }

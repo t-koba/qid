@@ -514,9 +514,11 @@ fn manager_external_id(user: &ScimUser) -> Option<String> {
 }
 
 fn user_deprovisioned_at(user: &ScimUser) -> Option<u64> {
-    user.enterprise_json
-        .get("deprovisioned_at")
-        .and_then(|value| value.as_u64())
+    // Authority is the server-owned field only. Legacy or forged
+    // `enterprise_json.deprovisioned_at` markers are never consulted and are
+    // never backfilled; old rows read as `None` until a new lifecycle
+    // transition stamps them.
+    user.deprovisioned_at
 }
 
 pub fn user_employment_state(user: &ScimUser) -> Option<EmploymentState> {
@@ -560,6 +562,7 @@ fn scim_user_from_ldap_entry(
         emails_json: serde_json::json!([]),
         enterprise_json: serde_json::json!({}),
         directory_provider_id: Some(provider_id.to_string()),
+        deprovisioned_at: None,
         active: entry.enabled,
     };
     apply_ldap_entry(&mut user, provider_id, entry, synced_at);
@@ -587,6 +590,15 @@ fn apply_ldap_entry(
         .map(|mail| serde_json::json!([{ "value": mail, "primary": true }]))
         .unwrap_or_else(|| serde_json::json!([]));
     mark_ldap_source(user, entry, synced_at);
+    if entry.enabled {
+        // Reactivation clears the authoritative timestamp and any stale
+        // enterprise marker so a later disable gets a fresh timestamp.
+        clear_deprovisioned(user);
+    } else {
+        // Disabled snapshots stamp the first transition only and preserve it
+        // across repeated disabled snapshots.
+        ensure_deprovisioned(user, synced_at);
+    }
 }
 
 fn mark_ldap_source(user: &mut ScimUser, entry: &LdapDirectoryEntry, synced_at: u64) {
@@ -649,6 +661,7 @@ fn scim_user_semantic_eq(left: &ScimUser, right: &ScimUser) -> bool {
         && left.emails_json == right.emails_json
         && left.enterprise_json == right.enterprise_json
         && left.directory_provider_id == right.directory_provider_id
+        && left.deprovisioned_at == right.deprovisioned_at
         && left.active == right.active
 }
 
@@ -662,6 +675,7 @@ fn scim_user_from_hr_record(realm_id: &str, record: &HrRecord) -> ScimUser {
         emails_json: serde_json::json!([]),
         enterprise_json: serde_json::json!({}),
         directory_provider_id: None,
+        deprovisioned_at: None,
         active: true,
     };
     apply_hr_record(&mut user, record);
@@ -672,6 +686,10 @@ fn apply_hr_record(user: &mut ScimUser, record: &HrRecord) {
     user.external_id = Some(record.external_id.clone());
     user.user_name = record.user_name.clone();
     user.active = true;
+    // Any reactivation clears the authoritative timestamp and stale marker so
+    // a later disable gets a fresh timestamp. Limited to lifecycle metadata;
+    // mover department/manager handling stays unchanged.
+    clear_deprovisioned(user);
     user.name_json = record
         .display_name
         .as_ref()
@@ -730,6 +748,9 @@ fn set_employment_state_value(
 }
 
 fn mark_deprovisioned(user: &mut ScimUser, deprovisioned_at: u64) {
+    // Unconditional transition stamp (missing-user deactivation, HR leaver):
+    // overwrites the authoritative timestamp and projects it.
+    user.deprovisioned_at = Some(deprovisioned_at);
     let mut enterprise = user
         .enterprise_json
         .as_object()
@@ -745,6 +766,43 @@ fn mark_deprovisioned(user: &mut ScimUser, deprovisioned_at: u64) {
     );
     set_employment_state_value(&mut enterprise, EmploymentState::Inactive);
     user.enterprise_json = serde_json::Value::Object(enterprise);
+}
+
+/// Preserve-first disabled-snapshot stamp: set the authoritative timestamp
+/// only when absent, then project the trusted value into `enterprise_json`
+/// and mark employment inactive. Repeated disabled snapshots keep the first
+/// timestamp.
+fn ensure_deprovisioned(user: &mut ScimUser, synced_at: u64) {
+    if user.deprovisioned_at.is_none() {
+        user.deprovisioned_at = Some(synced_at);
+    }
+    let trusted = user.deprovisioned_at.expect("just ensured");
+    let mut enterprise = user
+        .enterprise_json
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    enterprise.insert(
+        "lifecycle_source".to_string(),
+        serde_json::Value::String(LIFECYCLE_SCHEMA.to_string()),
+    );
+    enterprise.insert(
+        "deprovisioned_at".to_string(),
+        serde_json::Value::Number(trusted.into()),
+    );
+    set_employment_state_value(&mut enterprise, EmploymentState::Inactive);
+    user.enterprise_json = serde_json::Value::Object(enterprise);
+}
+
+/// Reactivation: clear the authoritative timestamp and any stale or forged
+/// enterprise marker. Only lifecycle metadata is touched.
+fn clear_deprovisioned(user: &mut ScimUser) {
+    user.deprovisioned_at = None;
+    if let Some(object) = user.enterprise_json.as_object_mut() {
+        object.remove("deprovisioned_at");
+    } else {
+        user.enterprise_json = serde_json::json!({});
+    }
 }
 
 fn is_break_glass_user(user: &ScimUser) -> bool {

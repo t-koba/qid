@@ -176,6 +176,8 @@ Device IDs and EventSubscription IDs are global within each resource type. POST 
 
 Inbound SCIM is an isolated provisioning registry: setting `active` to false or deleting a user affects only the SCIM record (plain DELETE is a soft delete that deactivates but retains the record; hard delete needs `hard_delete=true`). There is no binding from a SCIM user to a login identity, so SCIM mutations do not revoke sessions or tokens — suspension policy must define that binding explicitly before it can act on login state.
 
+Lifecycle deprovision timestamp (`deprovisioned_at`) is server-owned: directory and HR sync are the only writers, SCIM create never sets it, PUT/PATCH preserve it, and the SCIM `enterprise` extension only projects the trusted value (a client-supplied or legacy `enterprise.deprovisioned_at` marker is stripped on write and never rendered when the authority is `None`). Legacy `enterprise_json` markers from before the server-owned column existed are not trusted and are never backfilled; old rows read as `None` until a lifecycle transition stamps them. Preserve historical evidence only through an explicit reviewed migration. LDAP disabled snapshots stamp the first transition and preserve it across repeated snapshots; reactivation (LDAP enabled snapshot or HR joiner/mover that sets `active`) clears the timestamp and stale marker so a later disable gets a fresh timestamp.
+
 ## SAML
 
 Installed when any realm enables SAML; each endpoint also checks that the requested realm enables SAML.

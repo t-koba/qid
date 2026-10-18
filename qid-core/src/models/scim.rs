@@ -16,6 +16,16 @@ pub struct ScimUser {
     /// in SCIM responses; directory sync is the only writer.
     #[serde(default)]
     pub directory_provider_id: Option<String>,
+    /// Server-owned authoritative deprovision timestamp (seconds since epoch).
+    /// Directory/HR lifecycle is the only writer; SCIM clients can neither
+    /// set nor clear it. The wire `enterprise` extension only projects this
+    /// value and never acts as authority. Legacy `enterprise_json`
+    /// `deprovisioned_at` markers from before this field existed are not
+    /// trusted and are never backfilled: old rows read as `None` until a new
+    /// lifecycle transition stamps them. Preserve historical evidence only
+    /// through an explicit reviewed migration.
+    #[serde(default)]
+    pub deprovisioned_at: Option<u64>,
     pub active: bool,
 }
 
@@ -39,4 +49,29 @@ pub struct FedCmIdentity {
     pub given_name: Option<String>,
     pub picture_url: Option<String>,
     pub approved_clients: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScimUser;
+
+    #[test]
+    fn legacy_users_default_server_owned_lifecycle_fields_and_ignore_legacy_timestamp_as_authority()
+    {
+        let user: ScimUser = serde_json::from_value(serde_json::json!({
+            "id": "legacy-user",
+            "realm_id": "corp",
+            "external_id": "uid=legacy,dc=example,dc=com",
+            "user_name": "legacy@example.com",
+            "name_json": {},
+            "emails_json": [],
+            "enterprise_json": {"deprovisioned_at": 1_050},
+            "active": false
+        }))
+        .unwrap();
+
+        assert_eq!(user.directory_provider_id, None);
+        assert_eq!(user.deprovisioned_at, None);
+        assert_eq!(user.enterprise_json["deprovisioned_at"], 1_050);
+    }
 }

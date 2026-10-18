@@ -2,6 +2,16 @@ use async_trait::async_trait;
 
 use super::*;
 
+fn sqlite_deprovisioned_at(value: Option<u64>) -> QidResult<Option<i64>> {
+    value
+        .map(|value| {
+            i64::try_from(value).map_err(|_| QidError::BadRequest {
+                message: "deprovisioned_at exceeds the supported SQL timestamp range".to_string(),
+            })
+        })
+        .transpose()
+}
+
 #[derive(sqlx::FromRow)]
 struct ScimDeviceRow {
     id: String,
@@ -55,8 +65,9 @@ impl From<ScimEventSubscriptionRow> for ScimEventSubscriptionRecord {
 #[async_trait]
 impl ScimRepository for SqlRepository {
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()> {
+        let deprovisioned_at = sqlite_deprovisioned_at(user.deprovisioned_at)?;
         sqlx::query(
-            "INSERT INTO scim_users (id, realm_id, external_id, user_name, name_json, emails_json, enterprise_json, directory_provider_id, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scim_users (id, realm_id, external_id, user_name, name_json, emails_json, enterprise_json, directory_provider_id, deprovisioned_at, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&user.id)
         .bind(&user.realm_id)
@@ -66,6 +77,7 @@ impl ScimRepository for SqlRepository {
         .bind(user.emails_json.to_string())
         .bind(user.enterprise_json.to_string())
         .bind(&user.directory_provider_id)
+        .bind(deprovisioned_at)
         .bind(user.active as i64)
         .execute(&self.pool)
         .await
@@ -114,13 +126,15 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        sqlx::query("UPDATE scim_users SET external_id = ?, user_name = ?, name_json = ?, emails_json = ?, enterprise_json = ?, directory_provider_id = ?, active = ?, updated_at = strftime('%s', 'now') WHERE id = ?")
+        let deprovisioned_at = sqlite_deprovisioned_at(user.deprovisioned_at)?;
+        sqlx::query("UPDATE scim_users SET external_id = ?, user_name = ?, name_json = ?, emails_json = ?, enterprise_json = ?, directory_provider_id = ?, deprovisioned_at = ?, active = ?, updated_at = strftime('%s', 'now') WHERE id = ?")
             .bind(&user.external_id)
             .bind(&user.user_name)
             .bind(user.name_json.to_string())
             .bind(user.emails_json.to_string())
             .bind(user.enterprise_json.to_string())
             .bind(&user.directory_provider_id)
+            .bind(deprovisioned_at)
             .bind(user.active as i64)
             .bind(&user.id)
             .execute(&self.pool)
@@ -324,5 +338,17 @@ impl ScimRepository for SqlRepository {
             .await
             .map_err(storage_to_qid_error)?;
         Ok(result.rows_affected() == 1)
+    }
+}
+
+#[cfg(test)]
+mod deprovisioned_timestamp_tests {
+    use super::sqlite_deprovisioned_at;
+
+    #[test]
+    fn sqlite_deprovisioned_timestamp_rejects_overflow_without_wrapping() {
+        assert_eq!(sqlite_deprovisioned_at(None).unwrap(), None);
+        assert_eq!(sqlite_deprovisioned_at(Some(1_050)).unwrap(), Some(1_050));
+        assert!(sqlite_deprovisioned_at(Some(u64::MAX)).is_err());
     }
 }

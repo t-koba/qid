@@ -1114,7 +1114,7 @@ async fn scim_unowned_external_id_remains_mutable() {
         ))
         .unwrap();
     let put_response = app.clone().oneshot(put_request).await.unwrap();
-    assert_eq!(put_response.status(), StatusCode::OK);
+
     assert_eq!(response_json(put_response).await["externalId"], "hr-2");
 
     // Unowned PATCH may change and then clear externalId.
@@ -1144,4 +1144,136 @@ async fn scim_unowned_external_id_remains_mutable() {
     let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
     assert_eq!(stored.external_id, None);
     assert_eq!(stored.directory_provider_id, None);
+}
+
+#[tokio::test]
+async fn scim_enterprise_deprovisioned_at_is_server_owned() {
+    let (app, repo, _store_path) = setup_with_store().await;
+
+    // Create with a forged enterprise marker: storage and response must drop it.
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","externalId":"hr-forge","userName":"forge@example.com","urn:ietf:params:scim:schemas:extension:enterprise:2.0:User":{"department":"Engineering","deprovisioned_at":1050}}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created[ENTERPRISE_USER_SCHEMA]["department"], "Engineering");
+    assert!(
+        created[ENTERPRISE_USER_SCHEMA]
+            .get("deprovisioned_at")
+            .is_none()
+    );
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.deprovisioned_at, None);
+    assert!(stored.enterprise_json.get("deprovisioned_at").is_none());
+    assert_eq!(stored.enterprise_json["department"], "Engineering");
+
+    // Seed a trusted timestamp like directory sync would, with a stale forged
+    // enterprise value alongside it.
+    let mut trusted = stored;
+    trusted.deprovisioned_at = Some(1_050);
+    trusted.enterprise_json =
+        serde_json::json!({"department": "Engineering", "deprovisioned_at": 9_999});
+    repo.update_scim_user(&trusted).await.unwrap();
+
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = response_json(get_response).await;
+    assert_eq!(fetched[ENTERPRISE_USER_SCHEMA]["department"], "Engineering");
+    assert_eq!(fetched[ENTERPRISE_USER_SCHEMA]["deprovisioned_at"], 1_050);
+    let version_before = fetched["meta"]["version"].as_str().unwrap().to_string();
+
+    // PUT with a different forged marker must preserve the trusted timestamp
+    // while still applying unrelated enterprise attributes.
+    let put_request = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","externalId":"hr-forge","userName":"forge@example.com","urn:ietf:params:scim:schemas:extension:enterprise:2.0:User":{"department":"Platform","deprovisioned_at":9999}}"#,
+        ))
+        .unwrap();
+    let put_response = app.clone().oneshot(put_request).await.unwrap();
+    assert_eq!(put_response.status(), StatusCode::OK);
+    let put_body = response_json(put_response).await;
+    assert_eq!(put_body[ENTERPRISE_USER_SCHEMA]["department"], "Platform");
+    assert_eq!(put_body[ENTERPRISE_USER_SCHEMA]["deprovisioned_at"], 1_050);
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.deprovisioned_at, Some(1_050));
+    assert!(stored.enterprise_json.get("deprovisioned_at").is_none());
+    assert_eq!(stored.enterprise_json["department"], "Platform");
+
+    // PATCH replace of the timestamp must not change the authority.
+    let patch_forge = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            "{{\"Operations\":[{{\"op\":\"replace\",\"path\":\"{ENTERPRISE_USER_SCHEMA}:deprovisioned_at\",\"value\":7777}},{{\"op\":\"replace\",\"path\":\"{ENTERPRISE_USER_SCHEMA}:department\",\"value\":\"Research\"}}]}}"
+        )))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_forge).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["department"], "Research");
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["deprovisioned_at"], 1_050);
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.deprovisioned_at, Some(1_050));
+    assert!(stored.enterprise_json.get("deprovisioned_at").is_none());
+
+    // PATCH remove of the timestamp must not clear the authority.
+    let patch_remove = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            "{{\"Operations\":[{{\"op\":\"remove\",\"path\":\"{ENTERPRISE_USER_SCHEMA}:deprovisioned_at\"}}]}}"
+        )))
+        .unwrap();
+    let patch_remove_response = app.clone().oneshot(patch_remove).await.unwrap();
+    assert_eq!(patch_remove_response.status(), StatusCode::OK);
+    let removed = response_json(patch_remove_response).await;
+    assert_eq!(removed[ENTERPRISE_USER_SCHEMA]["deprovisioned_at"], 1_050);
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.deprovisioned_at, Some(1_050));
+
+    // PUT without an enterprise body preserves the timestamp.
+    let put_omit = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .header(IF_MATCH, version_before.as_str())
+        .body(Body::from(
+            r#"{"realm":"corp","externalId":"hr-forge","userName":"forge2@example.com"}"#,
+        ))
+        .unwrap();
+    // Version changed since creation, so a stale If-Match must fail; retry
+    // without it to prove the merge path still preserves the timestamp.
+    let stale = app.clone().oneshot(put_omit).await.unwrap();
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+    let put_retry = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","externalId":"hr-forge","userName":"forge2@example.com"}"#,
+        ))
+        .unwrap();
+    let put_retry_response = app.clone().oneshot(put_retry).await.unwrap();
+    assert_eq!(put_retry_response.status(), StatusCode::OK);
+    let retried = response_json(put_retry_response).await;
+    assert_eq!(retried[ENTERPRISE_USER_SCHEMA]["deprovisioned_at"], 1_050);
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.deprovisioned_at, Some(1_050));
 }

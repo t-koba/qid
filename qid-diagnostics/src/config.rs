@@ -67,16 +67,13 @@ pub(crate) fn check_weak_flows(config: &QidConfig) -> Vec<CheckItem> {
                 let mfa = &realm.authentication.mfa;
                 let strong_mfa = mfa.totp.enabled
                     || realm.authentication.passkeys.enabled
-                    || mfa
-                        .allowed
-                        .iter()
-                        .any(|m| m != "sms" && m != "phone");
+                    || mfa.client_certificate.enabled;
                 let weak_mfa_name = format!("weak_mfa.{}", realm.id);
                 if mfa.sms.enabled && !strong_mfa {
                     items.push(check_error(
                         weak_mfa_name,
                         format!(
-                            "high-risk audiences {:?} enabled but MFA is SMS-only; require TOTP or passkeys",
+                            "high-risk audiences {:?} enabled but MFA is SMS-only; require TOTP, passkeys, or client-certificate MFA",
                             high_risk_audiences
                         ),
                     ));

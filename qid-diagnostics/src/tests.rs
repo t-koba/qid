@@ -531,3 +531,80 @@ fn check_report_warns_for_misaligned_issuer_and_missing_policy_source() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn high_risk_mfa_requires_enabled_factor_not_allowed_label() {
+    fn high_risk_config() -> QidConfig {
+        let mut config = minimal_config();
+        config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
+            audience: "api://corp/payments".to_string(),
+            resources: vec!["https://api.example.com/payments".to_string()],
+            scopes: vec!["payments".to_string()],
+            introspection_client_ids: Vec::new(),
+            require_sender_constraint: false,
+            high_risk: true,
+        }];
+        config
+    }
+    fn weak_mfa_status(config: &QidConfig) -> (CheckStatus, String) {
+        let check = check_weak_flows(config)
+            .into_iter()
+            .find(|check| check.name == "weak_mfa.corp")
+            .expect("weak_mfa.corp check");
+        (check.status, check.message)
+    }
+
+    // Allowed label alone with every mechanism disabled is not strong MFA.
+    let mut config = high_risk_config();
+    config.realms[0].authentication.mfa.allowed = vec!["totp".to_string()];
+    assert!(!config.realms[0].authentication.mfa.totp.enabled);
+    assert!(!config.realms[0].authentication.passkeys.enabled);
+    assert!(
+        !config.realms[0]
+            .authentication
+            .mfa
+            .client_certificate
+            .enabled
+    );
+    assert!(!config.realms[0].authentication.mfa.sms.enabled);
+    let (status, message) = weak_mfa_status(&config);
+    assert_eq!(status, CheckStatus::Error);
+    assert!(message.contains("no MFA"), "unexpected message: {message}");
+
+    // Each supported enabled factor satisfies the diagnostic.
+    let mut config = high_risk_config();
+    config.realms[0].authentication.mfa.allowed = vec!["totp".to_string()];
+    config.realms[0].authentication.mfa.totp.enabled = true;
+    assert_eq!(weak_mfa_status(&config).0, CheckStatus::Ok);
+
+    let mut config = high_risk_config();
+    config.realms[0].authentication.passkeys.enabled = true;
+    assert_eq!(weak_mfa_status(&config).0, CheckStatus::Ok);
+
+    let mut config = high_risk_config();
+    config.realms[0]
+        .authentication
+        .mfa
+        .client_certificate
+        .enabled = true;
+    assert_eq!(weak_mfa_status(&config).0, CheckStatus::Ok);
+
+    // SMS alone stays weak with the accurate strong-factor recommendation.
+    let mut config = high_risk_config();
+    config.realms[0].authentication.mfa.sms.enabled = true;
+    let (status, message) = weak_mfa_status(&config);
+    assert_eq!(status, CheckStatus::Error);
+    assert!(
+        message.contains("SMS-only"),
+        "unexpected message: {message}"
+    );
+    assert!(message.contains("TOTP"), "unexpected message: {message}");
+    assert!(
+        message.contains("passkeys"),
+        "unexpected message: {message}"
+    );
+    assert!(
+        message.contains("client-certificate"),
+        "unexpected message: {message}"
+    );
+}

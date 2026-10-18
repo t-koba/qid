@@ -8,7 +8,7 @@ use axum::{
 };
 use base64::Engine;
 use qid_core::{QidError, state::SharedState, tenant::RealmId};
-use qid_crypto::{Jwk, jwt::verify_jwt_signature_with_jwk};
+use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -427,14 +427,7 @@ fn verify_registered_jwk_signature(
         .ok_or_else(|| QidError::Unauthorized {
             message: format!("{label} client jwks is missing keys"),
         })?;
-    let candidates: Vec<&serde_json::Value> = keys
-        .iter()
-        .filter(|key| {
-            kid.is_none_or(|expected| {
-                key.get("kid").and_then(|value| value.as_str()) == Some(expected)
-            })
-        })
-        .collect();
+    let candidates = matching_jwk_candidates(keys, kid);
     if candidates.is_empty() {
         return Err(QidError::Unauthorized {
             message: format!("{label} kid is not registered for client"),

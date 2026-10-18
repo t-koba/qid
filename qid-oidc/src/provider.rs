@@ -15,7 +15,7 @@ use qid_core::{
     state::SharedState,
     tenant::RealmId,
 };
-use qid_crypto::{Jwk, jwt::verify_jwt_signature_with_jwk};
+use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
 
 use qid_session::{auth::Authenticator, session_is_active};
 use qid_storage::prelude::*;
@@ -700,14 +700,7 @@ fn verify_request_object_signature(
     if keys.is_empty() {
         return Err(unauthorized("request object client jwks has no keys"));
     }
-    let candidates: Vec<&serde_json::Value> = keys
-        .iter()
-        .filter(|key| {
-            kid.is_none_or(|expected_kid| {
-                key.get("kid").and_then(|value| value.as_str()) == Some(expected_kid)
-            })
-        })
-        .collect();
+    let candidates = matching_jwk_candidates(keys, kid);
     if candidates.is_empty() {
         tracing::warn!(client_id = %client.client_id, kid = ?kid, "request object kid is not registered for client");
         return Err(unauthorized("invalid request object"));

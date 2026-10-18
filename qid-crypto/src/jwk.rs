@@ -37,6 +37,22 @@ impl JwkSet {
     }
 }
 
+/// Return JWK values matching the optional `kid` header exactly.
+///
+/// Without a `kid`, all entries remain candidates for caller-side validation.
+pub fn matching_jwk_candidates<'a>(
+    keys: &'a [serde_json::Value],
+    kid: Option<&str>,
+) -> Vec<&'a serde_json::Value> {
+    keys.iter()
+        .filter(|key| {
+            kid.is_none_or(|expected| {
+                key.get("kid").and_then(|value| value.as_str()) == Some(expected)
+            })
+        })
+        .collect()
+}
+
 /// A generated key pair with PEM private key, public key, and public JWK.
 pub struct GeneratedKeyPair {
     pub kid: String,

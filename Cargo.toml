@@ -45,9 +45,10 @@ exclude = ["vendor/rustls"]
 # and 6 OAuth token-audit, 7 DCR-context, 16 OAuth response-mapping, 95 session-cookie,
 # 29 session realm-resolution, 29 shared runtime-realm lookup, 45 lowercase-hex utility,
 # 17 session-config mapping, 9 session-cookie, 4 shared SHA-256-hex,
-# 1 MFA email-token utility, and 24 audited-delete response lines.
+# 1 MFA email-token utility, 24 audited-delete response lines, and
+# 12 shared JWK kid-selection lines.
 [workspace.metadata.budget]
-total = 103345
+total = 103333
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

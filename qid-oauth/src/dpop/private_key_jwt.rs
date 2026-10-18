@@ -3,7 +3,7 @@
 use qid_core::dpop::DpopState;
 use qid_core::error::{QidError, QidResult};
 use qid_core::util::now_seconds;
-use qid_crypto::{Jwk, jwt::verify_jwt_signature_with_jwk};
+use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
 
 use super::parse_jwt_unverified;
 
@@ -123,14 +123,7 @@ fn verify_client_assertion_signature(
         });
     }
 
-    let candidates: Vec<&serde_json::Value> = keys
-        .iter()
-        .filter(|key| {
-            kid.is_none_or(|expected_kid| {
-                key.get("kid").and_then(|value| value.as_str()) == Some(expected_kid)
-            })
-        })
-        .collect();
+    let candidates = matching_jwk_candidates(keys, kid);
     if candidates.is_empty() {
         return Err(QidError::Unauthorized {
             message: "client_assertion kid is not registered for client".to_string(),

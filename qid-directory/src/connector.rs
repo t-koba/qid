@@ -234,8 +234,9 @@ async fn with_ldap_session<T>(
         })?;
     let mut driver = tokio::task::JoinSet::new();
     driver.spawn(conn.drive());
+    // ldap3's operation timeout is one-shot; callers set it before every bind/search.
+    // This duration separately bounds session cleanup below.
     let timeout = Duration::from_secs(timeout_secs);
-    ldap.with_timeout(timeout);
     let result = operation(&mut ldap).await;
 
     // Always try unbind, including after bind/search errors. Bound cleanup even
@@ -268,6 +269,40 @@ async fn with_ldap_session<T>(
         Err(error) => Err(error),
         Ok(value) => unbind.and(closed).map(|()| value),
     }
+}
+
+async fn ldap_simple_bind_with_timeout(
+    ldap: &mut ldap3::Ldap,
+    bind_dn: &str,
+    bind_password: &str,
+    timeout: std::time::Duration,
+) -> QidResult<()> {
+    ldap.with_timeout(timeout);
+    let result = ldap
+        .simple_bind(bind_dn, bind_password)
+        .await
+        .map_err(|e| QidError::Internal {
+            message: format!("LDAP bind failed: {e}"),
+        })?;
+    ensure_ldap_bind_success(result)
+}
+
+async fn ldap_search_with_timeout(
+    ldap: &mut ldap3::Ldap,
+    base: &str,
+    scope: ldap3::Scope,
+    filter: &str,
+    attributes: Vec<&str>,
+    timeout: std::time::Duration,
+) -> QidResult<ldap3::SearchResult> {
+    ldap.with_timeout(timeout);
+    let result = ldap
+        .search(base, scope, filter, attributes)
+        .await
+        .map_err(|e| QidError::Internal {
+            message: format!("LDAP search failed: {e}"),
+        })?;
+    ensure_ldap_search_success(result)
 }
 
 fn ensure_ldap_bind_success(result: ldap3::LdapResult) -> QidResult<()> {
@@ -316,27 +351,20 @@ fn run_ldap_search(
             .set_starttls(use_starttls)
             .set_no_tls_verify(tls_insecure);
         with_ldap_session(settings, &url, timeout_secs, async |ldap| {
+            let operation_timeout = std::time::Duration::from_secs(timeout_secs);
             if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
-                let result = ldap.simple_bind(dn, pw).await.map_err(|e| {
-                    qid_core::error::QidError::Internal {
-                        message: format!("LDAP bind failed: {e}"),
-                    }
-                })?;
-                ensure_ldap_bind_success(result)?;
+                ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
-            let ldap3::SearchResult(entries, _res) = ensure_ldap_search_success(
-                ldap.search(
-                    search_base,
-                    ldap3::Scope::Subtree,
-                    search_filter,
-                    vec!["*", "userAccountControl"],
-                )
-                .await
-                .map_err(|e| qid_core::error::QidError::Internal {
-                    message: format!("LDAP search failed: {e}"),
-                })?,
-            )?;
+            let ldap3::SearchResult(entries, _res) = ldap_search_with_timeout(
+                ldap,
+                search_base,
+                ldap3::Scope::Subtree,
+                search_filter,
+                vec!["*", "userAccountControl"],
+                operation_timeout,
+            )
+            .await?;
 
             let result: Vec<LdapDirectoryEntry> = entries
                 .into_iter()
@@ -775,8 +803,10 @@ pub fn run_ldap_search_with_options(
         // Note: tls_insecure is not passed into this function; the
         // paged-search variant currently defaults to strict verification.
         with_ldap_session(settings, &url, options.timeout_secs, async |ldap| {
+            let operation_timeout = std::time::Duration::from_secs(options.timeout_secs);
             if options.use_sasl {
                 if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
+                    ldap.with_timeout(operation_timeout);
                     ldap_sasl_scram_sha256_bind(ldap, dn, pw)
                         .await
                         .map_err(|e| qid_core::error::QidError::Internal {
@@ -784,12 +814,7 @@ pub fn run_ldap_search_with_options(
                         })?;
                 }
             } else if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
-                let result = ldap.simple_bind(dn, pw).await.map_err(|e| {
-                    qid_core::error::QidError::Internal {
-                        message: format!("LDAP bind failed: {e}"),
-                    }
-                })?;
-                ensure_ldap_bind_success(result)?;
+                ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
             let page_size = options.page_size.unwrap_or(0);
@@ -803,18 +828,15 @@ pub fn run_ldap_search_with_options(
                         cookie: cookie.clone(),
                     });
                 }
-                let ldap3::SearchResult(entries, res) = ensure_ldap_search_success(
-                    ldap.search(
-                        search_base,
-                        ldap3::Scope::Subtree,
-                        search_filter,
-                        vec!["*", "userAccountControl"],
-                    )
-                    .await
-                    .map_err(|e| qid_core::error::QidError::Internal {
-                        message: format!("LDAP search failed: {e}"),
-                    })?,
-                )?;
+                let ldap3::SearchResult(entries, res) = ldap_search_with_timeout(
+                    ldap,
+                    search_base,
+                    ldap3::Scope::Subtree,
+                    search_filter,
+                    vec!["*", "userAccountControl"],
+                    operation_timeout,
+                )
+                .await?;
                 if page_size > 0 {
                     let raw = res.ctrls.iter().find_map(|ctrl| {
                         if let Control(Some(ControlType::PagedResults), raw) = ctrl {

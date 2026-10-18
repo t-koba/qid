@@ -1,6 +1,9 @@
 //! A tiny loopback LDAP peer, not a connector mock. Only tests may supply
 //! non-TLS settings to the private session helper; production enforces TLS.
-use super::{ensure_ldap_bind_success, ensure_ldap_search_success, with_ldap_session};
+use super::{
+    ensure_ldap_bind_success, ensure_ldap_search_success, ldap_search_with_timeout,
+    ldap_simple_bind_with_timeout, with_ldap_session,
+};
 use qid_core::error::QidError;
 use std::time::Duration;
 use tokio::{
@@ -219,17 +222,28 @@ async fn failed_operation(fail_search: bool) {
             assert_closed(&mut socket).await;
         };
         let client = with_ldap_session(ldap3::LdapConnSettings::new(), &url, 1, async |ldap| {
+            let timeout = Duration::from_secs(1);
             let error = if fail_search {
-                ldap.simple_bind("cn=test", "test").await.unwrap();
-                // ldap3's timeout is per operation; set this only in the test
-                // to force a search failure without changing production policy.
-                ldap.with_timeout(Duration::from_secs(1));
-                ldap.search("dc=test", ldap3::Scope::Subtree, "(uid=alice)", vec!["uid"])
+                ldap_simple_bind_with_timeout(ldap, "cn=test", "test", timeout)
+                    .await
+                    .unwrap();
+                // This uses the same timeout helper as production; no test-only reset.
+                ldap_search_with_timeout(
+                    ldap,
+                    "dc=test",
+                    ldap3::Scope::Subtree,
+                    "(uid=alice)",
+                    vec!["uid"],
+                    timeout,
+                )
+                .await
+                .unwrap_err()
+            } else {
+                ldap_simple_bind_with_timeout(ldap, "cn=test", "test", timeout)
                     .await
                     .unwrap_err()
-            } else {
-                ldap.simple_bind("cn=test", "test").await.unwrap_err()
             };
+            assert!(error.to_string().to_ascii_lowercase().contains("timeout"));
             Err::<(), _>(QidError::Internal {
                 message: format!("expected operation failure: {error}"),
             })

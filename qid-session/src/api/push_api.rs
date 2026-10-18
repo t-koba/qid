@@ -1,7 +1,7 @@
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -64,19 +64,6 @@ pub fn push_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
         .layer(Extension(Arc::new(PushMfaState::new())))
 }
 
-fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once('=')
-            && key.trim() == name
-        {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
-
 async fn get_session_user_id<R: Repository>(
     state: &Arc<SharedState<R>>,
     realm: &str,
@@ -88,7 +75,7 @@ async fn get_session_user_id<R: Repository>(
         })
     })?;
     let cookie_name = &realm_config.browser_session.cookie_name;
-    let session_id = extract_cookie(headers, cookie_name).ok_or_else(|| {
+    let session_id = super::extract_cookie(headers, cookie_name).ok_or_else(|| {
         qid_http::error_response(QidError::Unauthorized {
             message: "missing session cookie".to_string(),
         })

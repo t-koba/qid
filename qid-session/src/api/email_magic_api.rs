@@ -159,21 +159,7 @@ async fn email_magic_link_verify<R: Repository>(
     };
 
     let session_config = &realm_config.browser_session;
-    let old_session_id = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookie_str| {
-            cookie_str.split(';').find_map(|pair| {
-                let pair = pair.trim();
-                pair.split_once('=').and_then(|(key, value)| {
-                    if key.trim() == session_config.cookie_name {
-                        Some(value.trim().to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-        });
+    let old_session_id = super::extract_cookie(&headers, &session_config.cookie_name);
     let manager = SessionManager::new(
         state.repo.clone(),
         session_config.idle_timeout_minutes,

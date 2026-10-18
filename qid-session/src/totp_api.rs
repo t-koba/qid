@@ -12,6 +12,7 @@ use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::api::extract_cookie;
 use crate::browser::SessionManager;
 
 pub fn totp_routes<R: Repository>(_paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
@@ -310,21 +311,7 @@ async fn totp_authenticate<R: Repository>(
     metrics::counter!("qid_mfa_challenges_total", "method" => "totp").increment(1);
 
     let session_config = &realm_config.browser_session;
-    let old_session_id = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookie_str| {
-            cookie_str.split(';').find_map(|pair| {
-                let pair = pair.trim();
-                pair.split_once('=').and_then(|(key, value)| {
-                    if key.trim() == session_config.cookie_name {
-                        Some(value.trim().to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-        });
+    let old_session_id = extract_cookie(&headers, &session_config.cookie_name);
     let manager = SessionManager::new(
         state.repo.clone(),
         session_config.idle_timeout_minutes,
@@ -402,17 +389,4 @@ fn urlencoding(s: &str) -> String {
             other => format!("%{:02X}", other as u8),
         })
         .collect()
-}
-
-fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once('=')
-            && key.trim() == name
-        {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
 }

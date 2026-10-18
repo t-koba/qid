@@ -127,7 +127,7 @@ pub(crate) use webauthn::{
     webauthn_discoverable_auth_start, webauthn_register_finish, webauthn_register_start,
 };
 
-fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in cookie_header.split(';') {
         let pair = pair.trim();

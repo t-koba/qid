@@ -124,7 +124,7 @@ cargo run -p xtask -- budget
 The Rust source budget is configured in the workspace `Cargo.toml` under
 `[workspace.metadata.budget]`: `total` is the workspace product-source limit,
 `default_per_crate` is the default crate limit, and `per_crate` contains overrides.
-The current defaults are 103,598 total source lines and 4,000 per crate, with
+The current defaults are 103,503 total source lines and 4,000 per crate, with
 larger-crate overrides in that same table (including `qid-network = 4500` for
 CAPPORT/QUIC wiring). Budget changes are reviewed configuration changes; update the
 values when product scope changes and explain the reason in the commit.

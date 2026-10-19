@@ -2141,13 +2141,98 @@ async fn validate_approvals_rejects_request_not_in_approval_required_status() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_missing_admin_headers() {
-    let (app, _, session_id) = setup_with_repo().await;
+    let (app, repo, session_id) = setup_with_repo().await;
+    seed_default_erp_catalog(&repo, "test").await;
+    let eval_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
+                        "subject":"user-1",
+                        "entitlement":"app:erp:admin",
+                        "requested_duration_seconds":3600
+                    }"#,
+        &session_id,
+    )
+    .await;
+    assert_eq!(eval_body["status"], "approval_required");
+    let request_id = eval_body["id"].as_str().unwrap().to_string();
     let payload = serde_json::json!({
+        "request_id": request_id,
         "issue_grant": false,
         "approvals": []
     });
 
     let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/iga/v1/access-requests/approvals/validate")
+                .header("Content-Type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = json(response).await;
+    assert_eq!(body["error"], "admin session required");
+
+    assert_eq!(
+        repo.get_iga_access_request("test", &request_id)
+            .await
+            .expect("load stored IGA access request failed")
+            .expect("stored IGA access request missing")
+            .status,
+        "approval_required"
+    );
+    assert!(
+        repo.list_iga_approvals("test", &request_id)
+            .await
+            .expect("list stored IGA approvals failed")
+            .is_empty()
+    );
+    assert!(
+        repo.list_iga_access_grants("test", Some("user-1"))
+            .await
+            .expect("list stored IGA access grants failed")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn validate_approvals_rejects_insufficient_admin_role() {
+    let (app, repo, session_id) = setup_with_repo().await;
+    seed_default_erp_catalog(&repo, "test").await;
+    let eval_body = post_raw(
+        app.clone(),
+        "/iga/v1/access-requests",
+        r#"{
+                        "subject":"user-1",
+                        "entitlement":"app:erp:admin",
+                        "requested_duration_seconds":3600
+                    }"#,
+        &session_id,
+    )
+    .await;
+    assert_eq!(eval_body["status"], "approval_required");
+    let request_id = eval_body["id"].as_str().unwrap().to_string();
+    let mut admin = repo
+        .get_admin("test", "security-admin")
+        .await
+        .expect("load stored admin failed")
+        .expect("stored admin missing");
+    admin.roles = vec!["auditor".to_string()];
+    repo.upsert_admin(&admin)
+        .await
+        .expect("update stored admin role failed");
+    let payload = serde_json::json!({
+        "request_id": request_id,
+        "issue_grant": false,
+        "approvals": []
+    });
+
+    let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -2159,40 +2244,32 @@ async fn validate_approvals_rejects_missing_admin_headers() {
         )
         .await
         .unwrap();
-    assert!(
-        response.status() == StatusCode::BAD_REQUEST
-            || response.status() == StatusCode::UNAUTHORIZED,
-        "expected 4xx for missing admin auth, got {}",
-        response.status()
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = json(response).await;
+    assert_eq!(
+        body["error"],
+        "admin role is not allowed for IGA operations"
     );
-}
 
-#[tokio::test]
-async fn validate_approvals_rejects_insufficient_admin_role() {
-    let (app, _, _session_id) = setup_with_repo().await;
-    let payload = serde_json::json!({
-        "issue_grant": false,
-        "approvals": []
-    });
-
-    // Send request without admin session header - should be rejected
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/iga/v1/access-requests/approvals/validate")
-                .header("Content-Type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        repo.get_iga_access_request("test", &request_id)
+            .await
+            .expect("load stored IGA access request failed")
+            .expect("stored IGA access request missing")
+            .status,
+        "approval_required"
+    );
     assert!(
-        response.status() == StatusCode::BAD_REQUEST
-            || response.status() == StatusCode::UNAUTHORIZED,
-        "expected 4xx for missing admin auth, got {}",
-        response.status()
+        repo.list_iga_approvals("test", &request_id)
+            .await
+            .expect("list stored IGA approvals failed")
+            .is_empty()
+    );
+    assert!(
+        repo.list_iga_access_grants("test", Some("user-1"))
+            .await
+            .expect("list stored IGA access grants failed")
+            .is_empty()
     );
 }
 

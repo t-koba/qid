@@ -21,29 +21,122 @@ use qid_crypto::{
 };
 use qid_storage::{SqlRepository, prelude::*};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 use tower::ServiceExt;
 
 static DB_SEQ: AtomicU16 = AtomicU16::new(0);
+static SCHEMA_TEMPLATE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
+
+fn sqlite_main_path(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path.to_path_buf();
+    };
+    ["-wal", "-shm", "-journal"]
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .map_or_else(|| path.to_path_buf(), |name| path.with_file_name(name))
+}
+
+fn remove_sqlite_database_files(path: &Path) -> std::io::Result<()> {
+    for suffix in ["-wal", "-shm", "-journal", ""] {
+        let mut candidate = path.as_os_str().to_os_string();
+        candidate.push(suffix);
+        match std::fs::remove_file(PathBuf::from(candidate)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn clean_oidc_test_databases(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let database = sqlite_main_path(&entry?.path());
+        let name = database
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if name.starts_with("test_") && name.ends_with(".db") {
+            remove_sqlite_database_files(&database)?;
+        }
+    }
+    Ok(())
+}
+
+/// Build and close one migrated schema for independent per-test database copies.
+async fn schema_template_path() -> &'static PathBuf {
+    SCHEMA_TEMPLATE
+        .get_or_init(|| async {
+            let path = std::env::temp_dir()
+                .join("qid_test_oidc")
+                .join("schema_template.db");
+            remove_sqlite_database_files(&path).expect("remove stale OIDC schema template");
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .unwrap();
+            repo.migrate().await.unwrap();
+            repo.close().await;
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                let sidecar = PathBuf::from(sidecar);
+                assert!(
+                    !sidecar.exists(),
+                    "schema template has a sidecar after closing the pool: {}",
+                    sidecar.display()
+                );
+            }
+            path
+        })
+        .await
+}
 
 fn db_url() -> String {
     let dir = std::env::temp_dir().join("qid_test_oidc");
     std::fs::create_dir_all(&dir).ok();
     static CLEANED: OnceLock<()> = OnceLock::new();
     CLEANED.get_or_init(|| {
-        for entry in std::fs::read_dir(&dir).ok().into_iter().flatten().flatten() {
-            let name = entry.file_name();
-            let s = name.to_string_lossy();
-            if s.starts_with("test_") && s.ends_with(".db") {
-                std::fs::remove_file(entry.path()).ok();
-            }
-        }
+        clean_oidc_test_databases(&dir).expect("remove stale OIDC test database files");
     });
     let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("test_{n}.db"));
     format!("sqlite:{}", path.display())
+}
+
+#[test]
+fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
+    let dir = std::env::temp_dir().join(format!("qid_oidc_cleanup_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let test_database = dir.join("test_123.db");
+    let template = dir.join("schema_template.db");
+    for (path, suffixes) in [
+        (&test_database, &["", "-wal", "-shm", "-journal"][..]),
+        (&template, &["", "-wal", "-shm", "-journal"][..]),
+    ] {
+        for suffix in suffixes {
+            let mut candidate = path.as_os_str().to_os_string();
+            candidate.push(suffix);
+            std::fs::write(PathBuf::from(candidate), b"stale database artifact").unwrap();
+        }
+    }
+
+    clean_oidc_test_databases(&dir).unwrap();
+
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut test_file = test_database.as_os_str().to_os_string();
+        test_file.push(suffix);
+        assert!(!PathBuf::from(test_file).exists());
+        let mut template_file = template.as_os_str().to_os_string();
+        template_file.push(suffix);
+        assert!(PathBuf::from(template_file).exists());
+    }
+    remove_sqlite_database_files(&template).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // Each isolated fixture uses the same test password, so hash it once per process.
@@ -93,8 +186,12 @@ async fn setup() -> (Router, Arc<SharedState<SqlRepository>>) {
 }
 
 async fn setup_with_config(config: QidConfig) -> (Router, Arc<SharedState<SqlRepository>>) {
-    let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
-    repo.migrate().await.unwrap();
+    let url = db_url();
+    let path = std::path::Path::new(url.strip_prefix("sqlite:").unwrap());
+    // Migrations are run once here and covered on fresh databases by qid-storage;
+    // copying keeps every OIDC case isolated without repeating the migration set.
+    std::fs::copy(schema_template_path().await, path).unwrap();
+    let repo = Arc::new(SqlRepository::connect(&url).await.unwrap());
     repo.create_realm(
         &"tenant-1".into(),
         &"test".into(),

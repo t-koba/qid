@@ -95,6 +95,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 p256 = { version = "0.13", features = ["pem", "ecdsa", "pkcs8"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

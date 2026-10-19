@@ -5,13 +5,10 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use hmac::{Hmac, Mac};
 use qid_core::models::PasswordCredential;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
-
-type HmacSha256 = Hmac<Sha256>;
 
 pub const ARGON2ID_ALGORITHM: &str = "argon2id";
 pub const PBKDF2_SHA256_ALGORITHM: &str = "pbkdf2-sha256";
@@ -328,7 +325,7 @@ fn encode_pbkdf2_sha256_material(
     if salt.len() < 16 {
         anyhow::bail!("PBKDF2 salt must be at least 16 bytes");
     }
-    let digest = pbkdf2_sha256(material, salt, iterations)?;
+    let digest = pbkdf2_sha256(material, salt, iterations);
     Ok(format!(
         "$pbkdf2-sha256$i={iterations}${}${}",
         URL_SAFE_NO_PAD.encode(salt),
@@ -345,8 +342,8 @@ fn verify_argon2id_material(material: &[u8], encoded_hash: &str) -> anyhow::Resu
 
 fn verify_pbkdf2_sha256_material(material: &[u8], encoded_hash: &str) -> anyhow::Result<bool> {
     let parsed = parse_pbkdf2_sha256_hash(encoded_hash)?;
-    let digest = pbkdf2_sha256(material, &parsed.salt, parsed.iterations)?;
-    Ok(qid_core::util::constant_time_eq(&digest, &parsed.digest))
+    let digest = pbkdf2_sha256(material, &parsed.salt, parsed.iterations);
+    Ok(qid_core::util::constant_time_eq(digest, &parsed.digest))
 }
 
 struct Pbkdf2Sha256Hash {
@@ -387,25 +384,10 @@ fn parse_pbkdf2_sha256_hash(encoded_hash: &str) -> anyhow::Result<Pbkdf2Sha256Ha
     })
 }
 
-fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> anyhow::Result<Vec<u8>> {
-    let mut block_input = Vec::with_capacity(salt.len() + 4);
-    block_input.extend_from_slice(salt);
-    block_input.extend_from_slice(&1_u32.to_be_bytes());
-    let mut mac = HmacSha256::new_from_slice(password)
-        .map_err(|e| anyhow::anyhow!("invalid PBKDF2 password material: {e}"))?;
-    mac.update(&block_input);
-    let mut u = mac.finalize().into_bytes().to_vec();
-    let mut output = u.clone();
-    for _ in 1..iterations {
-        let mut mac = HmacSha256::new_from_slice(password)
-            .map_err(|e| anyhow::anyhow!("invalid PBKDF2 password material: {e}"))?;
-        mac.update(&u);
-        u = mac.finalize().into_bytes().to_vec();
-        for (out, byte) in output.iter_mut().zip(&u) {
-            *out ^= *byte;
-        }
-    }
-    Ok(output)
+fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<Sha256>(password, salt, iterations, &mut output);
+    output
 }
 
 fn password_material(plaintext: &str, pepper: Option<&[u8]>) -> Zeroizing<Vec<u8>> {
@@ -437,6 +419,9 @@ fn is_lower_hex_sha256(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    // Independently computed PBKDF2-HMAC-SHA256 fixture pins stored-hash compatibility.
+    const PBKDF2_TEST_HASH: &str = "$pbkdf2-sha256$i=100000$MDEyMzQ1Njc4OWFiY2RlZg$mUf20X-ZzWHTtUCVbW2FMJL_u8dULwn89X540zJ8fj0";
+
     #[test]
     fn password_hash_and_verify() {
         let password = "my-secure-password-123!";
@@ -448,9 +433,17 @@ mod tests {
     }
 
     #[test]
+    fn pbkdf2_rejects_iteration_counts_below_security_floor() {
+        assert!(encode_pbkdf2_sha256_hash("legacy", b"0123456789abcdef", 99_999).is_err());
+        let below_floor = PBKDF2_TEST_HASH.replace("i=100000", "i=99999");
+        assert!(parse_pbkdf2_sha256_hash(&below_floor).is_err());
+    }
+
+    #[test]
     fn password_credential_verifies_pbkdf2_and_requires_rehash() {
         let password = "legacy-password-123!";
         let hash = encode_pbkdf2_sha256_hash(password, b"0123456789abcdef", 100_000).unwrap();
+        assert_eq!(hash, PBKDF2_TEST_HASH);
         let credential = PasswordCredential {
             user_id: "user-1".to_string(),
             hash,
@@ -520,8 +513,8 @@ mod tests {
 
     #[test]
     fn password_import_plan_accepts_supported_legacy_shapes_and_flags_online_bind() {
-        let pbkdf2_hash =
-            encode_pbkdf2_sha256_hash("legacy", b"0123456789abcdef", 100_000).unwrap();
+        // The import planner validates encoded shape; it does not need a fresh derivation.
+        let pbkdf2_hash = PBKDF2_TEST_HASH.to_string();
         let records = vec![
             ImportedPasswordRecord {
                 user_id: "argon".to_string(),

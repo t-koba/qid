@@ -3949,6 +3949,7 @@ dependencies = [
  "jsonwebtoken",
  "ml-kem",
  "p256",
+ "pbkdf2",
  "proptest",
  "qid-core",
  "rand 0.8.8",

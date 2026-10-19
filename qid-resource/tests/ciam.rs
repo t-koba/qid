@@ -546,13 +546,11 @@ async fn ciam_trusted_identity_links_are_listed_lookupable_and_deletions_audited
 }
 
 #[tokio::test]
-async fn ciam_verification_and_password_reset_are_persisted_and_single_use() {
-    let (app, state) = setup().await;
-    let verify_issue = Request::builder()
-        .method(Method::POST)
-        .uri("/api/v1/test/ciam/verification/issue")
-        .header("Content-Type", "application/json")
-        .body(Body::from(
+async fn ciam_challenge_issue_routes_fail_without_delivery() {
+    let (app, _state) = setup().await;
+    let issue_requests = [
+        (
+            "/api/v1/test/ciam/verification/issue",
             r#"{
                 "user_id":"user-ciam",
                 "channel":"email",
@@ -561,20 +559,9 @@ async fn ciam_verification_and_password_reset_are_persisted_and_single_use() {
                 "now_epoch_seconds":1800000000,
                 "ttl_seconds":600
             }"#,
-        ))
-        .unwrap();
-    let verify_response = app.clone().oneshot(verify_issue).await.unwrap();
-    assert_eq!(verify_response.status(), StatusCode::CREATED);
-    let verify_json = json(verify_response).await;
-    assert_eq!(verify_json["user_id"], "user-ciam");
-    assert!(verify_json.get("code_hash").is_none());
-    assert!(verify_json.get("code").is_none());
-
-    let reset_issue = Request::builder()
-        .method(Method::POST)
-        .uri("/api/v1/test/ciam/password-reset/issue")
-        .header("Content-Type", "application/json")
-        .body(Body::from(
+        ),
+        (
+            "/api/v1/test/ciam/password-reset/issue",
             r#"{
                 "user_id":"user-ciam",
                 "device_id":"device-1",
@@ -582,32 +569,75 @@ async fn ciam_verification_and_password_reset_are_persisted_and_single_use() {
                 "now_epoch_seconds":1800000100,
                 "ttl_seconds":900
             }"#,
-        ))
-        .unwrap();
-    let reset_response = app.clone().oneshot(reset_issue).await.unwrap();
-    assert_eq!(reset_response.status(), StatusCode::CREATED);
-    let reset_json = json(reset_response).await;
-    let token_id = reset_json["id"].as_str().unwrap();
-    assert!(reset_json.get("token_hash").is_none());
-    assert!(reset_json.get("token").is_none());
-    let token = format!("test:user-ciam:device-1:1800000100:{token_id}");
+        ),
+    ];
+    for (uri, body) in issue_requests {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let response = json(response).await;
+        assert_eq!(response["error"], "challenge delivery is not configured");
+        for field in ["id", "delivery_ref", "delivery_secret", "code", "token"] {
+            assert!(
+                response.get(field).is_none(),
+                "unexpected {field} in response"
+            );
+        }
+    }
+}
 
-    let consume_request = Request::builder()
-        .method(Method::POST)
-        .uri("/api/v1/test/ciam/password-reset/consume")
-        .header("Content-Type", "application/json")
-        .body(Body::from(format!(
-            r#"{{
-                "token_id":"{token_id}",
-                "token":"{token}",
-                "device_id":"device-1",
-                "new_password":"new-secure-password",
-                "now_epoch_seconds":1800000200
-            }}"#
-        )))
+#[tokio::test]
+async fn ciam_password_reset_rejects_invalid_token_before_credential_write() {
+    let (app, state) = setup().await;
+    let now = qid_core::util::now_seconds();
+    let expected_token = "known-valid-reset-token";
+    let token = qid_core::models::PasswordResetToken {
+        id: "reset-known".to_string(),
+        realm_id: "test".to_string(),
+        user_id: "user-ciam".to_string(),
+        token_hash: qid_core::util::sha256_base64url(expected_token),
+        device_id: Some("device-1".to_string()),
+        risk_json: serde_json::json!({"score":10}),
+        expires_at_epoch_seconds: now + 900,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: now,
+    };
+    state
+        .repo
+        .store_password_reset_token(&token)
+        .await
+        .expect("seed password reset token failed");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/test/ciam/password-reset/consume")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "token_id":"reset-known",
+                        "token":"wrong-reset-token",
+                        "device_id":"device-1",
+                        "new_password":"new-secure-password",
+                        "now_epoch_seconds":1800000200
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
         .unwrap();
-    let consume_response = app.oneshot(consume_request).await.unwrap();
-    assert_eq!(consume_response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(
         state
             .repo
@@ -615,6 +645,16 @@ async fn ciam_verification_and_password_reset_are_persisted_and_single_use() {
             .await
             .unwrap()
             .is_none()
+    );
+    assert_eq!(
+        state
+            .repo
+            .get_password_reset_token("reset-known")
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed_at_epoch_seconds,
+        None
     );
 }
 

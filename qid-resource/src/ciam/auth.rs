@@ -7,7 +7,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use qid_core::{
     QidError, QidResult,
-    models::{CiamVerificationChallengeRecord, PasswordCredential, PasswordResetToken},
+    models::{PasswordCredential, PasswordResetToken},
     state::SharedState,
     tenant::RealmId,
     util,
@@ -148,33 +148,11 @@ pub struct CiamProtectionDecision {
 }
 
 pub async fn verification_issue<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    Path(realm): Path<String>,
-    Json(req): Json<VerificationIssueRequest>,
+    State(_state): State<Arc<SharedState<R>>>,
+    Path(_realm): Path<String>,
+    Json(_req): Json<VerificationIssueRequest>,
 ) -> Response {
-    match issue_verification_challenge(&realm, &req, &state.ciam_verification_pepper) {
-        Ok(issued) => {
-            let now = util::now_seconds();
-            let challenge = issued.challenge;
-            let record = CiamVerificationChallengeRecord {
-                id: challenge.id.clone(),
-                realm_id: realm,
-                user_id: challenge.user_id.clone(),
-                channel: channel_as_str(&challenge.channel).to_string(),
-                address: challenge.address.clone(),
-                purpose: challenge.purpose.clone(),
-                code_hash: issued.code_hash,
-                expires_at_epoch_seconds: challenge.expires_at_epoch_seconds,
-                consumed_at_epoch_seconds: None,
-                created_at_epoch_seconds: now,
-            };
-            match state.repo.store_ciam_verification_challenge(&record).await {
-                Ok(()) => (StatusCode::CREATED, Json(challenge)).into_response(),
-                Err(err) => qid_http::error_response(err),
-            }
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    challenge_delivery_unavailable()
 }
 
 pub async fn verification_confirm<R: Repository>(
@@ -230,36 +208,19 @@ pub async fn verification_confirm<R: Repository>(
 }
 
 pub async fn password_reset_issue<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    Path(realm): Path<String>,
-    Json(req): Json<PasswordResetIssueRequest>,
+    State(_state): State<Arc<SharedState<R>>>,
+    Path(_realm): Path<String>,
+    Json(_req): Json<PasswordResetIssueRequest>,
 ) -> Response {
-    match issue_password_reset(&realm, &req) {
-        Ok(issued) => {
-            let now = util::now_seconds();
-            let challenge = issued.challenge;
-            let record = PasswordResetToken {
-                id: challenge.id.clone(),
-                realm_id: realm,
-                user_id: challenge.user_id.clone(),
-                token_hash: issued.token_hash,
-                device_id: req.device_id,
-                risk_json: if req.risk.is_object() {
-                    req.risk
-                } else {
-                    serde_json::json!({})
-                },
-                expires_at_epoch_seconds: challenge.expires_at_epoch_seconds,
-                consumed_at_epoch_seconds: None,
-                created_at_epoch_seconds: now,
-            };
-            match state.repo.store_password_reset_token(&record).await {
-                Ok(()) => (StatusCode::CREATED, Json(challenge)).into_response(),
-                Err(err) => qid_http::error_response(err),
-            }
-        }
-        Err(e) => qid_http::error_response(e),
-    }
+    challenge_delivery_unavailable()
+}
+
+fn challenge_delivery_unavailable() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({"error":"challenge delivery is not configured"})),
+    )
+        .into_response()
 }
 
 pub async fn password_reset_consume<R: Repository>(
@@ -593,13 +554,6 @@ fn ciam_protection_audit_event(
         created_at: now,
         previous_hash: None,
         event_hash: None,
-    }
-}
-
-fn channel_as_str(channel: &VerificationChannel) -> &'static str {
-    match channel {
-        VerificationChannel::Email => "email",
-        VerificationChannel::Phone => "phone",
     }
 }
 

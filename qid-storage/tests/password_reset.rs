@@ -298,6 +298,7 @@ async fn sql_password_reset_is_atomic_and_owner_bound() {
         .unwrap();
     repo.migrate().await.unwrap();
     reset_regressions(&repo).await;
+    repo.close().await;
     drop(repo);
     std::fs::remove_file(path).unwrap();
 }
@@ -340,6 +341,7 @@ async fn sql_password_reset_credential_failure_rolls_back_both_writes() {
     .await
     .unwrap();
     assert_state(&repo, "retry", Some(150)).await;
+    repo.close().await;
     pool.close().await;
     drop(repo);
     std::fs::remove_file(path).unwrap();

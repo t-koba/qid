@@ -728,6 +728,146 @@ async fn test_file_ciam_repository_round_trip() {
     assert_ciam_repository_round_trip(&repo).await;
 }
 
+async fn assert_ciam_identity_link_id_binding(
+    repo: &(impl RealmRepository + UserRepository + CiamRepository),
+) {
+    for realm in ["realm-link", "realm-link-other"] {
+        repo.create_realm(
+            &"tenant-link".into(),
+            &realm.into(),
+            &format!("https://{realm}.example.com"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    for (id, realm) in [
+        ("user-link", "realm-link"),
+        ("user-link-other", "realm-link"),
+        ("user-link-realm", "realm-link-other"),
+    ] {
+        repo.create_user(&User {
+            id: id.to_string(),
+            realm_id: realm.to_string(),
+            email: Some(format!("{id}@example.com")),
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    }
+    let mut incumbent = CiamIdentityLink {
+        id: "link-owner-1".to_string(),
+        realm_id: "realm-link".to_string(),
+        user_id: "user-link".to_string(),
+        provider: "google".to_string(),
+        external_subject: "subject-1".to_string(),
+        external_email: Some("social@example.com".to_string()),
+        profile_json: serde_json::json!({"name": "Original"}),
+        linked_at_epoch_seconds: 1_800_000_000,
+        verified: false,
+    };
+    repo.store_ciam_identity_link(&incumbent).await.unwrap();
+    // Same-owner contact/profile updates and verification promotion remain supported.
+    incumbent.external_email = Some("updated@example.com".to_string());
+    incumbent.profile_json = serde_json::json!({"name": "Updated"});
+    repo.store_ciam_identity_link(&incumbent).await.unwrap();
+    incumbent.verified = true;
+    repo.store_ciam_identity_link(&incumbent).await.unwrap();
+    incumbent.profile_json = serde_json::json!({"name": "Updated after verification"});
+    repo.store_ciam_identity_link(&incumbent).await.unwrap();
+
+    let mut cross_user = incumbent.clone();
+    cross_user.user_id = "user-link-other".to_string();
+    let mut cross_realm = incumbent.clone();
+    cross_realm.realm_id = "realm-link-other".to_string();
+    cross_realm.user_id = "user-link-realm".to_string();
+    let mut changed_provider = incumbent.clone();
+    changed_provider.provider = "github".to_string();
+    let mut changed_subject = incumbent.clone();
+    changed_subject.external_subject = "subject-2".to_string();
+
+    let mut downgrade = incumbent.clone();
+    downgrade.verified = false;
+    let error = repo.store_ciam_identity_link(&downgrade).await.unwrap_err();
+    assert!(matches!(
+        error,
+        qid_core::error::QidError::BadRequest { .. }
+    ));
+
+    for mut collision in [cross_user, cross_realm, changed_provider, changed_subject] {
+        collision.profile_json = serde_json::json!({"name": "Must not persist"});
+        for verified in [false, true] {
+            collision.verified = verified;
+            let error = repo.store_ciam_identity_link(&collision).await.unwrap_err();
+            assert!(
+                matches!(error, qid_core::error::QidError::Conflict { .. }),
+                "owner/key reuse must conflict, got {error:?}"
+            );
+            assert_eq!(
+                repo.get_ciam_identity_link(&"realm-link".into(), &incumbent.id)
+                    .await
+                    .unwrap(),
+                Some(incumbent.clone())
+            );
+            assert_eq!(
+                repo.list_ciam_identity_links(&"realm-link".into(), "user-link")
+                    .await
+                    .unwrap(),
+                vec![incumbent.clone()]
+            );
+            for (realm, user) in [
+                ("realm-link", "user-link-other"),
+                ("realm-link-other", "user-link-realm"),
+            ] {
+                assert!(
+                    repo.list_ciam_identity_links(&realm.into(), user)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+    }
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(
+            &"realm-link".into(),
+            "google",
+            "subject-1"
+        )
+        .await
+        .unwrap(),
+        Some(incumbent.clone())
+    );
+    // A different ID still cannot claim the same realm/provider/subject.
+    let mut duplicate = incumbent.clone();
+    duplicate.id = "link-owner-duplicate".to_string();
+    let error = repo.store_ciam_identity_link(&duplicate).await.unwrap_err();
+    assert!(matches!(
+        error,
+        qid_core::error::QidError::BadRequest { .. }
+    ));
+    assert_eq!(
+        repo.list_ciam_identity_links(&"realm-link".into(), "user-link")
+            .await
+            .unwrap(),
+        vec![incumbent]
+    );
+}
+
+#[tokio::test]
+async fn test_sql_ciam_identity_link_id_binding() {
+    assert_ciam_identity_link_id_binding(&sql_repo().await).await;
+}
+
+#[tokio::test]
+async fn test_file_ciam_identity_link_id_binding() {
+    assert_ciam_identity_link_id_binding(&file_repo("ciam_link_binding").await).await;
+}
+
 async fn assert_ciam_consent_grant_owner_conflict<R>(repo: &R)
 where
     R: RealmRepository + UserRepository + CiamRepository,

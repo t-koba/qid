@@ -129,9 +129,13 @@ impl CiamRepository for SqlRepository {
 
     async fn store_ciam_identity_link(&self, link: &CiamIdentityLink) -> QidResult<()> {
         link.validate()?;
-        let existing = self
-            .get_ciam_identity_link(&RealmId(link.realm_id.clone()), &link.id)
-            .await?;
+        let existing: Option<CiamIdentityLinkRow> =
+            sqlx::query_as("SELECT * FROM ciam_identity_links WHERE id = ?")
+                .bind(&link.id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage_to_qid_error)?;
+        let existing = existing.map(Into::into);
         crate::domain::validate_ciam_identity_link_state(link, existing.as_ref())?;
         let user_realm: Option<String> =
             sqlx::query_scalar("SELECT realm_id FROM users WHERE id = ?")
@@ -164,9 +168,11 @@ impl CiamRepository for SqlRepository {
                 message: "CIAM identity link external subject is already linked".to_string(),
             });
         }
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO ciam_identity_links (id, realm_id, user_id, provider, external_subject, external_email, profile_json, linked_at_epoch_seconds, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, provider = excluded.provider, external_subject = excluded.external_subject, external_email = excluded.external_email, profile_json = excluded.profile_json, linked_at_epoch_seconds = excluded.linked_at_epoch_seconds, verified = excluded.verified",
+             ON CONFLICT(id) DO UPDATE SET external_email = excluded.external_email, profile_json = excluded.profile_json, linked_at_epoch_seconds = excluded.linked_at_epoch_seconds, verified = excluded.verified \
+             WHERE ciam_identity_links.realm_id = excluded.realm_id AND ciam_identity_links.user_id = excluded.user_id AND ciam_identity_links.provider = excluded.provider AND ciam_identity_links.external_subject = excluded.external_subject \
+             AND (ciam_identity_links.verified = 0 OR excluded.verified = 1)",
         )
         .bind(&link.id)
         .bind(&link.realm_id)
@@ -180,6 +186,11 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: format!("CIAM identity link {} changed concurrently", link.id),
+            });
+        }
         Ok(())
     }
 

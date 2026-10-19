@@ -294,6 +294,90 @@ async fn ciam_consent_grant_id_is_bound_to_owner() {
 }
 
 #[tokio::test]
+async fn ciam_identity_link_id_cannot_be_reused_by_a_foreign_realm_user() {
+    let (app, state) = setup().await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &"victim-realm".into(),
+            "https://victim.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "victim-user".to_string(),
+            realm_id: "victim-realm".to_string(),
+            email: Some("victim@example.com".to_string()),
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let victim = qid_core::models::CiamIdentityLink {
+        id: "link-victim".to_string(),
+        realm_id: "victim-realm".to_string(),
+        user_id: "victim-user".to_string(),
+        provider: "google".to_string(),
+        external_subject: "victim-subject".to_string(),
+        external_email: Some("victim@example.com".to_string()),
+        profile_json: serde_json::json!({"name": "Victim"}),
+        linked_at_epoch_seconds: 1_800_000_000,
+        verified: true,
+    };
+    state.repo.store_ciam_identity_link(&victim).await.unwrap();
+
+    let cookie = add_session(&state, "user-ciam").await;
+    let mut collision = victim.clone();
+    collision.realm_id = "test".to_string();
+    collision.user_id = "user-ciam".to_string();
+    collision.external_email = Some("attacker@example.com".to_string());
+    collision.profile_json = serde_json::json!({"name": "Attacker"});
+    collision.verified = false;
+    let request = with_cookie(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/test/ciam/identity-links")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&collision).unwrap()))
+            .unwrap(),
+        &cookie,
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        state
+            .repo
+            .get_ciam_identity_link(&"victim-realm".into(), &victim.id)
+            .await
+            .unwrap(),
+        Some(victim.clone())
+    );
+    assert_eq!(
+        state
+            .repo
+            .list_ciam_identity_links(&"victim-realm".into(), "victim-user")
+            .await
+            .unwrap(),
+        vec![victim]
+    );
+    assert!(
+        state
+            .repo
+            .list_ciam_identity_links(&"test".into(), "user-ciam")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn ciam_identity_links_are_persisted_lookupable_and_audited() {
     let (app, state) = setup().await;
     let cookie = add_session(&state, "user-ciam").await;

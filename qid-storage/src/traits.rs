@@ -415,6 +415,10 @@ pub trait CiamRepository: Send + Sync + 'static {
         id: &str,
         consumed_at: u64,
     ) -> QidResult<()>;
+    /// Store a link, atomically binding its global ID to its realm, user, provider and
+    /// external subject. Reuse with another owner or identity key returns Conflict.
+    /// Same-owner profile/contact updates are allowed; verified cannot revert to false.
+    /// Rejected updates leave the incumbent unchanged.
     async fn store_ciam_identity_link(&self, link: &CiamIdentityLink) -> QidResult<()>;
     async fn list_ciam_identity_links(
         &self,

@@ -249,7 +249,7 @@ realms return HTTP 404.
 | `GET` | `/api/v1/:realm/ciam/passwordless/campaign` | Passwordless campaign. |
 | `POST` | `/api/v1/:realm/ciam/consent/evaluate` | Evaluate consent. |
 | `POST` | `/api/v1/:realm/ciam/consent/grants` | Grant consent. Grant IDs are global and bound to `(realm, user, client)`; foreign-owner ID reuse returns `409 Conflict` without changing the incumbent. Same-owner updates remain supported. |
-| `POST` | `/api/v1/:realm/ciam/identity-links` | Create identity link. |
+| `POST` | `/api/v1/:realm/ciam/identity-links` | Create or update identity link. |
 | `POST` | `/api/v1/:realm/ciam/identity-links/lookup` | Lookup identity link. |
 | `GET` | `/api/v1/:realm/ciam/users/:user_id/identity-links` | List identity links. |
 | `DELETE` | `/api/v1/:realm/ciam/identity-links/:link_id` | Delete identity link. |
@@ -259,6 +259,14 @@ realms return HTTP 404.
 | `POST` | `/api/v1/:realm/ciam/password-reset/issue` | Issue password reset. |
 | `POST` | `/api/v1/:realm/ciam/password-reset/consume` | Consume password reset. |
 | `POST` | `/api/v1/:realm/ciam/protection/evaluate` | Protection/risk evaluation. |
+
+Identity-link IDs are global and bound to `(realm_id, user_id)`. For an existing ID,
+`provider` and `external_subject` are immutable. Reusing an ID for a different owner
+or identity key returns `409 Conflict` without changing the incumbent. Same-owner
+profile/contact updates remain supported, but `verified: true` cannot revert to
+`false` (rejected with `400 Bad Request`, or `409 Conflict` if a concurrent update
+verified the link). External subjects remain unique per realm and provider across
+different IDs; duplicates are rejected with `400 Bad Request`.
 
 ## Device, workload, SPIFFE
 

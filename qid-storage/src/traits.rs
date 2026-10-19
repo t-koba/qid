@@ -478,6 +478,8 @@ pub trait WorkloadRepository: Send + Sync + 'static {
         realm_id: &RealmId,
     ) -> QidResult<Vec<WorkloadIdentity>>;
     async fn delete_workload_identity(&self, id: &str) -> QidResult<()>;
+    /// Create or update a certificate only for its incumbent realm/workload/SPIFFE binding;
+    /// a global ID collision with another identity returns `Conflict` without changing it.
     async fn store_workload_certificate(&self, certificate: &WorkloadCertificate) -> QidResult<()>;
     async fn list_workload_certificates(
         &self,

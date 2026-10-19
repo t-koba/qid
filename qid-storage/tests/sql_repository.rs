@@ -124,6 +124,19 @@ where
         .expect("list workload certificates failed");
     assert_eq!(listed, vec![certificate.clone()]);
 
+    let mut renewed_certificate = certificate.clone();
+    renewed_certificate.serial_number = "01:02:04".to_string();
+    renewed_certificate.x5t_s256 = "e".repeat(64);
+    repo.store_workload_certificate(&renewed_certificate)
+        .await
+        .expect("same-identity certificate update failed");
+    let listed = repo
+        .list_workload_certificates(&realm, Some(&workload.id))
+        .await
+        .expect("list updated workload certificate failed");
+    assert_eq!(listed, vec![renewed_certificate.clone()]);
+    let certificate = renewed_certificate;
+
     let duplicate = WorkloadCertificate {
         id: "cert-api-duplicate".to_string(),
         ..certificate.clone()
@@ -138,6 +151,74 @@ where
         "unexpected error: {}",
         err.message()
     );
+
+    let same_realm_workload = WorkloadIdentity {
+        id: "workload-batch".to_string(),
+        realm_id: realm.0.clone(),
+        spiffe_id: "spiffe://corp.example/workload/batch".to_string(),
+        description: Some("Batch workload".to_string()),
+        trust_domain: "corp.example".to_string(),
+        authorities_json: serde_json::json!({"issuer": "ca-batch"}),
+    };
+    repo.create_workload_identity(&same_realm_workload)
+        .await
+        .expect("create same-realm workload identity failed");
+
+    let other_realm = RealmId("realm-workload-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-workload-other".to_string()),
+        &other_realm,
+        "https://other-workload.example.com",
+        Some("Other Workload Realm"),
+    )
+    .await
+    .expect("create other workload realm failed");
+    let other_workload = WorkloadIdentity {
+        id: "workload-other".to_string(),
+        realm_id: other_realm.0.clone(),
+        spiffe_id: "spiffe://other.example/workload/worker".to_string(),
+        description: Some("Other workload".to_string()),
+        trust_domain: "other.example".to_string(),
+        authorities_json: serde_json::json!({"issuer": "ca-other"}),
+    };
+    repo.create_workload_identity(&other_workload)
+        .await
+        .expect("create other workload identity failed");
+
+    for (collision_realm, collision_workload) in [
+        (&realm, &same_realm_workload),
+        (&other_realm, &other_workload),
+    ] {
+        let mut collision = certificate.clone();
+        collision.realm_id = collision_realm.0.clone();
+        collision.workload_id = collision_workload.id.clone();
+        collision.spiffe_id = collision_workload.spiffe_id.clone();
+        collision.serial_number = format!("collision:{}", collision_workload.id);
+        collision.x5t_s256 = "d".repeat(64);
+        let err = repo
+            .store_workload_certificate(&collision)
+            .await
+            .expect_err("workload certificate ID collision with another identity must fail");
+        assert!(
+            matches!(err, qid_core::error::QidError::Conflict { .. }),
+            "certificate identity collision must be a conflict, got: {}",
+            err.message()
+        );
+        assert_eq!(
+            repo.list_workload_certificates(&realm, Some(&workload.id))
+                .await
+                .expect("list incumbent workload certificate failed"),
+            vec![certificate.clone()],
+            "identity collision changed the incumbent certificate"
+        );
+        assert!(
+            repo.list_workload_certificates(collision_realm, Some(&collision_workload.id))
+                .await
+                .expect("list colliding workload certificates failed")
+                .is_empty(),
+            "identity collision inserted a certificate for the other workload"
+        );
+    }
 
     repo.revoke_workload_certificate(&realm, &certificate.id, 1_800_000_100)
         .await

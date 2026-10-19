@@ -60,6 +60,18 @@ impl WorkloadRepository for FileRepository {
                 message: "workload certificate identity does not match workload".to_string(),
             });
         }
+        crate::ownership::ensure_same_binding(
+            store
+                .workload_certificates
+                .get(&certificate.id)
+                .map(|stored| (&stored.realm_id, &stored.workload_id, &stored.spiffe_id)),
+            (
+                &certificate.realm_id,
+                &certificate.workload_id,
+                &certificate.spiffe_id,
+            ),
+            || "workload certificate ID belongs to another identity".to_string(),
+        )?;
         if store.workload_certificates.values().any(|stored| {
             stored.id != certificate.id
                 && stored.realm_id == certificate.realm_id

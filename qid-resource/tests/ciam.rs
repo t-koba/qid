@@ -350,7 +350,7 @@ async fn ciam_identity_link_id_cannot_be_reused_by_a_foreign_realm_user() {
         &cookie,
     );
     let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
         state
             .repo
@@ -378,34 +378,97 @@ async fn ciam_identity_link_id_cannot_be_reused_by_a_foreign_realm_user() {
 }
 
 #[tokio::test]
-async fn ciam_identity_links_are_persisted_lookupable_and_audited() {
+async fn ciam_session_cannot_assert_external_identity_links() {
     let (app, state) = setup().await;
     let cookie = add_session(&state, "user-ciam").await;
-    let create_request = with_cookie(
-        Request::builder()
-            .method(Method::POST)
-            .uri("/api/v1/test/ciam/identity-links")
-            .header("Content-Type", "application/json")
-            .body(Body::from(
-                r#"{
-                    "id":"link-route-1",
-                    "realm_id":"ignored",
-                    "user_id":"user-ciam",
-                    "provider":"google",
-                    "external_subject":"google-subject-1",
-                    "external_email":"social@example.com",
-                    "profile_json":{"name":"Social User"},
-                    "linked_at_epoch_seconds":1800000400,
-                    "verified":true
-                }"#,
-            ))
+    let realm = RealmId("test".to_string());
+    let incumbent = qid_core::models::CiamIdentityLink {
+        id: "trusted-link".to_string(),
+        realm_id: realm.0.clone(),
+        user_id: "user-ciam".to_string(),
+        provider: "google".to_string(),
+        external_subject: "trusted-subject".to_string(),
+        external_email: None,
+        profile_json: serde_json::json!({}),
+        linked_at_epoch_seconds: 1_800_000_400,
+        verified: true,
+    };
+    state
+        .repo
+        .store_ciam_identity_link(&incumbent)
+        .await
+        .unwrap();
+    let audits_before = serde_json::to_value(
+        state
+            .repo
+            .list_audit_events(Some(&realm), 10)
+            .await
             .unwrap(),
-        &cookie,
-    );
-    let create_response = app.clone().oneshot(create_request).await.unwrap();
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let created = json(create_response).await;
-    assert_eq!(created["realm_id"], "test");
+    )
+    .unwrap();
+    for verified in [true, false] {
+        for id in ["new-link", "trusted-link"] {
+            let mut submitted = incumbent.clone();
+            submitted.id = id.to_string();
+            submitted.verified = verified;
+            submitted.profile_json = serde_json::json!({"name": "Untrusted update"});
+            let request = || {
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/test/ciam/identity-links")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&submitted).unwrap()))
+                    .unwrap()
+            };
+            // Authentication must still run before the proof-required rejection.
+            let unauthenticated = app.clone().oneshot(request()).await.unwrap();
+            assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+            let response = app
+                .clone()
+                .oneshot(with_cookie(request(), &cookie))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                state
+                    .repo
+                    .list_ciam_identity_links(&realm, "user-ciam")
+                    .await
+                    .unwrap(),
+                vec![incumbent.clone()]
+            );
+            assert_eq!(
+                serde_json::to_value(
+                    state
+                        .repo
+                        .list_audit_events(Some(&realm), 10)
+                        .await
+                        .unwrap()
+                )
+                .unwrap(),
+                audits_before
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn ciam_trusted_identity_links_are_listed_lookupable_and_deletions_audited() {
+    let (app, state) = setup().await;
+    let cookie = add_session(&state, "user-ciam").await;
+    // Only a trusted provider-validated writer can establish this mapping.
+    let link = qid_core::models::CiamIdentityLink {
+        id: "link-route-1".to_string(),
+        realm_id: "test".to_string(),
+        user_id: "user-ciam".to_string(),
+        provider: "google".to_string(),
+        external_subject: "google-subject-1".to_string(),
+        external_email: Some("social@example.com".to_string()),
+        profile_json: serde_json::json!({"name": "Social User"}),
+        linked_at_epoch_seconds: 1_800_000_400,
+        verified: true,
+    };
+    state.repo.store_ciam_identity_link(&link).await.unwrap();
 
     let list_request = with_cookie(
         Request::builder()
@@ -473,7 +536,7 @@ async fn ciam_identity_links_are_persisted_lookupable_and_audited() {
         .iter()
         .map(|event| event.action.as_str())
         .collect::<Vec<_>>();
-    assert!(actions.contains(&"ciam.identity_link.create"));
+    assert!(!actions.contains(&"ciam.identity_link.create"));
     assert!(actions.contains(&"ciam.identity_link.delete"));
     assert!(
         audits

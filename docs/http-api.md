@@ -249,8 +249,8 @@ realms return HTTP 404.
 | `GET` | `/api/v1/:realm/ciam/passwordless/campaign` | Passwordless campaign. |
 | `POST` | `/api/v1/:realm/ciam/consent/evaluate` | Evaluate consent. |
 | `POST` | `/api/v1/:realm/ciam/consent/grants` | Grant consent. Grant IDs are global and bound to `(realm, user, client)`; foreign-owner ID reuse returns `409 Conflict` without changing the incumbent. Same-owner updates remain supported. |
-| `POST` | `/api/v1/:realm/ciam/identity-links` | Create or update identity link. |
-| `POST` | `/api/v1/:realm/ciam/identity-links/lookup` | Lookup identity link. |
+| `POST` | `/api/v1/:realm/ciam/identity-links` | Session authentication required; all writes return `400 Bad Request` because this surface has no provider proof. No link or create audit is persisted. |
+| `POST` | `/api/v1/:realm/ciam/identity-links/lookup` | Lookup a verified identity link only. |
 | `GET` | `/api/v1/:realm/ciam/users/:user_id/identity-links` | List identity links. |
 | `DELETE` | `/api/v1/:realm/ciam/identity-links/:link_id` | Delete identity link. |
 | `GET` | `/api/v1/:realm/ciam/privacy/:user_id` | Privacy dashboard. |
@@ -260,13 +260,19 @@ realms return HTTP 404.
 | `POST` | `/api/v1/:realm/ciam/password-reset/consume` | Consume password reset. |
 | `POST` | `/api/v1/:realm/ciam/protection/evaluate` | Protection/risk evaluation. |
 
-Identity-link IDs are global and bound to `(realm_id, user_id)`. For an existing ID,
-`provider` and `external_subject` are immutable. Reusing an ID for a different owner
-or identity key returns `409 Conflict` without changing the incumbent. Same-owner
-profile/contact updates remain supported, but `verified: true` cannot revert to
-`false` (rejected with `400 Bad Request`, or `409 Conflict` if a concurrent update
-verified the link). External subjects remain unique per realm and provider across
-different IDs; duplicates are rejected with `400 Bad Request`.
+Identity links are written only by trusted federation callbacks after validating provider
+assertions. The session-only POST surface rejects both `verified: true` and
+`verified: false` after authentication with `400 Bad Request`; a local session is
+not proof of control over an external identity. List/delete and the privacy dashboard
+remain available to the owning session; external-subject lookup ignores unverified
+legacy rows, which cannot authenticate or reserve a subject.
+
+At the storage boundary, identity-link IDs are global and bound to
+`(realm_id, user_id, provider, external_subject)`. Reusing an ID for another owner or
+identity key conflicts without changing the incumbent. Same-owner profile/contact
+updates and verification promotion remain supported, but verified links cannot be
+downgraded. External subjects are unique per realm/provider among verified links
+only; a trusted verified mapping can coexist with unverified legacy rows.
 
 ## Device, workload, SPIFFE
 

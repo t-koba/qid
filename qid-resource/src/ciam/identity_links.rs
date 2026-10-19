@@ -30,17 +30,11 @@ pub async fn identity_link_create<R: Repository>(
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.user_id).await {
         return e;
     }
-    let mut link = req;
-    link.realm_id = realm.clone();
-    if let Err(err) = state.repo.store_ciam_identity_link(&link).await {
-        return qid_http::error_response(err);
-    }
-    let event =
-        ciam_identity_link_audit_event(&realm, &link, "ciam.identity_link.create", "created");
-    if let Err(err) = state.repo.append_audit_event(&event).await {
-        return qid_http::error_response(err);
-    }
-    (StatusCode::CREATED, Json(link)).into_response()
+    // A session proves local ownership, not control of a provider identity.
+    qid_http::error_response(qid_core::error::QidError::BadRequest {
+        message: "Identity links require a verified provider assertion through federation"
+            .to_string(),
+    })
 }
 
 pub async fn identity_links_list<R: Repository>(

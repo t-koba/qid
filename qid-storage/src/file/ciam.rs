@@ -118,7 +118,9 @@ impl CiamRepository for FileRepository {
             });
         }
         if store.ciam_identity_links.values().any(|stored| {
-            stored.id != link.id
+            link.verified
+                && stored.verified
+                && stored.id != link.id
                 && stored.realm_id == link.realm_id
                 && stored.provider == link.provider
                 && stored.external_subject == link.external_subject
@@ -178,7 +180,8 @@ impl CiamRepository for FileRepository {
             .ciam_identity_links
             .values()
             .find(|link| {
-                link.realm_id == realm_id.0
+                link.verified
+                    && link.realm_id == realm_id.0
                     && link.provider == provider
                     && link.external_subject == external_subject
             })

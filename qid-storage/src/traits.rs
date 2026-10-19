@@ -415,6 +415,10 @@ pub trait CiamRepository: Send + Sync + 'static {
         id: &str,
         consumed_at: u64,
     ) -> QidResult<()>;
+    /// Trusted federation callers must validate provider proof before storing verified links.
+    /// Session-only API callers cannot create or update links, regardless of verified status.
+    /// External subjects are unique per realm/provider among verified links only;
+    /// legacy unverified rows do not reserve a subject or prevent a trusted mapping.
     /// Store a link, atomically binding its global ID to its realm, user, provider and
     /// external subject. Reuse with another owner or identity key returns Conflict.
     /// Same-owner profile/contact updates are allowed; verified cannot revert to false.
@@ -430,6 +434,7 @@ pub trait CiamRepository: Send + Sync + 'static {
         realm_id: &RealmId,
         id: &str,
     ) -> QidResult<Option<CiamIdentityLink>>;
+    /// Resolve only verified links for authentication; ignore legacy unverified rows.
     async fn get_ciam_identity_link_by_external_subject(
         &self,
         realm_id: &RealmId,

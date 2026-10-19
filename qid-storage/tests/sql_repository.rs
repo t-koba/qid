@@ -868,6 +868,102 @@ async fn test_file_ciam_identity_link_id_binding() {
     assert_ciam_identity_link_id_binding(&file_repo("ciam_link_binding").await).await;
 }
 
+async fn assert_ciam_only_verified_subjects_authenticate(
+    repo: &(impl RealmRepository + UserRepository + CiamRepository),
+) {
+    let realm = RealmId::from("realm-link-trust");
+    repo.create_realm(
+        &"tenant-link-trust".into(),
+        &realm,
+        "https://trust.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    for id in ["legacy-owner", "trusted-owner"] {
+        repo.create_user(&User {
+            id: id.to_string(),
+            realm_id: realm.0.clone(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    }
+    let mut legacy = CiamIdentityLink {
+        id: "legacy-link".to_string(),
+        realm_id: realm.0.clone(),
+        user_id: "legacy-owner".to_string(),
+        provider: "google".to_string(),
+        external_subject: "shared-subject".to_string(),
+        external_email: None,
+        profile_json: serde_json::json!({}),
+        linked_at_epoch_seconds: 1_800_000_000,
+        verified: false,
+    };
+    repo.store_ciam_identity_link(&legacy).await.unwrap();
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(&realm, "google", "shared-subject")
+            .await
+            .unwrap(),
+        None
+    );
+    let mut trusted = legacy.clone();
+    trusted.id = "trusted-link".to_string();
+    trusted.user_id = "trusted-owner".to_string();
+    trusted.verified = true;
+    // An unverified row owned by someone else cannot reserve the provider subject.
+    repo.store_ciam_identity_link(&trusted).await.unwrap();
+    // Unverified rows can also be stored after a verified mapping exists.
+    legacy.id = "second-legacy-link".to_string();
+    repo.store_ciam_identity_link(&legacy).await.unwrap();
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(&realm, "google", "shared-subject")
+            .await
+            .unwrap(),
+        Some(trusted.clone())
+    );
+    // Neither a new verified ID nor promotion of a legacy row may steal the subject.
+    let mut duplicate = trusted.clone();
+    duplicate.id = "duplicate-verified-link".to_string();
+    assert!(repo.store_ciam_identity_link(&duplicate).await.is_err());
+    let mut promoted = legacy.clone();
+    promoted.verified = true;
+    assert!(repo.store_ciam_identity_link(&promoted).await.is_err());
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &legacy.id)
+            .await
+            .unwrap(),
+        Some(legacy)
+    );
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &duplicate.id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(&realm, "google", "shared-subject")
+            .await
+            .unwrap(),
+        Some(trusted)
+    );
+}
+
+#[tokio::test]
+async fn test_sql_ciam_only_verified_subjects_authenticate() {
+    assert_ciam_only_verified_subjects_authenticate(&sql_repo().await).await;
+}
+
+#[tokio::test]
+async fn test_file_ciam_only_verified_subjects_authenticate() {
+    assert_ciam_only_verified_subjects_authenticate(&file_repo("ciam_link_trust").await).await;
+}
+
 async fn assert_ciam_consent_grant_owner_conflict<R>(repo: &R)
 where
     R: RealmRepository + UserRepository + CiamRepository,

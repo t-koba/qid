@@ -153,8 +153,9 @@ impl CiamRepository for SqlRepository {
                 message: "CIAM identity link user belongs to another realm".to_string(),
             });
         }
-        if let Some(existing_id) = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM ciam_identity_links WHERE realm_id = ? AND provider = ? AND external_subject = ?",
+        if link.verified
+            && let Some(existing_id) = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM ciam_identity_links WHERE realm_id = ? AND provider = ? AND external_subject = ? AND verified = 1",
         )
         .bind(&link.realm_id)
         .bind(&link.provider)
@@ -232,7 +233,7 @@ impl CiamRepository for SqlRepository {
         external_subject: &str,
     ) -> QidResult<Option<CiamIdentityLink>> {
         let row: Option<CiamIdentityLinkRow> = sqlx::query_as(
-            "SELECT * FROM ciam_identity_links WHERE realm_id = ? AND provider = ? AND external_subject = ?",
+            "SELECT * FROM ciam_identity_links WHERE realm_id = ? AND provider = ? AND external_subject = ? AND verified = 1",
         )
         .bind(realm_id.as_str())
         .bind(provider)

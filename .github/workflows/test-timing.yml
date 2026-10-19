@@ -1,0 +1,33 @@
+name: Test Timing
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_TOOLCHAIN: "1.96"
+
+jobs:
+  timing:
+    name: Per-test timing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Build test executables
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo test --workspace --locked --no-run --message-format=json > "$RUNNER_TEMP/cargo-test-json.log"
+      - name: Collect per-test timings
+        run: python3 scripts/report-test-timings.py --input "$RUNNER_TEMP/cargo-test-json.log" --output "$RUNNER_TEMP/test-timings.csv" --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload per-test timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-timings-${{ github.run_id }}
+          path: ${{ runner.temp }}/test-timings.csv

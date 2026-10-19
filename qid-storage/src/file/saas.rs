@@ -72,6 +72,15 @@ impl SaasRepository for FileRepository {
                 message: "custom domain hostname already exists".to_string(),
             });
         }
+        if store
+            .custom_domains
+            .get(&domain.id)
+            .is_some_and(|existing| existing.tenant_id != domain.tenant_id)
+        {
+            return Err(QidError::Conflict {
+                message: "custom domain ID already belongs to another tenant".to_string(),
+            });
+        }
         store
             .custom_domains
             .insert(domain.id.clone(), domain.clone());

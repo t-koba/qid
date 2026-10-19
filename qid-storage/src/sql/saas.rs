@@ -45,9 +45,10 @@ impl SaasRepository for SqlRepository {
                 message: "custom domain realm belongs to another tenant".to_string(),
             });
         }
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO custom_domains (id, tenant_id, realm_id, hostname, certificate_ref, verified, verification_status, dns_challenge_name, dns_challenge_value, certificate_expires_at, certificate_renew_after, last_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, certificate_ref = excluded.certificate_ref, verified = excluded.verified, verification_status = excluded.verification_status, dns_challenge_name = excluded.dns_challenge_name, dns_challenge_value = excluded.dns_challenge_value, certificate_expires_at = excluded.certificate_expires_at, certificate_renew_after = excluded.certificate_renew_after, last_verified_at = excluded.last_verified_at",
+             ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, certificate_ref = excluded.certificate_ref, verified = excluded.verified, verification_status = excluded.verification_status, dns_challenge_name = excluded.dns_challenge_name, dns_challenge_value = excluded.dns_challenge_value, certificate_expires_at = excluded.certificate_expires_at, certificate_renew_after = excluded.certificate_renew_after, last_verified_at = excluded.last_verified_at \
+             WHERE custom_domains.tenant_id = excluded.tenant_id",
         )
         .bind(&domain.id)
         .bind(&domain.tenant_id)
@@ -64,6 +65,11 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "custom domain ID already belongs to another tenant".to_string(),
+            });
+        }
         Ok(())
     }
 

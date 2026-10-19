@@ -106,7 +106,7 @@ Admin mutations require admin authorization checks and, depending on config, rea
 | `DELETE` | `/admin/api/v1/:realm/clients/:client_id` | Delete client. |
 | `GET, POST` | `/admin/api/v1/:realm/service-accounts` | List/create service accounts. |
 | `DELETE` | `/admin/api/v1/:realm/service-accounts/:sa_id` | Delete service account. |
-| `GET, POST` | `/admin/api/v1/tenants/:tenant/custom-domains` | List/create custom domains. |
+| `GET, POST` | `/admin/api/v1/tenants/:tenant/custom-domains` | List/create or update same-tenant domains. IDs are global; reuse by another tenant returns `409 Conflict` without changing the incumbent. |
 | `DELETE` | `/admin/api/v1/tenants/:tenant/custom-domains/:domain_id` | Delete custom domain. |
 | `POST` | `/admin/api/v1/tenants/:tenant/custom-domains/:domain_id/activate` | Activate custom domain. |
 | `POST` | `/admin/api/v1/tenants/:tenant/custom-domains/:domain_id/renew-certificate` | Renew custom domain certificate. |

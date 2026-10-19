@@ -1607,11 +1607,45 @@ async fn assert_saas_repository_round_trip(
     repo.store_custom_domain(&domain)
         .await
         .expect("store custom domain failed");
-    let domains = repo
-        .list_custom_domains("tenant-saas")
+    let mut updated_domain = domain.clone();
+    updated_domain.certificate_ref = "kms://certificates/customer-login-renewed".to_string();
+    updated_domain.last_verified_at = Some(1_810_000_000);
+    repo.store_custom_domain(&updated_domain)
         .await
-        .expect("list custom domains failed");
-    assert_eq!(domains, vec![domain.clone()]);
+        .expect("same-owner custom-domain lifecycle update failed");
+    assert_eq!(
+        repo.list_custom_domains("tenant-saas")
+            .await
+            .expect("list same-owner updated custom domain failed"),
+        vec![updated_domain.clone()]
+    );
+
+    let mut colliding_domain = updated_domain.clone();
+    colliding_domain.tenant_id = "tenant-other".to_string();
+    colliding_domain.realm_id = "realm-other".to_string();
+    colliding_domain.hostname = "login.other.customer.example.com".to_string();
+    colliding_domain.certificate_ref = "kms://certificates/attacker".to_string();
+    let error = repo
+        .store_custom_domain(&colliding_domain)
+        .await
+        .expect_err("cross-tenant duplicate custom-domain ID must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate ID must have conflict semantics, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_custom_domains("tenant-saas")
+            .await
+            .expect("list incumbent custom domain after collision failed"),
+        vec![updated_domain.clone()]
+    );
+    assert!(
+        repo.list_custom_domains("tenant-other")
+            .await
+            .expect("list other tenant custom domains failed")
+            .is_empty()
+    );
+
     repo.delete_custom_domain("tenant-other", "domain-1")
         .await
         .expect("cross-tenant custom domain delete failed");
@@ -1619,7 +1653,7 @@ async fn assert_saas_repository_round_trip(
         repo.list_custom_domains("tenant-saas")
             .await
             .expect("list custom domains after cross-tenant delete failed"),
-        vec![domain.clone()]
+        vec![updated_domain.clone()]
     );
 
     let mut invalid_domain = domain.clone();

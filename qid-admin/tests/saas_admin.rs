@@ -7,8 +7,8 @@ use http_body_util::BodyExt;
 use qid_core::{
     config::{SamlProtocolConfig, SamlServiceProviderConfig},
     models::{
-        Admin, AdminApproval, AdminElevation, AuditEvent, Client, ClientType, PolicyBundle,
-        Session, User, default_client_jwks, default_token_endpoint_auth_method,
+        Admin, AdminApproval, AdminElevation, AuditEvent, Client, ClientType, CustomDomain,
+        PolicyBundle, Session, User, default_client_jwks, default_token_endpoint_auth_method,
     },
     state::SharedState,
     tenant::{RealmId, TenantId},
@@ -1049,6 +1049,102 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
             && event.metadata_json["admin_session"]["roles"][0] == "tenant.owner"
             && event.metadata_json["operation"]["tenant_id"] == "tenant-saas"
     }));
+}
+
+#[tokio::test]
+async fn custom_domain_cross_tenant_id_collision_returns_conflict_without_mutation() {
+    let (app, state) = setup().await;
+    seed_saas_realm_client(&state).await;
+    state
+        .repo
+        .create_realm(
+            &TenantId::from("tenant-other"),
+            &RealmId::from("realm-other"),
+            "https://other.customer.example.com",
+            Some("Other tenant realm"),
+        )
+        .await
+        .unwrap();
+
+    let incumbent = CustomDomain {
+        id: "domain-shared".to_string(),
+        tenant_id: "tenant-saas".to_string(),
+        realm_id: "realm-saas".to_string(),
+        hostname: "login.customer.example.com".to_string(),
+        certificate_ref: "kms://certificates/customer-login".to_string(),
+        verified: true,
+        verification_status: "active".to_string(),
+        dns_challenge_name: Some("_qid.login.customer.example.com".to_string()),
+        dns_challenge_value: Some("qid-domain-proof".to_string()),
+        certificate_expires_at: Some(1_900_000_000),
+        certificate_renew_after: Some(1_880_000_000),
+        last_verified_at: Some(1_800_000_000),
+    };
+    state.repo.store_custom_domain(&incumbent).await.unwrap();
+
+    let now = qid_core::util::now_seconds();
+    let other_admin = Admin {
+        id: "admin-tenant-other".to_string(),
+        tenant_id: "tenant-other".to_string(),
+        subject: "other-admin@example.com".to_string(),
+        roles: vec!["tenant.owner".to_string()],
+        created_at: now,
+    };
+    state.repo.upsert_admin(&other_admin).await.unwrap();
+    state
+        .repo
+        .store_admin_elevation(&AdminElevation {
+            id: "other-admin-session".to_string(),
+            tenant_id: "tenant-other".to_string(),
+            admin_id: other_admin.id,
+            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+            amr: vec!["pwd".to_string(), "hwk".to_string()],
+            elevation_expires_at: now + 120,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+
+    let mut request = json_request(
+        Method::POST,
+        "/admin/api/v1/tenants/tenant-other/custom-domains",
+        r#"{
+            "id":"domain-shared",
+            "tenant_id":"tenant-other",
+            "realm_id":"realm-other",
+            "hostname":"login.other.example.com",
+            "certificate_ref":"kms://certificates/other-login",
+            "verified":true,
+            "verification_status":"active",
+            "dns_challenge_name":"_qid.login.other.example.com",
+            "dns_challenge_value":"other-proof",
+            "certificate_expires_at":1900000000,
+            "certificate_renew_after":1880000000,
+            "last_verified_at":1800000000
+        }"#,
+    );
+    request.headers_mut().insert(
+        "x-qid-admin-actor",
+        "other-admin@example.com".parse().unwrap(),
+    );
+    request.headers_mut().insert(
+        "x-qid-admin-session-id",
+        "other-admin-session".parse().unwrap(),
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        state.repo.list_custom_domains("tenant-saas").await.unwrap(),
+        vec![incumbent]
+    );
+    assert!(
+        state
+            .repo
+            .list_custom_domains("tenant-other")
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

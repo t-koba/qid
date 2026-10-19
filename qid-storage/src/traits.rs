@@ -480,6 +480,8 @@ pub trait WorkloadRepository: Send + Sync + 'static {
 #[async_trait]
 pub trait SaasRepository: Send + Sync + 'static {
     async fn list_saas_tenant_ids(&self) -> QidResult<Vec<String>>;
+    /// Create or update a domain only under its incumbent tenant owner; a global ID
+    /// collision with another tenant returns Conflict without modifying the domain.
     async fn store_custom_domain(&self, domain: &CustomDomain) -> QidResult<()>;
     async fn list_custom_domains(&self, tenant_id: &str) -> QidResult<Vec<CustomDomain>>;
     async fn delete_custom_domain(&self, tenant_id: &str, id: &str) -> QidResult<()>;

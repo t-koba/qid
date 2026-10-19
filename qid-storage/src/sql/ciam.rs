@@ -7,9 +7,10 @@ impl CiamRepository for SqlRepository {
     async fn store_ciam_consent_grant(&self, grant: &CiamConsentGrant) -> QidResult<()> {
         grant.validate()?;
         crate::domain::validate_ciam_consent_grant_state(grant)?;
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO ciam_consent_grants (id, realm_id, user_id, client_id, granted_claims_json, terms_version, granted_at_epoch_seconds, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET granted_claims_json = excluded.granted_claims_json, terms_version = excluded.terms_version, revoked = excluded.revoked",
+             ON CONFLICT(id) DO UPDATE SET granted_claims_json = excluded.granted_claims_json, terms_version = excluded.terms_version, revoked = excluded.revoked \
+             WHERE ciam_consent_grants.realm_id = excluded.realm_id AND ciam_consent_grants.user_id = excluded.user_id AND ciam_consent_grants.client_id = excluded.client_id",
         )
         .bind(&grant.id)
         .bind(&grant.realm_id)
@@ -22,6 +23,11 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: format!("CIAM consent grant {} belongs to another owner", grant.id),
+            });
+        }
         Ok(())
     }
 

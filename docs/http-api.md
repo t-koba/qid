@@ -248,7 +248,7 @@ realms return HTTP 404.
 | `POST` | `/api/v1/:realm/ciam/passwordless/migrate` | Passwordless migration. |
 | `GET` | `/api/v1/:realm/ciam/passwordless/campaign` | Passwordless campaign. |
 | `POST` | `/api/v1/:realm/ciam/consent/evaluate` | Evaluate consent. |
-| `POST` | `/api/v1/:realm/ciam/consent/grants` | Grant consent. |
+| `POST` | `/api/v1/:realm/ciam/consent/grants` | Grant consent. Grant IDs are global and bound to `(realm, user, client)`; foreign-owner ID reuse returns `409 Conflict` without changing the incumbent. Same-owner updates remain supported. |
 | `POST` | `/api/v1/:realm/ciam/identity-links` | Create identity link. |
 | `POST` | `/api/v1/:realm/ciam/identity-links/lookup` | Lookup identity link. |
 | `GET` | `/api/v1/:realm/ciam/users/:user_id/identity-links` | List identity links. |

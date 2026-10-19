@@ -167,6 +167,133 @@ async fn ciam_consent_grant_drives_evaluation_and_privacy_dashboard() {
 }
 
 #[tokio::test]
+async fn ciam_consent_grant_id_is_bound_to_owner() {
+    let (app, state) = setup().await;
+    state
+        .repo
+        .create_user(&User {
+            id: "user-attacker".to_string(),
+            realm_id: "test".to_string(),
+            email: Some("attacker@example.com".to_string()),
+            email_verified: false,
+            display_name: Some("Attacker".to_string()),
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let victim_cookie = add_session(&state, "user-ciam").await;
+    let attacker_cookie = add_session(&state, "user-attacker").await;
+
+    let victim_grant = with_cookie(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/test/ciam/consent/grants")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "id":"consent-owner-route",
+                    "realm_id":"ignored",
+                    "user_id":"user-ciam",
+                    "client_id":"client-ciam",
+                    "granted_claims":["email"],
+                    "terms_version":"2026-06",
+                    "granted_at_epoch_seconds":1800000000,
+                    "revoked":false
+                }"#,
+            ))
+            .unwrap(),
+        &victim_cookie,
+    );
+    let victim_response = app.clone().oneshot(victim_grant).await.unwrap();
+    assert_eq!(victim_response.status(), StatusCode::CREATED);
+
+    let attacker_grant = with_cookie(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/test/ciam/consent/grants")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "id":"consent-owner-route",
+                    "realm_id":"ignored",
+                    "user_id":"user-attacker",
+                    "client_id":"client-ciam",
+                    "granted_claims":["phone"],
+                    "terms_version":"2026-06",
+                    "granted_at_epoch_seconds":1800000000,
+                    "revoked":false
+                }"#,
+            ))
+            .unwrap(),
+        &attacker_cookie,
+    );
+    let attacker_response = app.clone().oneshot(attacker_grant).await.unwrap();
+    assert_eq!(attacker_response.status(), StatusCode::CONFLICT);
+
+    let dashboard_request = with_cookie(
+        Request::builder()
+            .method(Method::GET)
+            .uri("/api/v1/test/ciam/privacy/user-ciam")
+            .body(Body::empty())
+            .unwrap(),
+        &victim_cookie,
+    );
+    let dashboard_response = app.clone().oneshot(dashboard_request).await.unwrap();
+    assert_eq!(dashboard_response.status(), StatusCode::OK);
+    let dashboard = json(dashboard_response).await;
+    assert_eq!(dashboard["consents"].as_array().map(Vec::len), Some(1));
+    assert_eq!(dashboard["consents"][0]["id"], "consent-owner-route");
+    assert_eq!(
+        dashboard["consents"][0]["granted_claims"],
+        serde_json::json!(["email"])
+    );
+
+    let evaluate_request = with_cookie(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/test/ciam/consent/evaluate")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "user_id":"user-ciam",
+                    "client_id":"client-ciam",
+                    "requested_claims":["email","phone"],
+                    "granted_claims":[],
+                    "sensitive_claims":["email","phone"]
+                }"#,
+            ))
+            .unwrap(),
+        &victim_cookie,
+    );
+    let evaluate_response = app.clone().oneshot(evaluate_request).await.unwrap();
+    assert_eq!(evaluate_response.status(), StatusCode::OK);
+    let evaluated = json(evaluate_response).await;
+    assert_eq!(
+        evaluated["evaluation"]["released_claims"],
+        serde_json::json!(["email"])
+    );
+    assert_eq!(
+        evaluated["evaluation"]["denied_claims"],
+        serde_json::json!(["phone"])
+    );
+
+    let attacker_dashboard = with_cookie(
+        Request::builder()
+            .method(Method::GET)
+            .uri("/api/v1/test/ciam/privacy/user-attacker")
+            .body(Body::empty())
+            .unwrap(),
+        &attacker_cookie,
+    );
+    let attacker_dashboard_response = app.oneshot(attacker_dashboard).await.unwrap();
+    assert_eq!(attacker_dashboard_response.status(), StatusCode::OK);
+    let attacker_view = json(attacker_dashboard_response).await;
+    assert_eq!(attacker_view["consents"], serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn ciam_identity_links_are_persisted_lookupable_and_audited() {
     let (app, state) = setup().await;
     let cookie = add_session(&state, "user-ciam").await;

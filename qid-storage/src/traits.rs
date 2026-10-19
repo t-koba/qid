@@ -388,6 +388,12 @@ pub trait FedCmRepository: Send + Sync + 'static {
 
 #[async_trait]
 pub trait CiamRepository: Send + Sync + 'static {
+    /// Store a CIAM consent grant.
+    ///
+    /// Grant IDs are global: an existing ID is bound to its incumbent owner
+    /// tuple `(realm_id, user_id, client_id)`. A store with the same ID but a
+    /// different owner tuple fails with [`qid_core::error::QidError::Conflict`]
+    /// and leaves the incumbent unchanged. Same-owner stores upsert.
     async fn store_ciam_consent_grant(&self, grant: &CiamConsentGrant) -> QidResult<()>;
     async fn list_ciam_consent_grants(
         &self,

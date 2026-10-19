@@ -728,6 +728,166 @@ async fn test_file_ciam_repository_round_trip() {
     assert_ciam_repository_round_trip(&repo).await;
 }
 
+async fn assert_ciam_consent_grant_owner_conflict<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CiamRepository,
+{
+    repo.create_realm(
+        &"tenant-consent".into(),
+        &"realm-consent".into(),
+        "https://consent.example.com",
+        Some("Consent realm"),
+    )
+    .await
+    .expect("create consent realm failed");
+    repo.create_realm(
+        &"tenant-consent".into(),
+        &"realm-consent-other".into(),
+        "https://consent-other.example.com",
+        Some("Other consent realm"),
+    )
+    .await
+    .expect("create other consent realm failed");
+    for (id, realm) in [
+        ("user-consent", "realm-consent"),
+        ("user-consent-other", "realm-consent"),
+        ("user-consent-realm", "realm-consent-other"),
+    ] {
+        repo.create_user(&User {
+            id: id.to_string(),
+            realm_id: realm.to_string(),
+            email: Some(format!("{id}@example.com")),
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .expect("create consent user failed");
+    }
+
+    let grant = CiamConsentGrant {
+        id: "consent-owner-1".to_string(),
+        realm_id: "realm-consent".to_string(),
+        user_id: "user-consent".to_string(),
+        client_id: "client-consent".to_string(),
+        granted_claims: vec!["email".to_string()],
+        terms_version: Some("2026-06".to_string()),
+        granted_at_epoch_seconds: 1_800_000_000,
+        revoked: false,
+    };
+    repo.store_ciam_consent_grant(&grant)
+        .await
+        .expect("store initial consent grant failed");
+
+    let mut updated = grant.clone();
+    updated.granted_claims = vec!["email".to_string(), "profile".to_string()];
+    repo.store_ciam_consent_grant(&updated)
+        .await
+        .expect("same-owner consent update failed");
+    assert_eq!(
+        repo.list_ciam_consent_grants(
+            &RealmId::from("realm-consent"),
+            "user-consent",
+            Some("client-consent")
+        )
+        .await
+        .expect("list same-owner consent failed"),
+        vec![updated.clone()]
+    );
+
+    let mut cross_user = updated.clone();
+    cross_user.user_id = "user-consent-other".to_string();
+    cross_user.granted_claims = vec!["phone".to_string()];
+    let error = repo
+        .store_ciam_consent_grant(&cross_user)
+        .await
+        .expect_err("cross-user consent ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-user reuse must conflict, got {error:?}"
+    );
+
+    let mut cross_realm = updated.clone();
+    cross_realm.realm_id = "realm-consent-other".to_string();
+    cross_realm.user_id = "user-consent-realm".to_string();
+    cross_realm.granted_claims = vec!["phone".to_string()];
+    let error = repo
+        .store_ciam_consent_grant(&cross_realm)
+        .await
+        .expect_err("cross-realm consent ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-realm reuse must conflict, got {error:?}"
+    );
+
+    let mut cross_client = updated.clone();
+    cross_client.client_id = "client-other".to_string();
+    cross_client.granted_claims = vec!["phone".to_string()];
+    let error = repo
+        .store_ciam_consent_grant(&cross_client)
+        .await
+        .expect_err("cross-client consent ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-client reuse must conflict, got {error:?}"
+    );
+
+    assert_eq!(
+        repo.list_ciam_consent_grants(
+            &RealmId::from("realm-consent"),
+            "user-consent",
+            Some("client-consent")
+        )
+        .await
+        .expect("list incumbent consent after collisions failed"),
+        vec![updated.clone()]
+    );
+    assert!(
+        repo.list_ciam_consent_grants(
+            &RealmId::from("realm-consent"),
+            "user-consent-other",
+            Some("client-consent")
+        )
+        .await
+        .expect("list cross-user consent failed")
+        .is_empty()
+    );
+    assert!(
+        repo.list_ciam_consent_grants(
+            &RealmId::from("realm-consent-other"),
+            "user-consent-realm",
+            Some("client-consent")
+        )
+        .await
+        .expect("list cross-realm consent failed")
+        .is_empty()
+    );
+    assert!(
+        repo.list_ciam_consent_grants(
+            &RealmId::from("realm-consent"),
+            "user-consent",
+            Some("client-other")
+        )
+        .await
+        .expect("list cross-client consent failed")
+        .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_sql_ciam_consent_grant_owner_conflict() {
+    let repo = sql_repo().await;
+    assert_ciam_consent_grant_owner_conflict(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_ciam_consent_grant_owner_conflict() {
+    let repo = file_repo("test_ciam_consent_owner").await;
+    assert_ciam_consent_grant_owner_conflict(&repo).await;
+}
+
 #[tokio::test]
 async fn test_sql_workload_certificate_round_trip() {
     let repo = sql_repo().await;

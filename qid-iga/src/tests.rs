@@ -14,6 +14,19 @@ fn low_risk_entitlement_can_be_auto_approved() {
 }
 
 #[test]
+fn approval_validation_rejects_expired_access_request() {
+    let catalog = default_entitlement_catalog();
+    let mut evaluation =
+        evaluate_access_request("user-1", "app:erp:read", &[], Some(3600), &catalog);
+    let now = now_seconds();
+    evaluation.expires_at_epoch_seconds = Some(now);
+
+    let validation = validate_access_request_approvals(&evaluation, &[], now);
+    assert!(!validation.valid);
+    assert_eq!(validation.violations, vec!["request_expired"]);
+}
+
+#[test]
 fn approval_records_must_satisfy_required_steps_before_grant() {
     let catalog = default_entitlement_catalog();
     let evaluation = evaluate_access_request("user-1", "app:erp:admin", &[], Some(3600), &catalog);

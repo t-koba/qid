@@ -9,13 +9,56 @@ use common::{
     ADMIN_SESSION_ID_HEADER, json, post_json, post_raw, request_with_headers,
     seed_default_erp_catalog, setup_app, store_iga_approval,
 };
-use qid_core::models::{IgaAccessGrantRecord, IgaAccessRequestRecord, IgaFindingRecord};
+use qid_core::models::{
+    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaApprovalRecord, IgaFindingRecord,
+};
 use qid_storage::{FileRepository, prelude::*};
 use std::sync::Arc;
 use tower::ServiceExt;
 
 async fn setup_with_repo() -> (Router, Arc<FileRepository>, String) {
     setup_app("qid-iga", Some("test"), "security-admin").await
+}
+
+async fn store_approved_jit_source_request(
+    repo: &FileRepository,
+    request_id: &str,
+    expires_at_epoch_seconds: Option<u64>,
+    approved_at_epoch_seconds: Option<u64>,
+) {
+    let now = qid_core::util::now_seconds();
+    let created_at_epoch_seconds = expires_at_epoch_seconds
+        .filter(|expires_at| *expires_at <= now)
+        .map_or(now, |expires_at| expires_at.saturating_sub(2));
+    repo.store_iga_access_request(&IgaAccessRequestRecord {
+        id: request_id.to_string(),
+        tenant_id: "test".to_string(),
+        subject: "user-1".to_string(),
+        entitlement: "app:custom:admin".to_string(),
+        reason: Some("Emergency fix".to_string()),
+        status: "approved".to_string(),
+        approval_steps_json: serde_json::json!([
+            {"approver":"security-admin","reason":"owner_approval_required"}
+        ]),
+        violations_json: serde_json::json!([]),
+        package_entitlement_ids_json: serde_json::json!([]),
+        expires_at_epoch_seconds,
+        created_at_epoch_seconds,
+    })
+    .await
+    .expect("store JIT source access request failed");
+    repo.store_iga_approval(&IgaApprovalRecord {
+        id: format!("stored-security-admin-{request_id}"),
+        tenant_id: "test".to_string(),
+        request_id: request_id.to_string(),
+        approver: "security-admin".to_string(),
+        decision: "approved".to_string(),
+        approved_at_epoch_seconds: approved_at_epoch_seconds.unwrap_or(now),
+        expires_at_epoch_seconds: None,
+        reason: Some("stored approval".to_string()),
+    })
+    .await
+    .expect("store JIT approval failed");
 }
 
 #[tokio::test]
@@ -1032,25 +1075,7 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
         .await
         .unwrap();
     assert_eq!(entitlement_response.status(), StatusCode::OK);
-    let now = qid_core::util::now_seconds();
-    repo.store_iga_access_request(&IgaAccessRequestRecord {
-        id: "jit-request-1".to_string(),
-        tenant_id: "test".to_string(),
-        subject: "user-1".to_string(),
-        entitlement: "app:custom:admin".to_string(),
-        reason: Some("Emergency fix".to_string()),
-        status: "approved".to_string(),
-        approval_steps_json: serde_json::json!([
-            {"approver":"security-admin","reason":"owner_approval_required"}
-        ]),
-        violations_json: serde_json::json!([]),
-        package_entitlement_ids_json: serde_json::json!([]),
-        expires_at_epoch_seconds: Some(now + 3600),
-        created_at_epoch_seconds: now,
-    })
-    .await
-    .expect("store JIT source access request failed");
-    store_iga_approval(&repo, "test", "jit-request-1", "security-admin", "approved").await;
+    store_approved_jit_source_request(&repo, "jit-request-1", None, None).await;
 
     let issue_body = post_raw(
         app.clone(),
@@ -1083,6 +1108,15 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
         "INC-1"
     );
     assert_eq!(issue_body["jit_privilege"]["revoked"], false);
+    assert_eq!(
+        issue_body["jit_privilege"]["expires_at_epoch_seconds"]
+            .as_u64()
+            .unwrap(),
+        issue_body["jit_privilege"]["issued_at_epoch_seconds"]
+            .as_u64()
+            .unwrap()
+            + 300
+    );
 
     let stored = repo
         .list_iga_jit_privilege_grants("test", Some("user-1"))
@@ -1109,6 +1143,7 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
     assert_eq!(list_body["jit_privileges"][0]["id"], grant_id);
 
     let revoke_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -1128,6 +1163,68 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
         .await
         .expect("list stored IGA JIT privilege grants after revoke failed");
     assert!(stored[0].revoked);
+
+    let expired_at = qid_core::util::now_seconds() - 1;
+    store_approved_jit_source_request(
+        &repo,
+        "jit-request-expired",
+        Some(expired_at),
+        Some(expired_at - 1),
+    )
+    .await;
+    let expired_response = app
+        .clone()
+        .oneshot(request_with_headers(
+            Method::POST,
+            "/iga/v1/jit-privileges",
+            serde_json::json!({
+                "request_id": "jit-request-expired",
+                "subject": "user-1",
+                "entitlement": "app:custom:admin",
+                "reason": "Emergency fix",
+                "duration_seconds": 300
+            }),
+            &session_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(expired_response.status(), StatusCode::BAD_REQUEST);
+    let stored = repo
+        .list_iga_jit_privilege_grants("test", Some("user-1"))
+        .await
+        .expect("list stored IGA JIT grants after expired request failed");
+    assert_eq!(stored.len(), 1);
+
+    let near_expiry = qid_core::util::now_seconds() + 240;
+    store_approved_jit_source_request(&repo, "jit-request-near-expiry", Some(near_expiry), None)
+        .await;
+    let near_expiry_body = post_json(
+        app,
+        "/iga/v1/jit-privileges",
+        serde_json::json!({
+            "request_id": "jit-request-near-expiry",
+            "subject": "user-1",
+            "entitlement": "app:custom:admin",
+            "reason": "Emergency fix",
+            "duration_seconds": 300
+        }),
+        &session_id,
+    )
+    .await;
+    assert_eq!(
+        near_expiry_body["jit_privilege"]["expires_at_epoch_seconds"],
+        near_expiry
+    );
+    let stored = repo
+        .list_iga_jit_privilege_grants("test", Some("user-1"))
+        .await
+        .expect("list stored IGA JIT grants after near-expiry request failed");
+    assert_eq!(stored.len(), 2);
+    assert!(
+        stored
+            .iter()
+            .any(|grant| grant.expires_at_epoch_seconds == near_expiry)
+    );
 }
 
 #[tokio::test]

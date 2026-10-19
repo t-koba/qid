@@ -710,11 +710,6 @@ pub(super) async fn issue_jit_privilege<R: Repository>(
             Err(response) => return *response,
         }
     }
-    let validation =
-        validate_access_request_approvals(&evaluation, &approval_records, now_seconds());
-    if !validation.valid {
-        return bad_request_response("jit_privilege_approval_evidence_invalid");
-    }
     let catalog = match catalog_for_tenant(&state, &tenant_id).await {
         Ok(catalog) => catalog,
         Err(error) => return storage_error_response("list_iga_entitlements", error),
@@ -732,6 +727,17 @@ pub(super) async fn issue_jit_privilege<R: Repository>(
     if req.duration_seconds > max_duration {
         return bad_request_response("jit_privilege_duration_exceeds_max");
     }
+    let now = now_seconds();
+    if evaluation
+        .expires_at_epoch_seconds
+        .is_some_and(|expires_at| expires_at <= now)
+    {
+        return bad_request_response("jit_privilege_access_request_expired");
+    }
+    let validation = validate_access_request_approvals(&evaluation, &approval_records, now);
+    if !validation.valid {
+        return bad_request_response("jit_privilege_approval_evidence_invalid");
+    }
     let approved_by = if matches!(
         entitlement.risk_level,
         EntitlementRiskLevel::High | EntitlementRiskLevel::Critical
@@ -740,7 +746,12 @@ pub(super) async fn issue_jit_privilege<R: Repository>(
     } else {
         None
     };
-    let now = now_seconds();
+    let requested_expiry = now + req.duration_seconds;
+    let expires_at_epoch_seconds = evaluation
+        .expires_at_epoch_seconds
+        .map_or(requested_expiry, |request_expiry| {
+            request_expiry.min(requested_expiry)
+        });
     let record = IgaJitPrivilegeGrantRecord {
         id: ulid::Ulid::new().to_string(),
         tenant_id: tenant_id.clone(),
@@ -750,7 +761,7 @@ pub(super) async fn issue_jit_privilege<R: Repository>(
         approved_by,
         reason: req.reason,
         issued_at_epoch_seconds: now,
-        expires_at_epoch_seconds: now + req.duration_seconds,
+        expires_at_epoch_seconds,
         revoked: false,
         constraints_json: req.constraints_json,
     };

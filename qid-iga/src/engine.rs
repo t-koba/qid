@@ -305,6 +305,12 @@ pub fn validate_access_request_approvals(
     if evaluation.status == AccessRequestStatus::Rejected {
         violations.push("request_rejected".to_string());
     }
+    if evaluation
+        .expires_at_epoch_seconds
+        .is_some_and(|expires_at| expires_at <= now_epoch_seconds)
+    {
+        violations.push("request_expired".to_string());
+    }
 
     let mut approved_by: HashMap<&str, &AccessApprovalRecord> = HashMap::new();
     for approval in approvals {

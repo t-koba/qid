@@ -295,9 +295,12 @@ async fn assertion_subject_context<R: Repository>(
 ) -> QidResult<AssertionSubjectContext> {
     let realm = RealmId(realm_id.to_string());
     let groups = scim_group_names_for_user(repo.list_scim_groups(&realm).await?, user);
-    let grants = repo
-        .list_iga_access_grants(realm_id, Some(user.id.as_str()))
-        .await?;
+    let grants = if let Some(tenant_id) = repo.get_realm_tenant(&realm).await? {
+        repo.list_iga_access_grants(&tenant_id, Some(user.id.as_str()))
+            .await?
+    } else {
+        Vec::new()
+    };
     let entitlements = active_entitlements(grants, now);
     let roles = role_claims_from_entitlements(&entitlements);
 
@@ -609,6 +612,89 @@ mod tests {
         assert_eq!(claims["entitlements"][1], "app:erp:read");
     }
 
+    #[tokio::test]
+    async fn assertion_subject_context_scopes_iga_to_tenant_and_scim_to_realm() {
+        let now = 1_800_000_000;
+        let path = std::env::temp_dir().join(format!(
+            "qid-proxy-assertion-tenant-{}.json",
+            ulid::Ulid::new()
+        ));
+        let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
+            .await
+            .expect("file repository");
+        repo.migrate().await.expect("file repository migration");
+        let tenant_id = qid_core::tenant::TenantId("company".to_string());
+        let realm_id = RealmId("employees".to_string());
+        repo.create_realm(&tenant_id, &realm_id, "https://employees.example.com", None)
+            .await
+            .expect("realm tenant binding stored");
+        let user = User {
+            id: "usr_01J".to_string(),
+            realm_id: "employees".to_string(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        };
+        for (id, realm_id, display_name) in [
+            ("realm-group", "employees", "finance"),
+            ("tenant-group", "company", "wrong-realm"),
+        ] {
+            repo.create_scim_group(&ScimGroup {
+                id: id.to_string(),
+                realm_id: realm_id.to_string(),
+                display_name: display_name.to_string(),
+                members_json: serde_json::json!([{"value": "usr_01J"}]),
+            })
+            .await
+            .expect("SCIM group stored");
+        }
+        for grant in [
+            grant_for_tenant(
+                "own-role",
+                "company",
+                "role:admin",
+                Some(now + 600),
+                false,
+                now,
+            ),
+            grant_for_tenant("own-read", "company", "app:erp:read", None, false, now),
+            grant_for_tenant(
+                "realm-collision",
+                "employees",
+                "role:wrong-tenant",
+                None,
+                false,
+                now,
+            ),
+            grant_for_tenant(
+                "own-expired",
+                "company",
+                "app:expired",
+                Some(now),
+                false,
+                now,
+            ),
+            grant_for_tenant("own-revoked", "company", "app:revoked", None, true, now),
+        ] {
+            repo.store_iga_access_grant(&grant)
+                .await
+                .expect("IGA grant stored");
+        }
+
+        let context = assertion_subject_context(&repo, "employees", &user, now)
+            .await
+            .expect("assertion context");
+
+        assert_eq!(context.groups, vec!["finance"]);
+        assert_eq!(context.entitlements, vec!["app:erp:read", "role:admin"]);
+        assert_eq!(context.roles, vec!["admin"]);
+        drop(repo);
+        std::fs::remove_file(path).expect("remove test repository");
+    }
+
     #[test]
     fn assertion_subject_context_helpers_extract_groups_entitlements_and_roles() {
         let now = 1_800_000_000;
@@ -772,9 +858,27 @@ mod tests {
         revoked: bool,
         now: u64,
     ) -> IgaAccessGrantRecord {
+        grant_for_tenant(
+            id,
+            "corp",
+            entitlement,
+            expires_at_epoch_seconds,
+            revoked,
+            now,
+        )
+    }
+
+    fn grant_for_tenant(
+        id: &str,
+        tenant_id: &str,
+        entitlement: &str,
+        expires_at_epoch_seconds: Option<u64>,
+        revoked: bool,
+        now: u64,
+    ) -> IgaAccessGrantRecord {
         IgaAccessGrantRecord {
             id: id.to_string(),
-            tenant_id: "corp".to_string(),
+            tenant_id: tenant_id.to_string(),
             request_id: format!("req-{id}"),
             subject: "usr_01J".to_string(),
             entitlement: entitlement.to_string(),

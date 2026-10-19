@@ -206,6 +206,55 @@ async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
     );
 }
 
+#[tokio::test]
+async fn catalog_upserts_reject_invalid_records_without_state_changes() {
+    let (app, repo, session_id) = setup_with_repo().await;
+    let invalid_entitlement = request_with_headers(
+        Method::POST,
+        "/iga/v1/entitlements",
+        serde_json::json!({
+            "id": "app:invalid:duration",
+            "display_name": "Invalid duration",
+            "owner": "security-admin",
+            "risk_level": "medium",
+            "max_duration_seconds": 0,
+            "active": true
+        }),
+        &session_id,
+    );
+    let response = app.clone().oneshot(invalid_entitlement).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json(response).await["error"], "iga_entitlement_invalid");
+    assert!(
+        repo.list_iga_entitlements("test")
+            .await
+            .expect("list entitlements after invalid upsert failed")
+            .is_empty()
+    );
+
+    let empty_package = request_with_headers(
+        Method::POST,
+        "/iga/v1/access-packages",
+        serde_json::json!({
+            "id": "pkg:invalid:empty",
+            "display_name": "Empty package",
+            "owner": "security-admin",
+            "entitlement_ids": [],
+            "approval_policy_json": {}
+        }),
+        &session_id,
+    );
+    let response = app.oneshot(empty_package).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json(response).await["error"], "iga_access_package_invalid");
+    assert!(
+        repo.list_iga_access_packages("test")
+            .await
+            .expect("list packages after invalid upsert failed")
+            .is_empty()
+    );
+}
+
 async fn seed_conflicting_erp_pair(app: &Router, session_id: &str) {
     for (id, conflicts) in [
         ("app:erp:admin", vec!["app:erp:audit"]),

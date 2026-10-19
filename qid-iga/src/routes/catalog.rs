@@ -44,25 +44,36 @@ pub(super) async fn upsert_entitlement<R: Repository>(
             Ok(context) => context,
             Err(response) => return response,
         };
-    let owner = match state.repo.list_iga_entitlements(&tenant_id).await {
-        Ok(existing) => existing
-            .into_iter()
-            .find(|entitlement| entitlement.id == req.id)
-            .map(|entitlement| entitlement.owner)
-            .unwrap_or_else(|| admin.subject.clone()),
-        Err(error) => return storage_error_response("list_iga_entitlements", error),
-    };
     let _ = &req.owner;
-    let record = IgaEntitlementRecord {
+    let mut record = IgaEntitlementRecord {
         id: req.id,
         tenant_id: tenant_id.clone(),
         display_name: req.display_name,
-        owner,
+        owner: admin.subject.clone(),
         risk_level: risk_level_as_str(&req.risk_level).to_string(),
         conflicting_entitlements: req.conflicting_entitlements,
         max_duration_seconds: req.max_duration_seconds,
         active: req.active,
     };
+    if let Err(error) = record.validate() {
+        return match error {
+            qid_core::error::QidError::BadRequest { .. } => {
+                bad_request_response("iga_entitlement_invalid")
+            }
+            error => storage_error_response("validate_iga_entitlement", error),
+        };
+    }
+    match state.repo.list_iga_entitlements(&tenant_id).await {
+        Ok(existing) => {
+            if let Some(existing) = existing
+                .into_iter()
+                .find(|entitlement| entitlement.id == record.id)
+            {
+                record.owner = existing.owner;
+            }
+        }
+        Err(error) => return storage_error_response("list_iga_entitlements", error),
+    }
     if let Err(error) = state.repo.store_iga_entitlement(&record).await {
         return storage_error_response("store_iga_entitlement", error);
     }
@@ -138,18 +149,6 @@ pub(super) async fn upsert_access_package<R: Repository>(
             Ok(context) => context,
             Err(response) => return response,
         };
-    let known_entitlements = match catalog_for_tenant(&state, &tenant_id).await {
-        Ok(catalog) => catalog
-            .into_iter()
-            .map(|entitlement| entitlement.id)
-            .collect::<HashSet<_>>(),
-        Err(error) => return storage_error_response("list_iga_entitlements", error),
-    };
-    for entitlement_id in &req.entitlement_ids {
-        if !known_entitlements.contains(entitlement_id) {
-            return bad_request_response("access_package_unknown_entitlement");
-        }
-    }
     let record = IgaAccessPackageRecord {
         id: req.id,
         tenant_id: tenant_id.clone(),
@@ -160,6 +159,26 @@ pub(super) async fn upsert_access_package<R: Repository>(
         max_duration_seconds: req.max_duration_seconds,
         active: req.active,
     };
+    if let Err(error) = record.validate() {
+        return match error {
+            qid_core::error::QidError::BadRequest { .. } => {
+                bad_request_response("iga_access_package_invalid")
+            }
+            error => storage_error_response("validate_iga_access_package", error),
+        };
+    }
+    let known_entitlements = match catalog_for_tenant(&state, &tenant_id).await {
+        Ok(catalog) => catalog
+            .into_iter()
+            .map(|entitlement| entitlement.id)
+            .collect::<HashSet<_>>(),
+        Err(error) => return storage_error_response("list_iga_entitlements", error),
+    };
+    for entitlement_id in &record.entitlement_ids {
+        if !known_entitlements.contains(entitlement_id) {
+            return bad_request_response("access_package_unknown_entitlement");
+        }
+    }
     if let Err(error) = state.repo.store_iga_access_package(&record).await {
         return storage_error_response("store_iga_access_package", error);
     }

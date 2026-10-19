@@ -34,7 +34,7 @@ fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-pub(crate) async fn require_admin_session<R: Repository>(
+pub(crate) async fn require_admin_session<R: AdminRepository>(
     headers: &HeaderMap,
     state: &Arc<SharedState<R>>,
 ) -> Result<Admin, axum::response::Response> {

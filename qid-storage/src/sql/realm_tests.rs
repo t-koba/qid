@@ -2,7 +2,7 @@ use super::*;
 
 async fn setup() -> (std::path::PathBuf, SqlRepository) {
     let path = std::env::temp_dir().join(format!("qid-realm-{}.db", ulid::Ulid::new()));
-    let repo = SqlRepository::connect(&format!("sqlite://{}", path.display()))
+    let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
         .await
         .unwrap();
     repo.migrate().await.unwrap();

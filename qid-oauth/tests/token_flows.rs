@@ -26,6 +26,25 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use tower::ServiceExt;
 
 static DB_SEQ: AtomicU16 = AtomicU16::new(0);
+static SCHEMA_TEMPLATE: tokio::sync::OnceCell<std::path::PathBuf> =
+    tokio::sync::OnceCell::const_new();
+
+/// Build and close one migrated schema for independent per-test database copies.
+async fn schema_template_path() -> &'static std::path::PathBuf {
+    SCHEMA_TEMPLATE
+        .get_or_init(|| async {
+            let path = std::env::temp_dir()
+                .join("qid_test_oauth")
+                .join("test_template.db");
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .unwrap();
+            repo.migrate().await.unwrap();
+            repo.close().await;
+            path
+        })
+        .await
+}
 
 fn db_url() -> String {
     let dir = std::env::temp_dir().join("qid_test_oauth");
@@ -207,8 +226,12 @@ async fn setup() -> (Router, String, Arc<SharedState<SqlRepository>>) {
 }
 
 async fn setup_with_config(config: QidConfig) -> (Router, String, Arc<SharedState<SqlRepository>>) {
-    let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
-    repo.migrate().await.unwrap();
+    let url = db_url();
+    let path = std::path::Path::new(url.strip_prefix("sqlite:").unwrap());
+    // Migrations are run once here and covered on fresh databases by qid-storage;
+    // copying keeps every OAuth case isolated without repeating the migration set.
+    std::fs::copy(schema_template_path().await, path).unwrap();
+    let repo = Arc::new(SqlRepository::connect(&url).await.unwrap());
     // Seed the realm so FK constraints are satisfied.
     repo.create_realm(
         &"tenant-1".into(),

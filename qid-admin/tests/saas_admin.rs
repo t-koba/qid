@@ -881,6 +881,27 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
         .unwrap();
     assert_eq!(app_response.status(), StatusCode::CREATED);
 
+    let duplicate_app_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/tenants/tenant-saas/app-catalog",
+            r#"{
+                "id":"app-1",
+                "tenant_id":"tenant-saas",
+                "realm_id":"realm-saas",
+                "display_name":"Overwrite attempt",
+                "category":"sales",
+                "oidc_client_id":"crm-client",
+                "saml_entity_id":null,
+                "scim_enabled":true,
+                "marketplace_connector_id":"connector-1"
+            }"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(duplicate_app_response.status(), StatusCode::CONFLICT);
+
     let usage_response = app
         .clone()
         .oneshot(json_request(

@@ -197,6 +197,11 @@ impl SaasRepository for FileRepository {
                 }
             }
         }
+        if store.app_catalog_entries.contains_key(&entry.id) {
+            return Err(QidError::Conflict {
+                message: "app catalog entry ID already exists".to_string(),
+            });
+        }
         store
             .app_catalog_entries
             .insert(entry.id.clone(), entry.clone());

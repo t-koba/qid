@@ -233,7 +233,14 @@ impl SaasRepository for SqlRepository {
         .bind(&entry.marketplace_connector_id)
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(|error| match &error {
+            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
+                QidError::Conflict {
+                    message: "app catalog entry ID already exists".to_string(),
+                }
+            }
+            _ => storage_to_qid_error(error),
+        })?;
         Ok(())
     }
 

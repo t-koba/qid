@@ -1809,6 +1809,36 @@ async fn assert_saas_repository_round_trip(
     repo.store_app_catalog_entry(&entry)
         .await
         .expect("store app catalog entry failed");
+
+    let mut colliding_entry = entry.clone();
+    colliding_entry.tenant_id = "tenant-other".to_string();
+    colliding_entry.realm_id = "realm-other".to_string();
+    colliding_entry.display_name = "Other tenant overwrite".to_string();
+    colliding_entry.oidc_client_id = None;
+    colliding_entry.saml_entity_id = Some("https://other-sp.example.com/metadata".to_string());
+    colliding_entry.scim_enabled = false;
+    colliding_entry.marketplace_connector_id = None;
+    let error = repo
+        .store_app_catalog_entry(&colliding_entry)
+        .await
+        .expect_err("global duplicate app catalog ID must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate ID must have consistent conflict semantics, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_app_catalog_entries("tenant-saas")
+            .await
+            .expect("list incumbent app catalog entry failed"),
+        vec![entry.clone()]
+    );
+    assert!(
+        repo.list_app_catalog_entries("tenant-other")
+            .await
+            .expect("list other tenant app catalog entries failed")
+            .is_empty()
+    );
+
     let entries = repo
         .list_app_catalog_entries("tenant-saas")
         .await

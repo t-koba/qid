@@ -110,7 +110,7 @@ Admin mutations require admin authorization checks and, depending on config, rea
 | `DELETE` | `/admin/api/v1/tenants/:tenant/custom-domains/:domain_id` | Delete custom domain. |
 | `POST` | `/admin/api/v1/tenants/:tenant/custom-domains/:domain_id/activate` | Activate custom domain. |
 | `POST` | `/admin/api/v1/tenants/:tenant/custom-domains/:domain_id/renew-certificate` | Renew custom domain certificate. |
-| `GET, POST` | `/admin/api/v1/tenants/:tenant/app-catalog` | List/create app catalog entries. |
+| `GET, POST` | `/admin/api/v1/tenants/:tenant/app-catalog` | List/create app catalog entries. IDs are globally unique; duplicate POST IDs return `409 Conflict` without replacing the incumbent. |
 | `DELETE` | `/admin/api/v1/tenants/:tenant/app-catalog/:entry_id` | Delete app catalog entry. |
 | `GET, POST` | `/admin/api/v1/tenants/:tenant/ciam-brands` | List/create CIAM brands. |
 | `DELETE` | `/admin/api/v1/tenants/:tenant/ciam-brands/:brand_id` | Delete CIAM brand. |

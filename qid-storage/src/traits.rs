@@ -486,6 +486,8 @@ pub trait SaasRepository: Send + Sync + 'static {
     async fn store_ciam_brand(&self, brand: &CiamBrand) -> QidResult<()>;
     async fn list_ciam_brands(&self, tenant_id: &str) -> QidResult<Vec<CiamBrand>>;
     async fn delete_ciam_brand(&self, tenant_id: &str, id: &str) -> QidResult<()>;
+    /// Create an entry with a globally unique ID; duplicate IDs return Conflict
+    /// without changing the existing entry.
     async fn store_app_catalog_entry(&self, entry: &AppCatalogEntry) -> QidResult<()>;
     async fn list_app_catalog_entries(&self, tenant_id: &str) -> QidResult<Vec<AppCatalogEntry>>;
     async fn delete_app_catalog_entry(&self, tenant_id: &str, id: &str) -> QidResult<()>;

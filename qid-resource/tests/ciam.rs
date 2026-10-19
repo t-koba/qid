@@ -586,7 +586,7 @@ async fn ciam_challenge_issue_routes_fail_without_delivery() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
         let response = json(response).await;
-        assert_eq!(response["error"], "challenge delivery is not configured");
+        assert_eq!(response["error"], "challenge delivery is not implemented");
         for field in ["id", "delivery_ref", "delivery_secret", "code", "token"] {
             assert!(
                 response.get(field).is_none(),
@@ -659,7 +659,7 @@ async fn ciam_password_reset_rejects_invalid_token_before_credential_write() {
 }
 
 #[tokio::test]
-async fn ciam_verification_confirmation_is_bound_to_route_realm() {
+async fn ciam_verification_confirmation_fails_closed_without_attempt_protection() {
     let (app, state) = setup().await;
     let now = qid_core::util::now_seconds();
     let issued = qid_resource::ciam::issue_verification_challenge(
@@ -691,8 +691,7 @@ async fn ciam_verification_confirmation_is_bound_to_route_realm() {
             created_at_epoch_seconds: now,
         })
         .await
-        .expect("store test verification challenge failed");
-
+        .expect("seed verification challenge failed");
     let body = serde_json::json!({
         "challenge_id": challenge.id,
         "channel": "email",
@@ -703,37 +702,47 @@ async fn ciam_verification_confirmation_is_bound_to_route_realm() {
         "expires_at_epoch_seconds": challenge.expires_at_epoch_seconds,
         "now_epoch_seconds": now,
     });
-    let confirm_request = |realm: &str| {
-        Request::builder()
-            .method(Method::POST)
-            .uri(format!("/api/v1/{realm}/ciam/verification/confirm"))
-            .header("Content-Type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    };
 
-    let wrong_realm_response = app.clone().oneshot(confirm_request("other")).await.unwrap();
-    assert_eq!(wrong_realm_response.status(), StatusCode::NOT_FOUND);
+    for realm in ["other", "test"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/{realm}/ciam/verification/confirm"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let response = json(response).await;
+        assert_eq!(
+            response["error"],
+            "verification delivery and attempt protection are not implemented"
+        );
+        for field in [
+            "challenge_id",
+            "delivery_secret",
+            "code",
+            "verified",
+            "consumed",
+        ] {
+            assert!(
+                response.get(field).is_none(),
+                "unexpected {field} in response"
+            );
+        }
+    }
+
     let record = state
         .repo
         .get_ciam_verification_challenge(&RealmId::from("test"), &challenge.id)
         .await
         .unwrap()
-        .expect("verification challenge disappeared after wrong-realm request");
+        .expect("verification challenge disappeared");
     assert_eq!(record.consumed_at_epoch_seconds, None);
-
-    let correct_realm_response = app.oneshot(confirm_request("test")).await.unwrap();
-    assert_eq!(correct_realm_response.status(), StatusCode::OK);
-    let result = json(correct_realm_response).await;
-    assert_eq!(result["verified"], true);
-    assert_eq!(result["consumed"], true);
-    let record = state
-        .repo
-        .get_ciam_verification_challenge(&RealmId::from("test"), &challenge.id)
-        .await
-        .unwrap()
-        .expect("verification challenge disappeared after valid confirmation");
-    assert!(record.consumed_at_epoch_seconds.is_some());
 }
 
 #[tokio::test]

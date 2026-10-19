@@ -9,7 +9,6 @@ use qid_core::{
     QidError, QidResult,
     models::{PasswordCredential, PasswordResetToken},
     state::SharedState,
-    tenant::RealmId,
     util,
 };
 use qid_crypto::{ARGON2ID_ALGORITHM, hash_password};
@@ -152,59 +151,15 @@ pub async fn verification_issue<R: Repository>(
     Path(_realm): Path<String>,
     Json(_req): Json<VerificationIssueRequest>,
 ) -> Response {
-    challenge_delivery_unavailable()
+    ciam_challenge_unavailable("challenge delivery is not implemented")
 }
 
 pub async fn verification_confirm<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    Path(realm): Path<String>,
-    Json(req): Json<VerificationConfirmRequest>,
+    State(_state): State<Arc<SharedState<R>>>,
+    Path(_realm): Path<String>,
+    Json(_req): Json<VerificationConfirmRequest>,
 ) -> Response {
-    let realm_id = RealmId(realm);
-    let record = match state
-        .repo
-        .get_ciam_verification_challenge(&realm_id, &req.challenge_id)
-        .await
-    {
-        Ok(Some(record)) => record,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error":"verification challenge not found"})),
-            )
-                .into_response();
-        }
-        Err(err) => return qid_http::error_response(err),
-    };
-    if record.consumed_at_epoch_seconds.is_some() {
-        return Json(VerificationConfirmResult {
-            verified: false,
-            consumed: false,
-            reason: Some("already_consumed".to_string()),
-        })
-        .into_response();
-    }
-    let effective = VerificationConfirmRequest {
-        code_hash: record.code_hash,
-        expires_at_epoch_seconds: record.expires_at_epoch_seconds,
-        address: record.address,
-        purpose: record.purpose,
-        ..req
-    };
-    let result = confirm_verification_challenge(&effective, &state.ciam_verification_pepper);
-    if result.verified
-        && let Err(err) = state
-            .repo
-            .consume_ciam_verification_challenge(
-                &realm_id,
-                &effective.challenge_id,
-                util::now_seconds(),
-            )
-            .await
-    {
-        return qid_http::error_response(err);
-    }
-    Json(result).into_response()
+    ciam_challenge_unavailable("verification delivery and attempt protection are not implemented")
 }
 
 pub async fn password_reset_issue<R: Repository>(
@@ -212,13 +167,13 @@ pub async fn password_reset_issue<R: Repository>(
     Path(_realm): Path<String>,
     Json(_req): Json<PasswordResetIssueRequest>,
 ) -> Response {
-    challenge_delivery_unavailable()
+    ciam_challenge_unavailable("challenge delivery is not implemented")
 }
 
-fn challenge_delivery_unavailable() -> Response {
+fn ciam_challenge_unavailable(message: &'static str) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({"error":"challenge delivery is not configured"})),
+        Json(serde_json::json!({"error":message})),
     )
         .into_response()
 }

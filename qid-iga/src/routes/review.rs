@@ -334,6 +334,15 @@ pub(super) async fn create_certification<R: Repository>(
         evidence_json: req.evidence_json,
         decided_at_epoch_seconds: now_seconds(),
     };
+    if let Err(error) = record.validate() {
+        return match error {
+            qid_core::error::QidError::BadRequest { .. } => {
+                bad_request_response("certification_invalid")
+            }
+            error => storage_error_response("validate_iga_certification", error),
+        };
+    }
+
     // Effects first, mirroring the campaign decision path: record only after
     // the revocation effects have applied.
     let revoked_grants = if matches!(req.decision, AccessReviewDecision::Revoke) {

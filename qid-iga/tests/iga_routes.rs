@@ -410,6 +410,53 @@ async fn revoke_certification_removes_packaged_member_access() {
         .unwrap()
         .to_string();
 
+    let active_grant = repo
+        .list_iga_access_grants("test", Some("user-1"))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|grant| grant.id == grant_id)
+        .unwrap();
+    assert!(!active_grant.revoked);
+
+    let invalid_response = app
+        .clone()
+        .oneshot(request_with_headers(
+            Method::POST,
+            "/iga/v1/certifications",
+            serde_json::json!({
+                "certification_type": "manager",
+                "campaign_id": "review-1",
+                "subject": "user-1",
+                "entitlement": "app:erp:admin",
+                "decision": "revoke",
+                "evidence_json": []
+            }),
+            &session_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json(invalid_response).await["error"],
+        "certification_invalid"
+    );
+
+    let unchanged_grant = repo
+        .list_iga_access_grants("test", Some("user-1"))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|grant| grant.id == grant_id)
+        .unwrap();
+    assert!(!unchanged_grant.revoked);
+    assert!(
+        repo.list_iga_certifications("test", None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
     // Revoking the member via certification revokes the packaged grant.
     let cert_body = post_json(
         app.clone(),

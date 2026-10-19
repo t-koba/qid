@@ -172,6 +172,8 @@ pub struct FileRepository {
     flush_hook: Arc<std::sync::Mutex<Option<persistence_tests::FlushHook>>>,
     #[cfg(test)]
     rotation_hook: Arc<std::sync::Mutex<Option<persistence_tests::RotationHook>>>,
+    #[cfg(test)]
+    write_hook: Arc<std::sync::Mutex<Option<persistence_tests::FlushHook>>>,
     _process_lock: Arc<ProcessLock>,
     dirty: Arc<AtomicBool>,
     flush_mode: FileFlushMode,
@@ -218,6 +220,8 @@ impl FileRepository {
             flush_hook: Arc::default(),
             #[cfg(test)]
             rotation_hook: Arc::default(),
+            #[cfg(test)]
+            write_hook: Arc::default(),
             _process_lock: Arc::new(process_lock),
             dirty: Arc::new(AtomicBool::new(false)),
             flush_mode,
@@ -305,6 +309,14 @@ impl FileRepository {
             .map_err(|e| QidError::Internal {
                 message: format!("failed to write temp store file: {e}"),
             })?;
+        #[cfg(test)]
+        {
+            // Pause inside the filesystem sequence, not just before persistence.
+            let hook = self.write_hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook.run().await?;
+            }
+        }
         // fsync the file and the directory for durability
         let file = tokio::fs::OpenOptions::new()
             .read(true)

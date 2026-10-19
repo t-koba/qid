@@ -4,10 +4,11 @@ use std::pin::Pin;
 use std::task::Poll;
 use tokio::sync::oneshot;
 
-// Consumed once, before snapshot/write. No global failpoint or scheduling
-// sleeps: each test controls exactly one flush failure.
+// Consumed once at the configured persistence stage. No global failpoint or
+// scheduling sleeps: each test controls exactly one pause and optional failure.
 #[derive(Debug)]
 pub(super) struct FlushHook {
+    fail: bool,
     entered: oneshot::Sender<()>,
     resume: oneshot::Receiver<()>,
 }
@@ -16,9 +17,13 @@ impl FlushHook {
     pub(super) async fn run(self) -> QidResult<()> {
         self.entered.send(()).unwrap();
         self.resume.await.unwrap();
-        Err(QidError::Internal {
-            message: "injected persistence failure".to_string(),
-        })
+        if self.fail {
+            Err(QidError::Internal {
+                message: "injected persistence failure".to_string(),
+            })
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -26,6 +31,7 @@ fn fail_next_flush(repo: &FileRepository) -> (oneshot::Receiver<()>, oneshot::Se
     let (entered, reached) = oneshot::channel();
     let (resume, paused) = oneshot::channel();
     *repo.flush_hook.lock().unwrap() = Some(FlushHook {
+        fail: true,
         entered,
         resume: paused,
     });
@@ -527,4 +533,86 @@ async fn interval_password_reset_marks_both_changes_dirty_and_retries_flush() {
     drop(repo);
     let repo = file.reopen().await;
     assert_reset(&repo, "new", Some(150)).await;
+}
+
+#[tokio::test]
+async fn cancelled_immediate_password_reset_finishes_persistence_or_rollback() {
+    for fail in [false, true] {
+        let (file, repo) = TestFile::new().await;
+        seed_reset(&repo).await;
+        let (entered, reached) = oneshot::channel();
+        let (resume, paused) = oneshot::channel();
+        *repo.write_hook.lock().unwrap() = Some(FlushHook {
+            fail,
+            entered,
+            resume: paused,
+        });
+        let realm = "test".into();
+        let credential = reset_credential("new");
+        let mut reset = Box::pin(repo.replace_password_with_reset_token(
+            "reset",
+            &realm,
+            "digest",
+            None,
+            &credential,
+            150,
+        ));
+        assert_pending(reset.as_mut()).await;
+        complete(reached).await.unwrap();
+        // The temp file has been written, but the live store is still isolated
+        // and the atomic rename has not happened. Cancel only the caller.
+        let tentative: Store =
+            serde_json::from_slice(&tokio::fs::read(file.0.with_extension("tmp")).await.unwrap())
+                .unwrap();
+        assert_eq!(tentative.credentials_password["user"].hash, "new");
+        assert_eq!(
+            tentative.password_reset_tokens["reset"].consumed_at_epoch_seconds,
+            Some(150)
+        );
+        drop(reset);
+        assert!(repo.store.try_read().is_err());
+        assert!(repo.save_lock.try_lock().is_err());
+        resume.send(()).unwrap();
+        // Acquiring save_lock waits for the independent task's commit/rollback.
+        drop(complete(repo.save_lock.lock()).await);
+        let (hash, consumed_at) = if fail {
+            ("previous", None)
+        } else {
+            ("new", Some(150))
+        };
+        assert_reset(&repo, hash, consumed_at).await;
+        drop(repo);
+        let repo = file.reopen().await;
+        assert_reset(&repo, hash, consumed_at).await;
+        if fail {
+            // Failure after cancellation must leave the token available to retry.
+            repo.replace_password_with_reset_token(
+                "reset",
+                &realm,
+                "digest",
+                None,
+                &credential,
+                150,
+            )
+            .await
+            .unwrap();
+        }
+        // A committed reset, including a successful retry, is still one-use.
+        assert!(
+            repo.replace_password_with_reset_token(
+                "reset",
+                &realm,
+                "digest",
+                None,
+                &reset_credential("replay"),
+                151,
+            )
+            .await
+            .is_err()
+        );
+        assert_reset(&repo, "new", Some(150)).await;
+        drop(repo);
+        let reopened = file.reopen().await;
+        assert_reset(&reopened, "new", Some(150)).await;
+    }
 }

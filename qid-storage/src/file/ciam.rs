@@ -249,70 +249,42 @@ impl CiamRepository for FileRepository {
         credential: &PasswordCredential,
         consumed_at: u64,
     ) -> QidResult<()> {
-        // Lock order is save -> store. Keep the exclusive Store lock through
-        // persistence/rollback so readers and unrelated writers cannot observe
-        // tentative credentials or have their changes overwritten by rollback.
-        let save_guard = if self.flush_mode == FileFlushMode::Immediate {
-            Some(self.save_lock.lock().await)
-        } else {
-            None
-        };
-        let mut store = self.store.write().await;
-        let token = store
-            .password_reset_tokens
-            .get(id)
-            .ok_or_else(|| QidError::NotFound {
-                resource: "password reset token".into(),
-            })?;
-        crate::domain::validate_password_reset(
-            token,
-            realm_id,
-            token_hash,
-            device_id,
-            credential,
-            consumed_at,
-        )?;
-        let previous = store
-            .credentials_password
-            .insert(credential.user_id.clone(), credential.clone());
-        store
-            .password_reset_tokens
-            .get_mut(id)
-            .unwrap()
-            .consumed_at_epoch_seconds = Some(consumed_at);
-        let Some(save_guard) = save_guard else {
-            // Mark dirty while still holding Store; interval flushes snapshot
-            // both mutations together and retain their existing retry semantics.
-            self.dirty.store(true, Ordering::Release);
-            return Ok(());
-        };
-        let result = async {
-            #[cfg(test)]
-            self.before_flush().await?;
-            let content = serde_json::to_string(&*store).map_err(|e| QidError::Internal {
-                message: format!("failed to serialize store: {e}"),
-            })?;
-            self.write_store_content_locked(&save_guard, &content).await
+        if self.flush_mode != FileFlushMode::Immediate {
+            return self
+                .replace_password_with_reset_token_inner(
+                    id,
+                    realm_id,
+                    token_hash,
+                    device_id,
+                    credential,
+                    consumed_at,
+                )
+                .await;
         }
-        .await;
-        if result.is_err() {
-            match previous {
-                Some(previous) => {
-                    store
-                        .credentials_password
-                        .insert(credential.user_id.clone(), previous);
-                }
-                None => {
-                    store.credentials_password.remove(&credential.user_id);
-                }
-            }
-            store
-                .password_reset_tokens
-                .get_mut(id)
-                .unwrap()
-                .consumed_at_epoch_seconds = None;
-        }
-        result
+        // Once started, immediate resets finish persistence or rollback even if
+        // the caller disappears during a filesystem await. The task owns the
+        // repository (including its process lock) until that work is complete.
+        let repo = self.clone();
+        let id = id.to_owned();
+        let realm_id = realm_id.clone();
+        let token_hash = token_hash.to_owned();
+        let device_id = device_id.map(str::to_owned);
+        let credential = credential.clone();
+        tokio::spawn(async move {
+            repo.replace_password_with_reset_token_inner(
+                &id,
+                &realm_id,
+                &token_hash,
+                device_id.as_deref(),
+                &credential,
+                consumed_at,
+            )
+            .await
+        })
+        .await
+        .map_err(|e| QidError::Internal {
+            message: format!("password reset task failed: {e}"),
+        })?
     }
 
     async fn get_ciam_progressive_profile(
@@ -391,5 +363,82 @@ impl CiamRepository for FileRepository {
                 .then_with(|| a.id.cmp(&b.id))
         });
         Ok(profiles)
+    }
+}
+
+impl FileRepository {
+    async fn replace_password_with_reset_token_inner(
+        &self,
+        id: &str,
+        realm_id: &RealmId,
+        token_hash: &str,
+        device_id: Option<&str>,
+        credential: &PasswordCredential,
+        consumed_at: u64,
+    ) -> QidResult<()> {
+        // Lock order is save -> store. Keep the exclusive Store lock through
+        // persistence/rollback so readers and unrelated writers cannot observe
+        // tentative credentials or have their changes overwritten by rollback.
+        let save_guard = if self.flush_mode == FileFlushMode::Immediate {
+            Some(self.save_lock.lock().await)
+        } else {
+            None
+        };
+        let mut store = self.store.write().await;
+        let token = store
+            .password_reset_tokens
+            .get(id)
+            .ok_or_else(|| QidError::NotFound {
+                resource: "password reset token".into(),
+            })?;
+        crate::domain::validate_password_reset(
+            token,
+            realm_id,
+            token_hash,
+            device_id,
+            credential,
+            consumed_at,
+        )?;
+        let previous = store
+            .credentials_password
+            .insert(credential.user_id.clone(), credential.clone());
+        store
+            .password_reset_tokens
+            .get_mut(id)
+            .unwrap()
+            .consumed_at_epoch_seconds = Some(consumed_at);
+        let Some(save_guard) = save_guard else {
+            // Mark dirty while still holding Store; interval flushes snapshot
+            // both mutations together and retain their existing retry semantics.
+            self.dirty.store(true, Ordering::Release);
+            return Ok(());
+        };
+        let result = async {
+            #[cfg(test)]
+            self.before_flush().await?;
+            let content = serde_json::to_string(&*store).map_err(|e| QidError::Internal {
+                message: format!("failed to serialize store: {e}"),
+            })?;
+            self.write_store_content_locked(&save_guard, &content).await
+        }
+        .await;
+        if result.is_err() {
+            match previous {
+                Some(previous) => {
+                    store
+                        .credentials_password
+                        .insert(credential.user_id.clone(), previous);
+                }
+                None => {
+                    store.credentials_password.remove(&credential.user_id);
+                }
+            }
+            store
+                .password_reset_tokens
+                .get_mut(id)
+                .unwrap()
+                .consumed_at_epoch_seconds = None;
+        }
+        result
     }
 }

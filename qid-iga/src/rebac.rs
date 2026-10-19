@@ -2,7 +2,7 @@
 //!
 //! Provides the core `check` and `expand` operations over relationship tuples.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use qid_core::{
@@ -96,97 +96,102 @@ pub async fn check<R: RebacRepository>(
 
 /// Expand the set of subjects that have `relation` on `(namespace, object_id)`.
 ///
-/// Uses a two-phase iterative approach:
-///   1. BFS to collect tuple groups at each level of the userset tree.
-///   2. Build the tree bottom-up from leaves.
+/// Uses two phases:
+///   1. BFS to read each reachable tuple group once, up to MAX_DEPTH.
+///   2. Render each path separately, preserving cyclic and depth-limited edges as leaves.
 pub async fn expand<R: RebacRepository>(
     repo: &R,
     namespace: &str,
     object_id: &str,
     relation: &str,
 ) -> QidResult<ExpandNode> {
-    // Phase 1: collect tuple groups by (namespace, object_id, relation) key.
     type TupleGroupKey = (String, String, String);
-
-    let mut groups: Vec<(TupleGroupKey, Vec<RelationshipTuple>)> = Vec::new();
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back((
-        namespace.to_string(),
-        object_id.to_string(),
-        relation.to_string(),
-        0usize,
-    ));
-
-    while let Some((ns, oid, rel, depth)) = queue.pop_front() {
-        if depth > MAX_DEPTH {
-            continue;
-        }
-        let tuples = repo.list_relationship_tuples(&ns, &oid, Some(&rel)).await?;
-        groups.push(((ns.clone(), oid.clone(), rel.clone()), tuples.clone()));
-        for t in &tuples {
-            if !t.subject_relation.is_empty() {
-                queue.push_back((
-                    t.subject_namespace.clone(),
-                    t.subject_id.clone(),
-                    t.subject_relation.clone(),
-                    depth + 1,
-                ));
-            }
-        }
-    }
-
-    // Phase 2: build tree bottom-up by processing groups in reverse order.
-    let mut node_cache: HashMap<TupleGroupKey, Vec<ExpandNode>> = HashMap::new();
-
-    for ((ns, oid, rel), tuples) in groups.into_iter().rev() {
-        let mut children = Vec::with_capacity(tuples.len());
-        for t in &tuples {
-            if t.subject_relation.is_empty() {
-                children.push(ExpandNode::Leaf {
-                    namespace: t.subject_namespace.clone(),
-                    subject_id: t.subject_id.clone(),
-                    subject_relation: None,
-                });
-            } else {
-                let sub_key = (
-                    t.subject_namespace.clone(),
-                    t.subject_id.clone(),
-                    t.subject_relation.clone(),
-                );
-                if let Some(grand_children) = node_cache.get(&sub_key).cloned() {
-                    if grand_children.is_empty() {
-                        children.push(ExpandNode::Leaf {
-                            namespace: t.subject_namespace.clone(),
-                            subject_id: t.subject_id.clone(),
-                            subject_relation: Some(t.subject_relation.clone()),
-                        });
-                    } else {
-                        children.push(ExpandNode::Branch {
-                            namespace: t.subject_namespace.clone(),
-                            object_id: t.subject_id.clone(),
-                            relation: t.subject_relation.clone(),
-                            children: grand_children,
-                        });
-                    }
-                } else {
-                    children.push(ExpandNode::Leaf {
-                        namespace: t.subject_namespace.clone(),
-                        subject_id: t.subject_id.clone(),
-                        subject_relation: Some(t.subject_relation.clone()),
-                    });
-                }
-            }
-        }
-        node_cache.insert((ns, oid, rel), children);
-    }
 
     let root_key = (
         namespace.to_string(),
         object_id.to_string(),
         relation.to_string(),
     );
-    let root_children = node_cache.remove(&root_key).unwrap_or_default();
+    let mut groups = HashMap::new();
+    let mut seen = HashSet::from([root_key.clone()]);
+    let mut queue = std::collections::VecDeque::from([(root_key.clone(), 0usize)]);
 
+    // BFS discovers each group at its shortest depth. Mark it seen on enqueue
+    // so shared and cyclic edges cannot duplicate either queue entries or reads.
+    while let Some((key, depth)) = queue.pop_front() {
+        let tuples = repo
+            .list_relationship_tuples(&key.0, &key.1, Some(&key.2))
+            .await?;
+        if depth < MAX_DEPTH {
+            for t in &tuples {
+                if !t.subject_relation.is_empty() {
+                    let sub_key = (
+                        t.subject_namespace.clone(),
+                        t.subject_id.clone(),
+                        t.subject_relation.clone(),
+                    );
+                    if seen.insert(sub_key.clone()) {
+                        queue.push_back((sub_key, depth + 1));
+                    }
+                }
+            }
+        }
+        groups.insert(key, tuples);
+    }
+
+    // A rendered subtree depends on its path and depth, not just its group key.
+    // Only raw tuples are shared; remove ancestors on return so siblings retain
+    // their own copies of shared children. Recursion is bounded by MAX_DEPTH.
+    fn render_children(
+        groups: &HashMap<TupleGroupKey, Vec<RelationshipTuple>>,
+        key: &TupleGroupKey,
+        depth: usize,
+        ancestry: &mut HashSet<TupleGroupKey>,
+    ) -> Vec<ExpandNode> {
+        let Some(tuples) = groups.get(key) else {
+            return Vec::new();
+        };
+        let mut children = Vec::with_capacity(tuples.len());
+        for t in tuples {
+            if !t.subject_relation.is_empty() && depth < MAX_DEPTH {
+                let sub_key = (
+                    t.subject_namespace.clone(),
+                    t.subject_id.clone(),
+                    t.subject_relation.clone(),
+                );
+                if groups.get(&sub_key).is_some_and(|group| !group.is_empty())
+                    && ancestry.insert(sub_key.clone())
+                {
+                    let grand_children = render_children(groups, &sub_key, depth + 1, ancestry);
+                    ancestry.remove(&sub_key);
+                    children.push(ExpandNode::Branch {
+                        namespace: t.subject_namespace.clone(),
+                        object_id: t.subject_id.clone(),
+                        relation: t.subject_relation.clone(),
+                        children: grand_children,
+                    });
+                    continue;
+                }
+            }
+            children.push(ExpandNode::Leaf {
+                namespace: t.subject_namespace.clone(),
+                subject_id: t.subject_id.clone(),
+                subject_relation: if t.subject_relation.is_empty() {
+                    None
+                } else {
+                    Some(t.subject_relation.clone())
+                },
+            });
+        }
+        children
+    }
+
+    let root_children = render_children(
+        &groups,
+        &root_key,
+        0,
+        &mut HashSet::from([root_key.clone()]),
+    );
     Ok(ExpandNode::Branch {
         namespace: namespace.to_string(),
         object_id: object_id.to_string(),
@@ -770,6 +775,212 @@ mod tests {
             assert_eq!(inner.len(), 1);
         }
         assert_eq!(count_alice_leaves(&tree), 2);
+    }
+
+    struct ReadCountingRepository {
+        tuples: Vec<RelationshipTuple>,
+        reads: std::sync::atomic::AtomicUsize,
+        max_reads: usize,
+    }
+
+    impl ReadCountingRepository {
+        fn new(tuples: Vec<RelationshipTuple>, max_reads: usize) -> Self {
+            Self {
+                tuples,
+                reads: std::sync::atomic::AtomicUsize::new(0),
+                max_reads,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RebacRepository for ReadCountingRepository {
+        async fn create_relationship_tuple(&self, _: &RelationshipTuple) -> QidResult<()> {
+            unreachable!("read-only expansion fixture")
+        }
+
+        async fn delete_relationship_tuple(&self, _: &RelationshipTuple) -> QidResult<()> {
+            unreachable!("read-only expansion fixture")
+        }
+
+        async fn list_relationship_tuples(
+            &self,
+            namespace: &str,
+            object_id: &str,
+            relation: Option<&str>,
+        ) -> QidResult<Vec<RelationshipTuple>> {
+            let reads = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            // Fail before a regression can allocate an exponentially large tree.
+            assert!(
+                reads <= self.max_reads,
+                "too many tuple-group reads: {reads}"
+            );
+            Ok(self
+                .tuples
+                .iter()
+                .filter(|t| {
+                    t.namespace == namespace
+                        && t.object_id == object_id
+                        && relation.is_none_or(|r| t.relation == r)
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn list_relationship_tuples_by_subject(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> QidResult<Vec<RelationshipTuple>> {
+            unreachable!("expansion reads by tuple group")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_expand_complete_three_group_cycle_reads_each_group_once() {
+        let mut tuples = Vec::new();
+        for parent in ["a", "b", "c"] {
+            for child in ["a", "b", "c"] {
+                tuples.push(userset("group", parent, "member", "group", child, "member"));
+            }
+        }
+        let repo = ReadCountingRepository::new(tuples, 3);
+        let tree = expand(&repo, "group", "a", "member").await.unwrap();
+        assert_eq!(repo.reads.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+        fn inspect(node: &ExpandNode, path: &mut HashSet<String>) -> (usize, usize) {
+            match node {
+                ExpandNode::Leaf {
+                    namespace,
+                    subject_id,
+                    subject_relation,
+                } => {
+                    assert_eq!(namespace, "group");
+                    assert_eq!(subject_relation.as_deref(), Some("member"));
+                    assert!(path.contains(subject_id), "only cyclic edges are leaves");
+                    (1, 0)
+                }
+                ExpandNode::Branch {
+                    namespace,
+                    object_id,
+                    relation,
+                    children,
+                } => {
+                    assert_eq!(namespace, "group");
+                    assert_eq!(relation, "member");
+                    assert!(path.insert(object_id.clone()), "cycle rendered as branch");
+                    assert_eq!(children.len(), 3, "every userset edge is preserved");
+                    let mut nodes = 1;
+                    let mut depth = 0;
+                    for child in children {
+                        let (child_nodes, child_depth) = inspect(child, path);
+                        nodes += child_nodes;
+                        depth = depth.max(child_depth + 1);
+                    }
+                    path.remove(object_id);
+                    (nodes, depth)
+                }
+            }
+        }
+        // Root, two one-hop branches and two two-hop branches; every repeated
+        // key is a leaf, including self-edges. No branch is dropped globally.
+        let (nodes, depth) = inspect(&tree, &mut HashSet::new());
+        assert_eq!(nodes, 16);
+        assert_eq!(depth, 3);
+    }
+
+    #[tokio::test]
+    async fn test_expand_max_depth_is_path_local_even_for_cached_groups() {
+        let mut tuples = vec![
+            userset("group", "g0", "member", "group", "shared", "member"),
+            direct("group", "shared", "member", "user", "alice"),
+        ];
+        for i in 0..MAX_DEPTH {
+            tuples.push(userset(
+                "group",
+                &format!("g{i}"),
+                "member",
+                "group",
+                &format!("g{}", i + 1),
+                "member",
+            ));
+        }
+        tuples.push(direct(
+            "group",
+            &format!("g{MAX_DEPTH}"),
+            "member",
+            "user",
+            "bob",
+        ));
+        tuples.push(userset(
+            "group",
+            &format!("g{MAX_DEPTH}"),
+            "member",
+            "group",
+            "shared",
+            "member",
+        ));
+        // 'shared' is cached at depth 1 but must not be expanded at depth 11.
+        let repo = ReadCountingRepository::new(tuples, MAX_DEPTH + 2);
+        let tree = expand(&repo, "group", "g0", "member").await.unwrap();
+        assert_eq!(count_alice_leaves(&tree), 1);
+        let mut node = &tree;
+        for depth in 0..=MAX_DEPTH {
+            let ExpandNode::Branch {
+                object_id,
+                children,
+                ..
+            } = node
+            else {
+                panic!("expected group branch at depth {depth}");
+            };
+            assert_eq!(object_id, &format!("g{depth}"));
+            assert_eq!(
+                children.len(),
+                if depth == 0 || depth == MAX_DEPTH {
+                    2
+                } else {
+                    1
+                }
+            );
+            if depth == MAX_DEPTH {
+                assert!(matches!(&children[0], ExpandNode::Leaf {
+                    subject_id, subject_relation: None, ..
+                } if subject_id == "bob"));
+                assert!(matches!(&children[1], ExpandNode::Leaf {
+                    subject_id, subject_relation: Some(relation), ..
+                } if subject_id == "shared" && relation == "member"));
+            } else {
+                node = children.last().unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_expand_empty_groups_keep_userset_leaves_and_root_branch() {
+        let repo = ReadCountingRepository::new(
+            vec![userset(
+                "group", "root", "member", "group", "missing", "member",
+            )],
+            3,
+        );
+        let tree = expand(&repo, "group", "root", "member").await.unwrap();
+        let ExpandNode::Branch { children, .. } = tree else {
+            panic!("expected root branch");
+        };
+        assert_eq!(children.len(), 1);
+        assert!(matches!(&children[0], ExpandNode::Leaf {
+            namespace, subject_id, subject_relation: Some(relation),
+        } if namespace == "group" && subject_id == "missing" && relation == "member"));
+        let empty = expand(&repo, "group", "missing", "member").await.unwrap();
+        assert!(matches!(empty, ExpandNode::Branch {
+            namespace, object_id, relation, children,
+        } if namespace == "group" && object_id == "missing"
+            && relation == "member" && children.is_empty()));
     }
 
     #[tokio::test]

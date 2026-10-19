@@ -808,9 +808,29 @@ fn scim_custom_schemas_are_reported_as_unsupported() {
     );
 }
 
+const SAML_TEST_CERTIFICATE_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIC/zCCAeegAwIBAgIUBklt5yFAf9IfAMSY3gfu71ytLNkwDQYJKoZIhvcNAQEL
+BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA2MjMxNjAwMThaFw0yNzA2MjMxNjAw
+MThaMA8xDTALBgNVBAMMBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
+AoIBAQC+s1dflRD/3v+RyxIvc38/kZqJOiihSPSgAn5bxza4TLK7WSwzFS4S4kaG
+wdYecsP9LB6NrOl2Hfx5y1nBOQQLHbQGMt9gzToVHcofQLn+2qqlOqtilGaNfYm6
+FURG71zn1WLgDT1cUuwHUjSLKjsIPuS12+mKwseyqK17g/VSWHs9aDTHZyzxAQjd
+v+4pD4r65We9L7N7ZWCogjBFmFrkExsn7csH1tMWgq5SQtuJzH4ksq8+iW+1uRoL
+5lg1gE9ICpogIAOtQhTMCvhmlJ0go5+eB2aX999ejTLkbllGG7L4Q3/wZ3j9bq7/
+jH4ElAfwASJn97wjePmVisPLzq+NAgMBAAGjUzBRMB0GA1UdDgQWBBRSr8sT8LIG
+mRyacAk/70h0hB1PCzAfBgNVHSMEGDAWgBRSr8sT8LIGmRyacAk/70h0hB1PCzAP
+BgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBfqg5gAEXnXeEkQuNf
+CqEMxeueHdLbRFAx36DgKVLju79dQthuzf1ivjBcxxIoXrA+Nfi1/cTxOH9nvEnk
+1vxhuPxsvSriC9pyTeMaV5pqmUG0hvaGpyRw2UHn1b3dIhG2wCtbVIDMtzDOOB4w
+VlgZPT+tfVzEVy9p2FTTJV62cwpo8+az/narUloBdH7sqK3Vdb0OLNFC4hvUaa03
+YC/puz1Ykv6XmDxAOVTkZ+xLJncQq7+l942aYoDdnb0+U2RbFxnSdF3ldu7f+TpN
+xXH34azFfDbpP5BnN1dZUOrFzmBUg/qlEXwe3eWCHGgA13q5p8PNw+SxETUnV9T6
+Cw5L
+-----END CERTIFICATE-----"#;
+
 #[test]
 fn saml_certificate_diagnostics_accept_pem_and_bare_base64() {
-    let pem = include_str!("../tests/data/saml-test-cert.pem");
+    let pem = SAML_TEST_CERTIFICATE_PEM;
     let bare_base64: String = pem
         .lines()
         .filter(|line| !line.starts_with("-----"))
@@ -844,7 +864,7 @@ fn saml_certificate_diagnostics_accept_pem_and_bare_base64() {
 
 #[test]
 fn saml_certificate_diagnostics_reject_malformed_and_preserve_validity_checks() {
-    let pem = include_str!("../tests/data/saml-test-cert.pem");
+    let pem = SAML_TEST_CERTIFICATE_PEM;
     let malformed_der = STANDARD.encode(b"not an X.509 certificate");
     let future =
         x509_parser::time::ASN1Time::from_timestamp(1_700_000_000).expect("fixed test timestamp");

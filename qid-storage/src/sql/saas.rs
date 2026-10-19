@@ -331,8 +331,8 @@ impl SaasRepository for SqlRepository {
 
     async fn store_usage_billing_event(&self, event: &UsageBillingEvent) -> QidResult<()> {
         event.validate()?;
-        sqlx::query(
-            "INSERT INTO usage_billing_events (id, tenant_id, meter, quantity, occurred_at, idempotency_key, dimensions_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO usage_billing_events (id, tenant_id, meter, quantity, occurred_at, idempotency_key, dimensions_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&event.id)
         .bind(&event.tenant_id)
@@ -344,6 +344,11 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "usage billing event ID already exists".to_string(),
+            });
+        }
         Ok(())
     }
 

@@ -303,10 +303,13 @@ impl SaasRepository for FileRepository {
     async fn store_usage_billing_event(&self, event: &UsageBillingEvent) -> QidResult<()> {
         event.validate()?;
         let mut store = self.store.write().await;
+        if store.usage_billing_events.contains_key(&event.id) {
+            return Err(QidError::Conflict {
+                message: "usage billing event ID already exists".to_string(),
+            });
+        }
         if store.usage_billing_events.values().any(|stored| {
-            stored.id != event.id
-                && stored.tenant_id == event.tenant_id
-                && stored.idempotency_key == event.idempotency_key
+            stored.tenant_id == event.tenant_id && stored.idempotency_key == event.idempotency_key
         }) {
             return Err(QidError::Storage {
                 message: "usage billing idempotency key already exists for tenant".to_string(),

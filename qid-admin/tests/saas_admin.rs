@@ -973,6 +973,46 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
         .unwrap();
     assert_eq!(usage_response.status(), StatusCode::CREATED);
 
+    let mut usage_collision_request = json_request(
+        Method::POST,
+        "/admin/api/v1/tenants/tenant-other/usage-billing-events",
+        r#"{
+            "id":"usage-1",
+            "tenant_id":"tenant-other",
+            "meter":"active_users",
+            "quantity":999,
+            "occurred_at":1700000100,
+            "idempotency_key":"tenant-other:usage-1",
+            "dimensions":{"realm":"realm-other"}
+        }"#,
+    );
+    usage_collision_request.headers_mut().insert(
+        "x-qid-admin-actor",
+        "other-admin@example.com".parse().unwrap(),
+    );
+    usage_collision_request.headers_mut().insert(
+        "x-qid-admin-session-id",
+        "other-admin-session".parse().unwrap(),
+    );
+    let usage_collision_response = app.clone().oneshot(usage_collision_request).await.unwrap();
+    assert_eq!(usage_collision_response.status(), StatusCode::CONFLICT);
+    let incumbent_usage = state
+        .repo
+        .list_usage_billing_events("tenant-saas", 10)
+        .await
+        .unwrap();
+    assert_eq!(incumbent_usage.len(), 1);
+    assert_eq!(incumbent_usage[0].id, "usage-1");
+    assert_eq!(incumbent_usage[0].quantity, 42);
+    assert!(
+        state
+            .repo
+            .list_usage_billing_events("tenant-other", 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
     let evidence_response = app
         .clone()
         .oneshot(json_request(

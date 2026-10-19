@@ -2375,26 +2375,72 @@ async fn assert_saas_repository_round_trip(
             .is_empty()
     );
 
-    repo.store_usage_billing_event(&sample_usage_billing_event("usage-older", 100))
+    let older_usage = sample_usage_billing_event("usage-older", 100);
+    let newer_usage = sample_usage_billing_event("usage-newer", 200);
+    repo.store_usage_billing_event(&older_usage)
         .await
         .expect("store older usage billing event failed");
-    repo.store_usage_billing_event(&sample_usage_billing_event("usage-newer", 200))
+    repo.store_usage_billing_event(&newer_usage)
         .await
         .expect("store newer usage billing event failed");
+
+    // Tenant-scoped idempotency-key uniqueness remains enforced across IDs.
     let mut duplicate_usage = sample_usage_billing_event("usage-duplicate", 300);
-    duplicate_usage.idempotency_key = "tenant-saas:usage-newer".to_string();
+    duplicate_usage.idempotency_key = newer_usage.idempotency_key.clone();
+    let error = repo
+        .store_usage_billing_event(&duplicate_usage)
+        .await
+        .expect_err("duplicate tenant idempotency key must remain rejected");
     assert!(
-        repo.store_usage_billing_event(&duplicate_usage)
-            .await
-            .is_err()
+        matches!(error, qid_core::error::QidError::Storage { .. }),
+        "duplicate tenant idempotency key must keep its storage rejection, got {error:?}"
     );
     let events = repo
         .list_usage_billing_events("tenant-saas", 1)
         .await
         .expect("list usage billing events failed");
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].id, "usage-newer");
-    assert_eq!(events[0].dimensions["realm"], "realm-saas");
+    assert_eq!(events, vec![newer_usage.clone()]);
+
+    // Event IDs are create-only even when the tenant and idempotency key match.
+    let mut same_tenant_duplicate = newer_usage.clone();
+    same_tenant_duplicate.quantity = 999;
+    let error = repo
+        .store_usage_billing_event(&same_tenant_duplicate)
+        .await
+        .expect_err("duplicate billing event ID must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate billing event ID must return Conflict, got {error:?}"
+    );
+
+    // A different tenant cannot replace the global ID or alter recorded usage.
+    let mut cross_tenant_collision = newer_usage.clone();
+    cross_tenant_collision.tenant_id = "tenant-other".to_string();
+    cross_tenant_collision.idempotency_key = "tenant-other:usage-newer".to_string();
+    cross_tenant_collision.quantity = 999;
+    cross_tenant_collision
+        .dimensions
+        .insert("realm".to_string(), "realm-other".to_string());
+    let error = repo
+        .store_usage_billing_event(&cross_tenant_collision)
+        .await
+        .expect_err("cross-tenant billing event ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-tenant billing event ID reuse must return Conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_usage_billing_events("tenant-saas", 10)
+            .await
+            .expect("list incumbent usage history failed"),
+        vec![newer_usage, older_usage]
+    );
+    assert!(
+        repo.list_usage_billing_events("tenant-other", 10)
+            .await
+            .expect("list other tenant usage history failed")
+            .is_empty()
+    );
 
     let pack = sample_compliance_evidence_pack();
     repo.store_compliance_evidence_pack(&pack)

@@ -518,6 +518,8 @@ pub trait SaasRepository: Send + Sync + 'static {
         tenant_id: &str,
     ) -> QidResult<Vec<MarketplaceConnector>>;
     async fn delete_marketplace_connector(&self, tenant_id: &str, id: &str) -> QidResult<()>;
+    /// Create an event with a globally unique ID; duplicate IDs return `Conflict`
+    /// without changing recorded usage. Idempotency keys remain unique per tenant.
     async fn store_usage_billing_event(&self, event: &UsageBillingEvent) -> QidResult<()>;
     async fn list_usage_billing_events(
         &self,

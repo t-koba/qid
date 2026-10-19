@@ -3484,3 +3484,53 @@ async fn test_file_siem_delivery_owner_contract() {
     let repo = file_repo("test_siem_owner_contract").await;
     assert_siem_delivery_owner_contract(&repo).await;
 }
+
+async fn assert_compliance_evidence_pack_create_only_contract<R>(repo: &R)
+where
+    R: SaasRepository,
+{
+    let incumbent = sample_compliance_evidence_pack();
+    repo.store_compliance_evidence_pack(&incumbent)
+        .await
+        .expect("initial compliance evidence pack insert failed");
+
+    let mut cross_tenant_collision = incumbent.clone();
+    cross_tenant_collision.tenant_id = "tenant-other".to_string();
+    cross_tenant_collision.controls = vec!["ATTACKER-CONTROL".to_string()];
+    cross_tenant_collision.object_uri = "s3://attacker/overwrite.jsonl".to_string();
+    cross_tenant_collision.sha256_hex = "f".repeat(64);
+    cross_tenant_collision.generated_at += 1;
+    let error = repo
+        .store_compliance_evidence_pack(&cross_tenant_collision)
+        .await
+        .expect_err("cross-tenant compliance pack ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate compliance pack ID must return Conflict, got {error:?}"
+    );
+
+    assert_eq!(
+        repo.list_compliance_evidence_packs("tenant-saas")
+            .await
+            .expect("list incumbent compliance packs failed"),
+        vec![incumbent]
+    );
+    assert!(
+        repo.list_compliance_evidence_packs("tenant-other")
+            .await
+            .expect("list other tenant compliance packs failed")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_sql_compliance_evidence_pack_create_only_contract() {
+    let repo = sql_repo().await;
+    assert_compliance_evidence_pack_create_only_contract(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_compliance_evidence_pack_create_only_contract() {
+    let repo = file_repo("test_compliance_evidence_pack_collision").await;
+    assert_compliance_evidence_pack_create_only_contract(&repo).await;
+}

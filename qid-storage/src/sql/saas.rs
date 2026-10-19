@@ -360,8 +360,8 @@ impl SaasRepository for SqlRepository {
 
     async fn store_compliance_evidence_pack(&self, pack: &ComplianceEvidencePack) -> QidResult<()> {
         pack.validate()?;
-        sqlx::query(
-            "INSERT INTO compliance_evidence_packs (id, tenant_id, period_start, period_end, controls_json, object_uri, sha256_hex, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO compliance_evidence_packs (id, tenant_id, period_start, period_end, controls_json, object_uri, sha256_hex, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&pack.id)
         .bind(&pack.tenant_id)
@@ -374,6 +374,11 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "compliance evidence pack ID already exists".to_string(),
+            });
+        }
         Ok(())
     }
 

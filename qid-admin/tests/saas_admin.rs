@@ -738,6 +738,28 @@ async fn admin_ui_shell_and_dashboard_report_operational_status() {
 async fn saas_admin_routes_create_list_delete_and_audit() {
     let (app, state) = setup().await;
     seed_saas_realm_client(&state).await;
+    let now = qid_core::util::now_seconds();
+    let other_admin = Admin {
+        id: "admin-tenant-other".to_string(),
+        tenant_id: "tenant-other".to_string(),
+        subject: "other-admin@example.com".to_string(),
+        roles: vec!["tenant.owner".to_string()],
+        created_at: now,
+    };
+    state.repo.upsert_admin(&other_admin).await.unwrap();
+    state
+        .repo
+        .store_admin_elevation(&AdminElevation {
+            id: "other-admin-session".to_string(),
+            tenant_id: "tenant-other".to_string(),
+            admin_id: other_admin.id,
+            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+            amr: vec!["pwd".to_string(), "hwk".to_string()],
+            elevation_expires_at: now + 120,
+            created_at: now,
+        })
+        .await
+        .unwrap();
 
     let domain_response = app
         .clone()
@@ -940,6 +962,35 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
         .await
         .unwrap();
     assert_eq!(evidence_response.status(), StatusCode::CREATED);
+
+    let mut conflicting_evidence_request = json_request(
+        Method::POST,
+        "/admin/api/v1/tenants/tenant-other/compliance-evidence-packs",
+        r#"{
+            "id":"evidence-1",
+            "tenant_id":"tenant-other",
+            "period_start":1700000000,
+            "period_end":1702592000,
+            "controls":["ATTACKER-CONTROL"],
+            "object_uri":"s3://attacker/overwrite.jsonl",
+            "sha256_hex":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "generated_at":1702592200
+        }"#,
+    );
+    conflicting_evidence_request.headers_mut().insert(
+        "x-qid-admin-actor",
+        "other-admin@example.com".parse().unwrap(),
+    );
+    conflicting_evidence_request.headers_mut().insert(
+        "x-qid-admin-session-id",
+        "other-admin-session".parse().unwrap(),
+    );
+    let conflicting_evidence_response = app
+        .clone()
+        .oneshot(conflicting_evidence_request)
+        .await
+        .unwrap();
+    assert_eq!(conflicting_evidence_response.status(), StatusCode::CONFLICT);
 
     let delegated_admin_response = app
         .clone()

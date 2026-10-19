@@ -522,6 +522,8 @@ pub trait SaasRepository: Send + Sync + 'static {
         tenant_id: &str,
         limit: usize,
     ) -> QidResult<Vec<UsageBillingEvent>>;
+    /// Create a pack with a globally unique ID; duplicate IDs return `Conflict`
+    /// without changing the incumbent pack or its listing.
     async fn store_compliance_evidence_pack(&self, pack: &ComplianceEvidencePack) -> QidResult<()>;
     async fn list_compliance_evidence_packs(
         &self,

@@ -338,6 +338,11 @@ impl SaasRepository for FileRepository {
     async fn store_compliance_evidence_pack(&self, pack: &ComplianceEvidencePack) -> QidResult<()> {
         pack.validate()?;
         let mut store = self.store.write().await;
+        if store.compliance_evidence_packs.contains_key(&pack.id) {
+            return Err(QidError::Conflict {
+                message: "compliance evidence pack ID already exists".to_string(),
+            });
+        }
         store
             .compliance_evidence_packs
             .insert(pack.id.clone(), pack.clone());

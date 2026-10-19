@@ -96,7 +96,7 @@ mod tests {
     use qid_storage::{FileRepository, SqlRepository};
     use std::sync::Arc;
 
-    async fn deleted_user_cannot_authenticate(repo: Arc<impl Repository>) {
+    async fn deleted_user_cannot_authenticate(repo: &Arc<impl Repository>) {
         repo.create_realm(
             &"tenant".into(),
             &"test".into(),
@@ -137,7 +137,7 @@ mod tests {
         }
         let state = SharedState::new(
             test_helpers::test_config(),
-            repo.clone(),
+            Arc::clone(repo),
             Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests")),
             serde_json::json!({}),
         )
@@ -184,7 +184,8 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("qid-session-deletion-{}.json", ulid::Ulid::new()));
         let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
-        deleted_user_cannot_authenticate(repo).await;
+        deleted_user_cannot_authenticate(&repo).await;
+        drop(repo);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -198,7 +199,9 @@ mod tests {
                 .unwrap(),
         );
         repo.migrate().await.unwrap();
-        deleted_user_cannot_authenticate(repo).await;
+        deleted_user_cannot_authenticate(&repo).await;
+        repo.close().await;
+        drop(repo);
         std::fs::remove_file(path).unwrap();
     }
 }

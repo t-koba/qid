@@ -70,6 +70,11 @@ impl SqlRepository {
         })
     }
 
+    /// Close the connection pool and wait for active connections to finish.
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
         MIGRATOR.run(&self.pool).await
     }

@@ -834,6 +834,448 @@ async fn test_file_ciam_repository_round_trip() {
     assert_ciam_repository_round_trip(&repo).await;
 }
 
+struct CiamDeletionFixture {
+    user: User,
+    password: PasswordCredential,
+    profile: CiamProgressiveProfile,
+    consent: CiamConsentGrant,
+    challenge: CiamVerificationChallengeRecord,
+    reset: PasswordResetToken,
+    link: CiamIdentityLink,
+}
+
+impl CiamDeletionFixture {
+    fn new(id: &str) -> Self {
+        Self {
+            user: User {
+                id: id.into(),
+                realm_id: "realm-ciam-delete".into(),
+                email: Some(format!("{id}@example.com")),
+                email_verified: true,
+                display_name: Some(id.into()),
+                failed_login_attempts: 0,
+                locked_until: None,
+                org: None,
+            },
+            password: PasswordCredential {
+                user_id: id.into(),
+                hash: format!("hash-{id}"),
+                algorithm: "argon2id".into(),
+                pepper_ref: None,
+            },
+            profile: CiamProgressiveProfile {
+                id: format!("profile-{id}"),
+                realm_id: "realm-ciam-delete".into(),
+                user_id: id.into(),
+                profile_json: serde_json::json!({"name": id}),
+                passwordless_migrated_at: Some(200),
+                created_at: 100,
+                updated_at: 200,
+            },
+            consent: CiamConsentGrant {
+                id: format!("consent-{id}"),
+                realm_id: "realm-ciam-delete".into(),
+                user_id: id.into(),
+                client_id: "client".into(),
+                granted_claims: vec!["email".into()],
+                terms_version: Some("v1".into()),
+                granted_at_epoch_seconds: 100,
+                revoked: false,
+            },
+            challenge: CiamVerificationChallengeRecord {
+                id: format!("challenge-{id}"),
+                realm_id: "realm-ciam-delete".into(),
+                user_id: id.into(),
+                channel: "email".into(),
+                address: format!("{id}@example.com"),
+                purpose: "email_verification".into(),
+                code_hash: "code-hash".into(),
+                expires_at_epoch_seconds: 900,
+                consumed_at_epoch_seconds: None,
+                created_at_epoch_seconds: 100,
+            },
+            reset: PasswordResetToken {
+                id: format!("reset-{id}"),
+                realm_id: "realm-ciam-delete".into(),
+                user_id: id.into(),
+                token_hash: "reset-hash".into(),
+                device_id: Some("device".into()),
+                risk_json: serde_json::json!({"score": 20}),
+                expires_at_epoch_seconds: 900,
+                consumed_at_epoch_seconds: None,
+                created_at_epoch_seconds: 100,
+            },
+            link: CiamIdentityLink {
+                id: format!("link-{id}"),
+                realm_id: "realm-ciam-delete".into(),
+                user_id: id.into(),
+                provider: "google".into(),
+                external_subject: format!("subject-{id}"),
+                external_email: Some(format!("{id}@example.com")),
+                profile_json: serde_json::json!({"name": id}),
+                linked_at_epoch_seconds: 200,
+                verified: true,
+            },
+        }
+    }
+
+    async fn store(&self, repo: &(impl UserRepository + CiamRepository)) {
+        repo.create_user(&self.user).await.unwrap();
+        repo.store_password_credential(&self.password)
+            .await
+            .unwrap();
+        repo.store_ciam_progressive_profile(&self.profile)
+            .await
+            .unwrap();
+        repo.store_ciam_consent_grant(&self.consent).await.unwrap();
+        repo.store_ciam_verification_challenge(&self.challenge)
+            .await
+            .unwrap();
+        repo.store_password_reset_token(&self.reset).await.unwrap();
+        repo.store_ciam_identity_link(&self.link).await.unwrap();
+    }
+
+    async fn assert_present(&self, repo: &(impl UserRepository + CiamRepository)) {
+        let realm = RealmId::from(self.user.realm_id.as_str());
+        assert_eq!(
+            serde_json::to_value(repo.get_user_by_id(&self.user.id).await.unwrap()).unwrap(),
+            serde_json::to_value(Some(&self.user)).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(repo.get_password_credential(&self.user.id).await.unwrap())
+                .unwrap(),
+            serde_json::to_value(Some(&self.password)).unwrap()
+        );
+        assert_eq!(
+            repo.get_ciam_progressive_profile(&realm, &self.user.id)
+                .await
+                .unwrap(),
+            Some(self.profile.clone())
+        );
+        assert_eq!(
+            repo.list_ciam_consent_grants(&realm, &self.user.id, None)
+                .await
+                .unwrap(),
+            vec![self.consent.clone()]
+        );
+        assert_eq!(
+            repo.get_ciam_verification_challenge(&realm, &self.challenge.id)
+                .await
+                .unwrap(),
+            Some(self.challenge.clone())
+        );
+        assert_eq!(
+            repo.get_password_reset_token(&self.reset.id).await.unwrap(),
+            Some(self.reset.clone())
+        );
+        assert_eq!(
+            repo.list_ciam_identity_links(&realm, &self.user.id)
+                .await
+                .unwrap(),
+            vec![self.link.clone()]
+        );
+        assert_eq!(
+            repo.get_ciam_identity_link(&realm, &self.link.id)
+                .await
+                .unwrap(),
+            Some(self.link.clone())
+        );
+        assert_eq!(
+            repo.get_ciam_identity_link_by_external_subject(
+                &realm,
+                &self.link.provider,
+                &self.link.external_subject
+            )
+            .await
+            .unwrap(),
+            Some(self.link.clone())
+        );
+    }
+
+    async fn assert_deleted(&self, repo: &(impl UserRepository + CiamRepository)) {
+        let realm = RealmId::from(self.user.realm_id.as_str());
+        assert!(repo.get_user_by_id(&self.user.id).await.unwrap().is_none());
+        assert!(
+            repo.get_password_credential(&self.user.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repo.get_ciam_progressive_profile(&realm, &self.user.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repo.list_ciam_consent_grants(&realm, &self.user.id, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            repo.get_ciam_verification_challenge(&realm, &self.challenge.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repo.get_password_reset_token(&self.reset.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repo.list_ciam_identity_links(&realm, &self.user.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            repo.get_ciam_identity_link(&realm, &self.link.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !repo
+                .list_ciam_passwordless_migrations(&realm)
+                .await
+                .unwrap()
+                .iter()
+                .any(|p| p.user_id == self.user.id)
+        );
+    }
+}
+
+async fn assert_ciam_user_deletion(
+    repo: &(impl RealmRepository + UserRepository + CiamRepository + SaasRepository + AuditRepository),
+) {
+    let realm = RealmId::from("realm-ciam-delete");
+    repo.create_realm(
+        &"tenant-saas".into(),
+        &realm,
+        "https://ciam.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    let victim = CiamDeletionFixture::new("victim");
+    let survivor = CiamDeletionFixture::new("survivor");
+    victim.store(repo).await;
+    survivor.store(repo).await;
+    victim.assert_present(repo).await;
+    survivor.assert_present(repo).await;
+    let brand = CiamBrand {
+        realm_id: realm.0.clone(),
+        ..sample_ciam_brand()
+    };
+    repo.store_ciam_brand(&brand).await.unwrap();
+    repo.append_audit_event(&AuditEvent {
+        id: "audit-victim".into(),
+        realm_id: Some(realm.0.clone()),
+        actor: victim.user.id.clone(),
+        action: "user.create".into(),
+        target_type: "user".into(),
+        target_id: victim.user.id.clone(),
+        reason: "test".into(),
+        metadata_json: serde_json::json!({}),
+        created_at: 100,
+        previous_hash: None,
+        event_hash: None,
+    })
+    .await
+    .unwrap();
+    let audit_before = repo.list_audit_events(Some(&realm), 10).await.unwrap();
+
+    repo.delete_user(&victim.user.id).await.unwrap();
+    victim.assert_deleted(repo).await;
+    survivor.assert_present(repo).await;
+    assert!(
+        repo.get_ciam_identity_link_by_external_subject(
+            &realm,
+            &victim.link.provider,
+            &victim.link.external_subject
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        repo.list_ciam_passwordless_migrations(&realm)
+            .await
+            .unwrap(),
+        vec![survivor.profile.clone()]
+    );
+    assert_eq!(
+        repo.list_ciam_brands(&brand.tenant_id).await.unwrap(),
+        vec![brand]
+    );
+    assert_eq!(
+        serde_json::to_value(repo.list_audit_events(Some(&realm), 10).await.unwrap()).unwrap(),
+        serde_json::to_value(audit_before).unwrap()
+    );
+    assert_eq!(
+        repo.get_realm_issuer(&realm).await.unwrap().as_deref(),
+        Some("https://ciam.example.com")
+    );
+
+    let reclaimed = CiamIdentityLink {
+        id: "link-reclaimed".into(),
+        user_id: survivor.user.id.clone(),
+        ..victim.link.clone()
+    };
+    repo.store_ciam_identity_link(&reclaimed).await.unwrap();
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(
+            &realm,
+            &reclaimed.provider,
+            &reclaimed.external_subject
+        )
+        .await
+        .unwrap(),
+        Some(reclaimed)
+    );
+}
+
+#[tokio::test]
+async fn test_sql_ciam_user_deletion() {
+    assert_ciam_user_deletion(&sql_repo().await).await;
+}
+
+#[tokio::test]
+async fn test_file_ciam_user_deletion_and_reopen() {
+    let path = std::env::temp_dir().join(format!("qid_ciam_delete_{}.json", ulid::Ulid::new()));
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    repo.migrate().await.unwrap();
+    assert_ciam_user_deletion(&repo).await;
+    drop(repo);
+
+    let reopened = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    CiamDeletionFixture::new("victim")
+        .assert_deleted(&reopened)
+        .await;
+    let realm = RealmId::from("realm-ciam-delete");
+    let reclaimed = reopened
+        .get_ciam_identity_link_by_external_subject(&realm, "google", "subject-victim")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reclaimed.user_id, "survivor");
+    // Remove only the newly claimed link so the survivor's original state can be compared exactly.
+    reopened
+        .delete_ciam_identity_link(&realm, &reclaimed.id)
+        .await
+        .unwrap();
+    CiamDeletionFixture::new("survivor")
+        .assert_present(&reopened)
+        .await;
+    assert_eq!(
+        reopened
+            .list_audit_events(Some(&realm), 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        reopened
+            .list_ciam_brands("tenant-saas")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn test_sql_ciam_identity_link_user_lifecycle_migration() {
+    let url = db_url();
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+    // Reproduce the legacy schema, including the verified-only unique index.
+    for sql in [
+        include_str!("../migrations/20250101000001_initial_schema.sql"),
+        include_str!("../migrations/20250618000031_ciam_identity_links.sql"),
+        include_str!("../migrations/20250630000010_ciam_verified_identity_subjects.sql"),
+    ] {
+        sqlx::raw_sql(sql).execute(&pool).await.unwrap();
+    }
+    sqlx::raw_sql(
+        "INSERT INTO realms (id, tenant_id, issuer) VALUES ('realm', 'tenant', 'https://id.example.com');
+         INSERT INTO users (id, realm_id) VALUES ('live', 'realm');
+         INSERT INTO ciam_identity_links VALUES
+             ('verified', 'realm', 'live', 'google', 'subject', 'social@example.com', '{\"name\":\"Live\"}', 200, 1),
+             ('unverified', 'realm', 'live', 'google', 'subject', NULL, '{}', 100, 0),
+             ('orphan', 'realm', 'deleted', 'google', 'orphan-subject', NULL, '{}', 100, 1);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let realm = RealmId::from("realm");
+    let before = repo.list_ciam_identity_links(&realm, "live").await.unwrap();
+    assert_eq!(before.len(), 2);
+    assert!(
+        repo.get_ciam_identity_link(&realm, "orphan")
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/20250630000011_ciam_identity_link_user_lifecycle.sql"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        repo.list_ciam_identity_links(&realm, "live").await.unwrap(),
+        before
+    );
+    assert!(
+        repo.get_ciam_identity_link(&realm, "orphan")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let indexes: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ciam_identity_links' AND sql IS NOT NULL ORDER BY name",
+    ).fetch_all(&pool).await.unwrap();
+    assert_eq!(indexes.len(), 2);
+    assert_eq!(indexes[0].0, "idx_ciam_identity_links_external_subject");
+    assert!(indexes[0].1.contains("UNIQUE"));
+    assert!(indexes[0].1.contains("WHERE verified = 1"));
+    assert_eq!(indexes[1].0, "idx_ciam_identity_links_user");
+    assert!(
+        indexes[1]
+            .1
+            .contains("realm_id, user_id, linked_at_epoch_seconds DESC")
+    );
+    // Enforce the new FK and verified uniqueness at the database boundary.
+    for (id, user, verified) in [("bad-owner", "missing", 0), ("duplicate", "live", 1)] {
+        assert!(sqlx::query(
+            "INSERT INTO ciam_identity_links VALUES (?, 'realm', ?, 'google', 'subject', NULL, '{}', 300, ?)",
+        ).bind(id).bind(user).bind(verified).execute(&pool).await.is_err());
+    }
+    sqlx::query("INSERT INTO ciam_identity_links VALUES ('another-unverified', 'realm', 'live', 'google', 'subject', NULL, '{}', 300, 0)")
+        .execute(&pool).await.unwrap();
+    repo.delete_user("live").await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ciam_identity_links")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "deletion must cascade verified and unverified links"
+    );
+    pool.close().await;
+}
+
 async fn assert_ciam_identity_link_id_binding(
     repo: &(impl RealmRepository + UserRepository + CiamRepository),
 ) {

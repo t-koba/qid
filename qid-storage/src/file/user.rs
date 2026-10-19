@@ -63,6 +63,21 @@ impl UserRepository for FileRepository {
         let mut store = self.store.write().await;
         store.users.remove(id);
         store.credentials_password.remove(id);
+        store
+            .ciam_profiles
+            .retain(|_, profile| profile.user_id != id);
+        store
+            .ciam_consent_grants
+            .retain(|_, grant| grant.user_id != id);
+        store
+            .ciam_verification_challenges
+            .retain(|_, challenge| challenge.user_id != id);
+        store
+            .ciam_identity_links
+            .retain(|_, link| link.user_id != id);
+        store
+            .password_reset_tokens
+            .retain(|_, token| token.user_id != id);
         drop(store);
         self.save().await
     }

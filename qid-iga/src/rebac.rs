@@ -35,7 +35,7 @@ pub async fn check<R: RebacRepository>(
     subject_namespace: &str,
     subject_id: &str,
 ) -> QidResult<bool> {
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut visited: HashSet<(String, String, String)> = HashSet::new();
 
     struct WorkItem {
         namespace: String,
@@ -57,9 +57,10 @@ pub async fn check<R: RebacRepository>(
             continue;
         }
 
-        let node_key = format!(
-            "{}:{}#{}@{}:{}",
-            item.namespace, item.object_id, item.relation, subject_namespace, subject_id
+        let node_key = (
+            item.namespace.clone(),
+            item.object_id.clone(),
+            item.relation.clone(),
         );
         if !visited.insert(node_key) {
             continue;
@@ -835,6 +836,46 @@ mod tests {
             _: Option<&str>,
         ) -> QidResult<Vec<RelationshipTuple>> {
             unreachable!("expansion reads by tuple group")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_structural_visited_keys_preserve_distinct_usersets() {
+        for found_group_first in [false, true] {
+            let missing_group = userset(
+                "tenant::root",
+                "root",
+                "member",
+                "tenant::group",
+                "a:b",
+                "member",
+            );
+            let found_group = userset(
+                "tenant::root",
+                "root",
+                "member",
+                "tenant::group:a",
+                "b",
+                "member",
+            );
+            let mut tuples = if found_group_first {
+                vec![found_group, missing_group]
+            } else {
+                vec![missing_group, found_group]
+            };
+            tuples.push(direct("tenant::group:a", "b", "member", "user", "alice"));
+
+            let repo = ReadCountingRepository::new(tuples, 3);
+            assert!(
+                check(&repo, "tenant::root", "root", "member", "user", "alice",)
+                    .await
+                    .unwrap(),
+                "membership must be found with sibling order found_first={found_group_first}"
+            );
+            assert_eq!(
+                repo.reads.load(std::sync::atomic::Ordering::SeqCst),
+                if found_group_first { 2 } else { 3 }
+            );
         }
     }
 

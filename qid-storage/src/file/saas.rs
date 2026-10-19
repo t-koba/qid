@@ -72,15 +72,14 @@ impl SaasRepository for FileRepository {
                 message: "custom domain hostname already exists".to_string(),
             });
         }
-        if store
-            .custom_domains
-            .get(&domain.id)
-            .is_some_and(|existing| existing.tenant_id != domain.tenant_id)
-        {
-            return Err(QidError::Conflict {
-                message: "custom domain ID already belongs to another tenant".to_string(),
-            });
-        }
+        crate::ownership::ensure_same_binding(
+            store
+                .custom_domains
+                .get(&domain.id)
+                .map(|existing| &existing.tenant_id),
+            &domain.tenant_id,
+            || "custom domain ID already belongs to another tenant".to_string(),
+        )?;
         store
             .custom_domains
             .insert(domain.id.clone(), domain.clone());
@@ -126,15 +125,14 @@ impl SaasRepository for FileRepository {
                 message: "CIAM brand realm belongs to another tenant".to_string(),
             });
         }
-        if store
-            .ciam_brands
-            .get(&brand.id)
-            .is_some_and(|existing| existing.tenant_id != brand.tenant_id)
-        {
-            return Err(QidError::Conflict {
-                message: "CIAM brand ID already belongs to another tenant".to_string(),
-            });
-        }
+        crate::ownership::ensure_same_binding(
+            store
+                .ciam_brands
+                .get(&brand.id)
+                .map(|existing| &existing.tenant_id),
+            &brand.tenant_id,
+            || "CIAM brand ID already belongs to another tenant".to_string(),
+        )?;
         store.ciam_brands.insert(brand.id.clone(), brand.clone());
         drop(store);
         self.save().await
@@ -387,15 +385,14 @@ impl SaasRepository for FileRepository {
         }
         drop(store);
         let mut store = self.store.write().await;
-        if store
-            .delegated_tenant_admins
-            .get(&admin.id)
-            .is_some_and(|existing| existing.tenant_id != admin.tenant_id)
-        {
-            return Err(QidError::Conflict {
-                message: "delegated tenant admin ID already belongs to another tenant".to_string(),
-            });
-        }
+        crate::ownership::ensure_same_binding(
+            store
+                .delegated_tenant_admins
+                .get(&admin.id)
+                .map(|existing| &existing.tenant_id),
+            &admin.tenant_id,
+            || "delegated tenant admin ID already belongs to another tenant".to_string(),
+        )?;
         store
             .delegated_tenant_admins
             .insert(admin.id.clone(), admin.clone());

@@ -23,12 +23,9 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: format!("CIAM consent grant {} belongs to another owner", grant.id),
-            });
-        }
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("CIAM consent grant {} belongs to another owner", grant.id)
+        })
     }
 
     async fn list_ciam_consent_grants(
@@ -187,12 +184,9 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: format!("CIAM identity link {} changed concurrently", link.id),
-            });
-        }
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("CIAM identity link {} changed concurrently", link.id)
+        })
     }
 
     async fn list_ciam_identity_links(

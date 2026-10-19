@@ -243,12 +243,9 @@ impl ScimRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "SCIM device ID belongs to another realm".to_string(),
-            });
-        }
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "SCIM device ID belongs to another realm".to_string()
+        })
     }
 
     async fn get_scim_device(&self, id: &str) -> QidResult<Option<ScimDeviceRecord>> {
@@ -296,12 +293,9 @@ impl ScimRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "SCIM event subscription ID belongs to another realm".to_string(),
-            });
-        }
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "SCIM event subscription ID belongs to another realm".to_string()
+        })
     }
 
     async fn get_scim_event_subscription(

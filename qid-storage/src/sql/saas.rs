@@ -65,12 +65,9 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "custom domain ID already belongs to another tenant".to_string(),
-            });
-        }
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "custom domain ID already belongs to another tenant".to_string()
+        })
     }
 
     async fn list_custom_domains(&self, tenant_id: &str) -> QidResult<Vec<CustomDomain>> {
@@ -129,12 +126,9 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "CIAM brand ID already belongs to another tenant".to_string(),
-            });
-        }
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "CIAM brand ID already belongs to another tenant".to_string()
+        })
     }
 
     async fn list_ciam_brands(&self, tenant_id: &str) -> QidResult<Vec<CiamBrand>> {
@@ -438,12 +432,9 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "delegated tenant admin ID already belongs to another tenant".to_string(),
-            });
-        }
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "delegated tenant admin ID already belongs to another tenant".to_string()
+        })
     }
 
     async fn list_delegated_tenant_admins(

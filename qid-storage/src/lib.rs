@@ -11,6 +11,7 @@ use qid_core::error::{QidError, QidResult};
 
 mod domain;
 mod file;
+mod ownership;
 mod sql;
 pub mod traits;
 

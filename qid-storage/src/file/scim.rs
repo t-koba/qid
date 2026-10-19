@@ -118,15 +118,14 @@ impl ScimRepository for FileRepository {
 
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if store
-            .scim_devices
-            .get(&device.id)
-            .is_some_and(|existing| existing.realm_id != device.realm_id)
-        {
-            return Err(QidError::Conflict {
-                message: "SCIM device ID belongs to another realm".to_string(),
-            });
-        }
+        crate::ownership::ensure_same_binding(
+            store
+                .scim_devices
+                .get(&device.id)
+                .map(|existing| &existing.realm_id),
+            &device.realm_id,
+            || "SCIM device ID belongs to another realm".to_string(),
+        )?;
         store.scim_devices.insert(device.id.clone(), device.clone());
         drop(store);
         self.save().await
@@ -164,15 +163,14 @@ impl ScimRepository for FileRepository {
         subscription: &ScimEventSubscriptionRecord,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if store
-            .scim_event_subscriptions
-            .get(&subscription.id)
-            .is_some_and(|existing| existing.realm_id != subscription.realm_id)
-        {
-            return Err(QidError::Conflict {
-                message: "SCIM event subscription ID belongs to another realm".to_string(),
-            });
-        }
+        crate::ownership::ensure_same_binding(
+            store
+                .scim_event_subscriptions
+                .get(&subscription.id)
+                .map(|existing| &existing.realm_id),
+            &subscription.realm_id,
+            || "SCIM event subscription ID belongs to another realm".to_string(),
+        )?;
         store
             .scim_event_subscriptions
             .insert(subscription.id.clone(), subscription.clone());

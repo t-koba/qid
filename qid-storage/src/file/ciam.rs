@@ -8,15 +8,14 @@ impl CiamRepository for FileRepository {
         grant.validate()?;
         crate::domain::validate_ciam_consent_grant_state(grant)?;
         let mut store = self.store.write().await;
-        if let Some(existing) = store.ciam_consent_grants.get(&grant.id)
-            && (existing.realm_id != grant.realm_id
-                || existing.user_id != grant.user_id
-                || existing.client_id != grant.client_id)
-        {
-            return Err(QidError::Conflict {
-                message: format!("CIAM consent grant {} belongs to another owner", grant.id),
-            });
-        }
+        crate::ownership::ensure_same_binding(
+            store
+                .ciam_consent_grants
+                .get(&grant.id)
+                .map(|existing| (&existing.realm_id, &existing.user_id, &existing.client_id)),
+            (&grant.realm_id, &grant.user_id, &grant.client_id),
+            || format!("CIAM consent grant {} belongs to another owner", grant.id),
+        )?;
         store
             .ciam_consent_grants
             .insert(grant.id.clone(), grant.clone());

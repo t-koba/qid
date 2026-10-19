@@ -83,6 +83,10 @@ pub trait RealmRepository: Send + Sync + 'static {
     async fn get_realm_issuer(&self, id: &RealmId) -> QidResult<Option<String>>;
     async fn get_realm_tenant(&self, id: &RealmId) -> QidResult<Option<String>>;
     async fn list_realms(&self) -> QidResult<Vec<(String, String)>>;
+    /// Idempotently remove the realm and its live owned state, including users
+    /// and their authentication dependents. Audit/retention/delivery history and
+    /// independently tenant/global-scoped records survive. Reusing the realm ID
+    /// does not restore deleted live records.
     async fn delete_realm(&self, id: &RealmId) -> QidResult<()>;
 }
 

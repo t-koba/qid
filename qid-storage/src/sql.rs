@@ -26,6 +26,8 @@ mod fedcm;
 mod iga;
 mod policy;
 mod realm;
+#[cfg(test)]
+mod realm_tests;
 mod rebac;
 mod row;
 mod saas;

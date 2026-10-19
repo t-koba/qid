@@ -33,6 +33,8 @@ mod iga;
 mod persistence_tests;
 mod policy;
 mod realm;
+#[cfg(test)]
+mod realm_tests;
 mod rebac;
 mod saas;
 mod scim;

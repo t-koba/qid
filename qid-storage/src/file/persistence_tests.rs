@@ -27,11 +27,27 @@ impl FlushHook {
     }
 }
 
-fn fail_next_flush(repo: &FileRepository) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+pub(super) fn fail_next_flush(
+    repo: &FileRepository,
+) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (entered, reached) = oneshot::channel();
     let (resume, paused) = oneshot::channel();
     *repo.flush_hook.lock().unwrap() = Some(FlushHook {
         fail: true,
+        entered,
+        resume: paused,
+    });
+    (reached, resume)
+}
+
+pub(super) fn pause_next_write(
+    repo: &FileRepository,
+    fail: bool,
+) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    let (entered, reached) = oneshot::channel();
+    let (resume, paused) = oneshot::channel();
+    *repo.write_hook.lock().unwrap() = Some(FlushHook {
+        fail,
         entered,
         resume: paused,
     });
@@ -65,7 +81,7 @@ fn pause_next_rotation(repo: &FileRepository) -> (oneshot::Receiver<()>, oneshot
 
 // Poll exactly once to reach a hook or queue behind a held lock.
 // Unlike spawning/yielding, this does not depend on task scheduling.
-async fn assert_pending<F: Future>(mut future: Pin<&mut F>) {
+pub(super) async fn assert_pending<F: Future>(mut future: Pin<&mut F>) {
     poll_fn(|cx| {
         assert!(future.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -73,23 +89,23 @@ async fn assert_pending<F: Future>(mut future: Pin<&mut F>) {
     .await;
 }
 
-async fn complete<F: Future>(future: F) -> F::Output {
+pub(super) async fn complete<F: Future>(future: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(5), future)
         .await
         .expect("persistence operation deadlocked")
 }
 
-struct TestFile(PathBuf);
+pub(super) struct TestFile(pub(super) PathBuf);
 
 impl TestFile {
-    async fn new() -> (Self, FileRepository) {
+    pub(super) async fn new() -> (Self, FileRepository) {
         let dir = std::env::temp_dir().join(format!("qid_rotation_{}", ulid::Ulid::new()));
         let file = Self(dir.join("store.json"));
         let repo = FileRepository::new(file.0.to_str().unwrap()).await.unwrap();
         (file, repo)
     }
 
-    async fn reopen(&self) -> FileRepository {
+    pub(super) async fn reopen(&self) -> FileRepository {
         FileRepository::new(self.0.to_str().unwrap()).await.unwrap()
     }
 }

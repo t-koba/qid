@@ -61,70 +61,7 @@ impl UserRepository for FileRepository {
 
     async fn delete_user(&self, id: &str) -> QidResult<()> {
         let mut store = self.store.write().await;
-        // Follow ownership links before removing their parents. All live auth state
-        // disappears together under this write lock; realm/client peers are untouched.
-        let sessions: std::collections::HashSet<_> = store
-            .sessions
-            .values()
-            .filter(|session| session.user_id == id)
-            .map(|session| session.id.clone())
-            .collect();
-        store.authorization_codes.retain(|_, code| {
-            code.user_id != id
-                && !code
-                    .session_id
-                    .as_ref()
-                    .is_some_and(|sid| sessions.contains(sid))
-        });
-        let families: std::collections::HashSet<_> = store
-            .token_families
-            .values()
-            .filter(|family| {
-                family.user_id == id
-                    || family
-                        .session_id
-                        .as_ref()
-                        .is_some_and(|sid| sessions.contains(sid))
-            })
-            .map(|family| family.id.clone())
-            .collect();
-        store.access_tokens.retain(|_, token| {
-            token.user_id != id
-                && !token
-                    .family_id
-                    .as_ref()
-                    .is_some_and(|fid| families.contains(fid))
-        });
-        store
-            .token_families
-            .retain(|fid, _| !families.contains(fid));
-        store.sessions.retain(|sid, _| !sessions.contains(sid));
-        store.webauthn_credentials.remove(id);
-        store.totp_credentials.retain(|_, cred| cred.user_id != id);
-        store.devices.retain(|_, device| device.user_id != id);
-        store
-            .device_authorization_grants
-            .retain(|_, grant| grant.user_id.as_deref() != Some(id));
-        store
-            .backchannel_authentication_grants
-            .retain(|_, grant| grant.user_id.as_deref() != Some(id));
-        store.users.remove(id);
-        store.credentials_password.remove(id);
-        store
-            .ciam_profiles
-            .retain(|_, profile| profile.user_id != id);
-        store
-            .ciam_consent_grants
-            .retain(|_, grant| grant.user_id != id);
-        store
-            .ciam_verification_challenges
-            .retain(|_, challenge| challenge.user_id != id);
-        store
-            .ciam_identity_links
-            .retain(|_, link| link.user_id != id);
-        store
-            .password_reset_tokens
-            .retain(|_, token| token.user_id != id);
+        store.remove_auth_state(&std::collections::HashSet::from([id.to_string()]), None);
         drop(store);
         self.save().await
     }
@@ -151,5 +88,90 @@ impl UserRepository for FileRepository {
     ) -> QidResult<Option<PasswordCredential>> {
         let store = self.store.read().await;
         Ok(store.credentials_password.get(user_id).cloned())
+    }
+}
+
+impl Store {
+    // Shared by user and realm deletion so their dependent authentication state
+    // has the same lifetime, including indirect session/family ownership.
+    pub(super) fn remove_auth_state(
+        &mut self,
+        users: &std::collections::HashSet<String>,
+        realm: Option<&str>,
+    ) {
+        let in_realm = |owner: &str| realm == Some(owner);
+        // Follow ownership links before removing their parents. All live auth state
+        // disappears together under this write lock; realm/client peers are untouched.
+        let sessions: std::collections::HashSet<_> = self
+            .sessions
+            .values()
+            .filter(|session| users.contains(&session.user_id) || in_realm(&session.realm_id))
+            .map(|session| session.id.clone())
+            .collect();
+        self.authorization_codes.retain(|_, code| {
+            !users.contains(&code.user_id)
+                && !in_realm(&code.realm_id)
+                && !code
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|sid| sessions.contains(sid))
+        });
+        let families: std::collections::HashSet<_> = self
+            .token_families
+            .values()
+            .filter(|family| {
+                users.contains(&family.user_id)
+                    || in_realm(&family.realm_id)
+                    || family
+                        .session_id
+                        .as_ref()
+                        .is_some_and(|sid| sessions.contains(sid))
+            })
+            .map(|family| family.id.clone())
+            .collect();
+        self.access_tokens.retain(|_, token| {
+            !users.contains(&token.user_id)
+                && !in_realm(&token.realm_id)
+                && !token
+                    .family_id
+                    .as_ref()
+                    .is_some_and(|fid| families.contains(fid))
+        });
+        self.token_families.retain(|fid, _| !families.contains(fid));
+        self.sessions.retain(|sid, _| !sessions.contains(sid));
+        self.webauthn_credentials
+            .retain(|user, _| !users.contains(user));
+        self.totp_credentials
+            .retain(|_, cred| !users.contains(&cred.user_id));
+        self.devices
+            .retain(|_, device| !users.contains(&device.user_id) && !in_realm(&device.realm_id));
+        self.device_authorization_grants.retain(|_, grant| {
+            !grant
+                .user_id
+                .as_ref()
+                .is_some_and(|user| users.contains(user))
+                && !in_realm(&grant.realm_id)
+        });
+        self.backchannel_authentication_grants.retain(|_, grant| {
+            !grant
+                .user_id
+                .as_ref()
+                .is_some_and(|user| users.contains(user))
+                && !in_realm(&grant.realm_id)
+        });
+        self.users.retain(|user, _| !users.contains(user));
+        self.credentials_password
+            .retain(|user, _| !users.contains(user));
+        self.ciam_profiles
+            .retain(|_, profile| !users.contains(&profile.user_id) && !in_realm(&profile.realm_id));
+        self.ciam_consent_grants
+            .retain(|_, grant| !users.contains(&grant.user_id) && !in_realm(&grant.realm_id));
+        self.ciam_verification_challenges.retain(|_, challenge| {
+            !users.contains(&challenge.user_id) && !in_realm(&challenge.realm_id)
+        });
+        self.ciam_identity_links
+            .retain(|_, link| !users.contains(&link.user_id) && !in_realm(&link.realm_id));
+        self.password_reset_tokens
+            .retain(|_, token| !users.contains(&token.user_id) && !in_realm(&token.realm_id));
     }
 }

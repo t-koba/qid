@@ -10,7 +10,8 @@ use common::{
     seed_default_erp_catalog, setup_app, store_iga_approval,
 };
 use qid_core::models::{
-    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaApprovalRecord, IgaFindingRecord,
+    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaApprovalRecord,
+    IgaFindingRecord,
 };
 use qid_storage::{FileRepository, prelude::*};
 use std::sync::Arc;
@@ -2430,4 +2431,93 @@ async fn access_review_revoke_decision_retry_converges_without_new_effects() {
         .expect("list retry grants failed");
     assert_eq!(grants.len(), 1);
     assert!(grants[0].revoked);
+}
+
+#[tokio::test]
+async fn access_review_close_returns_not_found_for_missing_or_other_tenant() {
+    let (app, repo, session_id) = setup_with_repo().await;
+    let now = qid_core::util::now_seconds();
+    let campaign = IgaAccessReviewCampaignRecord {
+        id: "close-ok-1".to_string(),
+        tenant_id: "test".to_string(),
+        reviewer: "security-admin".to_string(),
+        subjects_json: serde_json::json!([]),
+        status: "open".to_string(),
+        created_at_epoch_seconds: now,
+        due_at_epoch_seconds: None,
+    };
+    repo.store_iga_access_review_campaign(&campaign)
+        .await
+        .expect("store close test campaign failed");
+    let other_tenant_campaign = IgaAccessReviewCampaignRecord {
+        id: "close-other-1".to_string(),
+        tenant_id: "other".to_string(),
+        reviewer: "security-admin".to_string(),
+        subjects_json: serde_json::json!([]),
+        status: "open".to_string(),
+        created_at_epoch_seconds: now,
+        due_at_epoch_seconds: None,
+    };
+    repo.store_iga_access_review_campaign(&other_tenant_campaign)
+        .await
+        .expect("store other tenant close test campaign failed");
+
+    for id in ["close-ok-1", "close-ok-1"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/iga/v1/access-reviews/{id}/close"))
+                    .header("Content-Type", "application/json")
+                    .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                    .body(Body::from(
+                        serde_json::json!({"tenant_id": "test"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json(response).await;
+        assert_eq!(body["id"], id);
+        assert_eq!(body["status"], "closed");
+    }
+    let closed = repo
+        .get_iga_access_review_campaign("test", "close-ok-1")
+        .await
+        .expect("get closed campaign failed")
+        .expect("closed campaign missing");
+    assert_eq!(closed.status, "closed");
+
+    for id in ["review-missing", "close-other-1"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/iga/v1/access-reviews/{id}/close"))
+                    .header("Content-Type", "application/json")
+                    .header(ADMIN_SESSION_ID_HEADER, &session_id)
+                    .body(Body::from(
+                        serde_json::json!({"tenant_id": "test"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "close of {id} must be 404"
+        );
+        let body = json(response).await;
+        assert_eq!(body["error"], "IGA access review campaign not found");
+    }
+    let other = repo
+        .get_iga_access_review_campaign("other", "close-other-1")
+        .await
+        .expect("get other tenant campaign failed")
+        .expect("other tenant campaign missing");
+    assert_eq!(other.status, "open");
 }

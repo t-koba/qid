@@ -315,17 +315,24 @@ impl IgaRepository for FileRepository {
         Ok(campaigns)
     }
 
-    async fn close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<()> {
+    async fn close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        if let Some(campaign) = store
+        let closed = if let Some(campaign) = store
             .iga_access_review_campaigns
             .get_mut(id)
             .filter(|c| c.tenant_id == tenant_id)
         {
             campaign.status = "closed".to_string();
-        }
+            true
+        } else {
+            false
+        };
         drop(store);
-        self.save().await
+        if !closed {
+            return Ok(false);
+        }
+        self.save().await?;
+        Ok(true)
     }
 
     async fn store_iga_access_review_decision(

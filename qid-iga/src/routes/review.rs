@@ -114,12 +114,16 @@ pub(super) async fn close_access_review<R: Repository>(
             Ok(context) => context,
             Err(response) => return response,
         };
-    if let Err(error) = state
+    let closed = match state
         .repo
         .close_iga_access_review_campaign(&tenant_id, &id)
         .await
     {
-        return storage_error_response("close_iga_access_review_campaign", error);
+        Ok(closed) => closed,
+        Err(error) => return storage_error_response("close_iga_access_review_campaign", error),
+    };
+    if !closed {
+        return not_found_response("IGA access review campaign not found");
     }
     Json(serde_json::json!({
         "id": id,

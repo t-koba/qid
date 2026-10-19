@@ -3774,15 +3774,59 @@ async fn assert_iga_repository_round_trip(repo: &impl IgaRepository) {
             .is_err()
     );
 
-    repo.close_iga_access_review_campaign("tenant-iga", "review-1")
-        .await
-        .expect("close IGA access review campaign failed");
+    assert!(
+        repo.close_iga_access_review_campaign("tenant-iga", "review-1")
+            .await
+            .expect("close IGA access review campaign failed"),
+        "closing an open campaign must report success"
+    );
     let closed = repo
         .get_iga_access_review_campaign("tenant-iga", "review-1")
         .await
         .expect("get closed IGA access review campaign failed")
         .expect("closed IGA access review campaign missing");
     assert_eq!(closed.status, "closed");
+    assert!(
+        repo.close_iga_access_review_campaign("tenant-iga", "review-1")
+            .await
+            .expect("re-closing a closed campaign failed"),
+        "closing an already-closed campaign must stay successful and idempotent"
+    );
+    assert!(
+        !repo
+            .close_iga_access_review_campaign("tenant-iga", "review-missing")
+            .await
+            .expect("close missing IGA access review campaign failed"),
+        "missing campaign close must report absent"
+    );
+    assert!(
+        repo.get_iga_access_review_campaign("tenant-iga", "review-missing")
+            .await
+            .expect("get missing IGA access review campaign failed")
+            .is_none()
+    );
+    let mut other_tenant_campaign =
+        sample_iga_access_review_campaign("review-other-tenant", 1_700_000_310);
+    other_tenant_campaign.tenant_id = "tenant-other".to_string();
+    repo.store_iga_access_review_campaign(&other_tenant_campaign)
+        .await
+        .expect("store other tenant IGA access review campaign failed");
+    assert!(
+        !repo
+            .close_iga_access_review_campaign("tenant-iga", "review-other-tenant")
+            .await
+            .expect("close other tenant IGA access review campaign failed"),
+        "other-tenant campaign close must report absent like a missing ID"
+    );
+    assert_eq!(
+        repo.get_iga_access_review_campaign("tenant-other", "review-other-tenant")
+            .await
+            .expect("get other tenant IGA access review campaign failed")
+            .expect("other tenant campaign must remain")
+            .status,
+        "open",
+        "other-tenant close must not mutate the campaign"
+    );
 
     let decision_2 = sample_iga_access_review_decision("decision-2", 1_700_000_500);
     repo.store_iga_access_review_decision(&decision_2)

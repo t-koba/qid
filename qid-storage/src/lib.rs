@@ -326,7 +326,7 @@ delegate!(IgaRepository {
     store_iga_access_review_campaign(&self, campaign: &qid_core::models::IgaAccessReviewCampaignRecord) -> QidResult<()>;
     get_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<Option<qid_core::models::IgaAccessReviewCampaignRecord>>;
     list_iga_access_review_campaigns(&self, tenant_id: &str) -> QidResult<Vec<qid_core::models::IgaAccessReviewCampaignRecord>>;
-    close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<()>;
+    close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<bool>;
     store_iga_access_review_decision(&self, decision: &qid_core::models::IgaAccessReviewDecisionRecord) -> QidResult<()>;
     list_iga_access_review_decisions(&self, tenant_id: &str, campaign_id: &str) -> QidResult<Vec<qid_core::models::IgaAccessReviewDecisionRecord>>;
     store_iga_certification(&self, certification: &qid_core::models::IgaCertificationRecord) -> QidResult<()>;

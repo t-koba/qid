@@ -465,8 +465,8 @@ impl IgaRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<()> {
-        sqlx::query(
+    async fn close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<bool> {
+        let result = sqlx::query(
             "UPDATE iga_access_review_campaigns SET status = 'closed' WHERE tenant_id = ? AND id = ?",
         )
         .bind(tenant_id)
@@ -474,7 +474,7 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     async fn store_iga_access_review_decision(

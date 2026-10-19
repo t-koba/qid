@@ -652,7 +652,11 @@ pub trait IgaRepository: Send + Sync + 'static {
         &self,
         tenant_id: &str,
     ) -> QidResult<Vec<IgaAccessReviewCampaignRecord>>;
-    async fn close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<()>;
+    /// Close a tenant-scoped access-review campaign.
+    /// Returns `true` when a matching campaign existed (now closed, idempotent
+    /// for an already-closed campaign) and `false` when no tenant-scoped
+    /// campaign exists. Absent and other-tenant IDs are indistinguishable.
+    async fn close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<bool>;
     async fn store_iga_access_review_decision(
         &self,
         decision: &IgaAccessReviewDecisionRecord,

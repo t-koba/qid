@@ -16,10 +16,79 @@ use qid_storage::{
     FileRepository, ScimDeviceRecord, ScimEventSubscriptionRecord, SqlRepository, prelude::*,
 };
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 static DB_SEQ: AtomicU16 = AtomicU16::new(0);
+static SCHEMA_TEMPLATE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
+
+fn sqlite_main_path(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path.to_path_buf();
+    };
+    ["-wal", "-shm", "-journal"]
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .map_or_else(|| path.to_path_buf(), |name| path.with_file_name(name))
+}
+
+fn remove_sqlite_database_files(path: &Path) -> std::io::Result<()> {
+    for suffix in ["-wal", "-shm", "-journal", ""] {
+        let mut candidate = path.as_os_str().to_os_string();
+        candidate.push(suffix);
+        match std::fs::remove_file(PathBuf::from(candidate)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn clean_storage_test_databases(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let database = sqlite_main_path(&entry?.path());
+        let name = database
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if name.starts_with("test_") && name.ends_with(".db") {
+            remove_sqlite_database_files(&database)?;
+        }
+    }
+    Ok(())
+}
+
+/// Build and close one migrated schema for independent per-test database copies.
+async fn schema_template_path() -> &'static PathBuf {
+    SCHEMA_TEMPLATE
+        .get_or_init(|| async {
+            let path = std::env::temp_dir()
+                .join("qid_test")
+                .join("schema_template.db");
+            remove_sqlite_database_files(&path).expect("remove stale storage schema template");
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .expect("connect storage schema template failed");
+            repo.migrate()
+                .await
+                .expect("migrate storage schema template failed");
+            repo.close().await;
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                let sidecar = PathBuf::from(sidecar);
+                assert!(
+                    !sidecar.exists(),
+                    "schema template has a sidecar after closing the pool: {}",
+                    sidecar.display()
+                );
+            }
+            path
+        })
+        .await
+}
 
 fn db_url() -> String {
     let dir = std::env::temp_dir().join("qid_test");
@@ -27,13 +96,7 @@ fn db_url() -> String {
     // Clean old test databases once per process
     static CLEANED: OnceLock<()> = OnceLock::new();
     CLEANED.get_or_init(|| {
-        for e in std::fs::read_dir(&dir).ok().into_iter().flatten().flatten() {
-            let name = e.file_name();
-            let s = name.to_string_lossy();
-            if s.starts_with("test_") && s.ends_with(".db") {
-                std::fs::remove_file(e.path()).ok();
-            }
-        }
+        clean_storage_test_databases(&dir).expect("remove stale storage test database files");
     });
     let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("test_{n}.db"));
@@ -41,11 +104,55 @@ fn db_url() -> String {
 }
 
 async fn sql_repo() -> SqlRepository {
-    let repo = SqlRepository::connect(&db_url())
-        .await
-        .expect("connect failed");
-    repo.migrate().await.expect("migration failed");
-    repo
+    let url = db_url();
+    let path = Path::new(
+        url.strip_prefix("sqlite:")
+            .expect("test database url has sqlite prefix"),
+    );
+    // Migrations run once in the schema template and fresh-database coverage stays
+    // in test_connect_and_migrate; copying keeps every test database isolated
+    // without repeating the migration set.
+    std::fs::copy(schema_template_path().await, path).expect("copy storage schema template");
+    SqlRepository::connect(&url).await.expect("connect failed")
+}
+
+#[test]
+fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
+    let dir = std::env::temp_dir().join(format!("qid_storage_cleanup_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create storage cleanup fixture dir");
+    let test_database = dir.join("test_123.db");
+    let template = dir.join("schema_template.db");
+    for (path, suffixes) in [
+        (&test_database, &["", "-wal", "-shm", "-journal"][..]),
+        (&template, &["", "-wal", "-shm", "-journal"][..]),
+    ] {
+        for suffix in suffixes {
+            let mut candidate = path.as_os_str().to_os_string();
+            candidate.push(*suffix);
+            std::fs::write(PathBuf::from(candidate), b"stale database artifact")
+                .expect("write storage cleanup fixture");
+        }
+    }
+
+    clean_storage_test_databases(&dir).expect("clean storage test databases");
+
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut test_file = test_database.as_os_str().to_os_string();
+        test_file.push(suffix);
+        assert!(
+            !PathBuf::from(test_file).exists(),
+            "stale test database file was not removed"
+        );
+        let mut template_file = template.as_os_str().to_os_string();
+        template_file.push(suffix);
+        assert!(
+            PathBuf::from(template_file).exists(),
+            "schema template must not match test database cleanup"
+        );
+    }
+    remove_sqlite_database_files(&template).expect("remove storage cleanup template");
+    std::fs::remove_dir_all(&dir).expect("remove storage cleanup fixture dir");
 }
 
 async fn file_repo(prefix: &str) -> FileRepository {
@@ -234,7 +341,9 @@ where
 
 #[tokio::test]
 async fn test_connect_and_migrate() {
-    let _repo = sql_repo().await;
+    let url = db_url();
+    let repo = SqlRepository::connect(&url).await.expect("connect failed");
+    repo.migrate().await.expect("migration failed");
 }
 
 #[tokio::test]

@@ -527,6 +527,9 @@ pub trait SaasRepository: Send + Sync + 'static {
         &self,
         tenant_id: &str,
     ) -> QidResult<Vec<ComplianceEvidencePack>>;
+    /// Create or update a delegated admin only under its incumbent tenant owner; a
+    /// global ID collision with another tenant returns Conflict without modifying
+    /// the grant.
     async fn store_delegated_tenant_admin(&self, admin: &DelegatedTenantAdmin) -> QidResult<()>;
     async fn list_delegated_tenant_admins(
         &self,

@@ -421,9 +421,10 @@ impl SaasRepository for SqlRepository {
                 }
             }
         }
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO delegated_tenant_admins (id, tenant_id, subject, roles_json, allowed_realm_ids_json, granted_by, granted_at, expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET subject = excluded.subject, roles_json = excluded.roles_json, allowed_realm_ids_json = excluded.allowed_realm_ids_json, granted_by = excluded.granted_by, granted_at = excluded.granted_at, expires_at = excluded.expires_at, revoked = excluded.revoked",
+             ON CONFLICT(id) DO UPDATE SET subject = excluded.subject, roles_json = excluded.roles_json, allowed_realm_ids_json = excluded.allowed_realm_ids_json, granted_by = excluded.granted_by, granted_at = excluded.granted_at, expires_at = excluded.expires_at, revoked = excluded.revoked \
+             WHERE delegated_tenant_admins.tenant_id = excluded.tenant_id",
         )
         .bind(&admin.id)
         .bind(&admin.tenant_id)
@@ -437,6 +438,11 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "delegated tenant admin ID already belongs to another tenant".to_string(),
+            });
+        }
         Ok(())
     }
 

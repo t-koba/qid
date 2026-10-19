@@ -1148,6 +1148,104 @@ async fn custom_domain_cross_tenant_id_collision_returns_conflict_without_mutati
 }
 
 #[tokio::test]
+async fn delegated_admin_cross_tenant_id_collision_returns_conflict_without_mutation() {
+    let (app, state) = setup().await;
+    seed_saas_realm_client(&state).await;
+    state
+        .repo
+        .create_realm(
+            &TenantId::from("tenant-other"),
+            &RealmId::from("realm-other"),
+            "https://other.customer.example.com",
+            Some("Other tenant realm"),
+        )
+        .await
+        .unwrap();
+
+    let incumbent = qid_core::models::DelegatedTenantAdmin {
+        id: "delegated-shared".to_string(),
+        tenant_id: "tenant-saas".to_string(),
+        subject: "incumbent@example.com".to_string(),
+        roles: vec!["app.admin".to_string()],
+        allowed_realm_ids: vec!["realm-saas".to_string()],
+        granted_by: "owner@example.com".to_string(),
+        granted_at: 1_800_000_000,
+        expires_at: Some(1_860_000_000),
+        revoked: false,
+    };
+    state
+        .repo
+        .store_delegated_tenant_admin(&incumbent)
+        .await
+        .unwrap();
+
+    let now = qid_core::util::now_seconds();
+    let other_admin = Admin {
+        id: "admin-tenant-other".to_string(),
+        tenant_id: "tenant-other".to_string(),
+        subject: "other-admin@example.com".to_string(),
+        roles: vec!["tenant.owner".to_string()],
+        created_at: now,
+    };
+    state.repo.upsert_admin(&other_admin).await.unwrap();
+    state
+        .repo
+        .store_admin_elevation(&AdminElevation {
+            id: "other-admin-session".to_string(),
+            tenant_id: "tenant-other".to_string(),
+            admin_id: other_admin.id,
+            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+            amr: vec!["pwd".to_string(), "hwk".to_string()],
+            elevation_expires_at: now + 120,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+
+    let mut request = json_request(
+        Method::POST,
+        "/admin/api/v1/tenants/tenant-other/delegated-admins",
+        r#"{
+            "id":"delegated-shared",
+            "tenant_id":"tenant-other",
+            "subject":"attacker@example.com",
+            "roles":["app.admin"],
+            "allowed_realm_ids":["realm-other"],
+            "granted_by":"other-admin@example.com",
+            "granted_at":1800000001,
+            "expires_at":1860000000,
+            "revoked":false
+        }"#,
+    );
+    request.headers_mut().insert(
+        "x-qid-admin-actor",
+        "other-admin@example.com".parse().unwrap(),
+    );
+    request.headers_mut().insert(
+        "x-qid-admin-session-id",
+        "other-admin-session".parse().unwrap(),
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        state
+            .repo
+            .list_delegated_tenant_admins("tenant-saas")
+            .await
+            .unwrap(),
+        vec![incumbent]
+    );
+    assert!(
+        state
+            .repo
+            .list_delegated_tenant_admins("tenant-other")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn saas_admin_routes_validate_saml_app_catalog_reference() {
     let mut config = test_helpers::test_config();
     config.realms[0].id = "realm-saas".to_string();

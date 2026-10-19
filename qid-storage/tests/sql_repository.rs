@@ -2379,6 +2379,42 @@ async fn assert_saas_repository_round_trip(
         .await
         .expect("list delegated tenant admins failed");
     assert_eq!(admins, vec![delegated_admin.clone()]);
+    let mut updated_admin = delegated_admin.clone();
+    updated_admin.subject = "admin-updated@example.com".to_string();
+    updated_admin.roles = vec!["realm.admin".to_string()];
+    repo.store_delegated_tenant_admin(&updated_admin)
+        .await
+        .expect("same-owner delegated admin update failed");
+    assert_eq!(
+        repo.list_delegated_tenant_admins("tenant-saas")
+            .await
+            .expect("list same-owner updated delegated admin failed"),
+        vec![updated_admin.clone()]
+    );
+    let mut colliding_admin = updated_admin.clone();
+    colliding_admin.tenant_id = "tenant-other".to_string();
+    colliding_admin.subject = "attacker@example.com".to_string();
+    colliding_admin.allowed_realm_ids = vec!["realm-other".to_string()];
+    let error = repo
+        .store_delegated_tenant_admin(&colliding_admin)
+        .await
+        .expect_err("cross-tenant duplicate delegated admin ID must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate ID must have conflict semantics, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_delegated_tenant_admins("tenant-saas")
+            .await
+            .expect("list incumbent delegated admin after collision failed"),
+        vec![updated_admin.clone()]
+    );
+    assert!(
+        repo.list_delegated_tenant_admins("tenant-other")
+            .await
+            .expect("list other tenant delegated admins failed")
+            .is_empty()
+    );
     let mut invalid_role = delegated_admin.clone();
     invalid_role.id = "delegated-admin-invalid-role".to_string();
     invalid_role.roles = vec!["security.admin".to_string()];

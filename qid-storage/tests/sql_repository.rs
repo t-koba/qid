@@ -2,13 +2,14 @@ use qid_core::models::TotpCredential;
 use qid_core::models::{
     AccessToken, AppCatalogEntry, AuditEvent, AuditRetentionConfig, AuthorizationCode,
     BackchannelAuthenticationGrant, CiamBrand, CiamConsentGrant, CiamIdentityLink,
-    CiamVerificationChallengeRecord, Client, ClientType, ComplianceEvidencePack, CustomDomain,
-    DelegatedTenantAdmin, DeviceAuthorizationGrant, IgaAccessGrantRecord, IgaAccessPackageRecord,
-    IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
-    IgaApprovalRecord, IgaCertificationRecord, IgaEntitlementRecord, IgaFindingRecord,
-    IgaJitPrivilegeGrantRecord, MarketplaceConnector, MarketplaceConnectorType, PasswordCredential,
-    PasswordResetToken, PolicyBundle, ScimGroup, ScimUser, Session, UsageBillingEvent, User,
-    VcCredentialStatusRecord, WorkloadCertificate, WorkloadIdentity,
+    CiamProgressiveProfile, CiamVerificationChallengeRecord, Client, ClientType,
+    ComplianceEvidencePack, CustomDomain, DelegatedTenantAdmin, DeviceAuthorizationGrant,
+    IgaAccessGrantRecord, IgaAccessPackageRecord, IgaAccessRequestRecord,
+    IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
+    IgaCertificationRecord, IgaEntitlementRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
+    MarketplaceConnector, MarketplaceConnectorType, PasswordCredential, PasswordResetToken,
+    PolicyBundle, ScimGroup, ScimUser, Session, UsageBillingEvent, User, VcCredentialStatusRecord,
+    WorkloadCertificate, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{
@@ -1067,6 +1068,109 @@ async fn test_sql_ciam_only_verified_subjects_authenticate() {
 #[tokio::test]
 async fn test_file_ciam_only_verified_subjects_authenticate() {
     assert_ciam_only_verified_subjects_authenticate(&file_repo("ciam_link_trust").await).await;
+}
+
+async fn assert_ciam_progressive_profile_owner_conflict(
+    repo: &(impl RealmRepository + UserRepository + CiamRepository),
+) {
+    for (realm, user) in [("team_blue", "person"), ("team", "blue_person")] {
+        repo.create_realm(
+            &"tenant-profile".into(),
+            &realm.into(),
+            &format!("https://{realm}.example.com"),
+            None,
+        )
+        .await
+        .unwrap();
+        repo.create_user(&User {
+            id: user.to_string(),
+            realm_id: realm.to_string(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    }
+    let mut incumbent = CiamProgressiveProfile {
+        id: "team_blue_person".to_string(),
+        realm_id: "team_blue".to_string(),
+        user_id: "person".to_string(),
+        profile_json: serde_json::json!({"name": "Original"}),
+        passwordless_migrated_at: None,
+        created_at: 100,
+        updated_at: 100,
+    };
+    repo.store_ciam_progressive_profile(&incumbent)
+        .await
+        .unwrap();
+    incumbent.profile_json = serde_json::json!({"name": "Updated"});
+    incumbent.passwordless_migrated_at = Some(200);
+    incumbent.updated_at = 200;
+    repo.store_ciam_progressive_profile(&incumbent)
+        .await
+        .unwrap();
+    let mut incoming = CiamProgressiveProfile {
+        realm_id: "team".to_string(),
+        user_id: "blue_person".to_string(),
+        profile_json: serde_json::json!({"name": "Other owner"}),
+        ..incumbent.clone()
+    };
+    assert!(matches!(
+        repo.store_ciam_progressive_profile(&incoming).await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"team_blue".into(), "person")
+            .await
+            .unwrap(),
+        Some(incumbent.clone())
+    );
+    assert!(
+        repo.get_ciam_progressive_profile(&"team".into(), "blue_person")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // An existing owner cannot silently replace its profile's identity either.
+    let changed_id = CiamProgressiveProfile {
+        id: "replacement-id".to_string(),
+        ..incumbent.clone()
+    };
+    assert!(matches!(
+        repo.store_ciam_progressive_profile(&changed_id).await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
+    incoming.id = "4:teamblue_person".to_string();
+    repo.store_ciam_progressive_profile(&incoming)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"team".into(), "blue_person")
+            .await
+            .unwrap(),
+        Some(incoming)
+    );
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"team_blue".into(), "person")
+            .await
+            .unwrap(),
+        Some(incumbent)
+    );
+}
+
+#[tokio::test]
+async fn test_sql_ciam_progressive_profile_owner_conflict() {
+    assert_ciam_progressive_profile_owner_conflict(&sql_repo().await).await;
+}
+
+#[tokio::test]
+async fn test_file_ciam_progressive_profile_owner_conflict() {
+    assert_ciam_progressive_profile_owner_conflict(&file_repo("ciam_profile_owner").await).await;
 }
 
 async fn assert_ciam_consent_grant_owner_conflict<R>(repo: &R)

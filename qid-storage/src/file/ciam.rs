@@ -256,6 +256,30 @@ impl CiamRepository for FileRepository {
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
         let key = format!("{}:{}", profile.realm_id, profile.user_id);
+        for stored in store
+            .ciam_profiles
+            .values()
+            .filter(|stored| stored.id == profile.id)
+        {
+            crate::ownership::ensure_same_binding(
+                Some((&stored.realm_id, &stored.user_id)),
+                (&profile.realm_id, &profile.user_id),
+                || {
+                    format!(
+                        "CIAM progressive profile {} belongs to another owner",
+                        profile.id
+                    )
+                },
+            )?;
+        }
+        crate::ownership::ensure_same_binding(
+            store
+                .ciam_profiles
+                .get(&key)
+                .map(|stored| (&stored.id, &stored.realm_id, &stored.user_id)),
+            (&profile.id, &profile.realm_id, &profile.user_id),
+            || "CIAM progressive profile identity cannot change".to_string(),
+        )?;
         store.ciam_profiles.insert(key, profile.clone());
         drop(store);
         self.save().await

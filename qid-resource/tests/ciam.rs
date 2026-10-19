@@ -32,7 +32,19 @@ fn db_url() -> String {
 }
 
 async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
-    let config = test_helpers::test_config();
+    setup_with_realms(&[]).await
+}
+
+async fn setup_with_realms(
+    extra_realms: &[&str],
+) -> (axum::Router, Arc<SharedState<SqlRepository>>) {
+    let mut config = test_helpers::test_config();
+    for realm in extra_realms {
+        let mut realm_config = config.realms[0].clone();
+        realm_config.id = (*realm).to_string();
+        realm_config.issuer = format!("https://id.example.com/{realm}");
+        config.realms.push(realm_config);
+    }
     let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
     repo.migrate().await.unwrap();
     repo.create_realm(
@@ -55,6 +67,16 @@ async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
     })
     .await
     .unwrap();
+    for realm in extra_realms {
+        repo.create_realm(
+            &"tenant-1".into(),
+            &(*realm).into(),
+            &format!("https://id.example.com/{realm}"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
     let app = qid_resource::resource_routes(&state.paths).with_state(state.clone());
@@ -62,11 +84,19 @@ async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
 }
 
 async fn add_session(state: &Arc<SharedState<SqlRepository>>, user_id: &str) -> String {
-    let cookie_name = &state.config.realms[0].sessions.browser.cookie_name;
+    add_session_in_realm(state, "test", user_id).await
+}
+
+async fn add_session_in_realm(
+    state: &Arc<SharedState<SqlRepository>>,
+    realm: &str,
+    user_id: &str,
+) -> String {
+    let cookie_name = &state.plan.realm(realm).unwrap().browser_session.cookie_name;
     let now = qid_core::util::now_seconds();
     let session = qid_core::models::Session {
         id: format!("ciam-session-{user_id}"),
-        realm_id: "test".to_string(),
+        realm_id: realm.to_string(),
         user_id: user_id.to_string(),
         auth_time: now,
         acr: None,
@@ -797,4 +827,83 @@ async fn ciam_protection_evaluation_rate_limits_and_records_audit() {
     assert_eq!(audits[0].action, "ciam.protection.evaluate");
     assert_eq!(audits[0].actor, "user-ciam");
     assert_eq!(audits[0].metadata_json["outcome"], "rate_limit");
+}
+
+#[tokio::test]
+async fn ciam_progressive_profiles_keep_concatenation_collision_owners_independent() {
+    let (app, state) = setup_with_realms(&["team_blue", "team"]).await;
+    let owners = [("team_blue", "person"), ("team", "blue_person")];
+    for (realm, user) in owners {
+        state
+            .repo
+            .create_user(&User {
+                id: user.to_string(),
+                realm_id: realm.to_string(),
+                email: None,
+                email_verified: false,
+                display_name: None,
+                failed_login_attempts: 0,
+                locked_until: None,
+                org: None,
+            })
+            .await
+            .unwrap();
+    }
+    // Exercise each route's profile creation path as well as same-owner updates.
+    let cookies = [
+        add_session_in_realm(&state, owners[0].0, owners[0].1).await,
+        add_session_in_realm(&state, owners[1].0, owners[1].1).await,
+    ];
+    for create_action in ["profile/submit", "passwordless/migrate"] {
+        for (realm, user) in owners {
+            state
+                .repo
+                .delete_ciam_progressive_profile(&realm.into(), user)
+                .await
+                .unwrap();
+        }
+        for action in [create_action, "profile/submit", "passwordless/migrate"] {
+            for ((realm, user), cookie) in owners.into_iter().zip(&cookies) {
+                let response = app
+                    .clone()
+                    .oneshot(with_cookie(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri(format!("/api/v1/{realm}/ciam/{action}"))
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(
+                                serde_json::json!({
+                                    "user_id": user,
+                                    "profile": {"name": user},
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap(),
+                        cookie,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{realm}/{action}");
+            }
+        }
+        let first = state
+            .repo
+            .get_ciam_progressive_profile(&"team_blue".into(), "person")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = state
+            .repo
+            .get_ciam_progressive_profile(&"team".into(), "blue_person")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        for (profile, (realm, user)) in [first, second].into_iter().zip(owners) {
+            assert_eq!(profile.realm_id, realm);
+            assert_eq!(profile.user_id, user);
+            assert_eq!(profile.profile_json, serde_json::json!({"name": user}));
+            assert!(profile.passwordless_migrated_at.is_some());
+        }
+    }
 }

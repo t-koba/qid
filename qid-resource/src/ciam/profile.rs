@@ -88,6 +88,12 @@ pub struct PasswordlessCampaignStats {
     pub migrated_user_ids: Vec<String>,
 }
 
+// The byte length makes the realm/user boundary unambiguous, even with delimiters
+// or non-ASCII characters in either component.
+fn progressive_profile_id(realm: &str, user: &str) -> String {
+    format!("{}:{realm}{user}", realm.len())
+}
+
 pub async fn profile_plan(
     Path(realm): Path<String>,
     Json(req): Json<ProgressiveProfileRequest>,
@@ -125,7 +131,7 @@ pub async fn profile_submit<R: Repository>(
         {
             Ok(Some(p)) => p,
             Ok(None) => CiamProgressiveProfile {
-                id: format!("{}_{}", realm_id.as_str(), req.user_id),
+                id: progressive_profile_id(realm_id.as_str(), &req.user_id),
                 realm_id: realm_id.0.clone(),
                 user_id: req.user_id.clone(),
                 profile_json: serde_json::json!({}),
@@ -357,7 +363,7 @@ pub async fn passwordless_migrate<R: Repository>(
             ..p
         },
         Ok(None) => CiamProgressiveProfile {
-            id: format!("{}_{}", realm_id.as_str(), user_id),
+            id: progressive_profile_id(realm_id.as_str(), user_id),
             realm_id: realm_id.0,
             user_id: user_id.to_string(),
             profile_json: serde_json::json!({}),
@@ -405,6 +411,23 @@ pub async fn passwordless_campaign<R: Repository>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progressive_profile_ids_distinguish_concatenation_collisions() {
+        assert_eq!(
+            progressive_profile_id("team_blue", "person"),
+            "9:team_blueperson"
+        );
+        assert_eq!(
+            progressive_profile_id("team", "blue_person"),
+            "4:teamblue_person"
+        );
+        assert_ne!(
+            progressive_profile_id("team_blue", "person"),
+            progressive_profile_id("team", "blue_person"),
+        );
+        assert_eq!(progressive_profile_id("é:", "user"), "3:é:user");
+    }
 
     #[test]
     fn progressive_profile_requires_missing_fields_verification_and_terms() {

@@ -319,9 +319,10 @@ impl CiamRepository for SqlRepository {
         &self,
         profile: &CiamProgressiveProfile,
     ) -> QidResult<()> {
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO ciam_profiles (id, realm_id, user_id, profile_json, passwordless_migrated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET profile_json = excluded.profile_json, passwordless_migrated_at = COALESCE(excluded.passwordless_migrated_at, ciam_profiles.passwordless_migrated_at), updated_at = excluded.updated_at",
+             ON CONFLICT(id) DO UPDATE SET profile_json = excluded.profile_json, passwordless_migrated_at = COALESCE(excluded.passwordless_migrated_at, ciam_profiles.passwordless_migrated_at), updated_at = excluded.updated_at \
+             WHERE ciam_profiles.realm_id = excluded.realm_id AND ciam_profiles.user_id = excluded.user_id",
         )
         .bind(&profile.id)
         .bind(&profile.realm_id)
@@ -332,8 +333,20 @@ impl CiamRepository for SqlRepository {
         .bind(profile.updated_at as i64)
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
-        Ok(())
+        .map_err(|err| match err {
+            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
+                QidError::Conflict {
+                    message: "CIAM progressive profile identity cannot change".to_string(),
+                }
+            }
+            other => storage_to_qid_error(other),
+        })?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!(
+                "CIAM progressive profile {} belongs to another owner",
+                profile.id
+            )
+        })
     }
 
     async fn delete_ciam_progressive_profile(

@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
+use qid_core::error::QidResult;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
@@ -456,17 +458,19 @@ pub(crate) fn evaluate_expression<'a>(
             } => {
                 let rebac = rebac?;
                 let subject_id = ctx.subject_id.as_deref()?;
-                Some(
-                    rebac
-                        .check(
-                            namespace,
-                            object_id,
-                            relation,
-                            subject_namespace,
-                            subject_id,
-                        )
-                        .await,
-                )
+                // Storage failures stay unknown (`None`), never positive or
+                // negative evidence, so `Not` over a failed check remains
+                // unknown and cannot satisfy a rule.
+                rebac
+                    .check(
+                        namespace,
+                        object_id,
+                        relation,
+                        subject_namespace,
+                        subject_id,
+                    )
+                    .await
+                    .ok()
             }
         }
     })
@@ -499,6 +503,11 @@ pub trait PolicyEngine: Send + Sync {
 /// Used by the policy engine to evaluate relationship tuples during
 /// rule matching.  Implementations typically call the ReBAC `check`
 /// function over a `RebacRepository`.
+///
+/// A storage failure is reported as `Err` and the policy expression
+/// evaluator maps it to unknown (`None`): it is neither positive nor
+/// counter-evidence, so `Not` over a failed check stays unknown and never
+/// satisfies a rule. Only `Ok(true)` / `Ok(false)` establish evidence.
 #[async_trait::async_trait]
 pub trait RebacEvaluator: Send + Sync {
     async fn check(
@@ -508,5 +517,5 @@ pub trait RebacEvaluator: Send + Sync {
         relation: &str,
         subject_namespace: &str,
         subject_id: &str,
-    ) -> bool;
+    ) -> QidResult<bool>;
 }

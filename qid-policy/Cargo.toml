@@ -16,6 +16,7 @@ cedar-embedded = ["dep:cedar-policy"]
 
 [dependencies]
 async-trait = { workspace = true }
+qid-core = { workspace = true }
 metrics = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

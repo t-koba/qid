@@ -272,7 +272,7 @@ where
         relation: &str,
         subject_namespace: &str,
         subject_id: &str,
-    ) -> bool {
+    ) -> QidResult<bool> {
         crate::rebac::check(
             &self.repo,
             namespace,
@@ -282,7 +282,6 @@ where
             subject_id,
         )
         .await
-        .unwrap_or(false)
     }
 }
 
@@ -333,7 +332,7 @@ where
         relation: &str,
         subject_namespace: &str,
         subject_id: &str,
-    ) -> bool {
+    ) -> QidResult<bool> {
         crate::rebac::check(
             &*self.repo,
             &self.scoped(namespace),
@@ -343,7 +342,6 @@ where
             subject_id,
         )
         .await
-        .unwrap_or(false)
     }
 }
 
@@ -1023,6 +1021,7 @@ mod tests {
             same_tenant
                 .check("document", "doc-1", "viewer", "user", "alice")
                 .await
+                .unwrap()
         );
         assert!(
             same_tenant
@@ -1034,12 +1033,80 @@ mod tests {
                     "alice"
                 )
                 .await
+                .unwrap()
         );
         let other_tenant = tenant_scoped_rebac_evaluator(repo, "tenant-b");
         assert!(
             !other_tenant
                 .check("document", "doc-1", "viewer", "user", "alice")
                 .await
+                .unwrap()
+        );
+    }
+
+    /// Storage failures must surface as errors, not as `false` evidence.
+    struct FailingRebacRepo;
+
+    #[async_trait::async_trait]
+    impl qid_storage::traits::RebacRepository for FailingRebacRepo {
+        async fn create_relationship_tuple(&self, _tuple: &RelationshipTuple) -> QidResult<()> {
+            Err(qid_core::error::QidError::Storage {
+                message: "failing repo".to_string(),
+            })
+        }
+
+        async fn delete_relationship_tuple(&self, _tuple: &RelationshipTuple) -> QidResult<()> {
+            Err(qid_core::error::QidError::Storage {
+                message: "failing repo".to_string(),
+            })
+        }
+
+        async fn list_relationship_tuples(
+            &self,
+            _namespace: &str,
+            _object_id: &str,
+            _relation: Option<&str>,
+        ) -> QidResult<Vec<RelationshipTuple>> {
+            Err(qid_core::error::QidError::Storage {
+                message: "failing repo".to_string(),
+            })
+        }
+
+        async fn list_relationship_tuples_by_subject(
+            &self,
+            _namespace: &str,
+            _object_id: &str,
+            _relation: &str,
+            _subject_namespace: &str,
+            _subject_id: &str,
+            _subject_relation: Option<&str>,
+        ) -> QidResult<Vec<RelationshipTuple>> {
+            Err(qid_core::error::QidError::Storage {
+                message: "failing repo".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unscoped_bridge_propagates_storage_error() {
+        let bridge = RebacEvaluatorBridge::new(FailingRebacRepo);
+        assert!(
+            bridge
+                .check("doc", "doc-1", "viewer", "user", "alice")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tenant_scoped_bridge_propagates_storage_error() {
+        let evaluator =
+            TenantScopedRebacEvaluator::new(std::sync::Arc::new(FailingRebacRepo), "tenant-a");
+        assert!(
+            evaluator
+                .check("document", "doc-1", "viewer", "user", "alice")
+                .await
+                .is_err()
         );
     }
 }

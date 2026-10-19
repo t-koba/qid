@@ -923,10 +923,10 @@ mod tests {
             relation: &str,
             subject_namespace: &str,
             subject_id: &str,
-        ) -> bool {
+        ) -> qid_core::error::QidResult<bool> {
             let key =
                 format!("{namespace}:{object_id}#{relation}:{subject_namespace}:{subject_id}");
-            self.tuples.get(&key).copied().unwrap_or(false)
+            Ok(self.tuples.get(&key).copied().unwrap_or(false))
         }
     }
 
@@ -1081,6 +1081,86 @@ mod tests {
         };
         assert_eq!(engine.decide(&ctx).await.decision, Decision::Deny);
         assert_eq!(engine.decide(&ctx).await.policy_id, "block-mallory");
+    }
+
+    /// Evaluator that always reports a storage failure. The expression
+    /// evaluator must map it to unknown, never to evidence.
+    struct FailingRebacEvaluator;
+
+    #[async_trait::async_trait]
+    impl RebacEvaluator for FailingRebacEvaluator {
+        async fn check(
+            &self,
+            _namespace: &str,
+            _object_id: &str,
+            _relation: &str,
+            _subject_namespace: &str,
+            _subject_id: &str,
+        ) -> qid_core::error::QidResult<bool> {
+            Err(qid_core::error::QidError::Storage {
+                message: "rebac unavailable".to_string(),
+            })
+        }
+    }
+
+    fn negated_rebac_allow_rule() -> Rule {
+        Rule {
+            name: "non-member-access".to_string(),
+            rule_type: RuleType::Allow,
+            action: "*".to_string(),
+            resource_host: None,
+            conditions: vec![],
+            expression: Some(Expression::Not {
+                not: Box::new(Expression::RebacCheck {
+                    namespace: "doc".to_string(),
+                    object_id: "doc-1".to_string(),
+                    relation: "viewer".to_string(),
+                    subject_namespace: "user".to_string(),
+                }),
+            }),
+            rate_limit_profile: None,
+            inject_headers: None,
+            pep: PepPolicyActions::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_negated_rebac_check_does_not_match_on_evaluator_error() {
+        let evaluator = Arc::new(FailingRebacEvaluator);
+        let mut engine = NativePolicyEngine::new().with_rebac_evaluator(evaluator);
+        let bundle = PolicyBundle {
+            version: "1".to_string(),
+            rules: vec![negated_rebac_allow_rule()],
+            default_decision: Decision::Deny,
+        };
+        engine.load(bundle, "test".to_string());
+
+        let ctx = PolicyContext {
+            subject_id: Some("alice".to_string()),
+            ..PolicyContext::default()
+        };
+        // Unknown under negation stays unknown: no match, default Deny holds.
+        assert_eq!(engine.decide(&ctx).await.decision, Decision::Deny);
+    }
+
+    #[tokio::test]
+    async fn test_negated_rebac_check_matches_on_established_false() {
+        let tuples = std::collections::HashMap::new(); // Ok(false): established absence
+        let evaluator = Arc::new(MockRebacEvaluator { tuples });
+        let mut engine = NativePolicyEngine::new().with_rebac_evaluator(evaluator);
+        let bundle = PolicyBundle {
+            version: "1".to_string(),
+            rules: vec![negated_rebac_allow_rule()],
+            default_decision: Decision::Deny,
+        };
+        engine.load(bundle, "test".to_string());
+
+        let ctx = PolicyContext {
+            subject_id: Some("bob".to_string()),
+            ..PolicyContext::default()
+        };
+        // Genuine Ok(false) is counter-evidence, so the negation satisfies the rule.
+        assert_eq!(engine.decide(&ctx).await.decision, Decision::Allow);
     }
 
     /// Determinism property: the same input always produces the same decision.

@@ -1501,3 +1501,249 @@ async fn scim_patch_rejects_custom_extension_without_partial_mutation() {
         "rejected PATCH must not change the version"
     );
 }
+
+async fn version_test_bulk(app: &Router, body: serde_json::Value) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/scim/v2/Bulk")
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response_json(response).await
+}
+
+async fn version_test_get(app: &Router, path: &str) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response_json(response).await
+}
+
+#[tokio::test]
+async fn scim_bulk_checks_user_and_group_versions_before_mutating() {
+    let app = setup().await;
+    for (resource, attribute) in [("Users", "userName"), ("Groups", "displayName")] {
+        let created = version_test_bulk(
+            &app,
+            serde_json::json!({"Operations": [{
+                "method": "POST", "path": format!("/{resource}"),
+                "data": {"realm": "corp", attribute: "initial", "active": true}
+            }]}),
+        )
+        .await;
+        assert_eq!(created["Operations"][0]["status"], "201");
+        let path = created["Operations"][0]["location"].as_str().unwrap();
+        let original_version = &created["Operations"][0]["response"]["meta"]["version"];
+        // A successful conditional PUT makes the creation version genuinely stale,
+        // without depending on clock resolution for the version to change.
+        let seeded = version_test_bulk(
+            &app,
+            serde_json::json!({"Operations": [{
+                "method": "PUT", "path": path, "version": original_version,
+                "data": {"realm": "corp", attribute: "seeded", "active": true}
+            }]}),
+        )
+        .await;
+        assert_eq!(seeded["Operations"][0]["status"], "200");
+        assert_ne!(
+            seeded["Operations"][0]["response"]["meta"]["version"],
+            *original_version
+        );
+
+        for method in ["PUT", "PATCH", "DELETE"] {
+            let before = version_test_get(&app, path).await;
+            let data = if method == "PATCH" {
+                serde_json::json!({"Operations": [{
+                    "op": "replace", "path": attribute, "value": "patched"
+                }]})
+            } else {
+                serde_json::json!({"realm": "corp", attribute: "replaced", "active": true})
+            };
+            let mut operation = serde_json::json!({
+                "method": method, "path": path, "bulkId": "conditional",
+                "version": original_version, "data": data
+            });
+            let stale = version_test_bulk(
+                &app,
+                serde_json::json!({
+                    "Operations": [operation.clone()]
+                }),
+            )
+            .await;
+            assert_eq!(
+                stale["Operations"][0]["status"], "412",
+                "{resource} {method}"
+            );
+            assert_eq!(stale["Operations"][0]["bulkId"], "conditional");
+            assert_eq!(stale["Operations"][0]["response"]["status"], "412");
+            assert_eq!(
+                version_test_get(&app, path).await,
+                before,
+                "stale {resource} {method} mutated state"
+            );
+
+            // PATCH also exercises the individual-route comma-list and whitespace
+            // matching rules; PUT and DELETE use the exact current version.
+            operation["version"] = if method == "PATCH" {
+                serde_json::json!(format!(
+                    " \"not-current\", {} ",
+                    before["meta"]["version"].as_str().unwrap()
+                ))
+            } else {
+                before["meta"]["version"].clone()
+            };
+            let current =
+                version_test_bulk(&app, serde_json::json!({"Operations": [operation]})).await;
+            assert_eq!(
+                current["Operations"][0]["status"],
+                if method == "DELETE" { "204" } else { "200" },
+                "{resource} {method}"
+            );
+            if method != "DELETE" {
+                let after = version_test_get(&app, path).await;
+                assert_eq!(
+                    after[attribute],
+                    if method == "PUT" {
+                        "replaced"
+                    } else {
+                        "patched"
+                    }
+                );
+                assert_eq!(current["Operations"][0]["response"], after);
+                assert_ne!(after["meta"]["version"], before["meta"]["version"]);
+            }
+        }
+        if resource == "Users" {
+            let soft_deleted = version_test_get(&app, path).await;
+            assert_eq!(soft_deleted["active"], false);
+            // A stale conditional hard delete must not remove the soft-deleted row.
+            let hard_path = format!("{path}?hard_delete=true");
+            let stale = version_test_bulk(
+                &app,
+                serde_json::json!({"Operations": [{
+                    "method": "DELETE", "path": hard_path, "version": original_version
+                }]}),
+            )
+            .await;
+            assert_eq!(stale["Operations"][0]["status"], "412");
+            assert_eq!(version_test_get(&app, path).await, soft_deleted);
+            let deleted = version_test_bulk(
+                &app,
+                serde_json::json!({"Operations": [{
+                    "method": "DELETE", "path": hard_path, "version": " * "
+                }]}),
+            )
+            .await;
+            assert_eq!(deleted["Operations"][0]["status"], "204");
+        }
+        let missing = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+#[tokio::test]
+async fn scim_bulk_version_failure_counts_toward_fail_on_errors() {
+    let app = setup().await;
+    let created = version_test_bulk(
+        &app,
+        serde_json::json!({"Operations": [{
+            "method": "POST", "path": "/Users", "data": {"realm": "corp", "userName": "unchanged"}
+        }]}),
+    )
+    .await;
+    let path = created["Operations"][0]["location"].as_str().unwrap();
+    let before = version_test_get(&app, path).await;
+    let result = version_test_bulk(&app, serde_json::json!({"failOnErrors": 1, "Operations": [
+        {"method": "PATCH", "path": path, "version": "\"stale\"", "data": {
+            "Operations": [{"op": "replace", "path": "userName", "value": "must-not-change"}]
+        }},
+        {"method": "POST", "path": "/Groups", "data": {"realm": "corp", "displayName": "must-not-run"}}
+    ]})).await;
+    assert_eq!(result["Operations"].as_array().unwrap().len(), 1);
+    assert_eq!(result["Operations"][0]["status"], "412");
+    assert_eq!(version_test_get(&app, path).await, before);
+    assert_eq!(
+        version_test_get(&app, "/scim/v2/Groups?realm=corp").await["totalResults"],
+        0
+    );
+}
+
+#[tokio::test]
+async fn scim_bulk_rejects_versions_on_create_without_creating_records() {
+    let app = setup().await;
+    for (resource, attribute) in [("Users", "userName"), ("Groups", "displayName")] {
+        let result = version_test_bulk(&app, serde_json::json!({"failOnErrors": 0, "Operations": [
+            {"method": "POST", "path": format!("/{resource}"), "version": "*", "bulkId": "rejected",
+             "data": {"realm": "corp", attribute: "must-not-exist"}},
+            {"method": "POST", "path": format!("/{resource}"),
+             "data": {"realm": "corp", attribute: "unversioned"}}
+        ]})).await;
+        assert_eq!(result["Operations"][0]["status"], "400");
+        assert_eq!(result["Operations"][0]["bulkId"], "rejected");
+        assert_eq!(result["Operations"][1]["status"], "201");
+        let listed = version_test_get(&app, &format!("/scim/v2/{resource}?realm=corp")).await;
+        assert_eq!(listed["totalResults"], 1);
+        assert_eq!(listed["Resources"][0][attribute], "unversioned");
+    }
+}
+
+#[tokio::test]
+async fn scim_bulk_version_checks_preserve_realm_isolation_and_missing_status() {
+    let app = setup().await;
+    let scoped = app
+        .clone()
+        .layer(axum::Extension(qid_scim::ScimRequestContext {
+            realm_id: "other".into(),
+        }));
+    for (resource, attribute) in [("Users", "userName"), ("Groups", "displayName")] {
+        let created = version_test_bulk(
+            &app,
+            serde_json::json!({"Operations": [{
+                "method": "POST", "path": format!("/{resource}"),
+                "data": {"realm": "corp", attribute: "private"}
+            }]}),
+        )
+        .await;
+        let path = created["Operations"][0]["location"].as_str().unwrap();
+        let before = version_test_get(&app, path).await;
+        for method in ["PUT", "PATCH", "DELETE"] {
+            for version in [
+                before["meta"]["version"].as_str().unwrap(),
+                "\"stale\"",
+                "*",
+            ] {
+                let result = version_test_bulk(
+                    &scoped,
+                    serde_json::json!({"Operations": [{
+                        "method": method, "path": path, "version": version,
+                        "data": {"realm": "other", attribute: "must-not-change", "Operations": []}
+                    }]}),
+                )
+                .await;
+                assert_eq!(
+                    result["Operations"][0]["status"], "404",
+                    "{resource} {method}"
+                );
+            }
+            let missing = version_test_bulk(&app, serde_json::json!({"Operations": [{
+                "method": method, "path": format!("/{resource}/missing"), "version": "*", "data": {}
+            }]})).await;
+            assert_eq!(missing["Operations"][0]["status"], "404");
+        }
+        assert_eq!(version_test_get(&app, path).await, before);
+    }
+}

@@ -117,6 +117,14 @@ pub(crate) fn check_if_match(
     let Ok(value) = value.to_str() else {
         return Err("invalid If-Match header");
     };
+    check_resource_version(value, current_version)
+}
+
+/// Shared matching rules for individual If-Match and Bulk version preconditions.
+pub(crate) fn check_resource_version(
+    value: &str,
+    current_version: &str,
+) -> Result<(), &'static str> {
     if value
         .split(',')
         .map(str::trim)

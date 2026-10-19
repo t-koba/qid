@@ -34,6 +34,8 @@ pub(crate) struct BulkOperation {
     bulk_id: Option<String>,
     #[serde(default)]
     data: Option<serde_json::Value>,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 pub(crate) async fn bulk<R: Repository>(
@@ -95,6 +97,16 @@ async fn apply_bulk_operation<R: Repository>(
     .to_string();
     metrics::counter!("qid_scim_operations_total", "operation" => operation_name.clone())
         .increment(1);
+    if method == "POST"
+        && matches!(path.as_str(), "/Users" | "Users" | "/Groups" | "Groups")
+        && op.version.is_some()
+    {
+        return bulk_error(
+            op.bulk_id,
+            "400",
+            "version is not applicable to create operations",
+        );
+    }
     match (method.as_str(), path.as_str()) {
         ("POST", "/Users") | ("POST", "Users") => {
             let Some(data) = op.data else {
@@ -125,8 +137,10 @@ async fn apply_bulk_operation<R: Repository>(
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            if let Err(e) = ensure_user_realm(state, id, context_realm).await {
-                return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
+            if let Err((status, detail)) =
+                check_user_preconditions(state, id, context_realm, op.version.as_deref()).await
+            {
+                return bulk_error(op.bulk_id, &status.to_string(), &detail);
             }
             let mut req = match super::parse_create_user(data) {
                 Ok(req) => req,
@@ -150,8 +164,10 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("PATCH", path) if path.starts_with("/Users/") => {
             let id = path.trim_start_matches("/Users/");
-            if let Err(e) = ensure_user_realm(state, id, context_realm).await {
-                return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
+            if let Err((status, detail)) =
+                check_user_preconditions(state, id, context_realm, op.version.as_deref()).await
+            {
+                return bulk_error(op.bulk_id, &status.to_string(), &detail);
             }
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
@@ -207,8 +223,10 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("PUT", path) if path.starts_with("/Groups/") => {
             let id = path.trim_start_matches("/Groups/");
-            if let Err(e) = ensure_group_realm(state, id, context_realm).await {
-                return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
+            if let Err((status, detail)) =
+                check_group_preconditions(state, id, context_realm, op.version.as_deref()).await
+            {
+                return bulk_error(op.bulk_id, &status.to_string(), &detail);
             }
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
@@ -239,8 +257,10 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("PATCH", path) if path.starts_with("/Groups/") => {
             let id = path.trim_start_matches("/Groups/");
-            if let Err(e) = ensure_group_realm(state, id, context_realm).await {
-                return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
+            if let Err((status, detail)) =
+                check_group_preconditions(state, id, context_realm, op.version.as_deref()).await
+            {
+                return bulk_error(op.bulk_id, &status.to_string(), &detail);
             }
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
@@ -268,8 +288,10 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("DELETE", path) if path.starts_with("/Users/") => {
             let id = path.trim_start_matches("/Users/");
-            if let Err(e) = ensure_user_realm(state, id, context_realm).await {
-                return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
+            if let Err((status, detail)) =
+                check_user_preconditions(state, id, context_realm, op.version.as_deref()).await
+            {
+                return bulk_error(op.bulk_id, &status.to_string(), &detail);
             }
             let hard_delete = query.as_deref() == Some("hard_delete=true");
             match delete_user_record(state, id, hard_delete).await {
@@ -279,8 +301,10 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("DELETE", path) if path.starts_with("/Groups/") => {
             let id = path.trim_start_matches("/Groups/");
-            if let Err(e) = ensure_group_realm(state, id, context_realm).await {
-                return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
+            if let Err((status, detail)) =
+                check_group_preconditions(state, id, context_realm, op.version.as_deref()).await
+            {
+                return bulk_error(op.bulk_id, &status.to_string(), &detail);
             }
             match state.repo.delete_scim_group(id).await {
                 Ok(()) => bulk_success(method, op.bulk_id, "204", None, None),
@@ -291,47 +315,60 @@ async fn apply_bulk_operation<R: Repository>(
     }
 }
 
-async fn ensure_user_realm<R: Repository>(
+// These checks intentionally precede, rather than form an atomic unit with, the
+// record mutation, just like individual-route If-Match checks.
+async fn check_user_preconditions<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     context_realm: Option<&str>,
-) -> qid_core::error::QidResult<()> {
-    let Some(realm_id) = context_realm else {
+    version: Option<&str>,
+) -> Result<(), (u16, String)> {
+    if context_realm.is_none() && version.is_none() {
         return Ok(());
-    };
-    let user =
-        state
-            .repo
-            .get_scim_user(id)
-            .await?
-            .ok_or_else(|| qid_core::error::QidError::NotFound {
-                resource: "scim user".to_string(),
-            })?;
-    if user.realm_id != realm_id {
-        return Err(qid_core::error::QidError::NotFound {
-            resource: "scim user".to_string(),
-        });
+    }
+    let user = state
+        .repo
+        .get_scim_user(id)
+        .await
+        .map_err(|e| (e.status_code(), e.message()))?
+        .ok_or_else(|| (404, "scim user not found".to_string()))?;
+    if context_realm.is_some_and(|realm_id| user.realm_id != realm_id) {
+        return Err((404, "scim user not found".to_string()));
+    }
+    if let Some(version) = version {
+        crate::response::check_resource_version(
+            version,
+            &crate::response::scim_user_version(&user),
+        )
+        .map_err(|detail| (412, detail.to_string()))?;
     }
     Ok(())
 }
 
-async fn ensure_group_realm<R: Repository>(
+async fn check_group_preconditions<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     context_realm: Option<&str>,
-) -> qid_core::error::QidResult<()> {
-    let Some(realm_id) = context_realm else {
+    version: Option<&str>,
+) -> Result<(), (u16, String)> {
+    if context_realm.is_none() && version.is_none() {
         return Ok(());
-    };
-    let group = state.repo.get_scim_group(id).await?.ok_or_else(|| {
-        qid_core::error::QidError::NotFound {
-            resource: "scim group".to_string(),
-        }
-    })?;
-    if group.realm_id != realm_id {
-        return Err(qid_core::error::QidError::NotFound {
-            resource: "scim group".to_string(),
-        });
+    }
+    let group = state
+        .repo
+        .get_scim_group(id)
+        .await
+        .map_err(|e| (e.status_code(), e.message()))?
+        .ok_or_else(|| (404, "scim group not found".to_string()))?;
+    if context_realm.is_some_and(|realm_id| group.realm_id != realm_id) {
+        return Err((404, "scim group not found".to_string()));
+    }
+    if let Some(version) = version {
+        crate::response::check_resource_version(
+            version,
+            &crate::response::scim_group_version(&group),
+        )
+        .map_err(|detail| (412, detail.to_string()))?;
     }
     Ok(())
 }

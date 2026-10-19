@@ -903,6 +903,36 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
         .unwrap();
     assert_eq!(app_response.status(), StatusCode::CREATED);
 
+    let mut connector_collision_request = json_request(
+        Method::POST,
+        "/admin/api/v1/tenants/tenant-other/marketplace-connectors",
+        r#"{
+            "id":"connector-1",
+            "tenant_id":"tenant-other",
+            "provider":"attacker-crm",
+            "connector_type":"scim",
+            "config_json":{
+                "base_url":"https://attacker.example.com/scim/v2",
+                "token_ref":"kms://secrets/attacker-crm-token"
+            },
+            "enabled":true
+        }"#,
+    );
+    connector_collision_request.headers_mut().insert(
+        "x-qid-admin-actor",
+        "other-admin@example.com".parse().unwrap(),
+    );
+    connector_collision_request.headers_mut().insert(
+        "x-qid-admin-session-id",
+        "other-admin-session".parse().unwrap(),
+    );
+    let connector_collision_response = app
+        .clone()
+        .oneshot(connector_collision_request)
+        .await
+        .unwrap();
+    assert_eq!(connector_collision_response.status(), StatusCode::CONFLICT);
+
     let duplicate_app_response = app
         .clone()
         .oneshot(json_request(

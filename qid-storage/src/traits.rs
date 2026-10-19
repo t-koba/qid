@@ -510,6 +510,8 @@ pub trait SaasRepository: Send + Sync + 'static {
     async fn store_app_catalog_entry(&self, entry: &AppCatalogEntry) -> QidResult<()>;
     async fn list_app_catalog_entries(&self, tenant_id: &str) -> QidResult<Vec<AppCatalogEntry>>;
     async fn delete_app_catalog_entry(&self, tenant_id: &str, id: &str) -> QidResult<()>;
+    /// Create a connector with a globally unique ID; duplicate IDs return `Conflict`
+    /// without changing the incumbent connector or its app-catalog references.
     async fn store_marketplace_connector(&self, connector: &MarketplaceConnector) -> QidResult<()>;
     async fn list_marketplace_connectors(
         &self,

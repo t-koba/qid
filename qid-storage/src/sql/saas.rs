@@ -272,8 +272,8 @@ impl SaasRepository for SqlRepository {
 
     async fn store_marketplace_connector(&self, connector: &MarketplaceConnector) -> QidResult<()> {
         connector.validate()?;
-        sqlx::query(
-            "INSERT INTO marketplace_connectors (id, tenant_id, provider, connector_type, config_json, enabled) VALUES (?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO marketplace_connectors (id, tenant_id, provider, connector_type, config_json, enabled) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&connector.id)
         .bind(&connector.tenant_id)
@@ -284,6 +284,11 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "marketplace connector ID already exists".to_string(),
+            });
+        }
         Ok(())
     }
 

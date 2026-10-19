@@ -253,6 +253,11 @@ impl SaasRepository for FileRepository {
     async fn store_marketplace_connector(&self, connector: &MarketplaceConnector) -> QidResult<()> {
         connector.validate()?;
         let mut store = self.store.write().await;
+        if store.marketplace_connectors.contains_key(&connector.id) {
+            return Err(QidError::Conflict {
+                message: "marketplace connector ID already exists".to_string(),
+            });
+        }
         store
             .marketplace_connectors
             .insert(connector.id.clone(), connector.clone());

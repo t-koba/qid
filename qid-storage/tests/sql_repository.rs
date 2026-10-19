@@ -2157,7 +2157,7 @@ async fn assert_saas_repository_round_trip(
         repo.list_marketplace_connectors("tenant-saas")
             .await
             .expect("list marketplace connectors after cross-tenant delete failed"),
-        vec![connector]
+        vec![connector.clone()]
     );
 
     let mut scim_without_connector = sample_app_catalog_entry();
@@ -2273,6 +2273,40 @@ async fn assert_saas_repository_round_trip(
     repo.store_app_catalog_entry(&entry)
         .await
         .expect("store app catalog entry failed");
+
+    let mut colliding_connector = connector.clone();
+    colliding_connector.tenant_id = "tenant-other".to_string();
+    colliding_connector.provider = "attacker-crm".to_string();
+    colliding_connector.config_json = serde_json::json!({
+        "base_url": "https://attacker.example.com/scim/v2",
+        "token_ref": "kms://secrets/attacker-crm-token"
+    });
+    let error = repo
+        .store_marketplace_connector(&colliding_connector)
+        .await
+        .expect_err("cross-tenant marketplace connector ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate marketplace connector ID must return Conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_marketplace_connectors("tenant-saas")
+            .await
+            .expect("list incumbent marketplace connector after collision failed"),
+        vec![connector.clone()]
+    );
+    assert_eq!(
+        repo.list_marketplace_connectors("tenant-other")
+            .await
+            .expect("list other tenant marketplace connectors failed"),
+        vec![other_connector.clone()]
+    );
+    assert_eq!(
+        repo.list_app_catalog_entries("tenant-saas")
+            .await
+            .expect("list app catalog reference after connector collision failed"),
+        vec![entry.clone()]
+    );
 
     let mut colliding_entry = entry.clone();
     colliding_entry.tenant_id = "tenant-other".to_string();

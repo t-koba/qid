@@ -114,7 +114,7 @@ Admin mutations require admin authorization checks and, depending on config, rea
 | `DELETE` | `/admin/api/v1/tenants/:tenant/app-catalog/:entry_id` | Delete app catalog entry. |
 | `GET, POST` | `/admin/api/v1/tenants/:tenant/ciam-brands` | List/create or update same-tenant CIAM brands. IDs are global; reuse by another tenant returns `409 Conflict` without changing the incumbent. |
 | `DELETE` | `/admin/api/v1/tenants/:tenant/ciam-brands/:brand_id` | Delete CIAM brand. |
-| `GET, POST` | `/admin/api/v1/tenants/:tenant/marketplace-connectors` | List/create marketplace connectors. |
+| `GET, POST` | `/admin/api/v1/tenants/:tenant/marketplace-connectors` | List/create marketplace connectors; duplicate connector IDs return `409 Conflict`. |
 | `DELETE` | `/admin/api/v1/tenants/:tenant/marketplace-connectors/:connector_id` | Delete marketplace connector. |
 | `GET, POST` | `/admin/api/v1/tenants/:tenant/usage-billing-events` | List/create usage billing events. |
 | `GET, POST` | `/admin/api/v1/tenants/:tenant/compliance-evidence-packs` | List/create compliance evidence packs; duplicate pack IDs return `409 Conflict`. |

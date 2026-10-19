@@ -21,7 +21,7 @@ use crate::{ScimRequestContext, scoped_realm};
 
 use super::{
     CreateUser, DeleteQuery, ListQuery, MAX_LIST_RESULTS, PatchOperation, PatchRequest, bool_value,
-    string_value,
+    reject_unsupported_user_extensions, string_value, unsupported_user_schema_error,
 };
 
 pub(crate) async fn list_users<R: Repository>(
@@ -172,9 +172,13 @@ pub(crate) fn scim_cursor_secret<R: Repository>(
 pub(crate) async fn create_user<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     context: Option<Extension<ScimRequestContext>>,
-    Json(mut req): Json<CreateUser>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "create_user").increment(1);
+    let mut req = match super::parse_create_user(raw) {
+        Ok(req) => req,
+        Err(e) => return qid_http::error_response(e),
+    };
     req.realm = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm);
     match create_user_record(&state, req).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::CREATED, user),
@@ -248,7 +252,7 @@ pub(crate) async fn replace_user<R: Repository>(
     context: Option<Extension<ScimRequestContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(mut req): Json<CreateUser>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "replace_user").increment(1);
     let existing = match state.repo.get_scim_user(&id).await {
@@ -272,6 +276,10 @@ pub(crate) async fn replace_user<R: Repository>(
     {
         return crate::response::precondition_failed(detail);
     }
+    let mut req = match super::parse_create_user(raw) {
+        Ok(req) => req,
+        Err(e) => return qid_http::error_response(e),
+    };
     req.realm = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm);
     match replace_user_record(&state, &id, req).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
@@ -422,6 +430,21 @@ fn owned_external_id_conflict(action: &str) -> QidError {
 fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidError> {
     let op_name = op.op.to_ascii_lowercase();
     let path = op.path.unwrap_or_default();
+    let enterprise_path = format!("{ENTERPRISE_USER_SCHEMA}:");
+    let core_path = format!("{}:", super::CORE_USER_SCHEMA);
+    let unsupported_urn_path = super::has_urn_scheme(&path)
+        && path != ENTERPRISE_USER_SCHEMA
+        && !path.starts_with(&enterprise_path)
+        && path != super::CORE_USER_SCHEMA
+        && !path.starts_with(&core_path);
+    if unsupported_urn_path
+        || op
+            .value
+            .as_ref()
+            .is_some_and(|value| reject_unsupported_user_extensions(value).is_err())
+    {
+        return Err(unsupported_user_schema_error());
+    }
     match (op_name.as_str(), path.as_str()) {
         ("add" | "replace", "userName") => {
             user.user_name = string_value(op.value, "userName")?;

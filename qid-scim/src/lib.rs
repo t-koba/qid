@@ -61,13 +61,10 @@ pub fn scim_routes_at<R: Repository>(base_path: &str) -> Router<Arc<SharedState<
             &scim_path(&base_path, "/ServiceProviderConfig"),
             get(inbound::service_provider_config),
         )
-        .route(
-            &scim_path(&base_path, "/Schemas"),
-            get(inbound::schemas::<R>),
-        )
+        .route(&scim_path(&base_path, "/Schemas"), get(inbound::schemas))
         .route(
             &scim_path(&base_path, "/ResourceTypes"),
-            get(inbound::resource_types::<R>),
+            get(inbound::resource_types),
         )
         .route(
             &scim_path(&base_path, "/Users"),

@@ -1,10 +1,5 @@
-use axum::extract::Extension;
-use axum::{Json, extract::State, response::IntoResponse};
-use qid_core::state::SharedState;
-use qid_storage::prelude::*;
-use std::sync::Arc;
+use axum::{Json, response::IntoResponse};
 
-use crate::ScimRequestContext;
 use crate::{ENTERPRISE_USER_SCHEMA, RFC_9944_DEVICE_SCHEMA, RFC_9967_EVENT_SUBSCRIPTION_SCHEMA};
 
 pub(crate) async fn service_provider_config() -> impl IntoResponse {
@@ -20,11 +15,12 @@ pub(crate) async fn service_provider_config() -> impl IntoResponse {
     }))
 }
 
-pub(crate) async fn schemas<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    context: Option<Extension<ScimRequestContext>>,
-) -> impl IntoResponse {
-    let mut resources = vec![
+pub(crate) async fn schemas() -> impl IntoResponse {
+    // Only schemas with implemented behavior are advertised: core User/Group
+    // and the Enterprise User extension. Configured `custom_schemas` are
+    // rejected at configuration validation time, so discovery never lists
+    // extensions whose values would otherwise be silently discarded.
+    let resources = vec![
         serde_json::json!({
             "id": "urn:ietf:params:scim:schemas:core:2.0:User",
             "name": "User",
@@ -58,40 +54,6 @@ pub(crate) async fn schemas<R: Repository>(
             ]
         }),
     ];
-    let customs = context
-        .as_ref()
-        .and_then(|ext| {
-            state
-                .config
-                .realms
-                .iter()
-                .find(|realm| realm.id == ext.0.realm_id)
-        })
-        .map(|realm| realm.protocols.scim.custom_schemas.as_slice())
-        .unwrap_or(&[]);
-    for custom in customs {
-        let attrs: Vec<serde_json::Value> = custom
-            .attributes
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "name": a.name,
-                    "type": a.r#type,
-                    "multiValued": a.multi_valued,
-                    "required": a.required,
-                    "caseExact": a.case_exact,
-                    "mutability": a.mutability,
-                    "returned": a.returned,
-                })
-            })
-            .collect();
-        resources.push(serde_json::json!({
-            "id": custom.id,
-            "name": custom.name,
-            "description": custom.description,
-            "attributes": attrs,
-        }));
-    }
     Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
         "totalResults": resources.len(),
@@ -99,31 +61,11 @@ pub(crate) async fn schemas<R: Repository>(
     }))
 }
 
-pub(crate) async fn resource_types<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    context: Option<Extension<ScimRequestContext>>,
-) -> impl IntoResponse {
-    let mut user_extensions = vec![serde_json::json!({
+pub(crate) async fn resource_types() -> impl IntoResponse {
+    let user_extensions = vec![serde_json::json!({
         "schema": ENTERPRISE_USER_SCHEMA,
         "required": false
     })];
-    let customs = context
-        .as_ref()
-        .and_then(|ext| {
-            state
-                .config
-                .realms
-                .iter()
-                .find(|realm| realm.id == ext.0.realm_id)
-        })
-        .map(|realm| realm.protocols.scim.custom_schemas.as_slice())
-        .unwrap_or(&[]);
-    for custom in customs {
-        user_extensions.push(serde_json::json!({
-            "schema": custom.id,
-            "required": false
-        }));
-    }
     Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
         "totalResults": 4,

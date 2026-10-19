@@ -53,20 +53,12 @@ fn custom_schema(
 fn scim_test_config() -> qid_core::config::QidConfig {
     let mut config = test_helpers::test_config();
     config.realms[0].id = "corp".to_string();
-    config.realms[0].protocols.scim.custom_schemas = vec![
-        custom_schema("urn:example:CorpOnly", "CorpOnly", "corpAttr"),
-        custom_schema("urn:example:Shared", "SharedCorp", "corpSharedAttr"),
-    ];
     config.realms[0].protocols.scim.cursor_secret =
         Some("0123456789abcdef0123456789abcdef".to_string());
     config.realms[0].protocols.scim.event_callback_allowed_hosts =
         vec!["events.example.com".into()];
     let mut other = config.realms[0].clone();
     other.id = "other".into();
-    other.protocols.scim.custom_schemas = vec![
-        custom_schema("urn:example:OtherOnly", "OtherOnly", "otherAttr"),
-        custom_schema("urn:example:Shared", "SharedOther", "otherSharedAttr"),
-    ];
     config.realms.push(other);
     config
 }
@@ -803,50 +795,41 @@ async fn get_json(app: &Router, uri: &str, realm: Option<&str>) -> serde_json::V
 }
 
 #[tokio::test]
-async fn scim_schema_discovery_is_scoped_to_authenticated_realm() {
-    const CORP_ONLY: &str = "urn:example:CorpOnly";
-    const OTHER_ONLY: &str = "urn:example:OtherOnly";
-    const SHARED: &str = "urn:example:Shared";
+async fn scim_schema_discovery_advertises_only_supported_schemas() {
     let app = setup().await;
-
-    for (realm, only, shared_attr, foreign_attr) in [
-        ("corp", CORP_ONLY, "corpSharedAttr", "otherSharedAttr"),
-        ("other", OTHER_ONLY, "otherSharedAttr", "corpSharedAttr"),
-    ] {
-        let schemas = get_json(&app, "/scim/v2/Schemas", Some(realm))
-            .await
-            .to_string();
-        assert!(schemas.contains(only), "{realm} sees its own schema");
-        assert!(schemas.contains(SHARED), "{realm} sees the shared id");
+    for realm in [Some("corp"), Some("other"), None, Some("unknown")] {
+        let schemas = get_json(&app, "/scim/v2/Schemas", realm).await;
+        assert_eq!(schemas["totalResults"], 3);
+        let ids: Vec<&str> = schemas["Resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"urn:ietf:params:scim:schemas:core:2.0:User"));
+        assert!(ids.contains(&"urn:ietf:params:scim:schemas:core:2.0:Group"));
+        assert!(ids.contains(&ENTERPRISE_USER_SCHEMA));
         assert!(
-            schemas.contains(shared_attr),
-            "{realm} sees its own shared definition"
+            !schemas.to_string().contains("example:"),
+            "no custom extension is advertised"
         );
+        let types = get_json(&app, "/scim/v2/ResourceTypes", realm).await;
+        assert!(types.to_string().contains(ENTERPRISE_USER_SCHEMA));
         assert!(
-            !schemas.contains(foreign_attr),
-            "{realm} omits the other shared definition"
+            !types.to_string().contains("example:"),
+            "no custom extension is advertised"
         );
-        assert!(!schemas.contains("OtherOnly") || realm == "other");
-        assert!(!schemas.contains("CorpOnly") || realm == "corp");
-
-        let types = get_json(&app, "/scim/v2/ResourceTypes", Some(realm))
-            .await
-            .to_string();
-        assert!(types.contains(ENTERPRISE_USER_SCHEMA));
-        assert!(types.contains(only), "{realm} advertises its own schema");
-        assert!(types.contains(SHARED), "{realm} advertises the shared id");
-        assert!(!types.contains("OtherOnly") || realm == "other");
-        assert!(!types.contains("CorpOnly") || realm == "corp");
-    }
-
-    for uri in ["/scim/v2/Schemas", "/scim/v2/ResourceTypes"] {
-        for realm in [None, Some("unknown")] {
-            let body = get_json(&app, uri, realm).await;
-            assert!(!body.to_string().contains("example:"));
-        }
+        assert_eq!(
+            types["Resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "User")
+                .unwrap()["schemaExtensions"],
+            serde_json::json!([{"schema": ENTERPRISE_USER_SCHEMA, "required": false}])
+        );
     }
     let schemas = get_json(&app, "/scim/v2/Schemas", None).await;
-    assert_eq!(schemas["totalResults"], 3);
     assert!(
         schemas["Resources"].as_array().unwrap().iter().any(|r| {
             r["id"] == ENTERPRISE_USER_SCHEMA
@@ -857,16 +840,6 @@ async fn scim_schema_discovery_is_scoped_to_authenticated_realm() {
                     .any(|a| a["name"] == "department")
         }),
         "built-in enterprise extension stays advertised"
-    );
-    let types = get_json(&app, "/scim/v2/ResourceTypes", None).await;
-    assert_eq!(
-        types["Resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["id"] == "User")
-            .unwrap()["schemaExtensions"],
-        serde_json::json!([{"schema": ENTERPRISE_USER_SCHEMA, "required": false}])
     );
 }
 
@@ -1309,4 +1282,222 @@ async fn scim_enterprise_deprovisioned_at_is_server_owned() {
     assert_eq!(retried[ENTERPRISE_USER_SCHEMA]["deprovisioned_at"], 1_050);
     let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
     assert_eq!(stored.deprovisioned_at, Some(1_050));
+}
+
+const CUSTOM_URN: &str = "urn:example:Custom";
+const UNSUPPORTED_ERROR: &str = "unsupported SCIM schema extension";
+
+async fn post_user(app: &Router, body: &str) -> (StatusCode, serde_json::Value) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let json = response_json(response).await;
+    (status, json)
+}
+
+#[test]
+fn scim_custom_schemas_are_rejected_by_config_validation() {
+    fn single_realm_config() -> qid_core::config::QidConfig {
+        let mut config = test_helpers::test_config();
+        config.realms[0].id = "corp".to_string();
+        config.realms[0].issuer = "https://id.example.com/realms/corp".to_string();
+        config.realms.truncate(1);
+        config
+    }
+    let mut enabled = single_realm_config();
+    enabled.realms[0].protocols.scim.enabled = true;
+    enabled.realms[0].protocols.scim.custom_schemas =
+        vec![custom_schema(CUSTOM_URN, "Custom", "customAttr")];
+    let err = enabled.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("custom_schemas are unsupported"),
+        "unexpected error: {err}"
+    );
+
+    let mut disabled = single_realm_config();
+    disabled.realms[0].protocols.scim.enabled = false;
+    disabled.realms[0].protocols.scim.custom_schemas =
+        vec![custom_schema(CUSTOM_URN, "Custom", "customAttr")];
+    let err = disabled.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("custom_schemas are unsupported"),
+        "disabled realms must also fail: {err}"
+    );
+    assert!(
+        !err.contains(CUSTOM_URN),
+        "config error must not echo values: {err}"
+    );
+
+    single_realm_config()
+        .validate()
+        .expect("empty custom_schemas stays valid");
+}
+
+#[tokio::test]
+async fn scim_rejects_unsupported_user_extensions_on_post() {
+    let (app, repo, _path) = setup_with_store().await;
+    let before = repo.list_scim_users(&"corp".into()).await.unwrap().len();
+    for body in [
+        format!(
+            r#"{{"realm":"corp","userName":"custom@example.com","{CUSTOM_URN}":{{"customAttr":"x"}}}}"#
+        ),
+        format!(
+            r#"{{"realm":"corp","userName":"custom@example.com","schemas":["urn:ietf:params:scim:schemas:core:2.0:User","{CUSTOM_URN}"]}}"#
+        ),
+    ] {
+        let (status, json) = post_user(&app, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], format!("bad request: {UNSUPPORTED_ERROR}"));
+        assert!(
+            !json.to_string().contains(CUSTOM_URN),
+            "error must not echo values: {json}"
+        );
+    }
+    assert_eq!(
+        repo.list_scim_users(&"corp".into()).await.unwrap().len(),
+        before,
+        "rejected POST must persist nothing"
+    );
+
+    let (status, created) = post_user(
+        &app,
+        r#"{"realm":"corp","userName":"supported@example.com","schemas":["urn:ietf:params:scim:schemas:core:2.0:User","urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"],"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User":{"department":"Engineering"}}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created[ENTERPRISE_USER_SCHEMA]["department"], "Engineering");
+}
+
+#[tokio::test]
+async fn scim_rejects_unsupported_user_extensions_on_put() {
+    let (app, repo, _path) = setup_with_store().await;
+    let (_, created) = post_user(&app, r#"{"realm":"corp","userName":"put@example.com"}"#).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let version = created["meta"]["version"].as_str().unwrap().to_string();
+    for body in [
+        format!(
+            r#"{{"realm":"corp","userName":"put@example.com","{CUSTOM_URN}":{{"customAttr":"x"}}}}"#
+        ),
+        format!(
+            r#"{{"realm":"corp","userName":"put@example.com","schemas":["urn:ietf:params:scim:schemas:core:2.0:User","{CUSTOM_URN}"]}}"#
+        ),
+    ] {
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/scim/v2/Users/{id}"))
+            .header("Content-Type", "application/json")
+            .header(IF_MATCH, &version)
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = response_json(response).await;
+        assert_eq!(json["error"], format!("bad request: {UNSUPPORTED_ERROR}"));
+        assert!(!json.to_string().contains(CUSTOM_URN));
+    }
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.user_name, "put@example.com");
+    let get = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get).await.unwrap();
+    assert_eq!(
+        get_response.headers().get(ETAG).unwrap().to_str().unwrap(),
+        version,
+        "rejected PUT must not change the version"
+    );
+}
+
+#[tokio::test]
+async fn scim_bulk_rejects_unsupported_user_extensions() {
+    let (app, repo, _path) = setup_with_store().await;
+    let before = repo.list_scim_users(&"corp".into()).await.unwrap().len();
+    let bulk = format!(
+        r#"{{"failOnErrors":0,"Operations":[{{"method":"POST","path":"/Users","bulkId":"bad","data":{{"realm":"corp","userName":"bulk-custom@example.com","{CUSTOM_URN}":{{"customAttr":"x"}}}}}},{{"method":"POST","path":"/Users","bulkId":"good","data":{{"realm":"corp","userName":"bulk-ok@example.com"}}}}]}}"#
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(bulk))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["Operations"][0]["status"], "400");
+    assert_eq!(
+        json["Operations"][0]["response"]["detail"],
+        format!("bad request: {UNSUPPORTED_ERROR}")
+    );
+    assert!(!json.to_string().contains(CUSTOM_URN));
+    assert_eq!(json["Operations"][1]["status"], "201");
+    let users = repo.list_scim_users(&"corp".into()).await.unwrap();
+    assert_eq!(users.len(), before + 1);
+    assert!(users.iter().any(|u| u.user_name == "bulk-ok@example.com"));
+    assert!(
+        users
+            .iter()
+            .all(|u| u.user_name != "bulk-custom@example.com"),
+        "rejected Bulk user must persist nothing"
+    );
+}
+
+#[tokio::test]
+async fn scim_patch_rejects_custom_extension_without_partial_mutation() {
+    let (app, repo, _path) = setup_with_store().await;
+    let (_, created) = post_user(&app, r#"{"realm":"corp","userName":"patch@example.com"}"#).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let version = created["meta"]["version"].as_str().unwrap().to_string();
+
+    let custom_path = format!(
+        r#"{{"Operations":[{{"op":"replace","path":"userName","value":"changed@example.com"}},{{"op":"replace","path":"{CUSTOM_URN}:customAttr","value":"x"}}]}}"#
+    );
+    let request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .header(IF_MATCH, &version)
+        .body(Body::from(custom_path))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], format!("bad request: {UNSUPPORTED_ERROR}"));
+    assert!(!json.to_string().contains(CUSTOM_URN));
+
+    let pathless = format!(
+        r#"{{"Operations":[{{"op":"replace","path":"userName","value":"changed@example.com"}},{{"op":"add","value":{{"{CUSTOM_URN}":{{"customAttr":"x"}}}}}}]}}"#
+    );
+    let request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .header(IF_MATCH, &version)
+        .body(Body::from(pathless))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert!(!json.to_string().contains(CUSTOM_URN));
+
+    let stored = repo.get_scim_user(&id).await.unwrap().unwrap();
+    assert_eq!(stored.user_name, "patch@example.com");
+    let get = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.oneshot(get).await.unwrap();
+    assert_eq!(
+        get_response.headers().get(ETAG).unwrap().to_str().unwrap(),
+        version,
+        "rejected PATCH must not change the version"
+    );
 }

@@ -756,3 +756,53 @@ fn policy_bundles_accept_absolute_paths() {
     assert_eq!(check.status, CheckStatus::Ok, "{check:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn scim_custom_schemas_are_reported_as_unsupported() {
+    use qid_core::config::{CustomScimAttributeConfig, CustomScimSchemaConfig};
+    fn custom(id: &str) -> CustomScimSchemaConfig {
+        CustomScimSchemaConfig {
+            id: id.to_string(),
+            name: "Custom".to_string(),
+            description: "custom".to_string(),
+            attributes: vec![CustomScimAttributeConfig {
+                name: "customAttr".to_string(),
+                r#type: "string".to_string(),
+                multi_valued: false,
+                required: false,
+                case_exact: false,
+                mutability: "readWrite".to_string(),
+                returned: "default".to_string(),
+            }],
+        }
+    }
+    for enabled in [true, false] {
+        let mut config = minimal_config();
+        config.realms[0].protocols.scim.enabled = enabled;
+        config.realms[0].protocols.scim.custom_schemas = vec![custom("urn:example:Custom")];
+        let checks = check_scim_schemas(&config);
+        let error = checks
+            .iter()
+            .find(|c| c.name == "scim.schema.realm.corp")
+            .expect("unsupported declaration must be reported");
+        assert_eq!(error.status, CheckStatus::Error);
+        assert!(error.message.contains("unsupported"), "{error:?}");
+        assert!(
+            !error.message.contains("urn:example:Custom"),
+            "diagnostic must not echo values: {error:?}"
+        );
+    }
+    let mut clean = minimal_config();
+    clean.realms[0].protocols.scim.enabled = true;
+    let checks = check_scim_schemas(&clean);
+    assert!(
+        checks
+            .iter()
+            .any(|c| c.name == "scim.realm.corp" && c.status == CheckStatus::Ok)
+    );
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c.status == CheckStatus::Error && c.name.starts_with("scim.schema"))
+    );
+}

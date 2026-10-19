@@ -1091,6 +1091,14 @@ impl RealmConfig {
                 }
             }
         }
+        if !self.protocols.scim.custom_schemas.is_empty() {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {} SCIM custom_schemas are unsupported; remove them until custom User extensions are implemented",
+                    self.id
+                ),
+            });
+        }
         if self.protocols.scim.enabled {
             let Some(cursor_secret) = self.protocols.scim.cursor_secret.as_deref() else {
                 return Err(QidError::Config {
@@ -1111,7 +1119,6 @@ impl RealmConfig {
             for host in &self.protocols.scim.event_callback_allowed_hosts {
                 validate_scim_event_callback_allowed_host(host, &self.id)?;
             }
-            validate_scim_custom_schemas(&self.protocols.scim.custom_schemas, &self.id)?;
         }
         let mut seen_registration_names = std::collections::HashSet::new();
         for registration in &self.pep_registrations.registrations {
@@ -1492,77 +1499,6 @@ mod protocol;
 pub use auth::*;
 
 mod auth;
-
-fn validate_scim_custom_schemas(
-    schemas: &[crate::config::CustomScimSchemaConfig],
-    realm_id: &str,
-) -> QidResult<()> {
-    let valid_types = [
-        "string",
-        "boolean",
-        "decimal",
-        "integer",
-        "dateTime",
-        "binary",
-        "reference",
-        "complex",
-    ];
-    let mut seen_ids = std::collections::HashSet::new();
-    for schema in schemas {
-        if !seen_ids.insert(&schema.id) {
-            return Err(QidError::Config {
-                message: format!(
-                    "realm {realm_id} SCIM custom schema has duplicate id: {}",
-                    schema.id
-                ),
-            });
-        }
-        if !schema.id.starts_with("urn:") {
-            return Err(QidError::Config {
-                message: format!(
-                    "realm {realm_id} SCIM custom schema id must be a valid URN: {}",
-                    schema.id
-                ),
-            });
-        }
-        if schema.name.trim().is_empty() {
-            return Err(QidError::Config {
-                message: format!(
-                    "realm {realm_id} SCIM custom schema {} has empty name",
-                    schema.id
-                ),
-            });
-        }
-        let mut seen_attrs = std::collections::HashSet::new();
-        for attr in &schema.attributes {
-            if attr.name.trim().is_empty() {
-                return Err(QidError::Config {
-                    message: format!(
-                        "realm {realm_id} SCIM custom schema {} has an attribute with empty name",
-                        schema.id
-                    ),
-                });
-            }
-            if !seen_attrs.insert(&attr.name) {
-                return Err(QidError::Config {
-                    message: format!(
-                        "realm {realm_id} SCIM custom schema {} has duplicate attribute name: {}",
-                        schema.id, attr.name
-                    ),
-                });
-            }
-            if !valid_types.contains(&attr.r#type.as_str()) {
-                return Err(QidError::Config {
-                    message: format!(
-                        "realm {realm_id} SCIM custom schema {} attribute {} has invalid type: {}",
-                        schema.id, attr.name, attr.r#type
-                    ),
-                });
-            }
-        }
-    }
-    Ok(())
-}
 
 fn validate_scim_event_callback_allowed_host(host: &str, realm_id: &str) -> QidResult<()> {
     let normalized = host.trim().to_ascii_lowercase();

@@ -621,8 +621,12 @@ pub struct ScimProtocolConfig {
     /// wildcard entries must be of the form `*.example.com`.
     #[serde(default)]
     pub event_callback_allowed_hosts: Vec<String>,
-    /// Custom SCIM attribute schemas beyond core User/Group and Enterprise User.
-    /// Each entry defines a schema extension that the /Schemas endpoint will include.
+    /// Unsupported SCIM schema extensions.
+    ///
+    /// Only core User/Group and the Enterprise User extension have behavior;
+    /// any declared entry is rejected by configuration validation.
+    /// The field is retained so existing files fail with a clear error
+    /// instead of an unknown-field error.
     #[serde(default)]
     pub custom_schemas: Vec<CustomScimSchemaConfig>,
 }
@@ -643,6 +647,8 @@ fn default_scim_base_path() -> String {
     "/scim/v2".to_string()
 }
 
+/// Legacy custom schema configuration retained only so validation can report
+/// that custom User extensions are unsupported.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CustomScimSchemaConfig {

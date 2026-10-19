@@ -549,69 +549,20 @@ fn check_saml_certificates(name: &str, certs: &[String]) -> Vec<CheckItem> {
 pub(crate) fn check_scim_schemas(config: &QidConfig) -> Vec<CheckItem> {
     let mut checks = Vec::new();
     for realm in &config.realms {
-        let name = format!("scim.realm.{}", realm.id);
+        if !realm.protocols.scim.custom_schemas.is_empty() {
+            checks.push(check_error(
+                format!("scim.schema.realm.{}", realm.id),
+                "SCIM custom schemas are unsupported; remove custom_schemas until custom User extensions are implemented",
+            ));
+            continue;
+        }
         if !realm.protocols.scim.enabled {
             continue;
         }
         checks.push(check_ok(
-            &name,
+            format!("scim.realm.{}", realm.id),
             "SCIM protocol enabled, base_path configured",
         ));
-        for schema in &realm.protocols.scim.custom_schemas {
-            let schema_name = format!("scim.schema.{}.realm.{}", schema.id, realm.id);
-            if schema.name.trim().is_empty() {
-                checks.push(check_error(
-                    &schema_name,
-                    format!("SCIM custom schema {} has empty name", schema.id),
-                ));
-                continue;
-            }
-            if !schema.id.starts_with("urn:") {
-                checks.push(check_error(
-                    &schema_name,
-                    format!("SCIM custom schema id is not a valid URN: {}", schema.id),
-                ));
-                continue;
-            }
-            let valid_types = [
-                "string",
-                "boolean",
-                "decimal",
-                "integer",
-                "dateTime",
-                "binary",
-                "reference",
-                "complex",
-            ];
-            for attr in &schema.attributes {
-                let attr_name = format!("{schema_name}.{}", attr.name);
-                if attr.name.trim().is_empty() {
-                    checks.push(check_error(
-                        &attr_name,
-                        format!(
-                            "SCIM custom schema {} has attribute with empty name",
-                            schema.id
-                        ),
-                    ));
-                } else if !valid_types.contains(&attr.r#type.as_str()) {
-                    checks.push(check_error(
-                        &attr_name,
-                        format!(
-                            "SCIM custom schema {} attribute {} has invalid type: {}",
-                            schema.id, attr.name, attr.r#type
-                        ),
-                    ));
-                } else {
-                    checks.push(check_ok(
-                        &attr_name,
-                        format!(
-                            "SCIM custom schema {} attribute {} type={}",
-                            schema.id, attr.name, attr.r#type
-                        ),
-                    ));
-                }
-            }
-        }
     }
     if checks.is_empty() {
         checks.push(check_ok("scim", "SCIM not configured"));

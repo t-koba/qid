@@ -12,7 +12,7 @@ use super::groups::{create_group_record, patch_group_record, replace_group_recor
 use super::users::{
     create_user_record, delete_user_record, patch_user_record, replace_user_record,
 };
-use super::{CreateGroup, CreateUser, MAX_BULK_OPERATIONS, PatchRequest};
+use super::{CreateGroup, MAX_BULK_OPERATIONS, PatchRequest};
 use crate::ScimRequestContext;
 
 #[derive(Debug, Deserialize)]
@@ -100,11 +100,7 @@ async fn apply_bulk_operation<R: Repository>(
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            let mut req = match serde_json::from_value::<CreateUser>(data).map_err(|e| {
-                qid_core::error::QidError::BadRequest {
-                    message: format!("invalid user data: {e}"),
-                }
-            }) {
+            let mut req = match super::parse_create_user(data) {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
@@ -132,11 +128,7 @@ async fn apply_bulk_operation<R: Repository>(
             if let Err(e) = ensure_user_realm(state, id, context_realm).await {
                 return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
             }
-            let mut req = match serde_json::from_value::<CreateUser>(data).map_err(|e| {
-                qid_core::error::QidError::BadRequest {
-                    message: format!("invalid user data: {e}"),
-                }
-            }) {
+            let mut req = match super::parse_create_user(data) {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());

@@ -116,3 +116,62 @@ pub(crate) fn bool_value(value: Option<serde_json::Value>, field: &str) -> Resul
             message: format!("{field} must be a boolean"),
         })
 }
+
+/// Schemas with implemented User behavior.
+pub(crate) const CORE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
+pub(crate) const ENTERPRISE_SCHEMA: &str =
+    "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
+
+/// Fail closed when a User payload carries an extension without behavior.
+///
+/// `CreateUser` serde intentionally ignores unknown fields, so the raw value
+/// must be inspected first: an unsupported `schemas` entry or any top-level
+/// URN key other than the Enterprise extension is rejected with a static
+/// error that never echoes client-supplied values. Ordinary unknown fields
+/// without a URN keep their existing lenient behavior.
+pub(crate) fn unsupported_user_schema_error() -> QidError {
+    QidError::BadRequest {
+        message: "unsupported SCIM schema extension".to_string(),
+    }
+}
+
+fn has_urn_scheme(value: &str) -> bool {
+    value
+        .get(..4)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("urn:"))
+}
+
+pub(crate) fn reject_unsupported_user_extensions(raw: &serde_json::Value) -> Result<(), QidError> {
+    let Some(object) = raw.as_object() else {
+        return Ok(());
+    };
+    if let Some(schemas) = object.get("schemas") {
+        let Some(entries) = schemas.as_array() else {
+            return Err(unsupported_user_schema_error());
+        };
+        for entry in entries {
+            let supported = entry
+                .as_str()
+                .is_some_and(|id| id == CORE_USER_SCHEMA || id == ENTERPRISE_SCHEMA);
+            if !supported {
+                return Err(unsupported_user_schema_error());
+            }
+        }
+    }
+    if object
+        .keys()
+        .any(|key| has_urn_scheme(key) && key != ENTERPRISE_SCHEMA)
+    {
+        return Err(unsupported_user_schema_error());
+    }
+    Ok(())
+}
+
+/// Validate the raw User payload and deserialize it without widening
+/// `deny_unknown_fields` to other fields.
+pub(crate) fn parse_create_user(raw: serde_json::Value) -> Result<CreateUser, QidError> {
+    reject_unsupported_user_extensions(&raw)?;
+    serde_json::from_value::<CreateUser>(raw).map_err(|e| QidError::BadRequest {
+        message: format!("invalid user data: {e}"),
+    })
+}

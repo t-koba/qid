@@ -84,7 +84,7 @@ smallest interoperable OIDC authorization-code deployment, then move to
 - `active-directory-sync.yaml`: LDAP / Active Directory sync.
 - `multi-directory-authority.yaml`: multiple LDAP / AD authorities during coexistence or consolidation.
 - `hr-driven-jml.yaml`: HR-driven joiner / mover / leaver lifecycle feeds.
-- `scim-provisioning-custom-schema.yaml`: SCIM with custom schema extensions.
+- `scim-provisioning.yaml`: SCIM with core User/Group and the Enterprise User extension only.
 - `enterprise-workforce-suite.yaml`: workforce lifecycle suite with SCIM, SAML, and LDAPS directory authority.
 
 ### 06-edge-access-policy

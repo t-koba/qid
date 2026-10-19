@@ -3,7 +3,7 @@ profile: oidc
 storage:
   primary:
     type: file
-    url: "config/usecases/data/runtime/05-lifecycle-and-provisioning/scim-provisioning-custom-schema.json"
+    url: "config/usecases/data/runtime/05-lifecycle-and-provisioning/scim-provisioning.json"
 
 crypto:
   default_alg: ES256
@@ -40,32 +40,6 @@ realms:
         event_callback_allowed_hosts:
           - "events.example.com"
           - "*.provisioning.example.com"
-        custom_schemas:
-          - id: "urn:ietf:params:scim:schemas:extension:qid:2.0:Workforce"
-            name: "QidWorkforce"
-            description: "Workforce attributes used for access review and policy."
-            attributes:
-              - name: costCenter
-                type: string
-                multi_valued: false
-                required: false
-                case_exact: false
-                mutability: readWrite
-                returned: default
-              - name: employmentType
-                type: string
-                multi_valued: false
-                required: false
-                case_exact: false
-                mutability: readWrite
-                returned: default
-              - name: riskTier
-                type: integer
-                multi_valued: false
-                required: false
-                case_exact: false
-                mutability: readWrite
-                returned: default
       oauth:
         resource_servers:
           - audience: "api://qid/scim"

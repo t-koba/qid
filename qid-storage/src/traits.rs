@@ -106,6 +106,9 @@ pub trait UserRepository: Send + Sync + 'static {
         offset: usize,
         limit: usize,
     ) -> QidResult<Vec<User>>;
+    /// Delete a user and their live authentication state atomically, including
+    /// codes/families bound to their sessions and tokens in those families.
+    /// Preserve unrelated subjects, pending unowned grants and audit history.
     async fn delete_user(&self, id: &str) -> QidResult<()>;
     async fn update_user(&self, user: &User) -> QidResult<()>;
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()>;

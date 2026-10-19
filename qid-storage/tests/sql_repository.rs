@@ -1264,7 +1264,11 @@ async fn test_sql_ciam_identity_link_user_lifecycle_migration() {
     }
     sqlx::query("INSERT INTO ciam_identity_links VALUES ('another-unverified', 'realm', 'live', 'google', 'subject', NULL, '{}', 300, 0)")
         .execute(&pool).await.unwrap();
-    repo.delete_user("live").await.unwrap();
+    // Exercise the FK directly on this deliberately partial legacy schema.
+    sqlx::query("DELETE FROM users WHERE id = 'live'")
+        .execute(&pool)
+        .await
+        .unwrap();
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ciam_identity_links")
         .fetch_one(&pool)
         .await
@@ -2021,6 +2025,18 @@ async fn test_authorization_code_crud() {
     )
     .await
     .unwrap();
+    repo.create_user(&User {
+        id: "user-1".into(),
+        realm_id: "realm-ac".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
     let code = AuthorizationCode {
         code_hash: "abc123".to_string(),
         client_id: "client-1".to_string(),
@@ -2142,6 +2158,18 @@ async fn test_device_authorization_grant_polling_crud() {
     )
     .await
     .unwrap();
+    repo.create_user(&User {
+        id: "user-device".into(),
+        realm_id: "realm-device".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
 
     let grant = DeviceAuthorizationGrant {
         device_code_hash: "device-code-hash".to_string(),
@@ -2203,6 +2231,18 @@ async fn test_backchannel_authentication_grant_crud() {
         "https://id.example.com/realms/ciba",
         None,
     )
+    .await
+    .unwrap();
+    repo.create_user(&User {
+        id: "user-ciba".into(),
+        realm_id: "realm-ciba".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
     .await
     .unwrap();
 

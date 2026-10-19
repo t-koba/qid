@@ -61,6 +61,53 @@ impl UserRepository for FileRepository {
 
     async fn delete_user(&self, id: &str) -> QidResult<()> {
         let mut store = self.store.write().await;
+        // Follow ownership links before removing their parents. All live auth state
+        // disappears together under this write lock; realm/client peers are untouched.
+        let sessions: std::collections::HashSet<_> = store
+            .sessions
+            .values()
+            .filter(|session| session.user_id == id)
+            .map(|session| session.id.clone())
+            .collect();
+        store.authorization_codes.retain(|_, code| {
+            code.user_id != id
+                && !code
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|sid| sessions.contains(sid))
+        });
+        let families: std::collections::HashSet<_> = store
+            .token_families
+            .values()
+            .filter(|family| {
+                family.user_id == id
+                    || family
+                        .session_id
+                        .as_ref()
+                        .is_some_and(|sid| sessions.contains(sid))
+            })
+            .map(|family| family.id.clone())
+            .collect();
+        store.access_tokens.retain(|_, token| {
+            token.user_id != id
+                && !token
+                    .family_id
+                    .as_ref()
+                    .is_some_and(|fid| families.contains(fid))
+        });
+        store
+            .token_families
+            .retain(|fid, _| !families.contains(fid));
+        store.sessions.retain(|sid, _| !sessions.contains(sid));
+        store.webauthn_credentials.remove(id);
+        store.totp_credentials.retain(|_, cred| cred.user_id != id);
+        store.devices.retain(|_, device| device.user_id != id);
+        store
+            .device_authorization_grants
+            .retain(|_, grant| grant.user_id.as_deref() != Some(id));
+        store
+            .backchannel_authentication_grants
+            .retain(|_, grant| grant.user_id.as_deref() != Some(id));
         store.users.remove(id);
         store.credentials_password.remove(id);
         store

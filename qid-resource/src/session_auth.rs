@@ -83,3 +83,122 @@ fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{StatusCode, header::COOKIE};
+    use qid_core::{
+        models::{Session, User},
+        test_helpers,
+    };
+    use qid_crypto::LocalSigner;
+    use qid_storage::{FileRepository, SqlRepository};
+    use std::sync::Arc;
+
+    async fn deleted_user_cannot_authenticate(repo: Arc<impl Repository>) {
+        repo.create_realm(
+            &"tenant".into(),
+            &"test".into(),
+            "https://id.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+        let now = qid_core::util::now_seconds();
+        for id in ["target", "survivor"] {
+            repo.create_user(&User {
+                id: id.into(),
+                realm_id: "test".into(),
+                email: None,
+                email_verified: false,
+                display_name: None,
+                failed_login_attempts: 0,
+                locked_until: None,
+                org: None,
+            })
+            .await
+            .unwrap();
+            repo.create_session(&Session {
+                id: id.into(),
+                realm_id: "test".into(),
+                user_id: id.into(),
+                auth_time: now,
+                acr: None,
+                amr: vec!["pwd".into()],
+                idle_expires_at: now + 600,
+                absolute_expires_at: now + 600,
+                revoked: false,
+                created_at: now,
+                cnf: None,
+            })
+            .await
+            .unwrap();
+        }
+        let state = SharedState::new(
+            test_helpers::test_config(),
+            repo.clone(),
+            Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests")),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let cookie_name = &state
+            .plan
+            .realm("test")
+            .unwrap()
+            .browser_session
+            .cookie_name;
+        let mut target = HeaderMap::new();
+        target.insert(COOKIE, format!("{cookie_name}=target").parse().unwrap());
+        let mut survivor = HeaderMap::new();
+        survivor.insert(COOKIE, format!("{cookie_name}=survivor").parse().unwrap());
+        assert_eq!(
+            require_any_session(&target, &state, "test").await.unwrap(),
+            "target"
+        );
+        repo.delete_user("target").await.unwrap();
+        assert_eq!(
+            require_any_session(&target, &state, "test")
+                .await
+                .unwrap_err()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            require_session(&target, &state, "test", "target")
+                .await
+                .unwrap_err()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            require_session(&survivor, &state, "test", "survivor")
+                .await
+                .unwrap(),
+            "survivor"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleted_file_user_session_is_rejected() {
+        let path =
+            std::env::temp_dir().join(format!("qid-session-deletion-{}.json", ulid::Ulid::new()));
+        let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
+        deleted_user_cannot_authenticate(repo).await;
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleted_sql_user_session_is_rejected() {
+        let path =
+            std::env::temp_dir().join(format!("qid-session-deletion-{}.db", ulid::Ulid::new()));
+        let repo = Arc::new(
+            SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .unwrap(),
+        );
+        repo.migrate().await.unwrap();
+        deleted_user_cannot_authenticate(repo).await;
+        std::fs::remove_file(path).unwrap();
+    }
+}

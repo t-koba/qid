@@ -117,11 +117,46 @@ impl UserRepository for SqlRepository {
     }
 
     async fn delete_user(&self, id: &str) -> QidResult<()> {
-        sqlx::query("DELETE FROM users WHERE id = ?")
+        let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        // Session links need not have the same direct owner. Remove their children
+        // before the user cascade removes the sessions, in the same transaction.
+        sqlx::query("DELETE FROM authorization_codes WHERE user_id = ? OR session_id IN (SELECT id FROM sessions WHERE user_id = ?)")
             .bind(id)
-            .execute(&self.pool)
+            .bind(id)
+            .execute(&mut *tx)
             .await
             .map_err(storage_to_qid_error)?;
+        // Access-token subjects deliberately have no user FK: service/workload
+        // subjects survive, unless their token belongs to a removed refresh family.
+        sqlx::query("DELETE FROM access_tokens WHERE user_id = ? OR family_id IN (SELECT id FROM token_families WHERE user_id = ? OR session_id IN (SELECT id FROM sessions WHERE user_id = ?))")
+            .bind(id)
+            .bind(id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+        sqlx::query("DELETE FROM token_families WHERE user_id = ? OR session_id IN (SELECT id FROM sessions WHERE user_id = ?)")
+            .bind(id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+        sqlx::query("DELETE FROM device_authorization_grants WHERE user_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+        sqlx::query("DELETE FROM backchannel_authentication_grants WHERE user_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+        tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(())
     }
 

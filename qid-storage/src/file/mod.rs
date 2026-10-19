@@ -274,21 +274,33 @@ impl FileRepository {
         _save_guard: &tokio::sync::MutexGuard<'_, ()>,
     ) -> QidResult<()> {
         #[cfg(test)]
-        {
-            let hook = self.flush_hook.lock().unwrap().take();
-            if let Some(hook) = hook {
-                hook.run().await?;
-            }
-        }
+        self.before_flush().await?;
         let content = {
             let store = self.store.read().await;
             serde_json::to_string(&*store).map_err(|e| QidError::Internal {
                 message: format!("failed to serialize store: {e}"),
             })?
         };
+        self.write_store_content_locked(_save_guard, &content).await
+    }
+
+    #[cfg(test)]
+    async fn before_flush(&self) -> QidResult<()> {
+        let hook = self.flush_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook.run().await?;
+        }
+        Ok(())
+    }
+
+    async fn write_store_content_locked(
+        &self,
+        _save_guard: &tokio::sync::MutexGuard<'_, ()>,
+        content: &str,
+    ) -> QidResult<()> {
         // Atomic write: temp → fsync → rename (crash-safe)
         let tmp_path = self.path.with_extension("tmp");
-        tokio::fs::write(&tmp_path, &content)
+        tokio::fs::write(&tmp_path, content)
             .await
             .map_err(|e| QidError::Internal {
                 message: format!("failed to write temp store file: {e}"),

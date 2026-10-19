@@ -180,6 +180,7 @@ fn ciam_challenge_unavailable(message: &'static str) -> Response {
 
 pub async fn password_reset_consume<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    Path(realm): Path<String>,
     Json(req): Json<PasswordResetConsumeRequest>,
 ) -> Response {
     let record = match state.repo.get_password_reset_token(&req.token_id).await {
@@ -193,7 +194,6 @@ pub async fn password_reset_consume<R: Repository>(
         }
         Err(err) => return qid_http::error_response(err),
     };
-    let now = util::now_seconds();
     match consume_password_reset(&record, &req) {
         Ok(()) => {
             let hash = match hash_password(&req.new_password) {
@@ -206,19 +206,19 @@ pub async fn password_reset_consume<R: Repository>(
             };
             if let Err(err) = state
                 .repo
-                .store_password_credential(&PasswordCredential {
-                    user_id: record.user_id.clone(),
-                    hash,
-                    algorithm: ARGON2ID_ALGORITHM.to_string(),
-                    pepper_ref: None,
-                })
-                .await
-            {
-                return qid_http::error_response(err);
-            }
-            if let Err(err) = state
-                .repo
-                .consume_password_reset_token(&record.id, now)
+                .replace_password_with_reset_token(
+                    &record.id,
+                    &realm.into(),
+                    &util::sha256_base64url(&req.token),
+                    req.device_id.as_deref(),
+                    &PasswordCredential {
+                        user_id: record.user_id.clone(),
+                        hash,
+                        algorithm: ARGON2ID_ALGORITHM.to_string(),
+                        pepper_ref: None,
+                    },
+                    util::now_seconds(),
+                )
                 .await
             {
                 return qid_http::error_response(err);

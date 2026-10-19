@@ -452,6 +452,20 @@ pub trait CiamRepository: Send + Sync + 'static {
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()>;
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>>;
     async fn consume_password_reset_token(&self, id: &str, consumed_at: u64) -> QidResult<()>;
+    /// Validate an unused, unexpired, owner/device/hash-bound reset token and
+    /// replace its owner's credential in the same atomic storage operation.
+    /// `token_hash` is the digest of the presented token, never the raw secret.
+    /// Expiry is inclusive: a token is valid at its expiry second.
+    async fn replace_password_with_reset_token(
+        &self,
+        id: &str,
+        realm_id: &RealmId,
+        token_hash: &str,
+        device_id: Option<&str>,
+        credential: &PasswordCredential,
+        consumed_at: u64,
+    ) -> QidResult<()>;
+
     async fn get_ciam_progressive_profile(
         &self,
         realm_id: &RealmId,

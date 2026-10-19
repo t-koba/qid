@@ -627,8 +627,8 @@ async fn ciam_challenge_issue_routes_fail_without_delivery() {
 }
 
 #[tokio::test]
-async fn ciam_password_reset_rejects_invalid_token_before_credential_write() {
-    let (app, state) = setup().await;
+async fn ciam_password_reset_validates_and_atomically_replaces_credentials() {
+    let (app, state) = setup_with_realms(&["other"]).await;
     let now = qid_core::util::now_seconds();
     let expected_token = "known-valid-reset-token";
     let token = qid_core::models::PasswordResetToken {
@@ -649,6 +649,7 @@ async fn ciam_password_reset_rejects_invalid_token_before_credential_write() {
         .expect("seed password reset token failed");
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -686,6 +687,53 @@ async fn ciam_password_reset_rejects_invalid_token_before_credential_write() {
             .consumed_at_epoch_seconds,
         None
     );
+
+    for (realm, password, expected) in [
+        ("other", "wrong-realm-password", StatusCode::BAD_REQUEST),
+        ("test", "new-secure-password", StatusCode::OK),
+        ("test", "replay-secure-password", StatusCode::BAD_REQUEST),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/{realm}/ciam/password-reset/consume"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "token_id": "reset-known", "token": expected_token,
+                            "device_id": "device-1", "new_password": password,
+                            "now_epoch_seconds": 1
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        let credential = state
+            .repo
+            .get_password_credential("user-ciam")
+            .await
+            .unwrap();
+        let token = state
+            .repo
+            .get_password_reset_token("reset-known")
+            .await
+            .unwrap()
+            .unwrap();
+        if realm == "other" {
+            assert!(credential.is_none());
+            assert!(token.consumed_at_epoch_seconds.is_none());
+        } else {
+            let credential = credential.unwrap();
+            assert!(qid_crypto::verify_password("new-secure-password", &credential.hash).unwrap());
+            assert_eq!(credential.algorithm, qid_crypto::ARGON2ID_ALGORITHM);
+            assert!(token.consumed_at_epoch_seconds.unwrap() >= now);
+        }
+    }
 }
 
 #[tokio::test]

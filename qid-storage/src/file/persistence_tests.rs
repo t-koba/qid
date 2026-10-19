@@ -396,3 +396,135 @@ async fn interval_rotation_marks_dirty_and_survives_flush_failure() {
     let reopened = file.reopen().await;
     assert_family(&reopened, "interval", "new", Some(300)).await;
 }
+
+fn reset_credential(hash: &str) -> PasswordCredential {
+    PasswordCredential {
+        user_id: "user".into(),
+        hash: hash.into(),
+        algorithm: "argon2id".into(),
+        pepper_ref: None,
+    }
+}
+
+async fn seed_reset(repo: &FileRepository) {
+    repo.store_password_credential(&reset_credential("previous"))
+        .await
+        .unwrap();
+    repo.store_password_reset_token(&PasswordResetToken {
+        id: "reset".into(),
+        realm_id: "test".into(),
+        user_id: "user".into(),
+        token_hash: "digest".into(),
+        device_id: None,
+        risk_json: serde_json::json!({}),
+        expires_at_epoch_seconds: 200,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: 100,
+    })
+    .await
+    .unwrap();
+}
+
+async fn assert_reset(repo: &FileRepository, hash: &str, consumed_at: Option<u64>) {
+    assert_eq!(
+        repo.get_password_credential("user")
+            .await
+            .unwrap()
+            .unwrap()
+            .hash,
+        hash
+    );
+    assert_eq!(
+        repo.get_password_reset_token("reset")
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed_at_epoch_seconds,
+        consumed_at
+    );
+}
+
+#[tokio::test]
+async fn immediate_password_reset_waits_for_save_lock_and_rolls_back_flush_failure() {
+    let (file, repo) = TestFile::new().await;
+    seed_reset(&repo).await;
+    {
+        let guard = repo.save_lock.lock().await;
+        let realm = "test".into();
+        let credential = reset_credential("failed");
+        let reset = repo.replace_password_with_reset_token(
+            "reset",
+            &realm,
+            "digest",
+            None,
+            &credential,
+            150,
+        );
+        tokio::pin!(reset);
+        assert_pending(reset.as_mut()).await;
+        // Mutation must not happen until save_lock is acquired.
+        assert_reset(&repo, "previous", None).await;
+        let (reached, resume) = fail_next_flush(&repo);
+        drop(guard);
+        assert_pending(reset.as_mut()).await;
+        reached.await.unwrap();
+        // No reader or writer can observe tentative fields before rollback.
+        assert!(repo.store.try_read().is_err());
+        assert!(repo.save_lock.try_lock().is_err());
+        resume.send(()).unwrap();
+        assert!(complete(reset).await.is_err());
+    }
+    assert_reset(&repo, "previous", None).await;
+    drop(repo);
+    let repo = file.reopen().await;
+    assert_reset(&repo, "previous", None).await;
+    repo.replace_password_with_reset_token(
+        "reset",
+        &"test".into(),
+        "digest",
+        None,
+        &reset_credential("retry"),
+        150,
+    )
+    .await
+    .unwrap();
+    assert_reset(&repo, "retry", Some(150)).await;
+}
+
+#[tokio::test]
+async fn interval_password_reset_marks_both_changes_dirty_and_retries_flush() {
+    let (file, mut repo) = TestFile::new().await;
+    seed_reset(&repo).await;
+    repo.flush_mode = FileFlushMode::Interval(Duration::from_secs(3600));
+    {
+        let _guard = repo.save_lock.lock().await;
+        complete(repo.replace_password_with_reset_token(
+            "reset",
+            &"test".into(),
+            "digest",
+            None,
+            &reset_credential("new"),
+            150,
+        ))
+        .await
+        .unwrap();
+    }
+    assert!(repo.dirty.load(Ordering::Acquire));
+    assert_reset(&repo, "new", Some(150)).await;
+    let (reached, resume) = fail_next_flush(&repo);
+    {
+        let flush = repo.flush();
+        tokio::pin!(flush);
+        assert_pending(flush.as_mut()).await;
+        reached.await.unwrap();
+        resume.send(()).unwrap();
+        assert!(complete(flush).await.is_err());
+    }
+    assert!(repo.dirty.load(Ordering::Acquire));
+    assert_reset(&repo, "new", Some(150)).await;
+    repo.flush().await.unwrap();
+    assert!(!repo.dirty.load(Ordering::Acquire));
+    drop(repo);
+    let repo = file.reopen().await;
+    assert_reset(&repo, "new", Some(150)).await;
+}

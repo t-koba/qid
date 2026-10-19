@@ -240,6 +240,81 @@ impl CiamRepository for FileRepository {
         self.save().await
     }
 
+    async fn replace_password_with_reset_token(
+        &self,
+        id: &str,
+        realm_id: &RealmId,
+        token_hash: &str,
+        device_id: Option<&str>,
+        credential: &PasswordCredential,
+        consumed_at: u64,
+    ) -> QidResult<()> {
+        // Lock order is save -> store. Keep the exclusive Store lock through
+        // persistence/rollback so readers and unrelated writers cannot observe
+        // tentative credentials or have their changes overwritten by rollback.
+        let save_guard = if self.flush_mode == FileFlushMode::Immediate {
+            Some(self.save_lock.lock().await)
+        } else {
+            None
+        };
+        let mut store = self.store.write().await;
+        let token = store
+            .password_reset_tokens
+            .get(id)
+            .ok_or_else(|| QidError::NotFound {
+                resource: "password reset token".into(),
+            })?;
+        crate::domain::validate_password_reset(
+            token,
+            realm_id,
+            token_hash,
+            device_id,
+            credential,
+            consumed_at,
+        )?;
+        let previous = store
+            .credentials_password
+            .insert(credential.user_id.clone(), credential.clone());
+        store
+            .password_reset_tokens
+            .get_mut(id)
+            .unwrap()
+            .consumed_at_epoch_seconds = Some(consumed_at);
+        let Some(save_guard) = save_guard else {
+            // Mark dirty while still holding Store; interval flushes snapshot
+            // both mutations together and retain their existing retry semantics.
+            self.dirty.store(true, Ordering::Release);
+            return Ok(());
+        };
+        let result = async {
+            #[cfg(test)]
+            self.before_flush().await?;
+            let content = serde_json::to_string(&*store).map_err(|e| QidError::Internal {
+                message: format!("failed to serialize store: {e}"),
+            })?;
+            self.write_store_content_locked(&save_guard, &content).await
+        }
+        .await;
+        if result.is_err() {
+            match previous {
+                Some(previous) => {
+                    store
+                        .credentials_password
+                        .insert(credential.user_id.clone(), previous);
+                }
+                None => {
+                    store.credentials_password.remove(&credential.user_id);
+                }
+            }
+            store
+                .password_reset_tokens
+                .get_mut(id)
+                .unwrap()
+                .consumed_at_epoch_seconds = None;
+        }
+        result
+    }
+
     async fn get_ciam_progressive_profile(
         &self,
         realm_id: &RealmId,

@@ -262,6 +262,7 @@ delegate!(CiamRepository {
     store_password_reset_token(&self, token: &qid_core::models::PasswordResetToken) -> QidResult<()>;
     get_password_reset_token(&self, id: &str) -> QidResult<Option<qid_core::models::PasswordResetToken>>;
     consume_password_reset_token(&self, id: &str, consumed_at: u64) -> QidResult<()>;
+    replace_password_with_reset_token(&self, id: &str, realm_id: &qid_core::tenant::RealmId, token_hash: &str, device_id: Option<&str>, credential: &qid_core::models::PasswordCredential, consumed_at: u64) -> QidResult<()>;
     get_ciam_progressive_profile(&self, realm_id: &qid_core::tenant::RealmId, user_id: &str) -> QidResult<Option<qid_core::models::CiamProgressiveProfile>>;
     store_ciam_progressive_profile(&self, profile: &qid_core::models::CiamProgressiveProfile) -> QidResult<()>;
     delete_ciam_progressive_profile(&self, realm_id: &qid_core::tenant::RealmId, user_id: &str) -> QidResult<()>;

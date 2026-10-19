@@ -300,6 +300,69 @@ impl CiamRepository for SqlRepository {
         Ok(())
     }
 
+    async fn replace_password_with_reset_token(
+        &self,
+        id: &str,
+        realm_id: &RealmId,
+        token_hash: &str,
+        device_id: Option<&str>,
+        credential: &PasswordCredential,
+        consumed_at: u64,
+    ) -> QidResult<()> {
+        let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        // Claim before reading: a conditional write serializes competing resets
+        // without a SQLite read-to-write transaction upgrade race.
+        let result = sqlx::query(
+            "UPDATE password_reset_tokens SET consumed_at_epoch_seconds = ? WHERE id = ? AND realm_id = ? AND user_id = ? AND token_hash = ? AND (device_id = ? OR (device_id IS NULL AND ? IS NULL)) AND expires_at_epoch_seconds >= ? AND consumed_at_epoch_seconds IS NULL",
+        )
+        .bind(consumed_at as i64)
+        .bind(id)
+        .bind(realm_id.as_str())
+        .bind(&credential.user_id)
+        .bind(token_hash)
+        .bind(device_id)
+        .bind(device_id)
+        .bind(consumed_at as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            let row: Option<PasswordResetTokenRow> =
+                sqlx::query_as("SELECT * FROM password_reset_tokens WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(storage_to_qid_error)?;
+            let token = row
+                .map(PasswordResetToken::from)
+                .ok_or_else(|| QidError::NotFound {
+                    resource: "password reset token".into(),
+                })?;
+            crate::domain::validate_password_reset(
+                &token,
+                realm_id,
+                token_hash,
+                device_id,
+                credential,
+                consumed_at,
+            )?;
+            return Err(QidError::Conflict {
+                message: "password reset token already consumed".into(),
+            });
+        }
+        sqlx::query(
+            "INSERT INTO credentials_password (user_id, hash, algorithm, pepper_ref) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET hash = excluded.hash, algorithm = excluded.algorithm, pepper_ref = excluded.pepper_ref",
+        )
+        .bind(&credential.user_id)
+        .bind(&credential.hash)
+        .bind(&credential.algorithm)
+        .bind(&credential.pepper_ref)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage_to_qid_error)?;
+        tx.commit().await.map_err(storage_to_qid_error)
+    }
+
     async fn get_ciam_progressive_profile(
         &self,
         realm_id: &RealmId,

@@ -104,3 +104,39 @@ pub fn validate_ciam_identity_link_state(
     }
     Ok(())
 }
+
+/// Storage-side reset validation; no caller's earlier token read is authoritative.
+pub(crate) fn validate_password_reset(
+    token: &qid_core::models::PasswordResetToken,
+    realm_id: &qid_core::tenant::RealmId,
+    token_hash: &str,
+    device_id: Option<&str>,
+    credential: &qid_core::models::PasswordCredential,
+    now: u64,
+) -> QidResult<()> {
+    if token.realm_id != realm_id.as_str() || token.user_id != credential.user_id {
+        return Err(QidError::BadRequest {
+            message: "owner_mismatch".into(),
+        });
+    }
+    if token.consumed_at_epoch_seconds.is_some() {
+        return Err(QidError::Conflict {
+            message: "password reset token already consumed".into(),
+        });
+    }
+    let message = if now > token.expires_at_epoch_seconds {
+        Some("expired")
+    } else if token.device_id.as_deref() != device_id {
+        Some("device_mismatch")
+    } else if !qid_core::util::constant_time_eq(token_hash, &token.token_hash) {
+        Some("token_mismatch")
+    } else {
+        None
+    };
+    match message {
+        Some(message) => Err(QidError::BadRequest {
+            message: message.into(),
+        }),
+        None => Ok(()),
+    }
+}

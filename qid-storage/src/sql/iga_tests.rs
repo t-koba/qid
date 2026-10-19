@@ -137,3 +137,95 @@ async fn grant_batch_preserves_revoked_incumbent_and_rejects_malformed_evidence(
         Some(&incumbent)
     );
 }
+
+#[tokio::test]
+async fn sql_iga_entitlement_store_upserts_tenant_scoped_row() {
+    let (_db, repo, _) = Database::new().await;
+    let initial = IgaEntitlementRecord {
+        id: "ent-1".into(),
+        tenant_id: "tenant-a".into(),
+        display_name: "Payroll read".into(),
+        owner: "owner-1".into(),
+        risk_level: "low".into(),
+        conflicting_entitlements: vec!["other".into()],
+        max_duration_seconds: Some(3600),
+        active: true,
+    };
+    repo.store_iga_entitlement(&initial).await.unwrap();
+    let other_tenant = IgaEntitlementRecord {
+        id: "ent-1".into(),
+        tenant_id: "tenant-b".into(),
+        display_name: "Other tenant".into(),
+        owner: "other-owner".into(),
+        risk_level: "low".into(),
+        conflicting_entitlements: vec![],
+        max_duration_seconds: None,
+        active: true,
+    };
+    repo.store_iga_entitlement(&other_tenant).await.unwrap();
+    let updated = IgaEntitlementRecord {
+        id: "ent-1".into(),
+        tenant_id: "tenant-a".into(),
+        display_name: "Payroll read v2".into(),
+        owner: "owner-2".into(),
+        risk_level: "high".into(),
+        conflicting_entitlements: vec!["x".into(), "y".into()],
+        max_duration_seconds: Some(7200),
+        active: false,
+    };
+    repo.store_iga_entitlement(&updated).await.unwrap();
+    assert_eq!(
+        repo.list_iga_entitlements("tenant-a").await.unwrap(),
+        vec![updated]
+    );
+    assert_eq!(
+        repo.list_iga_entitlements("tenant-b").await.unwrap(),
+        vec![other_tenant]
+    );
+}
+
+#[tokio::test]
+async fn sql_iga_access_package_store_upserts_tenant_scoped_row() {
+    let (_db, repo, _) = Database::new().await;
+    let initial = IgaAccessPackageRecord {
+        id: "pkg-1".into(),
+        tenant_id: "tenant-a".into(),
+        display_name: "Base package".into(),
+        owner: "owner-1".into(),
+        entitlement_ids: vec!["ent-1".into()],
+        approval_policy_json: serde_json::json!({"steps": [{"approver": "manager"}]}),
+        max_duration_seconds: Some(7200),
+        active: true,
+    };
+    repo.store_iga_access_package(&initial).await.unwrap();
+    let other_tenant = IgaAccessPackageRecord {
+        id: "pkg-1".into(),
+        tenant_id: "tenant-b".into(),
+        display_name: "Other tenant".into(),
+        owner: "other-owner".into(),
+        entitlement_ids: vec!["ent-9".into()],
+        approval_policy_json: serde_json::json!({"steps": [{"approver": "other"}]}),
+        max_duration_seconds: None,
+        active: true,
+    };
+    repo.store_iga_access_package(&other_tenant).await.unwrap();
+    let updated = IgaAccessPackageRecord {
+        id: "pkg-1".into(),
+        tenant_id: "tenant-a".into(),
+        display_name: "Base package v2".into(),
+        owner: "owner-2".into(),
+        entitlement_ids: vec!["ent-1".into(), "ent-2".into()],
+        approval_policy_json: serde_json::json!({"steps": [{"approver": "owner"}]}),
+        max_duration_seconds: None,
+        active: false,
+    };
+    repo.store_iga_access_package(&updated).await.unwrap();
+    assert_eq!(
+        repo.list_iga_access_packages("tenant-a").await.unwrap(),
+        vec![updated]
+    );
+    assert_eq!(
+        repo.list_iga_access_packages("tenant-b").await.unwrap(),
+        vec![other_tenant]
+    );
+}

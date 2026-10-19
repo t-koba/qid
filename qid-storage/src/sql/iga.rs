@@ -7,7 +7,7 @@ impl IgaRepository for SqlRepository {
     async fn store_iga_entitlement(&self, entitlement: &IgaEntitlementRecord) -> QidResult<()> {
         entitlement.validate()?;
         sqlx::query(
-            "INSERT INTO iga_entitlements (tenant_id, id, display_name, owner, risk_level, conflicting_entitlements_json, max_duration_seconds, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO iga_entitlements (tenant_id, id, display_name, owner, risk_level, conflicting_entitlements_json, max_duration_seconds, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, id) DO UPDATE SET display_name = excluded.display_name, owner = excluded.owner, risk_level = excluded.risk_level, conflicting_entitlements_json = excluded.conflicting_entitlements_json, max_duration_seconds = excluded.max_duration_seconds, active = excluded.active",
         )
         .bind(&entitlement.tenant_id)
         .bind(&entitlement.id)
@@ -46,7 +46,7 @@ impl IgaRepository for SqlRepository {
     async fn store_iga_access_package(&self, package: &IgaAccessPackageRecord) -> QidResult<()> {
         package.validate()?;
         sqlx::query(
-            "INSERT INTO iga_access_packages (id, tenant_id, display_name, owner, entitlement_ids_json, approval_policy_json, max_duration_seconds, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO iga_access_packages (id, tenant_id, display_name, owner, entitlement_ids_json, approval_policy_json, max_duration_seconds, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, id) DO UPDATE SET display_name = excluded.display_name, owner = excluded.owner, entitlement_ids_json = excluded.entitlement_ids_json, approval_policy_json = excluded.approval_policy_json, max_duration_seconds = excluded.max_duration_seconds, active = excluded.active",
         )
         .bind(&package.id)
         .bind(&package.tenant_id)

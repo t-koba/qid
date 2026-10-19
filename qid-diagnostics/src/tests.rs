@@ -1,4 +1,5 @@
 use super::*;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use qid_core::config::{
     AdminConfig, AuthenticationConfig, CryptoConfig, DeploymentProfile, InboundProviderConfig,
     KeyringConfig, OAuthResourceServerConfig, ObservabilityConfig, OpsConfig, PepAuthorityConfig,
@@ -805,4 +806,94 @@ fn scim_custom_schemas_are_reported_as_unsupported() {
             .iter()
             .any(|c| c.status == CheckStatus::Error && c.name.starts_with("scim.schema"))
     );
+}
+
+#[test]
+fn saml_certificate_diagnostics_accept_pem_and_bare_base64() {
+    let pem = include_str!("../tests/data/saml-test-cert.pem");
+    let bare_base64: String = pem
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect();
+    let now =
+        x509_parser::time::ASN1Time::from_timestamp(1_800_000_000).expect("fixed test timestamp");
+
+    for (purpose, certificate) in [
+        (SamlCertificatePurpose::Signing, pem.to_string()),
+        (SamlCertificatePurpose::Signing, bare_base64.clone()),
+        (SamlCertificatePurpose::Encryption, bare_base64.clone()),
+    ] {
+        let check = check_saml_certificates_at("saml.test", &[certificate], purpose, now)
+            .pop()
+            .expect("one configured certificate yields one diagnostic");
+        assert_eq!(check.status, CheckStatus::Ok, "{check:?}");
+        assert!(check.message.contains("valid certificate"), "{check:?}");
+    }
+
+    let encryption_pem = check_saml_certificates_at(
+        "saml.test",
+        &[pem.to_string()],
+        SamlCertificatePurpose::Encryption,
+        now,
+    )
+    .pop()
+    .expect("diagnostic");
+    assert_eq!(encryption_pem.status, CheckStatus::Error);
+    assert!(encryption_pem.message.contains("invalid base64"));
+}
+
+#[test]
+fn saml_certificate_diagnostics_reject_malformed_and_preserve_validity_checks() {
+    let pem = include_str!("../tests/data/saml-test-cert.pem");
+    let malformed_der = STANDARD.encode(b"not an X.509 certificate");
+    let future =
+        x509_parser::time::ASN1Time::from_timestamp(1_700_000_000).expect("fixed test timestamp");
+    let valid =
+        x509_parser::time::ASN1Time::from_timestamp(1_800_000_000).expect("fixed test timestamp");
+    let expired_at =
+        x509_parser::time::ASN1Time::from_timestamp(1_900_000_000).expect("fixed test timestamp");
+
+    let malformed_base64 = check_saml_certificates_at(
+        "saml.test",
+        &["not base64!".to_string()],
+        SamlCertificatePurpose::Signing,
+        valid,
+    )
+    .pop()
+    .expect("diagnostic");
+    assert_eq!(malformed_base64.status, CheckStatus::Error);
+    assert!(malformed_base64.message.contains("invalid base64"));
+
+    let malformed_certificate = check_saml_certificates_at(
+        "saml.test",
+        &[malformed_der],
+        SamlCertificatePurpose::Signing,
+        valid,
+    )
+    .pop()
+    .expect("diagnostic");
+    assert_eq!(malformed_certificate.status, CheckStatus::Error);
+    assert!(malformed_certificate.message.contains("invalid X.509"));
+
+    let not_yet_valid = check_saml_certificates_at(
+        "saml.test",
+        &[pem.to_string()],
+        SamlCertificatePurpose::Signing,
+        future,
+    )
+    .pop()
+    .expect("diagnostic");
+    assert_eq!(not_yet_valid.status, CheckStatus::Warning);
+    assert!(not_yet_valid.message.contains("not yet valid"));
+
+    let expired = check_saml_certificates_at(
+        "saml.test",
+        &[pem.to_string()],
+        SamlCertificatePurpose::Signing,
+        expired_at,
+    )
+    .pop()
+    .expect("diagnostic");
+    assert_eq!(expired.status, CheckStatus::Error);
+    assert!(expired.message.contains("certificate expired"));
 }

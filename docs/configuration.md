@@ -205,7 +205,7 @@ Validation rules:
 | --- | --- |
 | `oidc` | OIDC enablement, auth code, PKCE, request object policy, discovery, userinfo, logout, session management. |
 | `oauth` | Introspection, revocation, PAR, RAR, DPoP, mTLS, device flow, CIBA, DCR, private_key_jwt, JARM, token TTL, resource servers. |
-| `saml` | SAML IdP routes, metadata signing, assertion signing/encryption, SP registration, clock skew. |
+| `saml` | SAML IdP routes, metadata signing, assertion signing/encryption, SP registration, clock skew. SP signing certificates accept PEM or bare standard base64 DER; encryption certificates require a compact bare standard base64 DER value. |
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. |
 | `federation` | Inbound OIDC/SAML/social providers and claim mappings. |

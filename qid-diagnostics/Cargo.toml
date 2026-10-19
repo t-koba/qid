@@ -11,6 +11,7 @@ documentation.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 qid-core = { workspace = true }
 qid-policy = { workspace = true }
 qid-storage = { workspace = true }

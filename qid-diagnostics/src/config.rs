@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine;
 use std::path::PathBuf;
 
 pub(crate) fn check_issuer_alignment(
@@ -467,11 +468,17 @@ pub(crate) fn check_saml_metadata(config: &QidConfig) -> Vec<CheckItem> {
         }
         for sp in &realm.protocols.saml.service_providers {
             let base = format!("saml.sp.{}.realm.{}", sp.entity_id, realm.id);
-            let signing =
-                check_saml_certificates(&format!("{base}.signing"), &sp.signing_certificates);
+            let signing = check_saml_certificates(
+                &format!("{base}.signing"),
+                &sp.signing_certificates,
+                SamlCertificatePurpose::Signing,
+            );
             checks.extend(signing);
-            let encryption =
-                check_saml_certificates(&format!("{base}.encryption"), &sp.encryption_certificates);
+            let encryption = check_saml_certificates(
+                &format!("{base}.encryption"),
+                &sp.encryption_certificates,
+                SamlCertificatePurpose::Encryption,
+            );
             checks.extend(encryption);
         }
     }
@@ -484,32 +491,44 @@ pub(crate) fn check_saml_metadata(config: &QidConfig) -> Vec<CheckItem> {
     checks
 }
 
-fn check_saml_certificates(name: &str, certs: &[String]) -> Vec<CheckItem> {
+#[derive(Clone, Copy)]
+pub(crate) enum SamlCertificatePurpose {
+    Signing,
+    Encryption,
+}
+
+fn check_saml_certificates(
+    name: &str,
+    certs: &[String],
+    purpose: SamlCertificatePurpose,
+) -> Vec<CheckItem> {
+    check_saml_certificates_at(name, certs, purpose, x509_parser::time::ASN1Time::now())
+}
+
+pub(crate) fn check_saml_certificates_at(
+    name: &str,
+    certs: &[String],
+    purpose: SamlCertificatePurpose,
+    now: x509_parser::time::ASN1Time,
+) -> Vec<CheckItem> {
     if certs.is_empty() {
         return vec![check_ok(name, "no certificates configured (optional)")];
     }
     certs
         .iter()
         .enumerate()
-        .map(|(i, pem_str)| {
+        .map(|(i, certificate)| {
             let cert_name = format!("{name}[{i}]");
-            let pem_bytes = pem_str.as_bytes();
-            let pem = match x509_parser::pem::Pem::read(std::io::Cursor::new(pem_bytes)) {
-                Ok((pem, _)) => pem,
+            let der = match decode_saml_certificate(certificate, purpose) {
+                Ok(der) => der,
                 Err(e) => {
-                    return check_error(
-                        cert_name,
-                        format!("invalid PEM certificate: {e}"),
-                    );
+                    return check_error(cert_name, format!("invalid base64 certificate: {e}"));
                 }
             };
-            let cert = match pem.parse_x509() {
-                Ok(c) => c,
+            let cert = match x509_parser::parse_x509_certificate(&der) {
+                Ok((_, cert)) => cert,
                 Err(e) => {
-                    return check_error(
-                        cert_name,
-                        format!("invalid X.509 certificate: {e}"),
-                    );
+                    return check_error(cert_name, format!("invalid X.509 certificate: {e}"));
                 }
             };
             let validity = cert.validity();
@@ -517,7 +536,6 @@ fn check_saml_certificates(name: &str, certs: &[String]) -> Vec<CheckItem> {
             let not_after = validity.not_after.to_string();
             let subject = cert.subject().to_string();
             let issuer = cert.issuer().to_string();
-            let now = x509_parser::time::ASN1Time::now();
             let expired = now > validity.not_after;
             let not_yet_valid = now < validity.not_before;
             if expired {
@@ -544,6 +562,27 @@ fn check_saml_certificates(name: &str, certs: &[String]) -> Vec<CheckItem> {
             }
         })
         .collect()
+}
+
+fn decode_saml_certificate(
+    certificate: &str,
+    purpose: SamlCertificatePurpose,
+) -> Result<Vec<u8>, base64::DecodeError> {
+    match purpose {
+        // qid-saml's signature verifier strips PEM delimiters before decoding, so
+        // both PEM and bare standard base64 DER are accepted here.
+        SamlCertificatePurpose::Signing => {
+            let body: String = certificate
+                .lines()
+                .filter(|line| !line.starts_with("-----"))
+                .collect();
+            base64::engine::general_purpose::STANDARD.decode(body.trim())
+        }
+        // Assertion encryption consumes the metadata X509Certificate body as-is.
+        SamlCertificatePurpose::Encryption => {
+            base64::engine::general_purpose::STANDARD.decode(certificate)
+        }
+    }
 }
 
 pub(crate) fn check_scim_schemas(config: &QidConfig) -> Vec<CheckItem> {

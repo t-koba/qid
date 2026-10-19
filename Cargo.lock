@@ -3982,6 +3982,7 @@ dependencies = [
 name = "qid-diagnostics"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "qid-core",
  "qid-policy",
  "qid-storage",

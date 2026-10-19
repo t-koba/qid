@@ -1605,6 +1605,106 @@ async fn assert_ciam_progressive_profile_owner_conflict(
     );
 }
 
+async fn assert_ciam_progressive_profile_colon_key(
+    repo: &(impl RealmRepository + UserRepository + CiamRepository),
+) {
+    for (realm, issuer) in [
+        ("a:b", "https://first.example.com"),
+        ("a", "https://second.example.com"),
+    ] {
+        repo.create_realm(&"tenant-profile-key".into(), &realm.into(), issuer, None)
+            .await
+            .unwrap();
+    }
+    for (user, realm) in [("c", "a:b"), ("b:c", "a")] {
+        repo.create_user(&User {
+            id: user.to_string(),
+            realm_id: realm.to_string(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    }
+    let mut first = CiamProgressiveProfile {
+        id: "3:a:bc".to_string(),
+        realm_id: "a:b".to_string(),
+        user_id: "c".to_string(),
+        profile_json: serde_json::json!({"owner": "first"}),
+        passwordless_migrated_at: None,
+        created_at: 100,
+        updated_at: 100,
+    };
+    let second = CiamProgressiveProfile {
+        id: "1:ab:c".to_string(),
+        realm_id: "a".to_string(),
+        user_id: "b:c".to_string(),
+        profile_json: serde_json::json!({"owner": "second"}),
+        created_at: 100,
+        updated_at: 100,
+        ..first.clone()
+    };
+    repo.store_ciam_progressive_profile(&first)
+        .await
+        .expect("store first colon profile failed");
+    repo.store_ciam_progressive_profile(&second)
+        .await
+        .expect("colon in user ID must not collide with realm separator");
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"a:b".into(), "c")
+            .await
+            .unwrap(),
+        Some(first.clone())
+    );
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"a".into(), "b:c")
+            .await
+            .unwrap(),
+        Some(second.clone())
+    );
+
+    first.profile_json = serde_json::json!({"owner": "first-updated"});
+    first.updated_at = 200;
+    repo.store_ciam_progressive_profile(&first)
+        .await
+        .expect("same-owner colon profile update failed");
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"a".into(), "b:c")
+            .await
+            .unwrap(),
+        Some(second.clone())
+    );
+    repo.delete_ciam_progressive_profile(&"a:b".into(), "c")
+        .await
+        .expect("delete first colon profile failed");
+    assert!(
+        repo.get_ciam_progressive_profile(&"a:b".into(), "c")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"a".into(), "b:c")
+            .await
+            .unwrap(),
+        Some(second)
+    );
+}
+
+#[tokio::test]
+async fn test_sql_ciam_progressive_profile_colon_key() {
+    assert_ciam_progressive_profile_colon_key(&sql_repo().await).await;
+}
+
+#[tokio::test]
+async fn test_file_ciam_progressive_profile_colon_key() {
+    assert_ciam_progressive_profile_colon_key(&file_repo("ciam_profile_colon_key").await).await;
+}
+
 #[tokio::test]
 async fn test_sql_ciam_progressive_profile_owner_conflict() {
     assert_ciam_progressive_profile_owner_conflict(&sql_repo().await).await;

@@ -123,6 +123,76 @@ async fn assert_family(repo: &FileRepository, id: &str, hash: &str, deadline: Op
 }
 
 #[tokio::test]
+async fn file_ciam_progressive_profile_legacy_keys_rekey_on_open() {
+    let (file, empty_repo) = TestFile::new().await;
+    drop(empty_repo);
+    let mut store = Store::default();
+    for (key, realm, user) in [
+        ("team_blue:person", "team_blue", "person"),
+        ("team:blue_person", "team", "blue_person"),
+    ] {
+        store.ciam_profiles.insert(
+            key.to_string(),
+            CiamProgressiveProfile {
+                id: "legacy-collision-id".to_string(),
+                realm_id: realm.to_string(),
+                user_id: user.to_string(),
+                profile_json: serde_json::json!({"owner": user}),
+                passwordless_migrated_at: None,
+                created_at: 100,
+                updated_at: 100,
+            },
+        );
+    }
+    tokio::fs::write(&file.0, serde_json::to_vec(&store).unwrap())
+        .await
+        .unwrap();
+
+    let repo = FileRepository::new(file.0.to_str().unwrap()).await.unwrap();
+    let mut first = repo
+        .get_ciam_progressive_profile(&"team_blue".into(), "person")
+        .await
+        .unwrap()
+        .unwrap();
+    let second = repo
+        .get_ciam_progressive_profile(&"team".into(), "blue_person")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.id, "legacy-collision-id");
+    assert_eq!(second.id, "legacy-collision-id");
+    first.profile_json = serde_json::json!({"owner": "updated"});
+    first.updated_at = 200;
+    repo.store_ciam_progressive_profile(&first).await.unwrap();
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"team".into(), "blue_person")
+            .await
+            .unwrap(),
+        Some(second.clone())
+    );
+
+    let persisted: Store =
+        serde_json::from_slice(&tokio::fs::read(&file.0).await.unwrap()).unwrap();
+    assert!(persisted.ciam_profiles.contains_key("9:team_blueperson"));
+    assert!(persisted.ciam_profiles.contains_key("4:teamblue_person"));
+    repo.delete_ciam_progressive_profile(&"team_blue".into(), "person")
+        .await
+        .unwrap();
+    assert!(
+        repo.get_ciam_progressive_profile(&"team_blue".into(), "person")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&"team".into(), "blue_person")
+            .await
+            .unwrap(),
+        Some(second)
+    );
+}
+
+#[tokio::test]
 async fn failed_rotation_cannot_leak_into_another_save() {
     let (file, repo) = TestFile::new().await;
     repo.create_token_family(&family("rotating", "old", Some(200)))

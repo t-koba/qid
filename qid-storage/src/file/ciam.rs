@@ -246,7 +246,7 @@ impl CiamRepository for FileRepository {
         user_id: &str,
     ) -> QidResult<Option<CiamProgressiveProfile>> {
         let store = self.store.read().await;
-        let key = format!("{}:{}", realm_id.0, user_id);
+        let key = ciam_progressive_profile_key(&realm_id.0, user_id);
         Ok(store.ciam_profiles.get(&key).cloned())
     }
 
@@ -255,28 +255,30 @@ impl CiamRepository for FileRepository {
         profile: &CiamProgressiveProfile,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let key = format!("{}:{}", profile.realm_id, profile.user_id);
-        for stored in store
-            .ciam_profiles
-            .values()
-            .filter(|stored| stored.id == profile.id)
-        {
-            crate::ownership::ensure_same_binding(
-                Some((&stored.realm_id, &stored.user_id)),
-                (&profile.realm_id, &profile.user_id),
-                || {
-                    format!(
-                        "CIAM progressive profile {} belongs to another owner",
-                        profile.id
-                    )
-                },
-            )?;
+        let key = ciam_progressive_profile_key(&profile.realm_id, &profile.user_id);
+        let incumbent = store.ciam_profiles.get(&key);
+        // Preserve legacy file snapshots that already contain duplicate IDs
+        // across distinct owners; only a new owner attempting that ID conflicts.
+        if incumbent.is_none() {
+            for stored in store
+                .ciam_profiles
+                .values()
+                .filter(|stored| stored.id == profile.id)
+            {
+                crate::ownership::ensure_same_binding(
+                    Some((&stored.realm_id, &stored.user_id)),
+                    (&profile.realm_id, &profile.user_id),
+                    || {
+                        format!(
+                            "CIAM progressive profile {} belongs to another owner",
+                            profile.id
+                        )
+                    },
+                )?;
+            }
         }
         crate::ownership::ensure_same_binding(
-            store
-                .ciam_profiles
-                .get(&key)
-                .map(|stored| (&stored.id, &stored.realm_id, &stored.user_id)),
+            incumbent.map(|stored| (&stored.id, &stored.realm_id, &stored.user_id)),
             (&profile.id, &profile.realm_id, &profile.user_id),
             || "CIAM progressive profile identity cannot change".to_string(),
         )?;
@@ -291,7 +293,7 @@ impl CiamRepository for FileRepository {
         user_id: &str,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let key = format!("{}:{}", realm_id.0, user_id);
+        let key = ciam_progressive_profile_key(&realm_id.0, user_id);
         store.ciam_profiles.remove(&key);
         drop(store);
         self.save().await

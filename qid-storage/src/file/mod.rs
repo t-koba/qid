@@ -45,6 +45,10 @@ mod user;
 mod vc;
 mod workload;
 
+fn ciam_progressive_profile_key(realm_id: &str, user_id: &str) -> String {
+    format!("{}:{realm_id}{user_id}", realm_id.len())
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Store {
     realm_issuers: HashMap<String, String>,
@@ -131,6 +135,28 @@ struct Store {
     audit_retention_configs: HashMap<String, AuditRetentionConfig>,
 }
 
+impl Store {
+    // Older file stores used `realm:user`; rebuild from record bindings so
+    // delimiter-bearing IDs cannot alias and existing records remain readable.
+    fn rekey_ciam_progressive_profiles(&mut self) -> QidResult<bool> {
+        let old_profiles = std::mem::take(&mut self.ciam_profiles);
+        let mut profiles = HashMap::with_capacity(old_profiles.len());
+        let mut changed = false;
+        for (old_key, profile) in old_profiles {
+            let new_key = ciam_progressive_profile_key(&profile.realm_id, &profile.user_id);
+            changed |= old_key != new_key;
+            if profiles.insert(new_key, profile).is_some() {
+                return Err(QidError::Internal {
+                    message: "file store contains duplicate CIAM progressive profile owners"
+                        .to_string(),
+                });
+            }
+        }
+        self.ciam_profiles = profiles;
+        Ok(changed)
+    }
+}
+
 /// File-backed repository implementation.
 ///
 /// Persists all data as a single JSON file. Suitable for development
@@ -172,7 +198,7 @@ impl FileRepository {
                 })?;
         }
         let process_lock = acquire_process_lock(&p)?;
-        let store = match tokio::fs::read_to_string(&p).await {
+        let mut store = match tokio::fs::read_to_string(&p).await {
             Ok(content) => serde_json::from_str(&content).map_err(|e| QidError::Internal {
                 message: format!("failed to parse store file: {e}"),
             })?,
@@ -183,6 +209,7 @@ impl FileRepository {
                 });
             }
         };
+        let profiles_rekeyed = store.rekey_ciam_progressive_profiles()?;
         let repo = Self {
             store: Arc::new(tokio::sync::RwLock::new(store)),
             path: p,
@@ -195,6 +222,9 @@ impl FileRepository {
             dirty: Arc::new(AtomicBool::new(false)),
             flush_mode,
         };
+        if profiles_rekeyed {
+            repo.save().await?;
+        }
         if let FileFlushMode::Interval(interval) = flush_mode {
             let repo = repo.clone();
             tokio::spawn(async move {

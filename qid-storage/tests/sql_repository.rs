@@ -11,7 +11,9 @@ use qid_core::models::{
     VcCredentialStatusRecord, WorkloadCertificate, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
-use qid_storage::{FileRepository, SqlRepository, prelude::*};
+use qid_storage::{
+    FileRepository, ScimDeviceRecord, ScimEventSubscriptionRecord, SqlRepository, prelude::*,
+};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -3119,4 +3121,169 @@ async fn sql_scim_deprovisioned_at_persists_and_defaults_to_none() {
         .unwrap()
         .unwrap();
     assert_eq!(fetched.deprovisioned_at, None);
+}
+
+async fn assert_scim_device_event_subscription_owner_contract<R>(repo: &R)
+where
+    R: RealmRepository + ScimRepository,
+{
+    repo.create_realm(
+        &"tenant-owner".into(),
+        &"realm-owner-a".into(),
+        "https://owner-a.example.com",
+        Some("Owner A"),
+    )
+    .await
+    .expect("create owner realm A failed");
+    repo.create_realm(
+        &"tenant-owner".into(),
+        &"realm-owner-b".into(),
+        "https://owner-b.example.com",
+        Some("Owner B"),
+    )
+    .await
+    .expect("create owner realm B failed");
+
+    // Device: same-realm updates still work.
+    let device = ScimDeviceRecord {
+        id: "scim-device-shared".to_string(),
+        realm_id: "realm-owner-a".to_string(),
+        display_name: Some("Phone A".to_string()),
+        manufacturer: Some("Acme".to_string()),
+        model: Some("One".to_string()),
+        os: Some("QidOS".to_string()),
+        os_version: Some("1.0".to_string()),
+        last_seen: Some(1_000),
+    };
+    repo.upsert_scim_device(&device)
+        .await
+        .expect("initial device upsert failed");
+    let mut updated_device = device.clone();
+    updated_device.display_name = Some("Phone A2".to_string());
+    updated_device.last_seen = Some(2_000);
+    repo.upsert_scim_device(&updated_device)
+        .await
+        .expect("same-realm device update failed");
+    assert_eq!(
+        repo.get_scim_device("scim-device-shared")
+            .await
+            .expect("get updated device failed")
+            .expect("updated device missing"),
+        updated_device
+    );
+    assert_eq!(
+        repo.list_scim_devices(&RealmId::from("realm-owner-a"))
+            .await
+            .expect("list owner realm devices failed"),
+        vec![updated_device.clone()]
+    );
+
+    // Device: same global ID from another realm conflicts and changes nothing.
+    let mut colliding_device = updated_device.clone();
+    colliding_device.realm_id = "realm-owner-b".to_string();
+    colliding_device.display_name = Some("Attacker phone".to_string());
+    let error = repo
+        .upsert_scim_device(&colliding_device)
+        .await
+        .expect_err("cross-realm device ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-realm device reuse must conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.get_scim_device("scim-device-shared")
+            .await
+            .expect("get incumbent device after collision failed")
+            .expect("incumbent device missing"),
+        updated_device
+    );
+    assert_eq!(
+        repo.list_scim_devices(&RealmId::from("realm-owner-a"))
+            .await
+            .expect("list incumbent devices after collision failed"),
+        vec![updated_device.clone()]
+    );
+    assert!(
+        repo.list_scim_devices(&RealmId::from("realm-owner-b"))
+            .await
+            .expect("list other realm devices failed")
+            .is_empty()
+    );
+
+    // Event subscription: same-realm updates still work (`created_at` stays stable).
+    let subscription = ScimEventSubscriptionRecord {
+        id: "scim-sub-shared".to_string(),
+        realm_id: "realm-owner-a".to_string(),
+        callback_url: "https://a.example.com/hook".to_string(),
+        event_types: vec!["user.created".to_string()],
+        enabled: true,
+        created_at: 1_000,
+    };
+    repo.upsert_scim_event_subscription(&subscription)
+        .await
+        .expect("initial subscription upsert failed");
+    let mut updated_subscription = subscription.clone();
+    updated_subscription.callback_url = "https://a.example.com/hook2".to_string();
+    updated_subscription.event_types = vec!["user.created".to_string(), "user.updated".to_string()];
+    updated_subscription.enabled = false;
+    repo.upsert_scim_event_subscription(&updated_subscription)
+        .await
+        .expect("same-realm subscription update failed");
+    assert_eq!(
+        repo.get_scim_event_subscription("scim-sub-shared")
+            .await
+            .expect("get updated subscription failed")
+            .expect("updated subscription missing"),
+        updated_subscription
+    );
+    assert_eq!(
+        repo.list_scim_event_subscriptions(&RealmId::from("realm-owner-a"))
+            .await
+            .expect("list owner realm subscriptions failed"),
+        vec![updated_subscription.clone()]
+    );
+
+    // Event subscription: same global ID from another realm conflicts.
+    let mut colliding_subscription = updated_subscription.clone();
+    colliding_subscription.realm_id = "realm-owner-b".to_string();
+    colliding_subscription.callback_url = "https://b.example.com/hook".to_string();
+    let error = repo
+        .upsert_scim_event_subscription(&colliding_subscription)
+        .await
+        .expect_err("cross-realm subscription ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-realm subscription reuse must conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.get_scim_event_subscription("scim-sub-shared")
+            .await
+            .expect("get incumbent subscription after collision failed")
+            .expect("incumbent subscription missing"),
+        updated_subscription
+    );
+    assert_eq!(
+        repo.list_scim_event_subscriptions(&RealmId::from("realm-owner-a"))
+            .await
+            .expect("list incumbent subscriptions after collision failed"),
+        vec![updated_subscription.clone()]
+    );
+    assert!(
+        repo.list_scim_event_subscriptions(&RealmId::from("realm-owner-b"))
+            .await
+            .expect("list other realm subscriptions failed")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_sql_scim_device_event_subscription_owner_contract() {
+    let repo = sql_repo().await;
+    assert_scim_device_event_subscription_owner_contract(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_scim_device_event_subscription_owner_contract() {
+    let repo = file_repo("test_scim_owner_contract").await;
+    assert_scim_device_event_subscription_owner_contract(&repo).await;
 }

@@ -46,6 +46,13 @@ fn db_url() -> String {
     format!("sqlite:{}", path.display())
 }
 
+// Each isolated fixture uses the same test password, so hash it once per process.
+fn correct_password_hash() -> String {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| hash_password("correct-password").expect("test password hashing failed"))
+        .clone()
+}
+
 fn dpop_test_key() -> (String, qid_crypto::Jwk) {
     static KEY: OnceLock<(String, qid_crypto::Jwk)> = OnceLock::new();
     KEY.get_or_init(|| {
@@ -136,7 +143,7 @@ async fn setup_with_config(config: QidConfig) -> (Router, Arc<SharedState<SqlRep
     .unwrap();
     repo.store_password_credential(&PasswordCredential {
         user_id: "par-user".to_string(),
-        hash: hash_password("correct-password").unwrap(),
+        hash: correct_password_hash(),
         algorithm: "argon2id".to_string(),
         pepper_ref: None,
     })

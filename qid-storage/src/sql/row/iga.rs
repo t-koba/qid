@@ -1,3 +1,4 @@
+use qid_core::error::{QidError, QidResult};
 use qid_core::models::*;
 
 #[derive(sqlx::FromRow)]
@@ -133,6 +134,32 @@ pub(in crate::sql) struct IgaAccessGrantRow {
     expires_at_epoch_seconds: Option<i64>,
     approval_ids_json: String,
     revoked: i64,
+}
+
+impl IgaAccessGrantRow {
+    // Batch reconciliation must not silently normalize malformed historical
+    // evidence via the legacy infallible row conversion.
+    pub(in crate::sql) fn into_checked(self) -> QidResult<IgaAccessGrantRecord> {
+        let approval_ids: Vec<String> =
+            serde_json::from_str(&self.approval_ids_json).map_err(|_| QidError::BadRequest {
+                message: "IGA incumbent grant has malformed approval evidence".to_string(),
+            })?;
+        if self.granted_at_epoch_seconds <= 0
+            || self
+                .expires_at_epoch_seconds
+                .is_some_and(|expiry| expiry <= self.granted_at_epoch_seconds)
+            || !matches!(self.revoked, 0 | 1)
+        {
+            return Err(QidError::BadRequest {
+                message: "IGA incumbent grant has malformed timestamps or revoked status"
+                    .to_string(),
+            });
+        }
+        let mut record: IgaAccessGrantRecord = self.into();
+        record.approval_ids = approval_ids;
+        record.validate()?;
+        Ok(record)
+    }
 }
 
 impl From<IgaAccessGrantRow> for IgaAccessGrantRecord {

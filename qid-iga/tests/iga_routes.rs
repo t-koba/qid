@@ -576,6 +576,123 @@ async fn package_issuance_refuses_drifted_package_definition() {
 }
 
 #[tokio::test]
+async fn package_grant_batch_issues_complete_set_or_repairs_partial_revoked_set() {
+    for partial in [false, true] {
+        let (app, repo, session_id) = setup_with_repo().await;
+        for id in ["app:custom:a", "app:custom:b"] {
+            post_json(
+                app.clone(),
+                "/iga/v1/entitlements",
+                serde_json::json!({
+                    "id": id, "display_name": id, "owner": "security-admin",
+                    "risk_level": "medium", "max_duration_seconds": 3600, "active": true
+                }),
+                &session_id,
+            )
+            .await;
+        }
+        let body = create_package_and_request(
+            &app,
+            &session_id,
+            serde_json::json!({
+                "id": "pkg-retry", "display_name": "Retry package", "owner": "security-admin",
+                "entitlement_ids": ["app:custom:a", "app:custom:b"],
+                "max_duration_seconds": 1800, "active": true
+            }),
+            "user-1",
+        )
+        .await;
+        assert_eq!(body["status"], "approval_required");
+        let request_id = body["id"].as_str().unwrap();
+        let now = qid_core::util::now_seconds();
+        let incumbent = IgaAccessGrantRecord {
+            id: "legacy-member".into(),
+            tenant_id: "test".into(),
+            request_id: request_id.into(),
+            subject: "user-1".into(),
+            entitlement: "app:custom:a".into(),
+            granted_at_epoch_seconds: now - 100,
+            expires_at_epoch_seconds: Some(now - 50),
+            approval_ids: vec!["legacy-approval".into()],
+            revoked: true,
+        };
+        if partial {
+            // Simulate a legacy per-member write followed by failure, then a
+            // certification revocation before retry. Neither may be undone.
+            repo.store_iga_access_grant(&incumbent).await.unwrap();
+        }
+        let issued = post_json(
+            app.clone(),
+            "/iga/v1/access-requests/approvals/validate",
+            serde_json::json!({
+                "request_id": request_id, "issue_grant": true,
+                "approvals": [{
+                    "id": "retry-approval",
+                    "request_id": request_id, "approver": "security-admin",
+                    "decision": "approved", "approved_at_epoch_seconds": now,
+                    "expires_at_epoch_seconds": now + 300
+                }]
+            }),
+            &session_id,
+        )
+        .await;
+        assert_eq!(issued["validation"]["valid"], true);
+        let grants = issued["grants"].as_array().unwrap();
+        assert_eq!(grants.len(), if partial { 1 } else { 2 });
+        assert_eq!(issued["grant"], grants[0]);
+        if partial {
+            assert_eq!(grants[0]["entitlement"], "app:custom:b");
+        }
+        for grant in grants {
+            let expiry = grant["expires_at_epoch_seconds"].as_u64().unwrap();
+            assert_eq!(expiry, body["expires_at_epoch_seconds"].as_u64().unwrap());
+        }
+        let stored = repo
+            .list_iga_access_grants("test", Some("user-1"))
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+        if partial {
+            assert_eq!(
+                stored.iter().find(|grant| grant.id == incumbent.id),
+                Some(&incumbent)
+            );
+        }
+        assert_eq!(
+            repo.get_iga_access_request("test", request_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "approved"
+        );
+        assert_eq!(
+            repo.list_iga_approvals("test", request_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let replay = post_json(
+            app.clone(),
+            "/iga/v1/access-requests/approvals/validate",
+            serde_json::json!({"request_id": request_id, "issue_grant": true}),
+            &session_id,
+        )
+        .await;
+        assert_eq!(replay["validation"]["valid"], true);
+        assert_eq!(replay["grants"], serde_json::json!([]));
+        assert!(replay["grant"].is_null());
+        assert_eq!(
+            repo.list_iga_access_grants("test", Some("user-1"))
+                .await
+                .unwrap(),
+            stored
+        );
+    }
+}
+
+#[tokio::test]
 async fn package_member_grant_feeds_later_sod_checks_and_review() {
     let (app, _repo, session_id) = setup_with_repo().await;
     seed_conflicting_erp_pair(&app, &session_id).await;

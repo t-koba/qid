@@ -30,6 +30,8 @@ mod device;
 mod fedcm;
 mod iga;
 #[cfg(test)]
+mod iga_tests;
+#[cfg(test)]
 mod persistence_tests;
 mod policy;
 mod realm;

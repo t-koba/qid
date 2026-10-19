@@ -208,6 +208,113 @@ impl IgaRepository for SqlRepository {
         Ok(())
     }
 
+    async fn ensure_iga_access_grants(
+        &self,
+        candidates: &[IgaAccessGrantRecord],
+    ) -> QidResult<Vec<IgaAccessGrantRecord>> {
+        let first = crate::iga_grants::validate_candidates(candidates)?;
+        for candidate in candidates {
+            if i64::try_from(candidate.granted_at_epoch_seconds).is_err()
+                || candidate
+                    .expires_at_epoch_seconds
+                    .is_some_and(|expiry| i64::try_from(expiry).is_err())
+            {
+                return Err(QidError::BadRequest {
+                    message: "IGA grant timestamps exceed SQL storage range".to_string(),
+                });
+            }
+        }
+
+        let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        let result = async {
+            // First operation: serialize on the parent, before reading grants.
+            // A write (not a deferred read) also serializes SQLite connections.
+            let parent = sqlx::query(
+                "UPDATE iga_access_requests SET status = status WHERE tenant_id = ? AND id = ?",
+            )
+            .bind(&first.tenant_id)
+            .bind(&first.request_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+            if parent.rows_affected() != 1 {
+                return Err(QidError::BadRequest {
+                    message: "IGA access request not found".to_string(),
+                });
+            }
+            let request: IgaAccessRequestRow = sqlx::query_as(
+                "SELECT * FROM iga_access_requests WHERE tenant_id = ? AND id = ?",
+            )
+            .bind(&first.tenant_id)
+            .bind(&first.request_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+            let rows: Vec<IgaAccessGrantRow> = sqlx::query_as(
+                "SELECT * FROM iga_access_grants WHERE tenant_id = ? AND request_id = ?",
+            )
+            .bind(&first.tenant_id)
+            .bind(&first.request_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+            let incumbents: Vec<_> = rows.into_iter().map(IgaAccessGrantRow::into_checked).collect::<QidResult<_>>()?;
+            let missing = crate::iga_grants::missing_grants(candidates, &request.into(), &incumbents)?;
+            // Even ignored replay IDs must not alias a different binding.
+            for candidate in candidates {
+                let row: Option<IgaAccessGrantRow> = sqlx::query_as(
+                    "SELECT * FROM iga_access_grants WHERE id = ?",
+                )
+                .bind(&candidate.id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+                if let Some(row) = row {
+                    let incumbent: IgaAccessGrantRecord = row.into();
+                    if incumbent.tenant_id != candidate.tenant_id
+                        || incumbent.request_id != candidate.request_id
+                        || incumbent.subject != candidate.subject
+                        || incumbent.entitlement != candidate.entitlement
+                    {
+                        return Err(QidError::BadRequest {
+                            message: "IGA grant ID belongs to another binding".to_string(),
+                        });
+                    }
+                }
+            }
+            for grant in &missing {
+                sqlx::query(
+                    "INSERT INTO iga_access_grants (id, tenant_id, request_id, subject, entitlement, granted_at_epoch_seconds, expires_at_epoch_seconds, approval_ids_json, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&grant.id)
+                .bind(&grant.tenant_id)
+                .bind(&grant.request_id)
+                .bind(&grant.subject)
+                .bind(&grant.entitlement)
+                .bind(grant.granted_at_epoch_seconds as i64)
+                .bind(grant.expires_at_epoch_seconds.map(|value| value as i64))
+                .bind(serde_json::to_string(&grant.approval_ids).map_err(|error| QidError::Internal {
+                    message: format!("failed to serialize grant approvals: {error}"),
+                })?)
+                .bind(grant.revoked as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+            }
+            Ok(missing)
+        }.await;
+        match result {
+            Ok(inserted) => {
+                tx.commit().await.map_err(storage_to_qid_error)?;
+                Ok(inserted)
+            }
+            Err(error) => {
+                tx.rollback().await.map_err(storage_to_qid_error)?;
+                Err(error)
+            }
+        }
+    }
+
     async fn list_iga_access_grants(
         &self,
         tenant_id: &str,

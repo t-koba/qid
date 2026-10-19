@@ -170,6 +170,27 @@ impl IgaRepository for FileRepository {
         self.save().await
     }
 
+    async fn ensure_iga_access_grants(
+        &self,
+        candidates: &[IgaAccessGrantRecord],
+    ) -> QidResult<Vec<IgaAccessGrantRecord>> {
+        crate::iga_grants::validate_candidates(candidates)?;
+        if self.flush_mode == FileFlushMode::Immediate {
+            // Like realm deletion, finish persistence/rollback if the caller
+            // cancels during a filesystem await.
+            let repo = self.clone();
+            let candidates = candidates.to_vec();
+            return tokio::spawn(
+                async move { repo.ensure_iga_access_grants_inner(&candidates).await },
+            )
+            .await
+            .map_err(|error| QidError::Internal {
+                message: format!("grant materialization task failed: {error}"),
+            })?;
+        }
+        self.ensure_iga_access_grants_inner(candidates).await
+    }
+
     async fn list_iga_access_grants(
         &self,
         tenant_id: &str,
@@ -428,5 +449,78 @@ fn validate_iga_access_request_status(status: &str) -> QidResult<()> {
         _ => Err(qid_core::error::QidError::BadRequest {
             message: "IGA access request status is not supported".to_string(),
         }),
+    }
+}
+
+impl FileRepository {
+    async fn ensure_iga_access_grants_inner(
+        &self,
+        candidates: &[IgaAccessGrantRecord],
+    ) -> QidResult<Vec<IgaAccessGrantRecord>> {
+        let first = &candidates[0];
+        let save_guard = if self.flush_mode == FileFlushMode::Immediate {
+            Some(self.save_lock.lock().await)
+        } else {
+            None
+        };
+        let mut store = self.store.write().await;
+        let request = store
+            .iga_access_requests
+            .get(&first.request_id)
+            .filter(|request| request.tenant_id == first.tenant_id)
+            .ok_or_else(|| QidError::BadRequest {
+                message: "IGA access request not found".to_string(),
+            })?;
+        let incumbents: Vec<_> = store
+            .iga_access_grants
+            .values()
+            .filter(|grant| {
+                grant.tenant_id == first.tenant_id && grant.request_id == first.request_id
+            })
+            .cloned()
+            .collect();
+        let missing = crate::iga_grants::missing_grants(candidates, request, &incumbents)?;
+        for candidate in candidates {
+            if let Some(incumbent) = store.iga_access_grants.get(&candidate.id)
+                && (incumbent.tenant_id != candidate.tenant_id
+                    || incumbent.request_id != candidate.request_id
+                    || incumbent.subject != candidate.subject
+                    || incumbent.entitlement != candidate.entitlement)
+            {
+                return Err(QidError::BadRequest {
+                    message: "IGA grant ID belongs to another binding".to_string(),
+                });
+            }
+        }
+        if missing.is_empty() {
+            return Ok(missing);
+        }
+        // Stage and validate before mutation. Hold both locks through the one
+        // persistence attempt and rollback so no tentative state is visible.
+        let previous = save_guard.as_ref().map(|_| store.clone());
+        for grant in &missing {
+            store
+                .iga_access_grants
+                .insert(grant.id.clone(), grant.clone());
+        }
+        if let Some(guard) = save_guard {
+            let result = async {
+                #[cfg(test)]
+                self.before_flush().await?;
+                let content =
+                    serde_json::to_string(&*store).map_err(|error| QidError::Internal {
+                        message: format!("failed to serialize store: {error}"),
+                    })?;
+                self.write_store_content_locked(&guard, &content).await
+            }
+            .await;
+            if let Err(error) = result {
+                *store = previous.unwrap();
+                return Err(error);
+            }
+        } else {
+            self.dirty.store(true, Ordering::Release);
+        }
+        Ok(missing)
     }
 }

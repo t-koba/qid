@@ -11,6 +11,7 @@ use qid_core::error::{QidError, QidResult};
 
 mod domain;
 mod file;
+mod iga_grants;
 mod ownership;
 mod sql;
 pub mod traits;
@@ -316,6 +317,7 @@ delegate!(IgaRepository {
     store_iga_approval(&self, approval: &qid_core::models::IgaApprovalRecord) -> QidResult<()>;
     list_iga_approvals(&self, tenant_id: &str, request_id: &str) -> QidResult<Vec<qid_core::models::IgaApprovalRecord>>;
     store_iga_access_grant(&self, grant: &qid_core::models::IgaAccessGrantRecord) -> QidResult<()>;
+    ensure_iga_access_grants(&self, candidates: &[qid_core::models::IgaAccessGrantRecord]) -> QidResult<Vec<qid_core::models::IgaAccessGrantRecord>>;
     list_iga_access_grants(&self, tenant_id: &str, subject: Option<&str>) -> QidResult<Vec<qid_core::models::IgaAccessGrantRecord>>;
     revoke_iga_access_grant(&self, tenant_id: &str, id: &str) -> QidResult<()>;
     store_iga_jit_privilege_grant(&self, grant: &qid_core::models::IgaJitPrivilegeGrantRecord) -> QidResult<()>;

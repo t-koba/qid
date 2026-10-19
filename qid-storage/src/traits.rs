@@ -604,7 +604,25 @@ pub trait IgaRepository: Send + Sync + 'static {
         tenant_id: &str,
         request_id: &str,
     ) -> QidResult<Vec<IgaApprovalRecord>>;
+    /// Direct record storage; does not enforce request/entitlement uniqueness.
     async fn store_iga_access_grant(&self, grant: &IgaAccessGrantRecord) -> QidResult<()>;
+    /// Atomically materialize a nonempty, complete grant set for one existing
+    /// tenant/request/subject, matching its singleton entitlement or package
+    /// snapshot, and require the request to be approved. Candidates must be
+    /// non-revoked. Validate every candidate before effects; reject mixed scopes,
+    /// duplicate IDs/entitlements, and malformed or inconsistent incumbents.
+    /// Under a repository serialization boundary, insert only missing bindings
+    /// (tenant, request, subject, entitlement). Preserve incumbents exactly,
+    /// including revoked/expired records, IDs, expiry and approval evidence.
+    /// Return only inserted records, in candidate order; complete replay is
+    /// empty. Failure leaves no partial set (Immediate file mode also restores
+    /// the prior store on persistence failure; Interval mode marks memory dirty).
+    /// This guarantee applies to this operation, not concurrent direct stores.
+    async fn ensure_iga_access_grants(
+        &self,
+        candidates: &[IgaAccessGrantRecord],
+    ) -> QidResult<Vec<IgaAccessGrantRecord>>;
+
     async fn list_iga_access_grants(
         &self,
         tenant_id: &str,

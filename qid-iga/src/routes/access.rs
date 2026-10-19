@@ -399,12 +399,7 @@ pub(super) async fn validate_approvals<R: Repository>(
 
     let validation = validate_access_request_approvals(&evaluation, &approvals, now);
 
-    let existing_grants = match state.repo.list_iga_access_grants(&tenant_id, None).await {
-        Ok(grants) => grants,
-        Err(error) => return storage_error_response("list_iga_access_grants", error),
-    };
-    let has_existing_grant = existing_grants.iter().any(|g| g.request_id == request_id);
-    let grants = if req.issue_grant && validation.valid && !has_existing_grant {
+    let grants = if req.issue_grant && validation.valid {
         if let Some(package_id) = stored.entitlement.strip_prefix("access_package:") {
             // Package approvals materialize one grant per approved member so
             // later SoD checks and access reviews resolve real entitlements
@@ -483,22 +478,33 @@ pub(super) async fn validate_approvals<R: Repository>(
     {
         return storage_error_response("update_iga_access_request_status", error);
     }
-    for grant in &grants {
-        let record = IgaAccessGrantRecord {
-            id: grant.id.clone(),
-            tenant_id: tenant_id.clone(),
-            request_id: grant.request_id.clone(),
-            subject: grant.subject.clone(),
-            entitlement: grant.entitlement.clone(),
-            granted_at_epoch_seconds: grant.granted_at_epoch_seconds,
-            expires_at_epoch_seconds: grant.expires_at_epoch_seconds,
-            approval_ids: grant.approvals.clone(),
-            revoked: false,
+    let grants = if grants.is_empty() {
+        grants
+    } else {
+        let candidates: Vec<_> = grants
+            .iter()
+            .map(|grant| IgaAccessGrantRecord {
+                id: grant.id.clone(),
+                tenant_id: tenant_id.clone(),
+                request_id: grant.request_id.clone(),
+                subject: grant.subject.clone(),
+                entitlement: grant.entitlement.clone(),
+                granted_at_epoch_seconds: grant.granted_at_epoch_seconds,
+                expires_at_epoch_seconds: grant.expires_at_epoch_seconds,
+                approval_ids: grant.approvals.clone(),
+                revoked: false,
+            })
+            .collect();
+        let inserted = match state.repo.ensure_iga_access_grants(&candidates).await {
+            Ok(inserted) => inserted,
+            Err(error) => return storage_error_response("ensure_iga_access_grants", error),
         };
-        if let Err(error) = state.repo.store_iga_access_grant(&record).await {
-            return storage_error_response("store_iga_access_grant", error);
-        }
-    }
+        // Keep the existing response model, but expose only persisted members.
+        grants
+            .into_iter()
+            .filter(|grant| inserted.iter().any(|record| record.id == grant.id))
+            .collect()
+    };
     Json(serde_json::json!({
         "validation": validation,
         "grant": grants.first(),

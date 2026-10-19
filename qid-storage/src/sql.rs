@@ -24,6 +24,8 @@ mod credential;
 mod device;
 mod fedcm;
 mod iga;
+#[cfg(test)]
+mod iga_tests;
 mod policy;
 mod realm;
 #[cfg(test)]

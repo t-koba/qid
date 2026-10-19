@@ -31,7 +31,7 @@ pub fn rebac_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
         .route("/iga/v1/rebac/tuples/read", post(read_tuples_handler::<R>))
 }
 
-async fn check_handler<R: Repository>(
+async fn check_handler<R: AdminRepository + RebacRepository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Json(req): Json<CheckRequest>,
@@ -42,7 +42,7 @@ async fn check_handler<R: Repository>(
     };
     let namespace = scoped_namespace(&admin.tenant_id, &req.namespace);
     let subject_namespace = scoped_namespace(&admin.tenant_id, &req.subject.namespace);
-    let allowed = rebac::check(
+    let allowed = match rebac::check(
         &*state.repo,
         &namespace,
         &req.object_id,
@@ -51,7 +51,10 @@ async fn check_handler<R: Repository>(
         &req.subject.subject_id,
     )
     .await
-    .unwrap_or(false);
+    {
+        Ok(allowed) => allowed,
+        Err(error) => return rebac_error_response(error),
+    };
     Json(CheckResponse { allowed }).into_response()
 }
 
@@ -177,8 +180,8 @@ fn unscoped_tuples(tenant_id: &str, tuples: Vec<RelationshipTuple>) -> Vec<Relat
 }
 
 #[cfg(test)]
-mod read_tests {
-    use super::read_tuples_handler;
+mod read_and_check_tests {
+    use super::{check_handler, read_tuples_handler};
     use async_trait::async_trait;
     use axum::{
         Router,
@@ -322,6 +325,7 @@ mod read_tests {
                 "/iga/v1/rebac/tuples/read",
                 post(read_tuples_handler::<FakeReadRepo>),
             )
+            .route("/iga/v1/rebac/check", post(check_handler::<FakeReadRepo>))
             .with_state(state);
         (app, session_id)
     }
@@ -361,5 +365,42 @@ mod read_tests {
         let (status, body) = post_read(app, &session_id).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["tuples"], serde_json::json!([]));
+    }
+
+    async fn post_check(app: Router, session_id: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/iga/v1/rebac/check")
+                    .header("Content-Type", "application/json")
+                    .header("x-qid-admin-session-id", session_id)
+                    .body(Body::from(
+                        r#"{"namespace":"document","object_id":"doc-1","relation":"viewer","subject":{"namespace":"user","subject_id":"alice"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn check_returns_storage_error_when_tuple_read_fails() {
+        let (app, session_id) = test_app(ReadMode::Fail);
+        let (status, body) = post_check(app, &session_id).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "rebac_storage_error");
+    }
+
+    #[tokio::test]
+    async fn check_returns_denied_on_successful_negative_check() {
+        let (app, session_id) = test_app(ReadMode::Empty);
+        let (status, body) = post_check(app, &session_id).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["allowed"], serde_json::json!(false));
     }
 }

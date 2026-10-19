@@ -146,15 +146,20 @@ async fn test_max_depth_exceeded_returns_false() {
         prev = ns;
         prev_id = oid;
     }
-    // group:g{max} -> member -> ... -> user:alice  (depth = max)
-    // Now check with depth = max+1 chain:
+    // group:g{max}#member expands through g0..g{max-1} to user:alice at depth max.
     let last = format!("g{max}");
     assert!(
         check(&repo, "group", &last, "member", "user", "alice")
             .await
             .unwrap()
     );
-    // For a chain longer than max, check returns false
+    // group:too_deep#member -> group:g{max}#member reaches alice only at depth
+    // max + 1, so the depth guard must deny it.
+    insert(
+        &repo,
+        userset("group", "too_deep", "member", "group", &last, "member"),
+    )
+    .await;
     assert!(
         !check(&repo, "group", "too_deep", "member", "user", "alice")
             .await

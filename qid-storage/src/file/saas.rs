@@ -117,6 +117,15 @@ impl SaasRepository for FileRepository {
                 message: "CIAM brand realm belongs to another tenant".to_string(),
             });
         }
+        if store
+            .ciam_brands
+            .get(&brand.id)
+            .is_some_and(|existing| existing.tenant_id != brand.tenant_id)
+        {
+            return Err(QidError::Conflict {
+                message: "CIAM brand ID already belongs to another tenant".to_string(),
+            });
+        }
         store.ciam_brands.insert(brand.id.clone(), brand.clone());
         drop(store);
         self.save().await

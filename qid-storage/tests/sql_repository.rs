@@ -1654,11 +1654,43 @@ async fn assert_saas_repository_round_trip(
     repo.store_ciam_brand(&brand)
         .await
         .expect("store CIAM brand failed");
-    let brands = repo
-        .list_ciam_brands("tenant-saas")
+    let mut updated_brand = brand.clone();
+    updated_brand.display_name = "Customer Blue Updated".to_string();
+    repo.store_ciam_brand(&updated_brand)
         .await
-        .expect("list CIAM brands failed");
-    assert_eq!(brands, vec![brand.clone()]);
+        .expect("same-owner CIAM brand update failed");
+    assert_eq!(
+        repo.list_ciam_brands("tenant-saas")
+            .await
+            .expect("list same-owner updated CIAM brand failed"),
+        vec![updated_brand.clone()]
+    );
+
+    let mut colliding_brand = updated_brand.clone();
+    colliding_brand.tenant_id = "tenant-other".to_string();
+    colliding_brand.realm_id = "realm-other".to_string();
+    colliding_brand.display_name = "Other tenant overwrite".to_string();
+    let error = repo
+        .store_ciam_brand(&colliding_brand)
+        .await
+        .expect_err("cross-tenant duplicate CIAM brand ID must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate ID must have conflict semantics, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_ciam_brands("tenant-saas")
+            .await
+            .expect("list incumbent CIAM brand after collision failed"),
+        vec![updated_brand.clone()]
+    );
+    assert!(
+        repo.list_ciam_brands("tenant-other")
+            .await
+            .expect("list other tenant CIAM brands failed")
+            .is_empty()
+    );
+
     repo.delete_ciam_brand("tenant-other", "brand-1")
         .await
         .expect("cross-tenant CIAM brand delete failed");
@@ -1666,7 +1698,7 @@ async fn assert_saas_repository_round_trip(
         repo.list_ciam_brands("tenant-saas")
             .await
             .expect("list CIAM brands after cross-tenant delete failed"),
-        vec![brand.clone()]
+        vec![updated_brand.clone()]
     );
     let mut invalid_brand = brand.clone();
     invalid_brand.id = "brand-invalid".to_string();

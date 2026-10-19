@@ -483,6 +483,8 @@ pub trait SaasRepository: Send + Sync + 'static {
     async fn store_custom_domain(&self, domain: &CustomDomain) -> QidResult<()>;
     async fn list_custom_domains(&self, tenant_id: &str) -> QidResult<Vec<CustomDomain>>;
     async fn delete_custom_domain(&self, tenant_id: &str, id: &str) -> QidResult<()>;
+    /// Create or update a brand only under its incumbent tenant owner; a global ID
+    /// collision with another tenant returns Conflict without modifying the brand.
     async fn store_ciam_brand(&self, brand: &CiamBrand) -> QidResult<()>;
     async fn list_ciam_brands(&self, tenant_id: &str) -> QidResult<Vec<CiamBrand>>;
     async fn delete_ciam_brand(&self, tenant_id: &str, id: &str) -> QidResult<()>;

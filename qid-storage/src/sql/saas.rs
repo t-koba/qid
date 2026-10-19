@@ -105,9 +105,10 @@ impl SaasRepository for SqlRepository {
                 message: "CIAM brand realm belongs to another tenant".to_string(),
             });
         }
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO ciam_brands (id, tenant_id, realm_id, display_name, primary_color, logo_uri, privacy_policy_uri, support_uri, terms_version, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, primary_color = excluded.primary_color, logo_uri = excluded.logo_uri, privacy_policy_uri = excluded.privacy_policy_uri, support_uri = excluded.support_uri, terms_version = excluded.terms_version, active = excluded.active",
+             ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, primary_color = excluded.primary_color, logo_uri = excluded.logo_uri, privacy_policy_uri = excluded.privacy_policy_uri, support_uri = excluded.support_uri, terms_version = excluded.terms_version, active = excluded.active \
+             WHERE ciam_brands.tenant_id = excluded.tenant_id",
         )
         .bind(&brand.id)
         .bind(&brand.tenant_id)
@@ -122,6 +123,11 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::Conflict {
+                message: "CIAM brand ID already belongs to another tenant".to_string(),
+            });
+        }
         Ok(())
     }
 

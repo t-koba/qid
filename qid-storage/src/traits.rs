@@ -406,12 +406,16 @@ pub trait CiamRepository: Send + Sync + 'static {
         &self,
         challenge: &CiamVerificationChallengeRecord,
     ) -> QidResult<()>;
+    /// Read a verification challenge only within its owning realm.
     async fn get_ciam_verification_challenge(
         &self,
+        realm_id: &RealmId,
         id: &str,
     ) -> QidResult<Option<CiamVerificationChallengeRecord>>;
+    /// Consume a challenge only within its owning realm; a wrong-realm call leaves it intact.
     async fn consume_ciam_verification_challenge(
         &self,
+        realm_id: &RealmId,
         id: &str,
         consumed_at: u64,
     ) -> QidResult<()>;

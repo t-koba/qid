@@ -92,26 +92,31 @@ impl CiamRepository for SqlRepository {
 
     async fn get_ciam_verification_challenge(
         &self,
+        realm_id: &RealmId,
         id: &str,
     ) -> QidResult<Option<CiamVerificationChallengeRecord>> {
-        let row: Option<CiamVerificationChallengeRow> =
-            sqlx::query_as("SELECT * FROM ciam_verification_challenges WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?;
+        let row: Option<CiamVerificationChallengeRow> = sqlx::query_as(
+            "SELECT * FROM ciam_verification_challenges WHERE realm_id = ? AND id = ?",
+        )
+        .bind(realm_id.as_str())
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
         Ok(row.map(Into::into))
     }
 
     async fn consume_ciam_verification_challenge(
         &self,
+        realm_id: &RealmId,
         id: &str,
         consumed_at: u64,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = ? WHERE id = ? AND consumed_at_epoch_seconds IS NULL",
+            "UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = ? WHERE realm_id = ? AND id = ? AND consumed_at_epoch_seconds IS NULL",
         )
         .bind(consumed_at as i64)
+        .bind(realm_id.as_str())
         .bind(id)
         .execute(&self.pool)
         .await

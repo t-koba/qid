@@ -619,6 +619,84 @@ async fn ciam_verification_and_password_reset_are_persisted_and_single_use() {
 }
 
 #[tokio::test]
+async fn ciam_verification_confirmation_is_bound_to_route_realm() {
+    let (app, state) = setup().await;
+    let now = qid_core::util::now_seconds();
+    let issued = qid_resource::ciam::issue_verification_challenge(
+        "test",
+        &qid_resource::ciam::VerificationIssueRequest {
+            user_id: "user-ciam".to_string(),
+            channel: qid_resource::ciam::VerificationChannel::Email,
+            address: "ciam@example.com".to_string(),
+            purpose: "email_verification".to_string(),
+            now_epoch_seconds: now,
+            ttl_seconds: 600,
+        },
+        &state.ciam_verification_pepper,
+    )
+    .expect("issue verification challenge for test failed");
+    let challenge = issued.challenge;
+    state
+        .repo
+        .store_ciam_verification_challenge(&qid_core::models::CiamVerificationChallengeRecord {
+            id: challenge.id.clone(),
+            realm_id: "test".to_string(),
+            user_id: challenge.user_id.clone(),
+            channel: "email".to_string(),
+            address: challenge.address.clone(),
+            purpose: challenge.purpose.clone(),
+            code_hash: issued.code_hash,
+            expires_at_epoch_seconds: challenge.expires_at_epoch_seconds,
+            consumed_at_epoch_seconds: None,
+            created_at_epoch_seconds: now,
+        })
+        .await
+        .expect("store test verification challenge failed");
+
+    let body = serde_json::json!({
+        "challenge_id": challenge.id,
+        "channel": "email",
+        "address": "ciam@example.com",
+        "purpose": "email_verification",
+        "code": issued.delivery_secret,
+        "code_hash": "ignored-by-route",
+        "expires_at_epoch_seconds": challenge.expires_at_epoch_seconds,
+        "now_epoch_seconds": now,
+    });
+    let confirm_request = |realm: &str| {
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("/api/v1/{realm}/ciam/verification/confirm"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let wrong_realm_response = app.clone().oneshot(confirm_request("other")).await.unwrap();
+    assert_eq!(wrong_realm_response.status(), StatusCode::NOT_FOUND);
+    let record = state
+        .repo
+        .get_ciam_verification_challenge(&RealmId::from("test"), &challenge.id)
+        .await
+        .unwrap()
+        .expect("verification challenge disappeared after wrong-realm request");
+    assert_eq!(record.consumed_at_epoch_seconds, None);
+
+    let correct_realm_response = app.oneshot(confirm_request("test")).await.unwrap();
+    assert_eq!(correct_realm_response.status(), StatusCode::OK);
+    let result = json(correct_realm_response).await;
+    assert_eq!(result["verified"], true);
+    assert_eq!(result["consumed"], true);
+    let record = state
+        .repo
+        .get_ciam_verification_challenge(&RealmId::from("test"), &challenge.id)
+        .await
+        .unwrap()
+        .expect("verification challenge disappeared after valid confirmation");
+    assert!(record.consumed_at_epoch_seconds.is_some());
+}
+
+#[tokio::test]
 async fn ciam_protection_evaluation_rate_limits_and_records_audit() {
     let (app, state) = setup().await;
     let cookie = add_session(&state, "user-ciam").await;

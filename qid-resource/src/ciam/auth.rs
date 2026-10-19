@@ -9,6 +9,7 @@ use qid_core::{
     QidError, QidResult,
     models::{CiamVerificationChallengeRecord, PasswordCredential, PasswordResetToken},
     state::SharedState,
+    tenant::RealmId,
     util,
 };
 use qid_crypto::{ARGON2ID_ALGORITHM, hash_password};
@@ -178,11 +179,13 @@ pub async fn verification_issue<R: Repository>(
 
 pub async fn verification_confirm<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    Path(realm): Path<String>,
     Json(req): Json<VerificationConfirmRequest>,
 ) -> Response {
+    let realm_id = RealmId(realm);
     let record = match state
         .repo
-        .get_ciam_verification_challenge(&req.challenge_id)
+        .get_ciam_verification_challenge(&realm_id, &req.challenge_id)
         .await
     {
         Ok(Some(record)) => record,
@@ -214,7 +217,11 @@ pub async fn verification_confirm<R: Repository>(
     if result.verified
         && let Err(err) = state
             .repo
-            .consume_ciam_verification_challenge(&effective.challenge_id, util::now_seconds())
+            .consume_ciam_verification_challenge(
+                &realm_id,
+                &effective.challenge_id,
+                util::now_seconds(),
+            )
             .await
     {
         return qid_http::error_response(err);

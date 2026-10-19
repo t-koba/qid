@@ -716,11 +716,33 @@ async fn assert_ciam_repository_round_trip(
     repo.store_ciam_verification_challenge(&challenge)
         .await
         .expect("store CIAM verification failed");
-    repo.consume_ciam_verification_challenge("verify-1", 1_800_000_050)
+    let realm = RealmId::from("realm-ciam");
+    let wrong_realm = RealmId::from("realm-other");
+    assert!(
+        repo.get_ciam_verification_challenge(&wrong_realm, "verify-1")
+            .await
+            .expect("wrong-realm CIAM verification lookup failed")
+            .is_none(),
+        "verification challenges must be hidden outside their realm"
+    );
+    assert!(
+        repo.consume_ciam_verification_challenge(&wrong_realm, "verify-1", 1_800_000_040)
+            .await
+            .is_err(),
+        "wrong realm must not consume a verification challenge"
+    );
+    let unconsumed = repo
+        .get_ciam_verification_challenge(&realm, "verify-1")
+        .await
+        .expect("get CIAM verification after wrong-realm attempt failed")
+        .expect("CIAM verification missing");
+    assert_eq!(unconsumed.consumed_at_epoch_seconds, None);
+
+    repo.consume_ciam_verification_challenge(&realm, "verify-1", 1_800_000_050)
         .await
         .expect("consume CIAM verification failed");
     let consumed = repo
-        .get_ciam_verification_challenge("verify-1")
+        .get_ciam_verification_challenge(&realm, "verify-1")
         .await
         .expect("get CIAM verification failed")
         .expect("CIAM verification missing");

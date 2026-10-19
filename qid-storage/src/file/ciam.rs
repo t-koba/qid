@@ -73,14 +73,20 @@ impl CiamRepository for FileRepository {
 
     async fn get_ciam_verification_challenge(
         &self,
+        realm_id: &RealmId,
         id: &str,
     ) -> QidResult<Option<CiamVerificationChallengeRecord>> {
         let store = self.store.read().await;
-        Ok(store.ciam_verification_challenges.get(id).cloned())
+        Ok(store
+            .ciam_verification_challenges
+            .get(id)
+            .filter(|challenge| challenge.realm_id == realm_id.0)
+            .cloned())
     }
 
     async fn consume_ciam_verification_challenge(
         &self,
+        realm_id: &RealmId,
         id: &str,
         consumed_at: u64,
     ) -> QidResult<()> {
@@ -88,6 +94,7 @@ impl CiamRepository for FileRepository {
         let challenge = store
             .ciam_verification_challenges
             .get_mut(id)
+            .filter(|challenge| challenge.realm_id == realm_id.0)
             .ok_or_else(|| QidError::NotFound {
                 resource: format!("CIAM verification challenge {id}"),
             })?;

@@ -255,7 +255,7 @@ realms return HTTP 404.
 | `DELETE` | `/api/v1/:realm/ciam/identity-links/:link_id` | Delete identity link. |
 | `GET` | `/api/v1/:realm/ciam/privacy/:user_id` | Privacy dashboard. |
 | `POST` | `/api/v1/:realm/ciam/verification/issue` | Issue verification challenge. |
-| `POST` | `/api/v1/:realm/ciam/verification/confirm` | Confirm verification. |
+| `POST` | `/api/v1/:realm/ciam/verification/confirm` | Confirm a verification challenge belonging to this realm; another realm receives not found and cannot consume it. |
 | `POST` | `/api/v1/:realm/ciam/password-reset/issue` | Issue password reset. |
 | `POST` | `/api/v1/:realm/ciam/password-reset/consume` | Consume password reset. |
 | `POST` | `/api/v1/:realm/ciam/protection/evaluate` | Protection/risk evaluation. |

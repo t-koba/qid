@@ -334,6 +334,7 @@ async fn sql_user_deletion_cleans_only_owned_authentication_state() {
     );
     repo.delete_user("target").await.unwrap();
     assert_deleted(&repo).await;
+    repo.close().await;
     drop(repo);
     std::fs::remove_file(path).unwrap();
 }
@@ -481,6 +482,7 @@ async fn sql_authentication_ownership_migration_drops_orphans_and_preserves_live
         );
     }
     pool.close().await;
+    repo.close().await;
     drop(repo);
     std::fs::remove_file(path).unwrap();
 }
@@ -534,6 +536,7 @@ async fn sql_failed_user_deletion_rolls_back_authentication_cleanup() {
     assert!(repo.get_totp_credential("target").await.unwrap().is_some());
     assert!(repo.get_device("target").await.unwrap().is_some());
     pool.close().await;
+    repo.close().await;
     drop(repo);
     std::fs::remove_file(path).unwrap();
 }

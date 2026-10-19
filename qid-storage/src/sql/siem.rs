@@ -5,8 +5,8 @@ use super::*;
 #[async_trait]
 impl SiemDeliveryRepository for SqlRepository {
     async fn upsert_siem_delivery(&self, delivery: &SiemDeliveryRecord) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO siem_delivery_queue (id, realm_id, endpoint_url, payload_json, attempts, next_retry_at, status, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET realm_id = excluded.realm_id, endpoint_url = excluded.endpoint_url, payload_json = excluded.payload_json, attempts = excluded.attempts, next_retry_at = excluded.next_retry_at, status = excluded.status, last_error = excluded.last_error, updated_at = excluded.updated_at",
+        let result = sqlx::query(
+            "INSERT INTO siem_delivery_queue (id, realm_id, endpoint_url, payload_json, attempts, next_retry_at, status, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET endpoint_url = excluded.endpoint_url, payload_json = excluded.payload_json, attempts = excluded.attempts, next_retry_at = excluded.next_retry_at, status = excluded.status, last_error = excluded.last_error, updated_at = excluded.updated_at WHERE (siem_delivery_queue.realm_id = excluded.realm_id OR (siem_delivery_queue.realm_id IS NULL AND excluded.realm_id IS NULL))",
         )
         .bind(&delivery.id)
         .bind(&delivery.realm_id)
@@ -21,7 +21,9 @@ impl SiemDeliveryRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "SIEM delivery ID belongs to a different realm scope".to_string()
+        })
     }
 
     async fn get_siem_delivery(&self, id: &str) -> QidResult<Option<SiemDeliveryRecord>> {

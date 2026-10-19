@@ -3287,3 +3287,200 @@ async fn test_file_scim_device_event_subscription_owner_contract() {
     let repo = file_repo("test_scim_owner_contract").await;
     assert_scim_device_event_subscription_owner_contract(&repo).await;
 }
+
+fn siem_delivery_record(
+    id: &str,
+    realm_id: Option<&str>,
+    endpoint_url: &str,
+    event_count: u64,
+    attempts: u32,
+    updated_at: u64,
+) -> SiemDeliveryRecord {
+    SiemDeliveryRecord {
+        id: id.to_string(),
+        realm_id: realm_id.map(str::to_string),
+        endpoint_url: endpoint_url.to_string(),
+        payload_json: serde_json::json!({"event_count": event_count}),
+        attempts,
+        next_retry_at: None,
+        status: SiemDeliveryStatus::Pending,
+        last_error: None,
+        created_at: 1_000,
+        updated_at,
+    }
+}
+
+async fn assert_siem_delivery_owner_contract<R>(repo: &R)
+where
+    R: SiemDeliveryRepository,
+{
+    // Same `Some(realm)` update succeeds and replaces mutable fields.
+    let delivery = siem_delivery_record(
+        "siem-shared-scoped",
+        Some("realm-siem-a"),
+        "https://siem.example.com/a",
+        1,
+        0,
+        1_000,
+    );
+    repo.upsert_siem_delivery(&delivery)
+        .await
+        .expect("initial scoped SIEM delivery upsert failed");
+    let mut updated = delivery.clone();
+    updated.payload_json = serde_json::json!({"event_count": 2});
+    updated.attempts = 2;
+    updated.next_retry_at = Some(2_000);
+    updated.last_error = Some("temporary failure".to_string());
+    updated.created_at = 1_400;
+    updated.updated_at = 1_500;
+    repo.upsert_siem_delivery(&updated)
+        .await
+        .expect("same-scope SIEM delivery update failed");
+    let mut incumbent = updated.clone();
+    incumbent.created_at = delivery.created_at;
+    assert_eq!(
+        repo.get_siem_delivery("siem-shared-scoped")
+            .await
+            .expect("get updated scoped delivery failed")
+            .expect("updated scoped delivery missing"),
+        incumbent
+    );
+    assert_eq!(
+        repo.list_siem_deliveries(Some("realm-siem-a"), None, 10)
+            .await
+            .expect("list scoped deliveries failed"),
+        vec![incumbent.clone()]
+    );
+
+    // Same global ID under another realm conflicts and changes nothing.
+    let mut colliding = incumbent.clone();
+    colliding.realm_id = Some("realm-siem-b".to_string());
+    colliding.endpoint_url = "https://siem.example.com/attacker".to_string();
+    colliding.payload_json = serde_json::json!({"event_count": 99});
+    let error = repo
+        .upsert_siem_delivery(&colliding)
+        .await
+        .expect_err("cross-realm SIEM delivery ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-realm SIEM reuse must conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.get_siem_delivery("siem-shared-scoped")
+            .await
+            .expect("get incumbent delivery after collision failed")
+            .expect("incumbent delivery missing"),
+        incumbent
+    );
+    assert_eq!(
+        repo.list_siem_deliveries(Some("realm-siem-a"), None, 10)
+            .await
+            .expect("list incumbent deliveries after collision failed"),
+        vec![incumbent.clone()]
+    );
+    assert!(
+        repo.list_siem_deliveries(Some("realm-siem-b"), None, 10)
+            .await
+            .expect("list other realm deliveries failed")
+            .is_empty()
+    );
+
+    // Same-scope status lifecycle still works after the ownership guard.
+    repo.mark_siem_delivery_status(
+        "siem-shared-scoped",
+        SiemDeliveryStatus::Delivered,
+        3,
+        None,
+        None,
+        2_000,
+    )
+    .await
+    .expect("scoped SIEM status transition failed");
+    let delivered = repo
+        .get_siem_delivery("siem-shared-scoped")
+        .await
+        .expect("get delivered SIEM record failed")
+        .expect("delivered SIEM record missing");
+    assert_eq!(delivered.status, SiemDeliveryStatus::Delivered);
+    assert_eq!(delivered.attempts, 3);
+
+    // Same `None` (global scope) update succeeds.
+    let global = siem_delivery_record(
+        "siem-shared-global",
+        None,
+        "https://siem.example.com/global",
+        1,
+        0,
+        1_000,
+    );
+    repo.upsert_siem_delivery(&global)
+        .await
+        .expect("initial global SIEM delivery upsert failed");
+    let mut updated_global = global.clone();
+    updated_global.payload_json = serde_json::json!({"event_count": 2});
+    updated_global.attempts = 1;
+    updated_global.next_retry_at = Some(3_000);
+    updated_global.updated_at = 1_500;
+    repo.upsert_siem_delivery(&updated_global)
+        .await
+        .expect("same global-scope SIEM delivery update failed");
+    assert_eq!(
+        repo.get_siem_delivery("siem-shared-global")
+            .await
+            .expect("get updated global delivery failed")
+            .expect("updated global delivery missing"),
+        updated_global
+    );
+
+    // `None` incumbent with a `Some(realm)` rewrite conflicts and preserves state.
+    let mut global_collision = updated_global.clone();
+    global_collision.realm_id = Some("realm-siem-a".to_string());
+    global_collision.payload_json = serde_json::json!({"event_count": 99});
+    let error = repo
+        .upsert_siem_delivery(&global_collision)
+        .await
+        .expect_err("global-to-realm SIEM delivery ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "global-to-realm SIEM reuse must conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.get_siem_delivery("siem-shared-global")
+            .await
+            .expect("get incumbent global delivery after collision failed")
+            .expect("incumbent global delivery missing"),
+        updated_global
+    );
+
+    // `Some(realm)` incumbent with a `None` rewrite conflicts as well.
+    let mut scoped_to_global = incumbent.clone();
+    scoped_to_global.realm_id = None;
+    scoped_to_global.payload_json = serde_json::json!({"event_count": 99});
+    let error = repo
+        .upsert_siem_delivery(&scoped_to_global)
+        .await
+        .expect_err("realm-to-global SIEM delivery ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "realm-to-global SIEM reuse must conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.get_siem_delivery("siem-shared-scoped")
+            .await
+            .expect("get incumbent scoped delivery after global collision failed")
+            .expect("incumbent scoped delivery missing"),
+        delivered
+    );
+}
+
+#[tokio::test]
+async fn test_sql_siem_delivery_owner_contract() {
+    let repo = sql_repo().await;
+    assert_siem_delivery_owner_contract(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_siem_delivery_owner_contract() {
+    let repo = file_repo("test_siem_owner_contract").await;
+    assert_siem_delivery_owner_contract(&repo).await;
+}

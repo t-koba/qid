@@ -685,6 +685,13 @@ pub trait SsfRepository: Send + Sync + 'static {
 
 #[async_trait]
 pub trait SiemDeliveryRepository: Send + Sync + 'static {
+    /// Insert or update a queued delivery within its incumbent realm scope.
+    /// The global ID is bound to the incumbent optional `realm_id`: `Some(realm)`
+    /// and `None` (global scope) are distinct bindings. Reuse of an ID under a
+    /// different binding returns `QidError::Conflict` and leaves the incumbent
+    /// record and listings unchanged. Same-scope upserts retain their existing
+    /// backend update behavior, with the original `created_at` retained; status
+    /// transitions remain available separately.
     async fn upsert_siem_delivery(&self, delivery: &SiemDeliveryRecord) -> QidResult<()>;
     async fn get_siem_delivery(&self, id: &str) -> QidResult<Option<SiemDeliveryRecord>>;
     async fn list_siem_deliveries(

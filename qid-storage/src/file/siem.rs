@@ -6,9 +6,18 @@ use super::*;
 impl SiemDeliveryRepository for FileRepository {
     async fn upsert_siem_delivery(&self, delivery: &SiemDeliveryRecord) -> QidResult<()> {
         let mut store = self.store.write().await;
-        store
-            .siem_deliveries
-            .insert(delivery.id.clone(), delivery.clone());
+        let incumbent = store.siem_deliveries.get(&delivery.id);
+        crate::ownership::ensure_same_binding(
+            incumbent.map(|existing| &existing.realm_id),
+            &delivery.realm_id,
+            || "SIEM delivery ID belongs to a different realm scope".to_string(),
+        )?;
+        let incumbent_created_at = incumbent.map(|existing| existing.created_at);
+        let mut stored = delivery.clone();
+        if let Some(created_at) = incumbent_created_at {
+            stored.created_at = created_at;
+        }
+        store.siem_deliveries.insert(delivery.id.clone(), stored);
         drop(store);
         self.save().await
     }

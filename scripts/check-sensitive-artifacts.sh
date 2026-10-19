@@ -34,6 +34,10 @@ is_allowed_fixture() {
     case "$1" in
         ./qid-oauth/tests/data/test-sp.key | \
         ./qid-oauth/tests/data/test-untrusted-saml.key) return 0 ;;
+        # Static keys used only by qid-crypto's JWE integration tests.
+        ./qid-crypto/tests/fixtures/jwe_rsa_private.pem | \
+        ./qid-crypto/tests/fixtures/jwe_rsa_public.pem | \
+        ./qid-crypto/tests/fixtures/jwe_rsa_wrong_private.pem) return 0 ;;
         ./qid-saml/src/test-ec-key.pem) return 0 ;;
         ./qid-saml/tests/data/test-sp.key) return 0 ;;
         *) return 1 ;;

@@ -8,7 +8,9 @@ executables from compiler-artifact records (``target.test`` and
 ``--exact --test-threads=1`` sequentially and records wall time.
 
 Notes:
-  * Reported wall times include child-process startup for each test binary.
+  * Every test runs in a fresh process. Wall times include startup and repeat
+    per-process initialization, so rows are not additive or directly
+    comparable with normal in-process suite timing.
   * Doctests are not timed: only compiled test executables discovered from
     Cargo JSON compiler-artifact lines are run; ``cargo test --doc`` output
     is never collected here.
@@ -257,7 +259,8 @@ def main(argv=None):
         "",
         "## Per-test timings (slowest {})".format(top_n),
         "",
-        "Wall times include per-test process startup; doctests are not timed.",
+        "Each row uses a fresh process: times include startup and repeat per-process initialization. "
+        "Rows are not additive or directly comparable with the normal in-process suite; doctests are not timed.",
         "",
         "| target | test | wall_seconds | status |",
         "| --- | --- | ---: | --- |",

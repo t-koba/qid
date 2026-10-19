@@ -184,6 +184,7 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
     assert_eq!(counts(&repo, "realm-peer").await, peer_expected);
     assert_history(&repo).await;
     repo.close().await;
+    drop(repo);
     std::fs::remove_file(path).unwrap();
 }
 
@@ -219,5 +220,6 @@ async fn realm_deletion_sql_cleans_non_fk_orphans_without_parent() {
     assert_eq!(counts(&repo, "realm-peer").await, peer_before);
     assert_history(&repo).await;
     repo.close().await;
+    drop(repo);
     std::fs::remove_file(path).unwrap();
 }

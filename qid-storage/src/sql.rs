@@ -72,8 +72,8 @@ impl SqlRepository {
         })
     }
 
-    /// Close the connection pool and wait for active connections to finish.
-    pub async fn close(&self) {
+    /// Close the connection pool, wait for active connections, and release this handle.
+    pub async fn close(self) {
         self.pool.close().await;
     }
 

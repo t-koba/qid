@@ -200,8 +200,10 @@ mod tests {
         );
         repo.migrate().await.unwrap();
         deleted_user_cannot_authenticate(&repo).await;
-        repo.close().await;
-        drop(repo);
+        Arc::try_unwrap(repo)
+            .expect("SQL repository still has shared owners")
+            .close()
+            .await;
         std::fs::remove_file(path).unwrap();
     }
 }

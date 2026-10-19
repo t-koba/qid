@@ -1,20 +1,69 @@
 use super::*;
 
-async fn setup() -> (std::path::PathBuf, SqlRepository) {
-    let path = std::env::temp_dir().join(format!("qid-realm-{}.db", ulid::Ulid::new()));
-    let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
-    let seed = include_str!("../../tests/fixtures/realm_seed.sql");
-    for sql in [
-        seed.to_string(),
-        seed.replace("'realm", "'realm-peer")
-            .replace("https://realm.", "https://realm-peer."),
-    ] {
-        sqlx::raw_sql(&sql).execute(&repo.pool).await.unwrap();
+struct TempDbDir(Option<std::path::PathBuf>);
+
+impl TempDbDir {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!("qid-realm-{}", ulid::Ulid::new()));
+        std::fs::create_dir(&path).unwrap();
+        Self(Some(path))
     }
-    (path, repo)
+
+    fn path(&self) -> &std::path::Path {
+        self.0
+            .as_deref()
+            .expect("temporary database directory exists")
+    }
+
+    fn remove(mut self) {
+        std::fs::remove_dir_all(self.0.take().unwrap()).unwrap();
+    }
+}
+
+impl Drop for TempDbDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+struct SqlRealmTestDb {
+    temp_dir: TempDbDir,
+    repo: SqlRepository,
+}
+
+impl SqlRealmTestDb {
+    async fn setup() -> Self {
+        let temp_dir = TempDbDir::new();
+        let path = temp_dir.path().join("realm.db");
+        let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap();
+        repo.migrate().await.unwrap();
+        let seed = include_str!("../../tests/fixtures/realm_seed.sql");
+        for sql in [
+            seed.to_string(),
+            seed.replace("'realm", "'realm-peer")
+                .replace("https://realm.", "https://realm-peer."),
+        ] {
+            sqlx::raw_sql(&sql).execute(&repo.pool).await.unwrap();
+        }
+        Self { temp_dir, repo }
+    }
+
+    fn repo(&self) -> &SqlRepository {
+        &self.repo
+    }
+
+    async fn cleanup(self) {
+        self.repo.close().await;
+        self.temp_dir.remove();
+    }
+}
+
+async fn setup() -> SqlRealmTestDb {
+    SqlRealmTestDb::setup().await
 }
 
 async fn counts(repo: &SqlRepository, realm: &str) -> Vec<(String, i64)> {
@@ -66,21 +115,23 @@ async fn assert_deleted(repo: &SqlRepository, recreated: bool) {
 
 #[tokio::test]
 async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_revival() {
-    let (path, repo) = setup().await;
-    let target_before = counts(&repo, "realm").await;
+    let db = setup().await;
+    let repo = db.repo();
+    let repo_clone = repo.clone();
+    let target_before = counts(repo, "realm").await;
     // Every live inventory category is seeded, including existing FK cascades.
     assert!(target_before.iter().all(|(_, count)| *count == 1));
-    let peer_before = counts(&repo, "realm-peer").await;
-    assert_history(&repo).await;
+    let peer_before = counts(repo, "realm-peer").await;
+    assert_history(repo).await;
 
     // Inject a late deterministic failure after earlier explicit cleanup has
     // run. Every statement and the root/cascade state must roll back together.
     sqlx::raw_sql("CREATE TRIGGER fail_realm_cleanup BEFORE DELETE ON ssf_streams WHEN OLD.realm_id = 'realm' BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;")
         .execute(&repo.pool).await.unwrap();
     assert!(repo.delete_realm(&"realm".into()).await.is_err());
-    assert_eq!(counts(&repo, "realm").await, target_before);
-    assert_eq!(counts(&repo, "realm-peer").await, peer_before);
-    assert_history(&repo).await;
+    assert_eq!(counts(repo, "realm").await, target_before);
+    assert_eq!(counts(repo, "realm-peer").await, peer_before);
+    assert_history(repo).await;
     sqlx::query("DROP TRIGGER fail_realm_cleanup")
         .execute(&repo.pool)
         .await
@@ -130,8 +181,8 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
     }
     for _ in 0..2 {
         repo.delete_realm(&"realm".into()).await.unwrap();
-        assert_deleted(&repo, false).await;
-        assert_history(&repo).await;
+        assert_deleted(repo, false).await;
+        assert_history(repo).await;
     }
     assert!(
         repo.get_authorization_code("linked-code")
@@ -157,7 +208,7 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
         .find(|(resource, _)| resource == "access_tokens")
         .unwrap()
         .1 += 2;
-    assert_eq!(counts(&repo, "realm-peer").await, peer_expected);
+    assert_eq!(counts(repo, "realm-peer").await, peer_expected);
     repo.create_realm(
         &"new-tenant".into(),
         &"realm".into(),
@@ -180,25 +231,25 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
             .as_deref(),
         Some("https://new.example.com")
     );
-    assert_deleted(&repo, true).await;
-    assert_eq!(counts(&repo, "realm-peer").await, peer_expected);
-    assert_history(&repo).await;
-    repo.close().await;
-    drop(repo);
-    std::fs::remove_file(path).unwrap();
+    assert_deleted(repo, true).await;
+    assert_eq!(counts(repo, "realm-peer").await, peer_expected);
+    assert_history(repo).await;
+    db.cleanup().await;
+    drop(repo_clone);
 }
 
 #[tokio::test]
 async fn realm_deletion_sql_cleans_non_fk_orphans_without_parent() {
-    let (path, repo) = setup().await;
-    let peer_before = counts(&repo, "realm-peer").await;
+    let db = setup().await;
+    let repo = db.repo();
+    let peer_before = counts(repo, "realm-peer").await;
     // Emulate legacy parent-only deletion: cascades happen, non-FK live state
     // remains. No existence check may skip this cleanup on a repeated delete.
     sqlx::query("DELETE FROM realms WHERE id = 'realm'")
         .execute(&repo.pool)
         .await
         .unwrap();
-    let orphaned = counts(&repo, "realm").await;
+    let orphaned = counts(repo, "realm").await;
     assert_eq!(orphaned.iter().find(|(t, _)| t == "users").unwrap().1, 0);
     for resource in [
         "ciam_brands",
@@ -216,10 +267,8 @@ async fn realm_deletion_sql_cleans_non_fk_orphans_without_parent() {
         );
     }
     repo.delete_realm(&"realm".into()).await.unwrap();
-    assert_deleted(&repo, false).await;
-    assert_eq!(counts(&repo, "realm-peer").await, peer_before);
-    assert_history(&repo).await;
-    repo.close().await;
-    drop(repo);
-    std::fs::remove_file(path).unwrap();
+    assert_deleted(repo, false).await;
+    assert_eq!(counts(repo, "realm-peer").await, peer_before);
+    assert_history(repo).await;
+    db.cleanup().await;
 }

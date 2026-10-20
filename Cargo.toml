@@ -49,7 +49,11 @@ exclude = ["vendor/rustls"]
 # 12 shared JWK kid-selection lines, 52 browser-session context lines, and
 # 18 shared CIAM-provider predicate lines.
 [workspace.metadata.budget]
-total = 103263
+# Raised from 103263 to 103500 to accommodate the queued correctness fixes:
+# the load-time directory provider checks, the LDAP paging-control check, the
+# configuration error messages, the CSV decoder and the object-only body
+# guard. The per-crate caps and the counted-file coverage are unchanged.
+total = 103500
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

@@ -2516,3 +2516,21 @@ async fn webhook_ingest_normalizes_every_attribute_like_the_csv_connector() {
     assert_eq!(users[1].display_name, None);
     assert_eq!(users[1].department, None);
 }
+
+#[test]
+fn a_bind_credential_fault_is_a_configuration_error() {
+    // A misconfigured provider is the operator's configuration, not a server
+    // fault, so it must not surface as an internal error.
+    let err = crate::connector::bind_credentials(Some(&"CN=svc".to_string()), None)
+        .expect_err("a bind DN needs a password");
+    assert!(
+        matches!(err, qid_core::error::QidError::Config { .. }),
+        "the fault must be a configuration error"
+    );
+    let err = crate::connector::bind_credentials(None, Some(&"secret".to_string()))
+        .expect_err("a password needs a bind DN");
+    assert!(
+        matches!(err, qid_core::error::QidError::Config { .. }),
+        "the fault must be a configuration error"
+    );
+}

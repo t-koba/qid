@@ -918,7 +918,7 @@ pub(crate) fn sasl_bind_dn(bind_dn: Option<&str>) -> QidResult<&str> {
     bind_dn
         .map(str::trim)
         .filter(|dn| !dn.is_empty())
-        .ok_or_else(|| QidError::Internal {
+        .ok_or_else(|| QidError::Config {
             message: "LDAP SASL bind requested without a configured bind DN".to_string(),
         })
 }
@@ -935,14 +935,14 @@ pub(crate) fn bind_credentials<'a>(
     let Some(dn) = bind_dn.map(|dn| dn.trim()) else {
         // A password without a bind DN would leave the search anonymous.
         if !pw.trim().is_empty() {
-            return Err(QidError::Internal {
+            return Err(QidError::Config {
                 message: "LDAP bind password requires a bind DN".to_string(),
             });
         }
         return Ok(None);
     };
     if dn.is_empty() || pw.trim().is_empty() {
-        return Err(QidError::Internal {
+        return Err(QidError::Config {
             message: "LDAP bind DN and bind password must both be set and non-blank".to_string(),
         });
     }

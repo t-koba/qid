@@ -260,8 +260,10 @@ pub async fn run_directory_sync_job(
                 fallback.connect(&provider.connection).await.ok();
                 fallback.fetch_users(&sync_config, &mapping).await?
             } else {
-                return Err(QidError::Internal {
-                    message: format!("directory fetch failed: {err}"),
+                let message = format!("directory fetch failed: {err}");
+                return Err(match err {
+                    QidError::Config { .. } => QidError::Config { message },
+                    _ => QidError::Internal { message },
                 });
             }
         }

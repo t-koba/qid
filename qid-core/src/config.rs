@@ -271,6 +271,23 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
         let providers = &realm.protocols.directory.providers;
         for provider in providers.iter().filter(|p| p.enabled) {
             let connection = &provider.connection;
+            if !matches!(provider.provider_type.as_str(), "ldap" | "active-directory") {
+                return Err(QidError::Config {
+                    message: format!(
+                        "provider {} of realm {} has unsupported type '{}'",
+                        provider.id, realm.id, provider.provider_type
+                    ),
+                });
+            }
+            let url = connection.url.as_str();
+            if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
+                return Err(QidError::Config {
+                    message: format!(
+                        "provider {} of realm {} must use an ldaps:// or ldap:// URL",
+                        provider.id, realm.id
+                    ),
+                });
+            }
             let dn = connection.bind_dn.as_deref();
             let password = connection.bind_password.as_deref();
             bind_credentials(dn, password).map_err(|error| QidError::Config {

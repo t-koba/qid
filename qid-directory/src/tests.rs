@@ -2177,6 +2177,22 @@ mod directory_http_truthfulness {
     }
 
     #[tokio::test]
+    async fn the_provider_list_advertises_only_the_types_the_sync_connects() {
+        let (app, _repo, session) = setup_routes().await;
+        let (status, body) =
+            directory_call(app, Method::GET, "/directory/v1/providers", Some(&session)).await;
+        assert_eq!(status, StatusCode::OK);
+        let supported = body["supported"]
+            .as_array()
+            .expect("the supported types are a list");
+        let types: Vec<&str> = supported
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        assert_eq!(types, vec!["ldap", "active-directory"]);
+    }
+
+    #[tokio::test]
     async fn get_provider_config_and_auth_boundaries_stay_intact() {
         let (app, _repo, session) = setup_routes().await;
         let (status, body) = directory_call(

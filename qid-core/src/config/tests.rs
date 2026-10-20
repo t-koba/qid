@@ -1356,3 +1356,38 @@ fn a_directory_provider_needs_usable_bind_credentials() {
     assert!(err.message().contains("ldap-main"), "{}", err.message());
     assert!(err.message().contains("corp"), "{}", err.message());
 }
+
+#[test]
+fn a_directory_provider_must_be_one_the_sync_can_connect() {
+    let mut config = minimal_config();
+    config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+        id: "ldap-main".to_string(),
+        provider_type: "scim".to_string(),
+        enabled: true,
+        connection: DirectoryConnectionConfig {
+            url: "https://dir.example.com".to_string(),
+            ..DirectoryConnectionConfig::default()
+        },
+        sync: DirectorySyncConfig::default(),
+        attribute_mapping: DirectoryAttributeMapping::default(),
+    }];
+    // The sync connects only LDAP and Active Directory providers, so an
+    // unsupported type is found when the configuration loads.
+    let err = config
+        .validate()
+        .expect_err("an unsupported provider type is a configuration fault");
+    assert!(
+        err.message().contains("unsupported type"),
+        "{}",
+        err.message()
+    );
+
+    config.realms[0].protocols.directory.providers[0].provider_type = "ldap".to_string();
+    config.realms[0].protocols.directory.providers[0]
+        .connection
+        .url = "ldap:/dir.example.com".to_string();
+    let err = config
+        .validate()
+        .expect_err("a mistyped URL scheme is a configuration fault");
+    assert!(err.message().contains("ldaps://"), "{}", err.message());
+}

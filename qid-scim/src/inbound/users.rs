@@ -370,9 +370,12 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
         ("add", "emails") => merge_complex_add(&mut user.emails_json, op.value, "emails")?,
         ("replace", "emails") => user.emails_json = op.value.unwrap_or(serde_json::json!([])),
         ("replace", ENTERPRISE_USER_SCHEMA) | ("replace", "enterprise") => {
-            user.enterprise_json = op.value.unwrap_or(serde_json::json!({}));
+            let value = op.value.unwrap_or(serde_json::json!({}));
+            super::complex::validate_enterprise(Some(&value))?;
+            user.enterprise_json = value;
         }
         ("add", ENTERPRISE_USER_SCHEMA) | ("add", "enterprise") => {
+            super::complex::validate_enterprise(op.value.as_ref())?;
             merge_complex_add(&mut user.enterprise_json, op.value, "enterprise")?;
         }
         ("remove", "externalId") => {

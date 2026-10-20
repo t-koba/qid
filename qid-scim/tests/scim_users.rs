@@ -2872,3 +2872,50 @@ async fn scim_patch_bodies_must_be_json_objects() {
     let group = get_json(&app, &format!("/scim/v2/Groups/{group_id}"), None).await;
     assert_eq!(group["displayName"], "engineering");
 }
+
+#[tokio::test]
+async fn scim_patch_rejects_a_non_object_enterprise_container() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"alice@example.com"}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let version = created["meta"]["version"].as_str().unwrap().to_string();
+
+    for body in [
+        r#"{"Operations":[{"op":"replace","path":"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User","value":["x","y"]}]}"#,
+        r#"{"Operations":[{"op":"add","path":"enterprise","value":["x","y"]}]}"#,
+    ] {
+        let request = Request::builder()
+            .method(Method::PATCH)
+            .uri(format!("/scim/v2/Users/{id}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "body must be rejected: {body}"
+        );
+    }
+
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = response_json(get_response).await;
+    assert_eq!(fetched["meta"]["version"], version);
+    assert!(fetched.get(ENTERPRISE_USER_SCHEMA).is_none());
+}

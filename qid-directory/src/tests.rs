@@ -2152,6 +2152,10 @@ mod directory_http_truthfulness {
     async fn unknown_provider_returns_404_for_unsupported_operations() {
         for (method, uri) in [
             (
+                Method::GET,
+                format!("/directory/v1/providers/{UNKNOWN_PROVIDER_ID}"),
+            ),
+            (
                 Method::PATCH,
                 format!("/directory/v1/providers/{UNKNOWN_PROVIDER_ID}"),
             ),

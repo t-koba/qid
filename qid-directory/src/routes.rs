@@ -99,11 +99,7 @@ async fn get_provider<R: Repository>(
             "user_search_filter": p.sync.user_search_filter,
         }))
         .into_response(),
-        None => Json(serde_json::json!({
-            "error": "provider not found",
-            "id": id,
-        }))
-        .into_response(),
+        None => directory_provider_not_found(&id),
     }
 }
 

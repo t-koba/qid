@@ -210,6 +210,12 @@ pub(crate) fn directory_fetch_error(err: QidError) -> QidError {
     }
 }
 
+/// Whether the command reports a failed directory sync, so the process
+/// exits non-zero instead of reporting success.
+pub fn sync_failed(result: &serde_json::Value) -> bool {
+    result["report"]["status"] == "failed"
+}
+
 /// Run a directory sync job against a configured directory provider.
 pub async fn run_directory_sync_job(
     repo: Arc<AnyRepository>,

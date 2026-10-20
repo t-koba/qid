@@ -201,7 +201,7 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 60000)]
         max_delay_ms: u64,
     },
-    /// Synchronize a directory provider (LDAP/AD/SCIM) into the local user store.
+    /// Synchronize a directory provider (LDAP/AD) into the local user store.
     #[command(name = "directory-sync")]
     DirectorySync {
         #[arg(long)]
@@ -263,14 +263,6 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-}
-
-/// Whether the command reports a failed directory sync, so the process
-/// exits non-zero instead of reporting success.
-pub(crate) fn sync_failed(result: &serde_json::Value) -> bool {
-    result["report"]["errors"]
-        .as_array()
-        .is_some_and(|errors| !errors.is_empty())
 }
 
 pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {

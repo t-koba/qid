@@ -268,6 +268,9 @@ impl DeploymentProfile {
 /// A directory provider must state usable bind credentials.
 fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
     for realm in &config.realms {
+        if !realm.protocols.directory.enabled {
+            continue;
+        }
         let providers = &realm.protocols.directory.providers;
         for provider in providers.iter().filter(|p| p.enabled) {
             let connection = &provider.connection;

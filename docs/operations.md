@@ -236,6 +236,11 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml directory-sync \
   --provider-id ad-main
 ```
 
+A directory sync that fails - an unknown realm or provider, or a provider the configuration
+does not allow - reports `failed` and the command exits nonzero; a sync that is skipped
+because the provider or the realm's directory sync is disabled reports `skipped_disabled` and
+exits zero.
+
 For JSON-based lifecycle testing or one-off sync, `--provider-id` must remain stable for the directory provider. LDAP rows retain the raw DN as SCIM `externalId` and record ownership in the internal server-owned `directory_provider_id` (never in `enterprise_json`, which SCIM clients can forge). Existing rows without an owner need explicit internal migration; ownership is never inferred from `enterprise_json`, even with a single provider. SCIM clients cannot change or remove `externalId` on provider-owned users. An unowned row whose `externalId` collides with an incoming DN fails the sync with a conflict before any write; unrelated ownerless rows do not block sync.
 
 ```sh

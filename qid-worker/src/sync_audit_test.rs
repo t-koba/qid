@@ -97,7 +97,7 @@ async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
 }
 
 #[test]
-fn a_directory_fetch_fault_keeps_the_connectors_kind() {
+fn a_directory_fetch_fault_keeps_its_kind() {
     use qid_core::error::QidError;
     // The classification is outside the production-only branch, so the kind
     // a connector reports is the kind the operator sees.
@@ -132,4 +132,20 @@ fn a_directory_fetch_fault_keeps_every_kind() {
         matches!(error, QidError::Storage { .. }),
         "a storage fault keeps its kind"
     );
+}
+
+#[test]
+fn a_failed_directory_sync_makes_the_command_exit_nonzero() {
+    let failed = serde_json::json!({
+        "command": "directory_sync",
+        "report": {"status": "failed", "errors": ["provider missing-provider not found"]}
+    });
+    assert!(crate::sync::sync_failed(&failed));
+    let skipped = serde_json::json!({
+        "command": "directory_sync",
+        "report": {"status": "skipped_disabled", "errors": []}
+    });
+    assert!(!crate::sync::sync_failed(&skipped));
+    let other = serde_json::json!({"command": "audit_retention_evaluate"});
+    assert!(!crate::sync::sync_failed(&other));
 }

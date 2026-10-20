@@ -223,12 +223,17 @@ An LDAP or Active Directory provider's `connection` holds:
 
 | Field | Purpose |
 | --- | --- |
-| `url` | The directory endpoint. `ldaps://` and `ldap://` are accepted; the scheme is checked when the provider connects. |
+| `url` | The directory endpoint. `ldaps://` and `ldap://` are accepted; another scheme is rejected when the configuration loads. |
 | `bind_dn` | The bind DN, used for the directory's simple bind. |
 | `bind_password` | The bind password for that DN. |
 | `base_dn` | The subtree the sync reads. |
 | `connect_timeout_seconds` | The timeout in seconds for the bind, the search and the unbind. Defaults to 10; the connect itself is not bounded by it. |
 | `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
+
+A provider's `type` must be `ldap` or `active-directory`; another type is rejected when the
+configuration loads. The rules below apply to an enabled provider of a realm whose
+directory sync is on; a provider that is disabled, or a realm whose directory sync is off, is
+not checked.
 
 An enabled provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
 bind DN must be absent and the bind password blank. A bind DN without a usable password is

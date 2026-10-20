@@ -213,7 +213,7 @@ Validation rules:
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. |
 | `federation` | Inbound OIDC/SAML/social providers and claim mappings. |
-| `directory` | LDAP and Active Directory providers, plus the CSV and webhook HR connectors; sync filters and attribute mapping. |
+| `directory` | LDAP and Active Directory providers, sync filters and attribute mapping. The CSV and webhook HR connectors are configurable but no sync path reads them yet. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
 | `vc` | OID4VCI/OID4VP/HAIP/status/holder binding. |
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |

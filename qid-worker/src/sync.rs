@@ -173,6 +173,7 @@ pub struct DirectorySyncJobConfig {
 pub enum DirectorySyncJobStatus {
     Completed,
     SkippedDisabled,
+    Failed,
 }
 
 /// Report from a directory sync run.
@@ -230,7 +231,7 @@ pub async fn run_directory_sync_job(
                 status: if skipped {
                     DirectorySyncJobStatus::SkippedDisabled
                 } else {
-                    DirectorySyncJobStatus::Completed
+                    DirectorySyncJobStatus::Failed
                 },
                 provider_id: config.provider_id,
                 created: 0,

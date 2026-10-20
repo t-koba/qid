@@ -47,7 +47,6 @@ async fn list_providers<R: Repository>(
 
     let active: Vec<serde_json::Value> = providers
         .iter()
-        .filter(|p| p.enabled)
         .map(|p| {
             serde_json::json!({
                 "id": p.id,

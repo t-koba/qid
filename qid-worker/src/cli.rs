@@ -265,6 +265,14 @@ pub(crate) enum Command {
     },
 }
 
+/// Whether the command reports a failed directory sync, so the process
+/// exits non-zero instead of reporting success.
+pub(crate) fn sync_failed(result: &serde_json::Value) -> bool {
+    result["report"]["errors"]
+        .as_array()
+        .is_some_and(|errors| !errors.is_empty())
+}
+
 pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
     let repo = open_repo(&args.config).await?;
     match args.command {

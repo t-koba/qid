@@ -2009,6 +2009,7 @@ mod directory_http_truthfulness {
     const ADMIN_SESSION_ID_HEADER: &str = "x-qid-admin-session-id";
     const CONFIGURED_PROVIDER_ID: &str = "ad-main";
     const UNKNOWN_PROVIDER_ID: &str = "missing-provider";
+    const DISABLED_PROVIDER_ID: &str = "ad-retired";
 
     async fn setup_routes() -> (Router, Arc<FileRepository>, String) {
         let path =
@@ -2029,6 +2030,21 @@ mod directory_http_truthfulness {
             sync: Default::default(),
             attribute_mapping: Default::default(),
         }];
+        config.realms[0]
+            .protocols
+            .directory
+            .providers
+            .push(DirectoryProviderConfig {
+                id: DISABLED_PROVIDER_ID.to_string(),
+                provider_type: "ldap".to_string(),
+                enabled: false,
+                connection: DirectoryConnectionConfig {
+                    url: "ldaps://retired.example.com".to_string(),
+                    ..Default::default()
+                },
+                sync: Default::default(),
+                attribute_mapping: Default::default(),
+            });
         let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
         let state =
             Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
@@ -2190,6 +2206,21 @@ mod directory_http_truthfulness {
             .filter_map(|value| value.as_str())
             .collect();
         assert_eq!(types, vec!["ldap", "active-directory"]);
+        // The list keeps the disabled providers, so the operator sees them.
+        let listed = body["providers"]
+            .as_array()
+            .expect("the providers are a list");
+        let entries: Vec<(&str, bool)> = listed
+            .iter()
+            .map(|provider| {
+                (
+                    provider["id"].as_str().unwrap_or_default(),
+                    provider["enabled"].as_bool().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert!(entries.contains(&(CONFIGURED_PROVIDER_ID, true)));
+        assert!(entries.contains(&(DISABLED_PROVIDER_ID, false)));
     }
 
     #[tokio::test]

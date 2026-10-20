@@ -75,3 +75,62 @@ realms:
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn a_sync_for_an_unknown_provider_reports_a_failure() {
+    let dir = std::env::temp_dir().join(format!("qid-worker-unknown-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let store = dir.join("qid-store.json");
+    let config_path = dir.join("qid.yaml");
+    let store_url = serde_json::to_string(&store.to_string_lossy()).expect("store path");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"server:
+  listen: "127.0.0.1:0"
+  public_base_url: "https://id.example.com"
+storage:
+  primary:
+    url: {store_url}
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    protocols:
+      directory:
+        enabled: true
+        providers:
+          - id: corp-ad
+            type: active-directory
+            enabled: true
+            connection:
+              url: "ldap://dir.invalid"
+"#
+        ),
+    )
+    .expect("config file");
+    let config = QidConfig::from_file(config_path.to_str().expect("config path")).expect("config");
+    let repo = Arc::new(
+        AnyRepository::connect(store.to_str().expect("store path"))
+            .await
+            .expect("repository"),
+    );
+    // An unknown provider is a failure, not a completed sync.
+    let report = run_directory_sync_job(
+        repo,
+        &config,
+        DirectorySyncJobConfig {
+            realm_id: "corp".to_string(),
+            provider_id: "missing-provider".to_string(),
+            actor: "qid-worker".to_string(),
+            reason: "unknown provider regression".to_string(),
+            now_epoch: 100,
+            record_audit_event: false,
+            dry_run: false,
+        },
+    )
+    .await
+    .expect("sync job");
+    assert_eq!(report.status, qid_worker::DirectorySyncJobStatus::Failed);
+    assert!(!report.errors.is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}

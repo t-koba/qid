@@ -1792,3 +1792,182 @@ async fn scim_bulk_version_checks_preserve_realm_isolation_and_missing_status() 
         assert_eq!(version_test_get(&app, path).await, before);
     }
 }
+
+#[tokio::test]
+async fn scim_user_patch_add_merges_complex_attributes() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"merge@example.com","name":{"givenName":"Ada","familyName":"Lovelace"},"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User":{"department":"Eng","employeeNumber":"E1"}}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Direct `add` on `name` merges: overlapping keys replace, the rest survive.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"add","path":"name","value":{"givenName":"Grace","middleName":"M"}}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(patched["name"]["givenName"], "Grace");
+    assert_eq!(patched["name"]["middleName"], "M");
+    assert_eq!(patched["name"]["familyName"], "Lovelace");
+
+    // Direct `add` on the short enterprise alias merges as well.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"add","path":"enterprise","value":{"department":"Platform","costCenter":"RND"}}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["department"], "Platform");
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["costCenter"], "RND");
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["employeeNumber"], "E1");
+
+    // The full enterprise URN alias merges through the same path.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"Operations":[{{"op":"add","path":"{ENTERPRISE_USER_SCHEMA}","value":{{"organization":"Example"}}}}]}}"#
+        )))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["organization"], "Example");
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["department"], "Platform");
+    assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["employeeNumber"], "E1");
+    assert_eq!(patched["name"]["familyName"], "Lovelace");
+
+    // Bulk PATCH shares the helper and must merge too.
+    let bulk_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"Operations":[{{"method":"PATCH","path":"/Users/{id}","data":{{"Operations":[{{"op":"add","path":"name","value":{{"nickName":"G"}}}}]}}}}]}}"#
+        )))
+        .unwrap();
+    let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
+    assert_eq!(bulk_response.status(), StatusCode::OK);
+    let bulk = response_json(bulk_response).await;
+    assert_eq!(bulk["Operations"][0]["status"], "200");
+    assert_eq!(bulk["Operations"][0]["response"]["name"]["nickName"], "G");
+    assert_eq!(
+        bulk["Operations"][0]["response"]["name"]["familyName"],
+        "Lovelace"
+    );
+
+    let bulk_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"Operations":[{{"method":"PATCH","path":"/Users/{id}","data":{{"Operations":[{{"op":"add","path":"{ENTERPRISE_USER_SCHEMA}","value":{{"division":"Research"}}}}]}}}}]}}"#
+        )))
+        .unwrap();
+    let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
+    assert_eq!(bulk_response.status(), StatusCode::OK);
+    let bulk = response_json(bulk_response).await;
+    assert_eq!(bulk["Operations"][0]["status"], "200");
+    assert_eq!(
+        bulk["Operations"][0]["response"][ENTERPRISE_USER_SCHEMA]["division"],
+        "Research"
+    );
+    assert_eq!(
+        bulk["Operations"][0]["response"][ENTERPRISE_USER_SCHEMA]["employeeNumber"],
+        "E1"
+    );
+
+    // Explicit `replace` still replaces the whole object.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"replace","path":"name","value":{"givenName":"Solo"}}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(patched["name"], serde_json::json!({"givenName": "Solo"}));
+
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"Operations":[{{"op":"replace","path":"{ENTERPRISE_USER_SCHEMA}","value":{{"department":"Solo"}}}}]}}"#
+        )))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(
+        patched[ENTERPRISE_USER_SCHEMA],
+        serde_json::json!({"department": "Solo"})
+    );
+
+    // Malformed `add` values fail closed and keep stored fields.
+    let before_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let before_response = app.clone().oneshot(before_request).await.unwrap();
+    assert_eq!(before_response.status(), StatusCode::OK);
+    let before = response_json(before_response).await;
+    let before_version = before["meta"]["version"].as_str().unwrap().to_string();
+
+    for body in [
+        r#"{"Operations":[{"op":"add","path":"name","value":"oops"}]}"#.to_string(),
+        format!(
+            r#"{{"Operations":[{{"op":"add","path":"{ENTERPRISE_USER_SCHEMA}","value":["oops"]}}]}}"#
+        ),
+        r#"{"Operations":[{"op":"add","path":"enterprise"}]}"#.to_string(),
+    ] {
+        let patch_request = Request::builder()
+            .method(Method::PATCH)
+            .uri(format!("/scim/v2/Users/{id}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+        assert_eq!(patch_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let after_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let after_response = app.oneshot(after_request).await.unwrap();
+    assert_eq!(after_response.status(), StatusCode::OK);
+    let after = response_json(after_response).await;
+    assert_eq!(after["name"], before["name"]);
+    assert_eq!(
+        after[ENTERPRISE_USER_SCHEMA],
+        before[ENTERPRISE_USER_SCHEMA]
+    );
+    assert_eq!(after["meta"]["version"], before_version);
+}

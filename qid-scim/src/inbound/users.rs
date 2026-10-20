@@ -312,8 +312,7 @@ pub(crate) async fn patch_user_record<R: Repository>(
         for op in req.operations {
             apply_user_patch(&mut user, op)?;
         }
-        // SCIM PATCH can neither forge, change, nor remove the authoritative
-        // timestamp; unrelated enterprise attributes still apply.
+        // SCIM PATCH keeps the authoritative timestamp while applying other attributes.
         user.deprovisioned_at = trusted_deprovisioned_at;
         crate::response::strip_stored_enterprise_marker(&mut user.enterprise_json);
         Ok(user)
@@ -323,8 +322,7 @@ pub(crate) async fn patch_user_record<R: Repository>(
     Ok(user)
 }
 
-/// 409 for SCIM attempts to mutate the provider-owned raw-DN `external_id`.
-/// Ownership lives in `directory_provider_id`; directory sync is the only writer.
+/// 409 when SCIM mutates the provider-owned raw-DN `external_id`; directory sync owns it.
 fn owned_external_id_conflict(action: &str) -> QidError {
     QidError::Conflict {
         message: format!("externalId is managed by directory sync and cannot be {action} via SCIM"),
@@ -341,18 +339,13 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
         && !path.starts_with(&enterprise_path)
         && path != super::CORE_USER_SCHEMA
         && !path.starts_with(&core_path);
-    if unsupported_urn_path
-        || op
-            .value
-            .as_ref()
-            .is_some_and(|value| reject_unsupported_user_extensions(value).is_err())
-    {
+    let bad =
+        matches!(op.value.as_ref(), Some(v) if reject_unsupported_user_extensions(v).is_err());
+    if unsupported_urn_path || bad {
         return Err(unsupported_user_schema_error());
     }
     match (op_name.as_str(), path.as_str()) {
-        ("add" | "replace", "userName") => {
-            user.user_name = string_value(op.value, "userName")?;
-        }
+        ("add" | "replace", "userName") => user.user_name = string_value(op.value, "userName")?,
         ("add" | "replace", "externalId") => {
             let new_value = string_value(op.value, "externalId")?;
             if user.directory_provider_id.is_some() {
@@ -364,17 +357,17 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
                 user.external_id = Some(new_value);
             }
         }
-        ("add" | "replace", "active") => {
-            user.active = bool_value(op.value, "active")?;
-        }
-        ("add" | "replace", "name") => {
-            user.name_json = op.value.unwrap_or_else(|| serde_json::json!({}));
-        }
+        ("add" | "replace", "active") => user.active = bool_value(op.value, "active")?,
+        ("replace", "name") => user.name_json = op.value.unwrap_or(serde_json::json!({})),
+        ("add", "name") => merge_complex_add(&mut user.name_json, op.value, "name")?,
         ("add" | "replace", "emails") => {
-            user.emails_json = op.value.unwrap_or_else(|| serde_json::json!([]));
+            user.emails_json = op.value.unwrap_or(serde_json::json!([]))
         }
-        ("add" | "replace", ENTERPRISE_USER_SCHEMA) | ("add" | "replace", "enterprise") => {
-            user.enterprise_json = op.value.unwrap_or_else(|| serde_json::json!({}));
+        ("replace", ENTERPRISE_USER_SCHEMA) | ("replace", "enterprise") => {
+            user.enterprise_json = op.value.unwrap_or(serde_json::json!({}));
+        }
+        ("add", ENTERPRISE_USER_SCHEMA) | ("add", "enterprise") => {
+            merge_complex_add(&mut user.enterprise_json, op.value, "enterprise")?;
         }
         ("remove", "externalId") => {
             if user.directory_provider_id.is_some() {
@@ -382,22 +375,29 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
             }
             user.external_id = None;
         }
-        ("remove", "active") => {
-            user.active = false;
-        }
-        ("remove", "name") => {
-            user.name_json = serde_json::json!({});
-        }
-        ("remove", "emails") => {
-            user.emails_json = serde_json::json!([]);
-        }
+        ("remove", "active") => user.active = false,
+        ("remove", "name") => user.name_json = serde_json::json!({}),
+        ("remove", "emails") => user.emails_json = serde_json::json!([]),
         ("remove", ENTERPRISE_USER_SCHEMA) | ("remove", "enterprise") => {
             user.enterprise_json = serde_json::json!({});
         }
-        _ => {
-            apply_enterprise_patch(user, op_name.as_str(), path.as_str(), op.value)?;
-        }
+        _ => apply_enterprise_patch(user, op_name.as_str(), path.as_str(), op.value)?,
     }
+    Ok(())
+}
+
+fn merge_complex_add(
+    target: &mut serde_json::Value,
+    value: Option<serde_json::Value>,
+    attribute: &str,
+) -> Result<(), QidError> {
+    let (Some(serde_json::Value::Object(added)), Some(stored)) = (value, target.as_object_mut())
+    else {
+        return Err(QidError::BadRequest {
+            message: format!("{attribute} must be an object"),
+        });
+    };
+    stored.extend(added);
     Ok(())
 }
 

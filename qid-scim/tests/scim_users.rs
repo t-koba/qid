@@ -2682,3 +2682,65 @@ async fn scim_complex_containers_are_validated_before_storage() {
     );
     assert_eq!(fetched_group["meta"]["version"], group_version);
 }
+
+#[tokio::test]
+async fn scim_write_bodies_must_be_json_objects() {
+    let app = setup().await;
+    // A JSON sequence must never be mapped positionally onto a payload, and
+    // a complex container must never be a sequence either.
+    for (path, body) in [
+        ("/scim/v2/Users", r#"[]"#),
+        ("/scim/v2/Users", r#"["corp","alice@example.com"]"#),
+        (
+            "/scim/v2/Users",
+            r#"{"userName":"a@example.com","urn:ietf:params:scim:schemas:extension:enterprise:2.0:User":["x"]}"#,
+        ),
+        ("/scim/v2/Groups", r#"["corp","engineering"]"#),
+        (
+            "/scim/v2/Devices",
+            r#"["corp","dev-positional",null,"Positional display",{"manufacturer":"acme"}]"#,
+        ),
+        (
+            "/scim/v2/Devices",
+            r#"{"urn:ietf:params:scim:schemas:extension:device:2.0:Device":[]}"#,
+        ),
+        (
+            "/scim/v2/Devices",
+            r#"{"urn:ietf:params:scim:schemas:extension:device:2.0:Device":["acme","model-x"]}"#,
+        ),
+        (
+            "/scim/v2/EventSubscriptions",
+            r#"["corp","sub-positional",null,1,"https://events.example.com/h",["user.created"],false]"#,
+        ),
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "body must be rejected: {body}"
+        );
+    }
+
+    for path in [
+        "/scim/v2/Users",
+        "/scim/v2/Groups",
+        "/scim/v2/Devices",
+        "/scim/v2/EventSubscriptions",
+    ] {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("{path}?realm=corp"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed = response_json(response).await;
+        assert_eq!(listed["totalResults"], 0, "a rejected write stores nothing");
+    }
+}

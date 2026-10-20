@@ -410,9 +410,7 @@ fn parse_bulk_data<T: serde::de::DeserializeOwned>(
     data: serde_json::Value,
     description: &str,
 ) -> qid_core::error::QidResult<T> {
-    serde_json::from_value(data).map_err(|error| qid_core::error::QidError::BadRequest {
-        message: format!("invalid {description} data: {error}"),
-    })
+    super::parse_object(data, description)
 }
 
 #[cfg(test)]

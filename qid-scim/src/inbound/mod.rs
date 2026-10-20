@@ -172,6 +172,22 @@ fn default_enabled() -> bool {
     true
 }
 
+/// Deserialize a payload that must be a JSON object. A derived struct would
+/// otherwise accept a JSON sequence and map it positionally onto its fields.
+pub(crate) fn parse_object<T: serde::de::DeserializeOwned>(
+    raw: serde_json::Value,
+    description: &str,
+) -> Result<T, QidError> {
+    if !raw.is_object() {
+        return Err(QidError::BadRequest {
+            message: format!("{description} must be a JSON object"),
+        });
+    }
+    serde_json::from_value(raw).map_err(|e| QidError::BadRequest {
+        message: format!("invalid {description} data: {e}"),
+    })
+}
+
 pub(crate) fn string_value(
     value: Option<serde_json::Value>,
     field: &str,
@@ -251,9 +267,7 @@ pub(crate) fn reject_unsupported_user_extensions(raw: &serde_json::Value) -> Res
 /// `deny_unknown_fields` to other fields.
 pub(crate) fn parse_create_user(raw: serde_json::Value) -> Result<CreateUser, QidError> {
     reject_unsupported_user_extensions(&raw)?;
-    serde_json::from_value::<CreateUser>(raw).map_err(|e| QidError::BadRequest {
-        message: format!("invalid user data: {e}"),
-    })
+    parse_object(raw, "user")
 }
 
 /// Reject a `schemas` array that names a schema the endpoint does not
@@ -273,12 +287,24 @@ pub(crate) fn reject_unsupported_schemas(
     Ok(())
 }
 
+/// Validate the raw Group payload and deserialize it.
+pub(crate) fn parse_create_group(raw: serde_json::Value) -> Result<CreateGroup, QidError> {
+    parse_object(raw, "group")
+}
+
 /// Validate the raw Device payload and deserialize it. The advertised
 /// attribute names are the only accepted ones.
 pub(crate) fn parse_create_device(raw: serde_json::Value) -> Result<CreateDevice, QidError> {
-    let req: CreateDevice = serde_json::from_value(raw).map_err(|e| QidError::BadRequest {
-        message: format!("invalid device data: {e}"),
-    })?;
+    // The extension container is an object; a sequence would be mapped
+    // positionally onto its attributes.
+    if let Some(extension) = raw.get(crate::RFC_9944_DEVICE_SCHEMA)
+        && !extension.is_object()
+    {
+        return Err(QidError::BadRequest {
+            message: "device extension must be a JSON object".to_string(),
+        });
+    }
+    let req: CreateDevice = parse_object(raw, "device")?;
     reject_unsupported_schemas(
         req.schemas.as_deref(),
         &[crate::CORE_DEVICE_SCHEMA, crate::RFC_9944_DEVICE_SCHEMA],
@@ -291,10 +317,7 @@ pub(crate) fn parse_create_device(raw: serde_json::Value) -> Result<CreateDevice
 pub(crate) fn parse_create_event_subscription(
     raw: serde_json::Value,
 ) -> Result<CreateEventSubscription, QidError> {
-    let req: CreateEventSubscription =
-        serde_json::from_value(raw).map_err(|e| QidError::BadRequest {
-            message: format!("invalid event subscription data: {e}"),
-        })?;
+    let req: CreateEventSubscription = parse_object(raw, "event subscription")?;
     reject_unsupported_schemas(
         req.schemas.as_deref(),
         &[crate::RFC_9967_EVENT_SUBSCRIPTION_SCHEMA],

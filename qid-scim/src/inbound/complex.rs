@@ -91,6 +91,17 @@ pub(crate) fn validate_emails(value: &Value) -> Result<(), QidError> {
     Ok(())
 }
 
+/// The `enterprise` extension is an object; a sequence would be stored as it
+/// arrived instead of the advertised shape.
+pub(crate) fn validate_enterprise(enterprise: Option<&Value>) -> Result<(), QidError> {
+    if let Some(enterprise) = enterprise
+        && !enterprise.is_object()
+    {
+        return Err(invalid("enterprise", "an object"));
+    }
+    Ok(())
+}
+
 /// The `members` container is an array of member objects.
 pub(crate) fn validate_members(value: &Value) -> Result<(), QidError> {
     let Some(items) = value.as_array() else {

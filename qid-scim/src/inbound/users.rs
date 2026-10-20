@@ -151,12 +151,13 @@ pub(crate) async fn create_user_record<R: Repository>(
     state: &SharedState<R>,
     req: CreateUser,
 ) -> QidResult<ScimUser> {
+    super::complex::validate_user_complex(req.name.as_ref(), req.emails.as_ref())?;
+    super::complex::validate_enterprise(req.enterprise.as_ref())?;
     let mut enterprise_json = req.enterprise.unwrap_or_else(|| serde_json::json!({}));
     // The authoritative timestamp is server-owned: strip any client-supplied
     // marker so storage never persists a forged value. SCIM create never
     // stamps a deprovision.
     crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
-    super::complex::validate_user_complex(req.name.as_ref(), req.emails.as_ref())?;
     let user = ScimUser {
         id: ulid::Ulid::new().to_string(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),
@@ -238,10 +239,11 @@ fn replace_user_value(existing: ScimUser, req: CreateUser) -> QidResult<ScimUser
     } else {
         req.external_id.or(existing.external_id)
     };
+    super::complex::validate_user_complex(req.name.as_ref(), req.emails.as_ref())?;
+    super::complex::validate_enterprise(req.enterprise.as_ref())?;
     let mut enterprise_json = req.enterprise.unwrap_or(existing.enterprise_json);
     // Preserve the authoritative lifecycle timestamp, stripping any client-supplied marker.
     crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
-    super::complex::validate_user_complex(req.name.as_ref(), req.emails.as_ref())?;
     Ok(ScimUser {
         id: existing.id.clone(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),

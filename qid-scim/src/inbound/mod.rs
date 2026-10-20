@@ -24,6 +24,10 @@ fn default_realm() -> String {
     "corp".to_string()
 }
 
+fn realm_opt(c: Option<&crate::ScimRequestContext>, r: Option<String>) -> Option<String> {
+    c.map(|c| c.realm_id.clone()).or(r)
+}
+
 fn default_bulk_fail_on_errors() -> usize {
     1
 }
@@ -70,8 +74,8 @@ pub(crate) struct PatchOperation {
 /// accepted from clients (including inside `enterprise`).
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateUser {
-    #[serde(default = "default_realm")]
-    pub(crate) realm: String,
+    #[serde(default)]
+    pub(crate) realm: Option<String>,
     #[serde(rename = "externalId")]
     #[serde(default)]
     pub(crate) external_id: Option<String>,
@@ -92,8 +96,8 @@ pub(crate) struct CreateUser {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateGroup {
-    #[serde(default = "default_realm")]
-    pub(crate) realm: String,
+    #[serde(default)]
+    pub(crate) realm: Option<String>,
     #[serde(rename = "displayName")]
     pub(crate) display_name: String,
     #[serde(default)]

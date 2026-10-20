@@ -14,8 +14,7 @@ use qid_core::{
 use qid_storage::{ScimMutation, prelude::*};
 use std::sync::Arc;
 
-use crate::filter;
-use crate::{ScimRequestContext, scoped_realm};
+use crate::{ScimRequestContext, filter, scoped_realm};
 
 use super::{CreateGroup, ListQuery, PatchOperation, PatchRequest, string_value};
 
@@ -79,7 +78,7 @@ pub(crate) async fn create_group<R: Repository>(
     Json(mut req): Json<CreateGroup>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "create_group").increment(1);
-    req.realm = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm);
+    req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
     match create_group_record(&state, req).await {
         Ok(group) => crate::response::scim_group_response(StatusCode::CREATED, group),
         Err(e) => qid_http::error_response(e),
@@ -92,7 +91,7 @@ pub(crate) async fn create_group_record<R: Repository>(
 ) -> QidResult<ScimGroup> {
     let group = ScimGroup {
         id: ulid::Ulid::new().to_string(),
-        realm_id: req.realm,
+        realm_id: req.realm.unwrap_or_else(super::default_realm),
         display_name: req.display_name,
         members_json: req.members.unwrap_or_else(|| serde_json::json!([])),
     };
@@ -138,7 +137,7 @@ pub(crate) async fn replace_group<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    req.realm = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm);
+    req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
     let expected = Condition::from_headers(existing.realm_id, &headers);
     match replace_group_record(&state, &id, req, expected).await {
         Ok(group) => crate::response::scim_group_response(StatusCode::OK, group),
@@ -149,7 +148,7 @@ pub(crate) async fn replace_group<R: Repository>(
 fn replace_group_value(existing: ScimGroup, req: CreateGroup) -> QidResult<ScimGroup> {
     Ok(ScimGroup {
         id: existing.id.clone(),
-        realm_id: req.realm,
+        realm_id: req.realm.unwrap_or_else(super::default_realm),
         display_name: req.display_name,
         members_json: req.members.unwrap_or(existing.members_json),
     })
@@ -164,7 +163,7 @@ pub(crate) async fn replace_group_record<R: Repository>(
     write_group(state, id, expected, move |current, conditional| {
         let mut req = req;
         if conditional {
-            req.realm = current.realm_id.clone();
+            req.realm.get_or_insert(current.realm_id.clone());
         }
         replace_group_value(current, req)
     })

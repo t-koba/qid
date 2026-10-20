@@ -352,3 +352,216 @@ async fn exercise_current_conditions(
     state.repo.update_scim_user(user).await.unwrap();
     state.repo.update_scim_group(group).await.unwrap();
 }
+#[tokio::test]
+async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
+    use crate::inbound::write::Condition;
+    use axum::http::{HeaderMap, HeaderValue, header::IF_MATCH};
+    for sql in [false, true] {
+        let dir = std::env::temp_dir().join(format!("qid-scim-realm-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = if sql {
+            format!("sqlite:{}", dir.join("store.db").display())
+        } else {
+            dir.join("store.json").to_str().unwrap().to_string()
+        };
+        let repo = std::sync::Arc::new(AnyRepository::connect(&url).await.unwrap());
+        repo.create_realm(
+            &TenantId::from("tenant"),
+            &RealmId::from("corp"),
+            "https://id.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+        repo.create_realm(
+            &TenantId::from("tenant"),
+            &RealmId::from("other"),
+            "https://other.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+        let state = SharedState::new(
+            test_helpers::test_config(),
+            repo.clone(),
+            std::sync::Arc::new(LocalSigner::from_secret("test", b"test-secret")),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let user = ScimUser {
+            id: "u-realm".into(),
+            realm_id: "other".into(),
+            external_id: None,
+            user_name: "base".into(),
+            name_json: serde_json::json!({}),
+            emails_json: serde_json::json!([]),
+            enterprise_json: serde_json::json!({}),
+            directory_provider_id: None,
+            deprovisioned_at: None,
+            active: true,
+        };
+        let group = ScimGroup {
+            id: "g-realm".into(),
+            realm_id: "other".into(),
+            display_name: "base".into(),
+            members_json: serde_json::json!([]),
+        };
+        repo.create_scim_user(&user).await.unwrap();
+        repo.create_scim_group(&group).await.unwrap();
+        // Omitted realm on create keeps the documented default.
+        let created = create_user_record(
+            &state,
+            super::super::parse_create_user(serde_json::json!({"userName": "created"})).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.realm_id, "corp");
+        let req = serde_json::from_value::<super::super::CreateGroup>(
+            serde_json::json!({"displayName": "created"}),
+        )
+        .unwrap();
+        assert!(req.realm.is_none());
+        assert_eq!(
+            create_group_record(&state, req).await.unwrap().realm_id,
+            "corp"
+        );
+        // Direct If-Match and Bulk version share the record path.
+        for via_bulk in [false, true] {
+            let before_user = repo.get_scim_user(&user.id).await.unwrap().unwrap();
+            let version = crate::response::scim_user_version(&before_user);
+            let expected = if via_bulk {
+                check_user_preconditions(&state, &user.id, None, Some(&version))
+                    .await
+                    .unwrap()
+            } else {
+                let mut headers = HeaderMap::new();
+                headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
+                Condition::from_headers("other".to_string(), &headers)
+            };
+            let explicit = super::super::parse_create_user(
+                serde_json::json!({"realm": "corp", "userName": "moved"}),
+            )
+            .unwrap();
+            assert_eq!(
+                replace_user_record(&state, &user.id, explicit, expected)
+                    .await
+                    .unwrap_err()
+                    .status_code(),
+                400
+            );
+            let stored = repo.get_scim_user(&user.id).await.unwrap().unwrap();
+            assert_eq!(stored.realm_id, "other");
+            assert_eq!(stored.user_name, before_user.user_name);
+            let version = crate::response::scim_user_version(&stored);
+            let expected = if via_bulk {
+                check_user_preconditions(&state, &user.id, None, Some(&version))
+                    .await
+                    .unwrap()
+            } else {
+                let mut headers = HeaderMap::new();
+                headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
+                Condition::from_headers("other".to_string(), &headers)
+            };
+            let omitted =
+                super::super::parse_create_user(serde_json::json!({"userName": "kept"})).unwrap();
+            assert!(omitted.realm.is_none());
+            let kept = replace_user_record(&state, &user.id, omitted, expected)
+                .await
+                .unwrap();
+            assert_eq!(kept.realm_id, "other");
+            assert_eq!(kept.user_name, "kept");
+            let before_group = repo.get_scim_group(&group.id).await.unwrap().unwrap();
+            let version = crate::response::scim_group_version(&before_group);
+            let expected = if via_bulk {
+                check_group_preconditions(&state, &group.id, None, Some(&version))
+                    .await
+                    .unwrap()
+            } else {
+                let mut headers = HeaderMap::new();
+                headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
+                Condition::from_headers("other".to_string(), &headers)
+            };
+            let explicit = serde_json::from_value::<super::super::CreateGroup>(
+                serde_json::json!({"realm": "corp", "displayName": "moved"}),
+            )
+            .unwrap();
+            assert_eq!(
+                replace_group_record(&state, &group.id, explicit, expected)
+                    .await
+                    .unwrap_err()
+                    .status_code(),
+                400
+            );
+            let stored = repo.get_scim_group(&group.id).await.unwrap().unwrap();
+            assert_eq!(stored.realm_id, "other");
+            assert_eq!(stored.display_name, before_group.display_name);
+            let version = crate::response::scim_group_version(&stored);
+            let expected = if via_bulk {
+                check_group_preconditions(&state, &group.id, None, Some(&version))
+                    .await
+                    .unwrap()
+            } else {
+                let mut headers = HeaderMap::new();
+                headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
+                Condition::from_headers("other".to_string(), &headers)
+            };
+            let omitted = serde_json::from_value::<super::super::CreateGroup>(
+                serde_json::json!({"displayName": "kept"}),
+            )
+            .unwrap();
+            assert!(omitted.realm.is_none());
+            let kept = replace_group_record(&state, &group.id, omitted, expected)
+                .await
+                .unwrap();
+            assert_eq!(kept.realm_id, "other");
+            assert_eq!(kept.display_name, "kept");
+        }
+        // Scoped context stays authoritative over an explicit body realm.
+        {
+            let current = repo.get_scim_user(&user.id).await.unwrap().unwrap();
+            let expected = check_user_preconditions(
+                &state,
+                &user.id,
+                Some("other"),
+                Some(&crate::response::scim_user_version(&current)),
+            )
+            .await
+            .unwrap();
+            let mut req = super::super::parse_create_user(
+                serde_json::json!({"realm": "corp", "userName": "ctx"}),
+            )
+            .unwrap();
+            req.realm = Some("other".to_string());
+            let kept = replace_user_record(&state, &user.id, req, expected)
+                .await
+                .unwrap();
+            assert_eq!(kept.realm_id, "other");
+            assert_eq!(kept.user_name, "ctx");
+            let current = repo.get_scim_group(&group.id).await.unwrap().unwrap();
+            let expected = check_group_preconditions(
+                &state,
+                &group.id,
+                Some("other"),
+                Some(&crate::response::scim_group_version(&current)),
+            )
+            .await
+            .unwrap();
+            let mut req = serde_json::from_value::<super::super::CreateGroup>(
+                serde_json::json!({"realm": "corp", "displayName": "ctx"}),
+            )
+            .unwrap();
+            req.realm = Some("other".to_string());
+            let kept = replace_group_record(&state, &group.id, req, expected)
+                .await
+                .unwrap();
+            assert_eq!(kept.realm_id, "other");
+            assert_eq!(kept.display_name, "ctx");
+        }
+        drop(state);
+        let repo = std::sync::Arc::try_unwrap(repo).ok().unwrap();
+        if let AnyRepository::Sql(repo) = repo {
+            repo.close().await;
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

@@ -137,7 +137,7 @@ async fn apply_bulk_operation<R: Repository>(
                 }
             };
             if let Some(realm_id) = context_realm {
-                req.realm = realm_id.to_string();
+                req.realm = Some(realm_id.to_string());
             }
             let result = if let Some(id) = id {
                 replace_user_record(state, id, req, expected).await
@@ -216,7 +216,7 @@ async fn apply_bulk_operation<R: Repository>(
                 }
             };
             if let Some(realm_id) = context_realm {
-                req.realm = realm_id.to_string();
+                req.realm = Some(realm_id.to_string());
             }
             let result = if let Some(id) = id {
                 replace_group_record(state, id, req, expected).await

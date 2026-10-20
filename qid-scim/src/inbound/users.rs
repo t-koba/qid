@@ -15,9 +15,7 @@ use qid_core::{
 use qid_storage::{ScimMutation, prelude::*};
 use std::sync::Arc;
 
-use crate::ENTERPRISE_USER_SCHEMA;
-use crate::filter;
-use crate::{ScimRequestContext, scoped_realm};
+use crate::{ENTERPRISE_USER_SCHEMA, ScimRequestContext, filter, scoped_realm};
 
 use super::{
     CreateUser, DeleteQuery, ListQuery, PatchOperation, PatchRequest, bool_value,
@@ -142,7 +140,7 @@ pub(crate) async fn create_user<R: Repository>(
         Ok(req) => req,
         Err(e) => return qid_http::error_response(e),
     };
-    req.realm = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm);
+    req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
     match create_user_record(&state, req).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::CREATED, user),
         Err(e) => qid_http::error_response(e),
@@ -160,7 +158,7 @@ pub(crate) async fn create_user_record<R: Repository>(
     crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
     let user = ScimUser {
         id: ulid::Ulid::new().to_string(),
-        realm_id: req.realm,
+        realm_id: req.realm.unwrap_or_else(super::default_realm),
         external_id: req.external_id,
         user_name: req.user_name,
         name_json: req.name.unwrap_or_else(|| serde_json::json!({})),
@@ -218,7 +216,7 @@ pub(crate) async fn replace_user<R: Repository>(
         Ok(req) => req,
         Err(e) => return qid_http::error_response(e),
     };
-    req.realm = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm);
+    req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
     let expected = Condition::from_headers(existing.realm_id, &headers);
     match replace_user_record(&state, &id, req, expected).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
@@ -244,7 +242,7 @@ fn replace_user_value(existing: ScimUser, req: CreateUser) -> QidResult<ScimUser
     crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
     Ok(ScimUser {
         id: existing.id.clone(),
-        realm_id: req.realm,
+        realm_id: req.realm.unwrap_or_else(super::default_realm),
         external_id,
         user_name: req.user_name,
         name_json: req.name.unwrap_or(existing.name_json),
@@ -266,7 +264,7 @@ pub(crate) async fn replace_user_record<R: Repository>(
     let user = write_user(state, id, expected, move |current, conditional| {
         let mut req = req;
         if conditional {
-            req.realm = current.realm_id.clone();
+            req.realm.get_or_insert(current.realm_id.clone());
         }
         replace_user_value(current, req)
     })

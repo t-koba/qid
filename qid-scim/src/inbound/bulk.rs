@@ -43,9 +43,13 @@ pub(crate) struct BulkOperation {
 pub(crate) async fn bulk<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     context: Option<Extension<ScimRequestContext>>,
-    Json(req): Json<BulkRequest>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "bulk").increment(1);
+    let req = parse_body!(raw, |body| super::parse_object::<BulkRequest>(
+        body,
+        "bulk request"
+    ));
     if req.operations.len() > MAX_BULK_OPERATIONS {
         return qid_http::error_response(qid_core::error::QidError::BadRequest {
             message: format!("SCIM Bulk supports at most {MAX_BULK_OPERATIONS} operations"),

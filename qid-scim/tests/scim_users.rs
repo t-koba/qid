@@ -2919,3 +2919,74 @@ async fn scim_patch_rejects_a_non_object_enterprise_container() {
     assert_eq!(fetched["meta"]["version"], version);
     assert!(fetched.get(ENTERPRISE_USER_SCHEMA).is_none());
 }
+
+#[tokio::test]
+async fn scim_bulk_body_must_be_a_json_object() {
+    let app = setup().await;
+    // A JSON sequence must not be mapped positionally onto failOnErrors and
+    // Operations, and it must not drive a write.
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"[[1,[{"method":"POST","path":"/Users","data":{"realm":"corp","userName":"bulk@example.com"}}]]]"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let list_request = Request::builder()
+        .method(Method::GET)
+        .uri("/scim/v2/Users?realm=corp")
+        .body(Body::empty())
+        .unwrap();
+    let list_response = app.clone().oneshot(list_request).await.unwrap();
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let listed = response_json(list_response).await;
+    assert_eq!(listed["totalResults"], 0, "a rejected body stores nothing");
+}
+
+#[tokio::test]
+async fn scim_bulk_patch_rejects_a_non_object_enterprise_container() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"alice@example.com"}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let version = created["meta"]["version"].as_str().unwrap().to_string();
+
+    // The Bulk PATCH path shares the record-level write path, so the same
+    // container rule applies.
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"failOnErrors":0,"Operations":[{{"method":"PATCH","path":"/Users/{id}","data":{{"Operations":[{{"op":"replace","path":"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User","value":["x","y"]}}]}}}}]}}"#
+        )))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bulk = response_json(response).await;
+    assert_eq!(bulk["Operations"][0]["status"], "400");
+
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = response_json(get_response).await;
+    assert_eq!(fetched["meta"]["version"], version);
+    assert!(fetched.get(ENTERPRISE_USER_SCHEMA).is_none());
+}

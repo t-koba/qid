@@ -1351,4 +1351,8 @@ fn a_directory_provider_needs_usable_bind_credentials() {
         .validate()
         .expect_err("a bind DN without a password is a configuration fault");
     assert!(err.message().contains("bind password"), "{}", err.message());
+    // The fault names the provider and the realm, like every other
+    // directory provider configuration error.
+    assert!(err.message().contains("corp-ldap"), "{}", err.message());
+    assert!(err.message().contains("corp"), "{}", err.message());
 }

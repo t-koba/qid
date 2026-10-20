@@ -273,7 +273,9 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
             let connection = &provider.connection;
             let dn = connection.bind_dn.as_deref();
             let password = connection.bind_password.as_deref();
-            bind_credentials(dn, password)?;
+            bind_credentials(dn, password).map_err(|error| QidError::Config {
+                message: format!("provider {} of realm {}: {error}", provider.id, realm.id),
+            })?;
         }
     }
     Ok(())

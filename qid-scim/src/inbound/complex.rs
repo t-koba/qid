@@ -4,20 +4,9 @@
 //! `members` array with typed subattributes. A write that supplies another
 //! shape is a client error, not a value to store and normalize later.
 
+use super::schemas::{EMAIL_SUBATTRIBUTES, NAME_SUBATTRIBUTES};
 use qid_core::error::QidError;
 use serde_json::Value;
-
-/// The advertised `name` subattributes, all strings.
-const NAME_ATTRIBUTES: [&str; 6] = [
-    "formatted",
-    "familyName",
-    "givenName",
-    "middleName",
-    "honorificPrefix",
-    "honorificSuffix",
-];
-/// The advertised `emails` subattributes; `primary` is the only boolean.
-const EMAIL_ATTRIBUTES: [&str; 4] = ["value", "display", "type", "primary"];
 
 fn invalid(attribute: &str, expected: &str) -> QidError {
     QidError::BadRequest {
@@ -47,46 +36,47 @@ pub(crate) fn validate_group_complex(members: Option<&Value>) -> Result<(), QidE
     Ok(())
 }
 
-/// The `name` container is an object whose advertised subattributes are strings.
-pub(crate) fn validate_name(value: &Value) -> Result<(), QidError> {
+/// Check a complex container against the advertised attribute table. A name
+/// the table does not advertise is rejected, so the advertised schema stays
+/// the only vocabulary a write may use.
+fn validate_subattributes(
+    value: &Value,
+    attribute: &str,
+    table: &[(&str, &str)],
+) -> Result<(), QidError> {
     let Some(object) = value.as_object() else {
-        return Err(invalid("name", "an object"));
+        return Err(invalid(attribute, "an object"));
     };
     for (key, item) in object {
-        if NAME_ATTRIBUTES.contains(&key.as_str()) && !item.is_string() {
-            return Err(invalid(&format!("name.{key}"), "a string"));
+        let Some((_, ty)) = table.iter().find(|(name, _)| *name == key) else {
+            return Err(invalid(
+                &format!("{attribute}.{key}"),
+                "an advertised attribute",
+            ));
+        };
+        let (valid, expected) = match *ty {
+            "boolean" => (item.is_boolean(), "a boolean"),
+            _ => (item.is_string(), "a string"),
+        };
+        if !valid {
+            return Err(invalid(&format!("{attribute}.{key}"), expected));
         }
     }
     Ok(())
 }
 
-/// The `emails` container is an array of objects whose `primary` subattribute
-/// is a boolean and whose other advertised subattributes are strings.
+/// The `name` container holds the advertised string subattributes.
+pub(crate) fn validate_name(value: &Value) -> Result<(), QidError> {
+    validate_subattributes(value, "name", &NAME_SUBATTRIBUTES)
+}
+
+/// The `emails` container is an array of the advertised email subattributes.
 pub(crate) fn validate_emails(value: &Value) -> Result<(), QidError> {
     let Some(items) = value.as_array() else {
         return Err(invalid("emails", "an array"));
     };
     for item in items {
-        let Some(object) = item.as_object() else {
-            return Err(invalid("emails", "an array of objects"));
-        };
-        for (key, entry) in object {
-            if !EMAIL_ATTRIBUTES.contains(&key.as_str()) {
-                continue;
-            }
-            let boolean = key == "primary";
-            let valid = if boolean {
-                entry.is_boolean()
-            } else {
-                entry.is_string()
-            };
-            if !valid {
-                return Err(invalid(
-                    &format!("emails.{key}"),
-                    if boolean { "a boolean" } else { "a string" },
-                ));
-            }
-        }
+        validate_subattributes(item, "emails", &EMAIL_SUBATTRIBUTES)?;
     }
     Ok(())
 }

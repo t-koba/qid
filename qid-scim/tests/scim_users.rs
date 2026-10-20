@@ -2092,7 +2092,8 @@ async fn scim_user_patch_add_merges_complex_attributes() {
     assert_eq!(patched[ENTERPRISE_USER_SCHEMA]["employeeNumber"], "E1");
     assert_eq!(patched["name"]["familyName"], "Lovelace");
 
-    // Bulk PATCH shares the helper and must merge too.
+    // Bulk PATCH shares the helper: a `name` subattribute the schema does not
+    // advertise is rejected instead of merged, and the record is unchanged.
     let bulk_request = Request::builder()
         .method(Method::POST)
         .uri("/scim/v2/Bulk")
@@ -2104,12 +2105,18 @@ async fn scim_user_patch_add_merges_complex_attributes() {
     let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
     assert_eq!(bulk_response.status(), StatusCode::OK);
     let bulk = response_json(bulk_response).await;
-    assert_eq!(bulk["Operations"][0]["status"], "200");
-    assert_eq!(bulk["Operations"][0]["response"]["name"]["nickName"], "G");
-    assert_eq!(
-        bulk["Operations"][0]["response"]["name"]["familyName"],
-        "Lovelace"
-    );
+    assert_eq!(bulk["Operations"][0]["status"], "400");
+
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = response_json(get_response).await;
+    assert_eq!(fetched["name"]["familyName"], "Lovelace");
+    assert!(fetched["name"].get("nickName").is_none());
 
     let bulk_request = Request::builder()
         .method(Method::POST)
@@ -2542,6 +2549,7 @@ async fn scim_complex_containers_are_validated_before_storage() {
     for body in [
         r#"{"realm":"corp","userName":"a@example.com","name":"Alice"}"#,
         r#"{"realm":"corp","userName":"a@example.com","name":{"givenName":42}}"#,
+        r#"{"realm":"corp","userName":"a@example.com","name":{"nickName":"Al"}}"#,
         r#"{"realm":"corp","userName":"a@example.com","emails":"a@example.com"}"#,
         r#"{"realm":"corp","userName":"a@example.com","emails":[{"value":"a@example.com","primary":"yes"}]}"#,
     ] {

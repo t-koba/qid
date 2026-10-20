@@ -15,7 +15,31 @@ fn read_only_attr(name: &str, ty: &str, multi: bool, required: bool) -> serde_js
     serde_json::json!({"name": name, "type": ty, "multiValued": multi, "required": required, "readOnly": true})
 }
 
-fn complex(name: &str, multi: bool, subs: Vec<serde_json::Value>) -> serde_json::Value {
+/// The advertised `name` subattributes and their JSON types. This table owns
+/// the vocabulary: the discovery document and the write validator both read
+/// it, so the two cannot drift apart.
+pub(crate) const NAME_SUBATTRIBUTES: [(&str, &str); 6] = [
+    ("formatted", "string"),
+    ("familyName", "string"),
+    ("givenName", "string"),
+    ("middleName", "string"),
+    ("honorificPrefix", "string"),
+    ("honorificSuffix", "string"),
+];
+
+/// The advertised `emails` subattributes and their JSON types.
+pub(crate) const EMAIL_SUBATTRIBUTES: [(&str, &str); 4] = [
+    ("value", "string"),
+    ("display", "string"),
+    ("type", "string"),
+    ("primary", "boolean"),
+];
+
+fn complex(name: &str, multi: bool, table: &[(&str, &str)]) -> serde_json::Value {
+    let subs = table
+        .iter()
+        .map(|(sub, ty)| attr(sub, ty, false, false))
+        .collect::<Vec<_>>();
     serde_json::json!({"name": name, "type": "complex", "multiValued": multi, "required": false, "subAttributes": subs})
 }
 
@@ -44,11 +68,8 @@ pub(crate) async fn schemas() -> impl IntoResponse {
         "attributes": [
             attr("userName", "string", false, true), attr("externalId", "string", false, false),
             attr("active", "boolean", false, false),
-            complex("name", false, vec![attr("formatted", "string", false, false), attr("familyName", "string", false, false),
-                attr("givenName", "string", false, false), attr("middleName", "string", false, false),
-                attr("honorificPrefix", "string", false, false), attr("honorificSuffix", "string", false, false)]),
-            complex("emails", true, vec![attr("value", "string", false, false), attr("display", "string", false, false),
-                attr("type", "string", false, false), attr("primary", "boolean", false, false)]),
+            complex("name", false, &NAME_SUBATTRIBUTES),
+            complex("emails", true, &EMAIL_SUBATTRIBUTES),
         ]}),
         serde_json::json!({
         "id": "urn:ietf:params:scim:schemas:core:2.0:Group",

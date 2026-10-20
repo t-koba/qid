@@ -2622,10 +2622,11 @@ fn an_unusable_paged_results_control_is_an_error_and_not_a_panic() {
             .push(info.to_string());
     }));
 
+    // A sequence with no elements reaches the parse, and the parse panics.
     let raw = RawControl {
         ctype: "1.2.840.113556.1.4.319".to_string(),
         crit: false,
-        val: Some(vec![0x04, 0x01, 0x00]),
+        val: Some(vec![0x30, 0x00]),
     };
     let ctrls = vec![Control(Some(ControlType::PagedResults), raw)];
     let err = crate::connector::paged_results_cookie(&ctrls)

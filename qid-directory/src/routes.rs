@@ -5,7 +5,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use qid_core::config::AdminSecurityConfig;
+use qid_core::config::{AdminSecurityConfig, DIRECTORY_PROVIDER_TYPES};
 use qid_core::models::Admin;
 
 const ADMIN_SESSION_ID_HEADER: &str = "x-qid-admin-session-id";
@@ -59,7 +59,7 @@ async fn list_providers<R: Repository>(
 
     Json(serde_json::json!({
         "providers": active,
-        "supported": ["ldap", "active-directory"],
+        "supported": DIRECTORY_PROVIDER_TYPES,
     }))
     .into_response()
 }

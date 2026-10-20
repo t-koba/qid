@@ -274,7 +274,7 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
         let providers = &realm.protocols.directory.providers;
         for provider in providers.iter().filter(|p| p.enabled) {
             let connection = &provider.connection;
-            if !matches!(provider.provider_type.as_str(), "ldap" | "active-directory") {
+            if !DIRECTORY_PROVIDER_TYPES.contains(&provider.provider_type.as_str()) {
                 return Err(QidError::Config {
                     message: format!(
                         "provider {} of realm {} has unsupported type '{}'",
@@ -441,7 +441,7 @@ fn validate_enterprise_profile(config: &QidConfig) -> QidResult<()> {
         }
         let has_enterprise_directory = realm.protocols.directory.providers.iter().any(|provider| {
             provider.enabled
-                && matches!(provider.provider_type.as_str(), "ldap" | "active-directory")
+                && DIRECTORY_PROVIDER_TYPES.contains(&provider.provider_type.as_str())
                 && provider.connection.url.starts_with("ldaps://")
                 && provider.connection.bind_dn.is_some()
                 && provider.connection.bind_password.is_some()
@@ -990,16 +990,13 @@ impl RealmConfig {
                         ),
                     });
                 }
-                match p.provider_type.as_str() {
-                    "ldap" | "active-directory" | "scim" | "hr_csv" | "hr_webhook" => {}
-                    other => {
-                        return Err(QidError::Config {
-                            message: format!(
-                                "realm {} directory provider {} has unsupported type: {other}",
-                                self.id, p.id
-                            ),
-                        });
-                    }
+                if !DIRECTORY_PROVIDER_TYPES.contains(&p.provider_type.as_str()) {
+                    return Err(QidError::Config {
+                        message: format!(
+                            "realm {} directory provider {} has unsupported type: {}",
+                            self.id, p.id, p.provider_type
+                        ),
+                    });
                 }
             }
         }

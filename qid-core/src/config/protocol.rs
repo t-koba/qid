@@ -837,6 +837,9 @@ pub fn bind_credentials<'a>(
     Ok(Some((dn, password)))
 }
 
+/// The directory provider types the sync can connect.
+pub const DIRECTORY_PROVIDER_TYPES: [&str; 2] = ["ldap", "active-directory"];
+
 /// Whether a bind DN carries a character a distinguished name cannot hold.
 pub fn valid_bind_dn(dn: &str) -> QidResult<()> {
     for ch in dn.chars() {

@@ -231,9 +231,10 @@ An LDAP or Active Directory provider's `connection` holds:
 | `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
 
 A provider's `type` must be `ldap` or `active-directory`; another type is rejected when the
-configuration loads. The rules below apply to an enabled provider of a realm whose
-directory sync is on; a provider that is disabled, or a realm whose directory sync is off, is
-not checked.
+configuration loads. The credential rules below apply to an enabled provider of a realm whose
+directory sync is on: a provider that is disabled, or a realm whose directory sync is off, is
+not checked for credentials. Every provider, enabled or not, still needs a unique id and a
+URL. A bind DN that carries a control character is rejected when the configuration loads.
 
 An enabled provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
 bind DN must be absent and the bind password blank. A bind DN without a usable password is

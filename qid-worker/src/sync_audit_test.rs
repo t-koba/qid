@@ -136,9 +136,12 @@ fn a_directory_fetch_fault_keeps_every_kind() {
 
 #[test]
 fn a_failed_directory_sync_makes_the_command_exit_nonzero() {
+    let status =
+        serde_json::to_value(crate::DirectorySyncJobStatus::Failed).expect("the status serializes");
+    assert_eq!(status, "failed");
     let failed = serde_json::json!({
         "command": "directory_sync",
-        "report": {"status": "failed", "errors": ["provider missing-provider not found"]}
+        "report": {"status": status, "errors": ["provider missing-provider not found"]}
     });
     assert!(crate::sync::sync_failed(&failed));
     let skipped = serde_json::json!({

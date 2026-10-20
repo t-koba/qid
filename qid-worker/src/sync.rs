@@ -1,5 +1,5 @@
 use qid_core::{
-    config::{DirectoryProviderConfig, QidConfig},
+    config::{DIRECTORY_PROVIDER_TYPES, DirectoryProviderConfig, QidConfig},
     error::{QidError, QidResult},
     models::{AuditEvent, ScimUser, User},
     tenant::RealmId,
@@ -255,20 +255,18 @@ pub async fn run_directory_sync_job(
             });
         }
     };
-    let mut connector: Box<dyn DirectoryConnector> = match provider.provider_type.as_str() {
-        "ldap" | "active-directory" => {
-            let mut ldap = LdapDirectoryConnector::new();
-            ldap.connect(&provider.connection).await?;
-            Box::new(ldap)
-        }
-        other => {
-            return Err(QidError::Config {
-                message: format!(
-                    "directory provider '{}' has unsupported type '{other}'",
-                    provider.id
-                ),
-            });
-        }
+    if !DIRECTORY_PROVIDER_TYPES.contains(&provider.provider_type.as_str()) {
+        return Err(QidError::Config {
+            message: format!(
+                "directory provider '{}' has unsupported type '{}'",
+                provider.id, provider.provider_type
+            ),
+        });
+    }
+    let mut connector: Box<dyn DirectoryConnector> = {
+        let mut ldap = LdapDirectoryConnector::new();
+        ldap.connect(&provider.connection).await?;
+        Box::new(ldap)
     };
     let sync_config = provider.sync.clone();
     let mapping = provider.attribute_mapping.clone();

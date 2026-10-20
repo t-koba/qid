@@ -219,11 +219,22 @@ Validation rules:
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |
 | `network_aaa` | RADIUS/TLS/EAP/CAPPORT/CoA/accounting/directory authority. |
 
-A directory provider's `connection.bind_dn` and `connection.bind_password` must both be
-set and non-blank, or both be absent. A configured bind DN without a password is an
+Each provider's `connection` holds:
+
+| Field | Purpose |
+| --- | --- |
+| `url` | The directory URL. `ldaps://` and `ldap://` are accepted. |
+| `bind_dn` | The bind DN, used for the directory's simple bind. |
+| `bind_password` | The bind password for that DN. |
+| `base_dn` | The subtree the sync reads. |
+| `connect_timeout_seconds` | The connection and operation timeout in seconds. Defaults to 10. |
+| `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
+
+An enabled provider's `bind_dn` and `bind_password` must both be set and non-blank, or both
+be absent - a blank value counts as absent. A configured bind DN without a password is an
 unauthenticated bind that RFC 4513 answers with success, and a password without a bind DN
 would leave the search anonymous, so a provider with only one of them is rejected when the
-configuration loads.
+configuration loads. A disabled provider is not checked, because no sync reads it.
 
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 

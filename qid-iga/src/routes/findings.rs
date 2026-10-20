@@ -40,8 +40,8 @@ pub(super) struct FindingDetectionRequest {
     tenant_id: Option<String>,
 }
 
-/// Detect separation-of-duties findings from active access grants. Dormant
-/// subjects are not derived here; reviewers supply them to access reviews.
+/// Detect separation-of-duties findings from active access grants. The subjects
+/// are derived here, and an access review reads its subjects from the findings.
 pub(super) async fn detect_findings<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,

@@ -1,10 +1,8 @@
 //! Shared cursor policy and list response shape for Users and Groups.
 use super::{ListQuery, MAX_LIST_RESULTS, users::scim_cursor_secret};
 use crate::response::{decode_cursor, encode_cursor, filter_fingerprint};
-use axum::{
-    Json,
-    response::{IntoResponse, Response},
-};
+use axum::Json;
+use axum::response::{IntoResponse, Response};
 use qid_core::{
     error::{QidError, QidResult},
     state::SharedState,
@@ -57,14 +55,18 @@ impl Pagination {
             "itemsPerPage": resources.len(),
             "Resources": resources
         });
-        if self.start + self.count < total {
-            body["nextCursor"] = serde_json::Value::String(encode_cursor(
-                self.secret.as_bytes(),
-                self.start + self.count,
-                self.count,
-                &self.fingerprint,
-            ));
+        let next = self.start.checked_add(self.count);
+        if self.count > 0
+            && let Some(next) = next
+            && next < total
+        {
+            let cursor = encode_cursor(self.secret.as_bytes(), next, self.count, &self.fingerprint);
+            body["nextCursor"] = serde_json::Value::String(cursor);
         }
         Json(body).into_response()
     }
 }
+
+#[cfg(test)]
+#[path = "list_tests.rs"]
+mod tests;

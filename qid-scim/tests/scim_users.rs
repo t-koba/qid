@@ -286,6 +286,21 @@ async fn scim_users_support_external_id_filter_and_pagination() {
 }
 
 #[tokio::test]
+async fn scim_pagination_extreme_start_index_is_safe_for_users_and_groups() {
+    let app = setup().await;
+    for resource in ["Users", "Groups"] {
+        let uri = format!(
+            "/scim/v2/{resource}?realm=corp&start_index={}&count=200",
+            usize::MAX
+        );
+        let page = get_json(&app, &uri, None).await;
+        assert_eq!(page["startIndex"], serde_json::json!(usize::MAX));
+        assert_eq!(page["itemsPerPage"], 0);
+        assert!(page.get("nextCursor").is_none());
+    }
+}
+
+#[tokio::test]
 async fn scim_group_can_be_created_patched_filtered_and_deleted() {
     let app = setup().await;
     let create_request = Request::builder()

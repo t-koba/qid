@@ -479,6 +479,16 @@ impl DirectoryConnector for CsvHrConnector {
     }
 }
 
+/// The enabled state an HR event states. The event is trimmed and read in
+/// lower case, so both HR connectors read the same record the same way.
+fn hr_event_enabled(event: &str) -> Option<bool> {
+    match event.trim().to_lowercase().as_str() {
+        "joiner" | "mover" => Some(true),
+        "leaver" => Some(false),
+        _ => None,
+    }
+}
+
 /// A directory attribute value. Every value is trimmed and an empty value is
 /// no value, so the two HR connectors store the same record for one person.
 fn optional_attribute(value: &str) -> Option<String> {
@@ -526,7 +536,7 @@ fn parse_csv_hr_records(content: &str) -> QidResult<Vec<LdapDirectoryEntry>> {
         let display_name = cols[display_idx].trim().trim_matches('"');
         let department = cols[dept_idx].trim().trim_matches('"');
         let manager_external_id = cols[mgr_idx].trim().trim_matches('"');
-        let event = cols[evt_idx].trim().trim_matches('"').to_lowercase();
+        let event = cols[evt_idx].trim().trim_matches('"');
 
         if external_id.is_empty() {
             return Err(qid_core::error::QidError::BadRequest {
@@ -534,18 +544,13 @@ fn parse_csv_hr_records(content: &str) -> QidResult<Vec<LdapDirectoryEntry>> {
             });
         }
 
-        let enabled = match event.as_str() {
-            "joiner" | "mover" => true,
-            "leaver" => false,
-            other => {
-                return Err(qid_core::error::QidError::BadRequest {
-                    message: format!(
-                        "CSV line {} has invalid event '{}' (expected joiner/mover/leaver)",
-                        lineno + 2,
-                        other
-                    ),
-                });
-            }
+        let Some(enabled) = hr_event_enabled(event) else {
+            return Err(qid_core::error::QidError::BadRequest {
+                message: format!(
+                    "CSV line {} has invalid event '{event}' (expected joiner/mover/leaver)",
+                    lineno + 2
+                ),
+            });
         };
 
         entries.push(LdapDirectoryEntry {
@@ -646,14 +651,10 @@ impl WebhookHrConnector {
                 }
             })?;
 
-            let enabled = match event {
-                "joiner" | "mover" => true,
-                "leaver" => false,
-                other => {
-                    return Err(qid_core::error::QidError::BadRequest {
-                        message: format!("webhook record has invalid event '{other}'"),
-                    });
-                }
+            let Some(enabled) = hr_event_enabled(event) else {
+                return Err(qid_core::error::QidError::BadRequest {
+                    message: format!("webhook record has invalid event '{event}'"),
+                });
             };
 
             let email = optional_attribute(

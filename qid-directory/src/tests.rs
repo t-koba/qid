@@ -2534,3 +2534,25 @@ fn a_bind_credential_fault_is_a_configuration_error() {
         "the fault must be a configuration error"
     );
 }
+
+#[tokio::test]
+async fn webhook_ingest_reads_the_event_like_the_csv_connector() {
+    use crate::connector::{DirectoryConnector, WebhookHrConnector};
+    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
+    let mut connector = WebhookHrConnector::new();
+    connector
+        .ingest_json(&serde_json::json!([
+            {"external_id": "hr-1", "event": " Joiner "},
+            {"external_id": "hr-2", "event": "LEAVER"}
+        ]))
+        .expect("the records are accepted");
+    let users = connector
+        .fetch_users(
+            &DirectorySyncConfig::default(),
+            &DirectoryAttributeMapping::default(),
+        )
+        .await
+        .unwrap();
+    assert!(users[0].enabled, "a joiner is an enabled user");
+    assert!(!users[1].enabled, "a leaver is a disabled user");
+}

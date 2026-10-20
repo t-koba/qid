@@ -8,14 +8,14 @@ use axum::{
 use common::{ADMIN_SESSION_ID_HEADER, post_raw, setup_app};
 use tower::ServiceExt;
 
-async fn seeded_setup() -> (Router, String) {
-    let (app, _repo, session_id) = setup_app("qid-rebac", None, "test-admin").await;
-    (app, session_id)
+async fn seeded_setup() -> (common::TestStoreDir, Router, String) {
+    let (_store_dir, app, _repo, session_id) = setup_app("qid-rebac", None, "test-admin").await;
+    (_store_dir, app, session_id)
 }
 
 #[tokio::test]
 async fn direct_check_allows_and_denies() {
-    let (app, session_id) = seeded_setup().await;
+    let (_store_dir, app, session_id) = seeded_setup().await;
 
     let write_resp = app
         .clone()
@@ -43,7 +43,7 @@ async fn direct_check_allows_and_denies() {
 
 #[tokio::test]
 async fn userset_check_expands_group_membership() {
-    let (app, session_id) = seeded_setup().await;
+    let (_store_dir, app, session_id) = seeded_setup().await;
 
     let write_resp = app
         .clone()
@@ -75,7 +75,7 @@ async fn userset_check_expands_group_membership() {
 
 #[tokio::test]
 async fn expand_returns_subject_tree() {
-    let (app, session_id) = seeded_setup().await;
+    let (_store_dir, app, session_id) = seeded_setup().await;
 
     post_raw(app.clone(), "/iga/v1/rebac/tuples", r#"{"tuples":[
                         {"namespace":"document","object_id":"doc-3","relation":"viewer","subject_namespace":"user","subject_id":"alice","subject_relation":""},
@@ -95,7 +95,7 @@ async fn expand_returns_subject_tree() {
 
 #[tokio::test]
 async fn read_returns_stored_tuples() {
-    let (app, session_id) = seeded_setup().await;
+    let (_store_dir, app, session_id) = seeded_setup().await;
 
     post_raw(app.clone(), "/iga/v1/rebac/tuples", r#"{"tuples":[
                         {"namespace":"document","object_id":"doc-4","relation":"owner","subject_namespace":"user","subject_id":"alice","subject_relation":""}
@@ -115,7 +115,7 @@ async fn read_returns_stored_tuples() {
 
 #[tokio::test]
 async fn delete_removes_tuple_and_check_denies() {
-    let (app, session_id) = seeded_setup().await;
+    let (_store_dir, app, session_id) = seeded_setup().await;
 
     post_raw(app.clone(), "/iga/v1/rebac/tuples", r#"{"tuples":[
                         {"namespace":"document","object_id":"doc-5","relation":"viewer","subject_namespace":"user","subject_id":"alice","subject_relation":""}

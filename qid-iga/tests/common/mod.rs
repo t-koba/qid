@@ -80,12 +80,49 @@ pub async fn seed_admin_session(repo: &FileRepository, tenant_id: &str, subject:
     elevation.id
 }
 
+/// Owns the temporary file-store directory for a route test fixture.
+///
+/// Must be bound before the Router and repository handles it guards so that
+/// Rust drops it last: `Router`/`Arc<FileRepository>` (which hold the
+/// Windows-exclusive `.lock` handle via `SharedState`) release first, then
+/// this guard removes the whole directory including the JSON store and its
+/// `.lock` sidecar.
+pub struct TestStoreDir {
+    dir: Option<tempfile::TempDir>,
+}
+
+impl TestStoreDir {
+    fn new(dir: tempfile::TempDir) -> Self {
+        Self { dir: Some(dir) }
+    }
+}
+
+impl Drop for TestStoreDir {
+    fn drop(&mut self) {
+        if let Some(dir) = self.dir.take() {
+            // Explicit close so cleanup failures are visible instead of
+            // silently ignored by `TempDir`'s best-effort `Drop`.
+            if std::thread::panicking() {
+                if let Err(error) = dir.close() {
+                    eprintln!("failed to clean up test store dir: {error}");
+                }
+            } else {
+                dir.close().expect("failed to clean up test store dir");
+            }
+        }
+    }
+}
+
 pub async fn setup_app(
     store_prefix: &str,
     tenant_id: Option<&str>,
     admin_subject: &str,
-) -> (Router, Arc<FileRepository>, String) {
-    let path = std::env::temp_dir().join(format!("{store_prefix}-{}.json", ulid::Ulid::new()));
+) -> (TestStoreDir, Router, Arc<FileRepository>, String) {
+    let dir = tempfile::Builder::new()
+        .prefix(format!("{store_prefix}-").as_str())
+        .tempdir()
+        .expect("create test store dir failed");
+    let path = dir.path().join(format!("{store_prefix}-store.json"));
     let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
     repo.migrate().await.unwrap();
     let mut config = test_helpers::test_config();
@@ -104,7 +141,12 @@ pub async fn setup_app(
     let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
     let repo = state.repo.clone();
     let session_id = seed_admin_session(&repo, &admin_tenant(tenant_id), admin_subject).await;
-    (qid_iga::iga_routes().with_state(state), repo, session_id)
+    (
+        TestStoreDir::new(dir),
+        qid_iga::iga_routes().with_state(state),
+        repo,
+        session_id,
+    )
 }
 
 fn admin_tenant(tenant_id: Option<&str>) -> String {

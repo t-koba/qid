@@ -17,7 +17,7 @@ use qid_storage::{FileRepository, prelude::*};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-async fn setup_with_repo() -> (Router, Arc<FileRepository>, String) {
+async fn setup_with_repo() -> (common::TestStoreDir, Router, Arc<FileRepository>, String) {
     setup_app("qid-iga", Some("test"), "security-admin").await
 }
 
@@ -64,7 +64,7 @@ async fn store_approved_jit_source_request(
 
 #[tokio::test]
 async fn access_request_route_evaluates_catalog_duration_and_approval_steps() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let body = post_raw(
         app.clone(),
@@ -102,7 +102,7 @@ async fn access_request_route_evaluates_catalog_duration_and_approval_steps() {
 
 #[tokio::test]
 async fn access_request_route_rejects_unknown_entitlement() {
-    let (app, _repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
     let body = post_raw(
         app.clone(),
         "/iga/v1/access-requests",
@@ -119,7 +119,7 @@ async fn access_request_route_rejects_unknown_entitlement() {
 
 #[tokio::test]
 async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let entitlement = serde_json::json!({
         "id": "app:custom:admin",
         "display_name": "Custom administrator",
@@ -208,7 +208,7 @@ async fn entitlement_catalog_route_persists_and_drives_access_request_policy() {
 
 #[tokio::test]
 async fn catalog_upserts_reject_invalid_records_without_state_changes() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let invalid_entitlement = request_with_headers(
         Method::POST,
         "/iga/v1/entitlements",
@@ -305,7 +305,7 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
         vec!["app:erp:admin", "app:erp:audit"],
         vec!["app:erp:audit", "app:erp:admin"],
     ] {
-        let (app, _repo, session_id) = setup_with_repo().await;
+        let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
         seed_conflicting_erp_pair(&app, &session_id).await;
         let body = create_package_and_request(
             &app,
@@ -334,7 +334,7 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
 
 #[tokio::test]
 async fn empty_or_fully_deactivated_catalog_rejects_as_unknown() {
-    let (app, _repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
     let request = |entitlement: &str| {
         serde_json::json!({
             "subject": "user-1",
@@ -416,7 +416,7 @@ async fn empty_or_fully_deactivated_catalog_rejects_as_unknown() {
 
 #[tokio::test]
 async fn revoke_certification_removes_packaged_member_access() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_conflicting_erp_pair(&app, &session_id).await;
     let body = create_package_and_request(
         &app,
@@ -550,7 +550,7 @@ async fn revoke_certification_removes_packaged_member_access() {
 
 #[tokio::test]
 async fn package_issuance_refuses_drifted_package_definition() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     for (id, owner) in [("app:custom:a", "owner-a"), ("app:custom:b", "owner-b")] {
         post_json(
             app.clone(),
@@ -628,7 +628,7 @@ async fn package_issuance_refuses_drifted_package_definition() {
 #[tokio::test]
 async fn package_grant_batch_issues_complete_set_or_repairs_partial_revoked_set() {
     for partial in [false, true] {
-        let (app, repo, session_id) = setup_with_repo().await;
+        let (_store_dir, app, repo, session_id) = setup_with_repo().await;
         for id in ["app:custom:a", "app:custom:b"] {
             post_json(
                 app.clone(),
@@ -744,7 +744,7 @@ async fn package_grant_batch_issues_complete_set_or_repairs_partial_revoked_set(
 
 #[tokio::test]
 async fn package_member_grant_feeds_later_sod_checks_and_review() {
-    let (app, _repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
     seed_conflicting_erp_pair(&app, &session_id).await;
     let body = create_package_and_request(
         &app,
@@ -834,7 +834,7 @@ async fn package_member_grant_feeds_later_sod_checks_and_review() {
 
 #[tokio::test]
 async fn access_package_route_persists_lists_and_deletes_packages() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let entitlement = serde_json::json!({
         "id": "app:custom:admin",
         "display_name": "Custom administrator",
@@ -955,7 +955,7 @@ async fn access_package_route_persists_lists_and_deletes_packages() {
 
 #[tokio::test]
 async fn approval_validation_route_issues_time_bound_grant_when_complete() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let evaluation = post_raw(
         app.clone(),
@@ -1104,7 +1104,7 @@ async fn approval_validation_route_issues_time_bound_grant_when_complete() {
 
 #[tokio::test]
 async fn access_package_request_can_issue_grants_for_each_entitlement() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     for entitlement in [
         serde_json::json!({
             "id": "app:custom:admin",
@@ -1265,7 +1265,7 @@ async fn access_package_request_can_issue_grants_for_each_entitlement() {
 
 #[tokio::test]
 async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let entitlement = serde_json::json!({
         "id": "app:custom:admin",
         "display_name": "Custom administrator",
@@ -1443,7 +1443,7 @@ async fn jit_privilege_route_issues_lists_and_revokes_short_lived_privilege() {
 
 #[tokio::test]
 async fn certification_routes_record_attestations_and_export_iga_evidence() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let entitlement = serde_json::json!({
         "id": "app:custom:admin",
         "display_name": "Custom administrator",
@@ -1622,7 +1622,7 @@ async fn certification_routes_record_attestations_and_export_iga_evidence() {
 
 #[tokio::test]
 async fn finding_routes_reject_foreign_admin_tenant_scope() {
-    let (app, _repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -1639,7 +1639,7 @@ async fn finding_routes_reject_foreign_admin_tenant_scope() {
 
 #[tokio::test]
 async fn finding_routes_detect_resolve_and_export_sod_conflicts_from_grants() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let now = qid_core::util::now_seconds();
     for (id, entitlement) in [
@@ -1738,7 +1738,7 @@ async fn finding_routes_detect_resolve_and_export_sod_conflicts_from_grants() {
 
 #[tokio::test]
 async fn approval_validation_route_reports_missing_and_rejected_approvals() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let eval_body = post_raw(
         app.clone(),
@@ -1786,7 +1786,7 @@ async fn approval_validation_route_reports_missing_and_rejected_approvals() {
 
 #[tokio::test]
 async fn access_review_route_builds_persists_lists_and_closes_campaign() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let now = qid_core::util::now_seconds();
     for (id, subject, entitlement) in [
         ("review-campaign-grant-1", "user-1", "app:erp:admin"),
@@ -2009,7 +2009,7 @@ async fn access_review_route_builds_persists_lists_and_closes_campaign() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_forged_evaluation_in_body() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let eval_body = post_raw(
         app.clone(),
@@ -2070,7 +2070,7 @@ async fn validate_approvals_rejects_forged_evaluation_in_body() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_self_approval_sod_violation() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let eval_body = post_raw(
         app.clone(),
@@ -2139,7 +2139,7 @@ async fn validate_approvals_rejects_self_approval_sod_violation() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_request_not_in_approval_required_status() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let eval_body = post_raw(
         app.clone(),
@@ -2190,7 +2190,7 @@ async fn validate_approvals_rejects_request_not_in_approval_required_status() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_missing_admin_headers() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let eval_body = post_raw(
         app.clone(),
@@ -2250,7 +2250,7 @@ async fn validate_approvals_rejects_missing_admin_headers() {
 
 #[tokio::test]
 async fn validate_approvals_rejects_insufficient_admin_role() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let eval_body = post_raw(
         app.clone(),
@@ -2324,7 +2324,7 @@ async fn validate_approvals_rejects_insufficient_admin_role() {
 
 #[tokio::test]
 async fn validate_approvals_is_idempotent_and_prevents_double_issuance() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     seed_default_erp_catalog(&repo, "test").await;
     let eval_body = post_raw(
         app.clone(),
@@ -2409,7 +2409,7 @@ async fn validate_approvals_is_idempotent_and_prevents_double_issuance() {
 
 #[tokio::test]
 async fn access_request_route_rejects_unrepresentable_duration() {
-    let (app, _repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
     let entitlement = serde_json::json!({
         "id": "app:test:overflow",
         "display_name": "Overflow probe",
@@ -2458,7 +2458,7 @@ async fn access_request_route_rejects_unrepresentable_duration() {
 
 #[tokio::test]
 async fn access_review_route_rejects_unrepresentable_due_time() {
-    let (app, _repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -2478,7 +2478,7 @@ async fn access_review_route_rejects_unrepresentable_due_time() {
 
 #[tokio::test]
 async fn access_review_revoke_decision_retry_converges_without_new_effects() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let now = qid_core::util::now_seconds();
     repo.store_iga_access_grant(&IgaAccessGrantRecord {
         id: "retry-grant-1".to_string(),
@@ -2561,7 +2561,7 @@ async fn access_review_revoke_decision_retry_converges_without_new_effects() {
 
 #[tokio::test]
 async fn access_review_close_returns_not_found_for_missing_or_other_tenant() {
-    let (app, repo, session_id) = setup_with_repo().await;
+    let (_store_dir, app, repo, session_id) = setup_with_repo().await;
     let now = qid_core::util::now_seconds();
     let campaign = IgaAccessReviewCampaignRecord {
         id: "close-ok-1".to_string(),

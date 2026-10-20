@@ -2378,11 +2378,7 @@ fn rejects_a_paged_results_control_without_a_value() {
     )];
     let err = crate::connector::paged_results_cookie(&ctrls)
         .expect_err("a control without a value must fail closed");
-    assert!(
-        err.message().contains("without a value"),
-        "{}",
-        err.message()
-    );
+    assert!(err.message().contains("unusable"), "{}", err.message());
 }
 
 #[test]
@@ -2413,4 +2409,30 @@ async fn webhook_ingest_trims_the_external_id_it_stores() {
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].uid, "hr-1");
     assert_eq!(users[0].dn, "hr-1");
+}
+
+#[test]
+fn rejects_a_malformed_paged_results_control() {
+    use ldap3::controls::{Control, ControlType, RawControl};
+    let ctrls = vec![Control(
+        Some(ControlType::PagedResults),
+        RawControl {
+            ctype: "1.2.840.113556.1.4.319".to_string(),
+            crit: false,
+            val: Some(b"not a paged results value".to_vec()),
+        },
+    )];
+    let err = crate::connector::paged_results_cookie(&ctrls)
+        .expect_err("a malformed control must fail closed");
+    assert!(err.message().contains("unusable"), "{}", err.message());
+}
+
+#[test]
+fn a_configured_bind_dn_needs_a_password() {
+    let err = crate::connector::bind_password(None).expect_err("a bind DN needs a password");
+    assert!(err.message().contains("bind password"), "{}", err.message());
+    assert_eq!(
+        crate::connector::bind_password(Some(&"secret".to_string())).unwrap(),
+        "secret"
+    );
 }

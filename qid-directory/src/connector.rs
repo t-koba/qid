@@ -875,7 +875,8 @@ pub fn run_ldap_search_with_options(
                         message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
                     }
                 })?;
-            } else if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
+            } else if let Some(dn) = &bind_dn {
+                let pw = bind_password(bind_pw.as_ref())?;
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
@@ -929,6 +930,17 @@ pub(crate) fn sasl_bind_dn(bind_dn: Option<&str>) -> QidResult<&str> {
     })
 }
 
+/// The password a configured bind DN must have. A bind DN without a password
+/// is an error: falling through would run an anonymous search and report a
+/// successful sync.
+pub(crate) fn bind_password(bind_pw: Option<&String>) -> QidResult<&str> {
+    bind_pw
+        .map(String::as_str)
+        .ok_or_else(|| QidError::Internal {
+            message: "LDAP bind DN is configured without a bind password".to_string(),
+        })
+}
+
 /// The cookie of the next page, taken from the PagedResults control the
 /// server must return for every requested page. A missing control is an
 /// error: reusing the previous cookie would repeat a page, and ending the
@@ -947,13 +959,14 @@ pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidRes
             message: "LDAP paged search did not return a PagedResults control".to_string(),
         });
     };
-    if raw.val.is_none() {
+    // The ldap3 parser panics on a malformed control value, so the parse is
+    // contained and reported as an error.
+    let parsed = std::panic::catch_unwind(|| raw.parse::<PagedResults>());
+    let Ok(pr) = parsed else {
         return Err(QidError::Internal {
-            message: "LDAP paged search returned a PagedResults control without a value"
-                .to_string(),
+            message: "LDAP paged search returned an unusable PagedResults control".to_string(),
         });
-    }
-    let pr: PagedResults = raw.parse();
+    };
     Ok(pr.cookie)
 }
 

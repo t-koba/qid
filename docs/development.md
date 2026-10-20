@@ -58,8 +58,8 @@ platform's compiler, SDK, and system headers.
 
 | Workflow | Purpose |
 | --- | --- |
-| `ci.yml` | Fast quality gates: format, clippy, docs, structure, and budget. |
-| `test.yml` | Workspace build/test matrix, all-features tests, config sample validation, sister-PEP smoke, and coverage. |
+| `ci.yml` | Fast quality gates: format, clippy, docs, structure, the source budget, and a lint that rejects blocking reqwest clients. |
+| `test.yml` | Workspace build/test matrix, an MSRV job, all-features tests, config sample validation, sister-PEP smoke, fuzz smoke on pull requests, and coverage. |
 | `security.yml` | Sensitive artifact checks, cargo-deny, cargo-audit, package metadata checks, crate packaging, and SBOM. |
 | `release.yml` | Release preflight, qpx-aligned release target builds, binary archives, crate tarballs, SBOM, and tag-based GitHub Releases. |
 

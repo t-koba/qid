@@ -1334,7 +1334,7 @@ fn introspection_object_form_keeps_the_endpoint_enabled() {
 fn a_directory_provider_needs_usable_bind_credentials() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
-        id: "corp-ldap".to_string(),
+        id: "ldap-main".to_string(),
         provider_type: "ldap".to_string(),
         enabled: true,
         connection: DirectoryConnectionConfig {
@@ -1353,6 +1353,6 @@ fn a_directory_provider_needs_usable_bind_credentials() {
     assert!(err.message().contains("bind password"), "{}", err.message());
     // The fault names the provider and the realm, like every other
     // directory provider configuration error.
-    assert!(err.message().contains("corp-ldap"), "{}", err.message());
+    assert!(err.message().contains("ldap-main"), "{}", err.message());
     assert!(err.message().contains("corp"), "{}", err.message());
 }

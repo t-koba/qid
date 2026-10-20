@@ -60,7 +60,7 @@ async fn list_providers<R: Repository>(
 
     Json(serde_json::json!({
         "providers": active,
-        "supported": ["ldap", "active-directory", "scim", "hr_csv"],
+        "supported": ["ldap", "active-directory"],
     }))
     .into_response()
 }

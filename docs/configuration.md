@@ -213,26 +213,26 @@ Validation rules:
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. |
 | `federation` | Inbound OIDC/SAML/social providers and claim mappings. |
-| `directory` | LDAP/AD/SCIM/HR providers, sync filters, attribute mapping. |
+| `directory` | LDAP and Active Directory providers, plus the CSV and webhook HR connectors; sync filters and attribute mapping. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
 | `vc` | OID4VCI/OID4VP/HAIP/status/holder binding. |
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |
 | `network_aaa` | RADIUS/TLS/EAP/CAPPORT/CoA/accounting/directory authority. |
 
-Each provider's `connection` holds:
+An LDAP or Active Directory provider's `connection` holds:
 
 | Field | Purpose |
 | --- | --- |
-| `url` | The directory URL. `ldaps://` and `ldap://` are accepted. |
+| `url` | The directory endpoint. `ldaps://` and `ldap://` are accepted; the scheme is checked when the provider connects. |
 | `bind_dn` | The bind DN, used for the directory's simple bind. |
 | `bind_password` | The bind password for that DN. |
 | `base_dn` | The subtree the sync reads. |
-| `connect_timeout_seconds` | The connection and operation timeout in seconds. Defaults to 10. |
+| `connect_timeout_seconds` | The timeout in seconds for the bind, the search and the unbind. Defaults to 10; the connect itself is not bounded by it. |
 | `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
 
-An enabled provider's `bind_dn` and `bind_password` must both be set and non-blank, or both
-be absent - a blank value counts as absent. A configured bind DN without a password is an
-unauthenticated bind that RFC 4513 answers with success, and a password without a bind DN
+An enabled provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
+bind DN must be absent and the bind password blank. A bind DN without a usable password is
+an unauthenticated bind that RFC 4513 answers with success, and a password without a bind DN
 would leave the search anonymous, so a provider with only one of them is rejected when the
 configuration loads. A disabled provider is not checked, because no sync reads it.
 

@@ -325,7 +325,7 @@ Workload and SPIFFE routes are only merged in the `workload` profile.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/directory/v1/providers` | List directory providers. |
-| `GET` | `/directory/v1/providers/:id` | Read provider configuration; connection and sync settings are managed through QID configuration. |
+| `GET` | `/directory/v1/providers/:id` | Read provider configuration (`404` for unknown IDs); connection and sync settings are managed through QID configuration. |
 | `PATCH` | `/directory/v1/providers/:id` | Unsupported (`501` for configured providers, `404` for unknown IDs); no provider status is asserted or changed. |
 | `POST` | `/directory/v1/providers/:id/sync` | Unsupported over HTTP (`501` for configured providers, `404` for unknown IDs); no job is scheduled. Use `qid-worker directory-sync --realm <realm> --provider-id <id>`. |
 | `GET` | `/directory/v1/providers/:id/sync/status` | Unsupported (`501` for configured providers, `404` for unknown IDs); the HTTP API does not track sync-job state. |

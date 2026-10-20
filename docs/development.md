@@ -58,7 +58,7 @@ platform's compiler, SDK, and system headers.
 
 | Workflow | Purpose |
 | --- | --- |
-| `ci.yml` | Fast quality gates: format, clippy, docs, config samples, structure, and budget. |
+| `ci.yml` | Fast quality gates: format, clippy, docs, structure, and budget. |
 | `test.yml` | Workspace build/test matrix, all-features tests, config sample validation, sister-PEP smoke, and coverage. |
 | `security.yml` | Sensitive artifact checks, cargo-deny, cargo-audit, package metadata checks, crate packaging, and SBOM. |
 | `release.yml` | Release preflight, qpx-aligned release target builds, binary archives, crate tarballs, SBOM, and tag-based GitHub Releases. |
@@ -108,10 +108,10 @@ Gate coverage:
 
 | Suite | Includes |
 | --- | --- |
-| `baseline` | fmt, clippy, workspace tests, docs, cargo-deny, cargo-audit, structure, budget. |
-| `conformance` | OAuth/OIDC, FAPI token flow, SAML, SCIM, WebAuthn, generic PEP decision, and sister-product PEP smoke. |
-| `assurance` | JWT/JWK hardening, SAML XML hardening, SCIM filter hardening, policy property checks, token rotation, tenant isolation, migration rollback, chaos checks. |
-| `preflight` | fuzz smoke tests, sanitizer smoke, PEP decision regression, all-features workspace tests. |
+| `baseline` | fmt, clippy, workspace tests, docs, cargo-deny, cargo-audit, structure, budget, docs-routes. |
+| `conformance` | OAuth/OIDC, FAPI token flow, SAML interop, SCIM protocol, WebAuthn ceremony, qpx end-to-end. |
+| `assurance` | JWT/JWK parser, SAML XML and SCIM filter hardening, policy property, token rotation and tenant isolation properties, migration rollback, chaos checks. |
+| `preflight` | JWT/JWK, SAML XML, SCIM filter and policy parser fuzz smokes, sanitizer smoke, PEP decision performance regression, release preflight. |
 | `release` | baseline + conformance + assurance + preflight. |
 
 Structure and budget can be run separately:

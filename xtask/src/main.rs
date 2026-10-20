@@ -75,15 +75,16 @@ fn main() -> anyhow::Result<()> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum GateSuite {
-    /// fmt, clippy, tests, docs, structure, and budget.
+    /// fmt, clippy, workspace tests, docs, cargo-deny, cargo-audit, structure, budget, docs-routes.
     Baseline,
-    /// OAuth/OIDC, FAPI, SAML, SCIM, WebAuthn, and qpx e2e checks.
+    /// OAuth/OIDC, FAPI token flow, SAML interop, SCIM protocol, WebAuthn ceremony, qpx end-to-end.
     Conformance,
-    /// Parser hardening, security properties, migration rollback, and chaos checks.
+    /// JWT/JWK, SAML XML and SCIM filter hardening, policy, token rotation and tenant
+    /// isolation properties, migration rollback, chaos checks.
     Assurance,
-    /// Sanitizer, performance, and final release preflight checks.
+    /// Fuzz smokes, sanitizer smoke, PEP decision performance regression, release preflight.
     Preflight,
-    /// Baseline, conformance, and assurance checks.
+    /// Baseline, conformance, assurance, and preflight checks.
     Release,
     /// Documentation route drift check only.
     DocsRoutes,

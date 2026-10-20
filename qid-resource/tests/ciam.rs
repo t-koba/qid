@@ -577,7 +577,7 @@ async fn ciam_trusted_identity_links_are_listed_lookupable_and_deletions_audited
 
 #[tokio::test]
 async fn ciam_challenge_issue_routes_fail_without_delivery() {
-    let (app, _state) = setup().await;
+    let (app, state) = setup().await;
     let issue_requests = [
         (
             "/api/v1/test/ciam/verification/issue",
@@ -624,6 +624,29 @@ async fn ciam_challenge_issue_routes_fail_without_delivery() {
             );
         }
     }
+    // The issue routes must persist nothing: the user's email stays
+    // unverified and no audit event records a challenge that was never
+    // delivered.
+    let realm_id = RealmId::from("test");
+    let user = state
+        .repo
+        .get_user_by_id_in_realm(&realm_id, "user-ciam")
+        .await
+        .unwrap()
+        .expect("the user exists");
+    assert!(
+        !user.email_verified,
+        "the 501 routes must not verify an email"
+    );
+    let audits = state
+        .repo
+        .list_audit_events(Some(&realm_id), 10)
+        .await
+        .unwrap();
+    assert!(
+        audits.is_empty(),
+        "the 501 routes must not write an audit event"
+    );
 }
 
 #[tokio::test]

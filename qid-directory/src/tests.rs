@@ -2276,3 +2276,91 @@ fn reads_the_paged_results_cookie() {
         vec![7]
     );
 }
+
+#[tokio::test]
+async fn webhook_ingest_rejects_an_empty_external_id() {
+    use crate::connector::{DirectoryConnector, WebhookHrConnector};
+    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
+    let mut connector = WebhookHrConnector::new();
+    let err = connector
+        .ingest_json(&serde_json::json!([{"external_id": "", "event": "joiner"}]))
+        .expect_err("an empty external id must be rejected");
+    assert!(err.message().contains("external_id"), "{}", err.message());
+    let users = connector
+        .fetch_users(
+            &DirectorySyncConfig::default(),
+            &DirectoryAttributeMapping::default(),
+        )
+        .await
+        .unwrap();
+    assert!(users.is_empty(), "a rejected record must not be stored");
+}
+
+#[tokio::test]
+async fn webhook_ingest_validates_the_batch_before_storing_it() {
+    use crate::connector::{DirectoryConnector, WebhookHrConnector};
+    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
+    let mut connector = WebhookHrConnector::new();
+    let err = connector
+        .ingest_json(&serde_json::json!([
+            {"external_id": "hr-1", "event": "joiner"},
+            {"external_id": "hr-2", "event": "not-an-event"}
+        ]))
+        .expect_err("an invalid record must be rejected");
+    assert!(err.message().contains("event"), "{}", err.message());
+    let users = connector
+        .fetch_users(
+            &DirectorySyncConfig::default(),
+            &DirectoryAttributeMapping::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        users.is_empty(),
+        "a rejected batch must leave no prefix behind"
+    );
+}
+
+#[tokio::test]
+async fn hr_import_rejects_joiner_mover_repeated_key_before_any_create() {
+    let state = setup().await;
+    let err = import_hr_records(
+        &state,
+        "corp",
+        vec![
+            HrRecord {
+                external_id: "hr-move".to_string(),
+                user_name: "move@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: None,
+                manager_external_id: None,
+                event: LifecycleEvent::Joiner,
+            },
+            HrRecord {
+                external_id: "hr-move".to_string(),
+                user_name: "move@example.com".to_string(),
+                email: None,
+                display_name: None,
+                department: None,
+                manager_external_id: None,
+                event: LifecycleEvent::Mover,
+            },
+        ],
+    )
+    .await
+    .expect_err("repeated key across joiner/mover must conflict");
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "expected conflict, got {err:?}"
+    );
+    let users = state
+        .repo
+        .list_scim_users(&RealmId::from("corp".to_string()))
+        .await
+        .unwrap();
+    assert!(
+        users.is_empty(),
+        "the joiner prefix must not be created before the repeated-key conflict"
+    );
+}

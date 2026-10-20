@@ -605,6 +605,7 @@ impl WebhookHrConnector {
                 message: "webhook payload must be a JSON array".to_string(),
             })?;
 
+        let mut ingested = Vec::with_capacity(records.len());
         for record in records {
             let obj = record
                 .as_object()
@@ -618,6 +619,12 @@ impl WebhookHrConnector {
                 .ok_or_else(|| qid_core::error::QidError::BadRequest {
                     message: "webhook record missing external_id".to_string(),
                 })?;
+
+            if external_id.trim().is_empty() {
+                return Err(qid_core::error::QidError::BadRequest {
+                    message: "webhook record has empty external_id".to_string(),
+                });
+            }
 
             let event = obj.get("event").and_then(|v| v.as_str()).ok_or_else(|| {
                 qid_core::error::QidError::BadRequest {
@@ -652,7 +659,7 @@ impl WebhookHrConnector {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            self.entries.push(LdapDirectoryEntry {
+            ingested.push(LdapDirectoryEntry {
                 dn: external_id.to_string(),
                 uid: external_id.to_string(),
                 mail: email,
@@ -662,6 +669,9 @@ impl WebhookHrConnector {
                 enabled,
             });
         }
+        // The batch is stored only once every record has been validated, so a
+        // rejected record leaves no prefix behind.
+        self.entries.extend(ingested);
         Ok(())
     }
 }

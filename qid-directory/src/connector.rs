@@ -45,43 +45,35 @@ pub fn escape_ldap_search_filter(input: &str) -> QidResult<String> {
     Ok(out)
 }
 
-/// Escape a string for safe inclusion in an LDAP distinguished name
-/// (RFC 4514 §2.4). The set of characters that require escaping is
-/// documented in the RFC and includes the structural delimiters `,`
-/// and `=`. NUL bytes are rejected.
-pub fn escape_ldap_dn_value(input: &str) -> QidResult<String> {
-    let mut out = String::with_capacity(input.len());
-    let leading = input.chars().next().unwrap_or(' ');
-    if matches!(leading, ' ' | '#') {
-        out.push('\\');
-    }
+/// Validate a configured bind DN (RFC 4514). The bind DN is used as it is
+/// configured: it is a sequence of attribute values, not a single value, so
+/// escaping it as one value would corrupt an ordinary full DN.
+fn validate_ldap_dn(input: &str) -> QidResult<()> {
     for ch in input.chars() {
-        match ch {
-            ',' | '+' | '"' | '\\' | '<' | '>' | ';' | '=' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            '\0' => {
-                return Err(QidError::Internal {
-                    message: "LDAP DN value contains NUL byte".to_string(),
-                });
-            }
-            c if (c as u32) < 0x20 => {
-                return Err(QidError::Internal {
-                    message: format!(
-                        "LDAP DN value contains control character U+{:04X}",
-                        c as u32
-                    ),
-                });
-            }
-            c => out.push(c),
+        if ch == '\0' {
+            return Err(QidError::Internal {
+                message: "LDAP bind DN contains NUL byte".to_string(),
+            });
+        }
+        if (ch as u32) < 0x20 {
+            return Err(QidError::Internal {
+                message: format!(
+                    "LDAP bind DN contains control character U+{:04X}",
+                    ch as u32
+                ),
+            });
         }
     }
-    if input.ends_with(' ') {
-        out.push('\\');
-        out.push(' ');
-    }
-    Ok(out)
+    Ok(())
+}
+
+/// The bind DN to use, preserved as configured.
+pub(crate) fn bind_dn_for(config: &DirectoryConnectionConfig) -> QidResult<Option<String>> {
+    let Some(dn) = &config.bind_dn else {
+        return Ok(None);
+    };
+    validate_ldap_dn(dn)?;
+    Ok(Some(dn.clone()))
 }
 
 /// Unified directory connector trait.
@@ -145,13 +137,9 @@ impl DirectoryConnector for LdapDirectoryConnector {
                     .to_string(),
             })?;
         let url = config.url.clone();
-        // The bind DN comes from configuration but is still passed verbatim
-        // into a search filter, so we escape it defensively to keep
-        // injection attacks out of the directory round trip.
-        let bind_dn = match &config.bind_dn {
-            Some(dn) => Some(escape_ldap_dn_value(dn)?),
-            None => None,
-        };
+        // The bind DN is a configured distinguished name, used as it is
+        // configured: it is not a value to escape.
+        let bind_dn = bind_dn_for(config)?;
         let bind_pw = config.bind_password.clone();
         let search_base = resolve_search_base(config);
         let raw_filter = sync
@@ -840,7 +828,6 @@ pub fn run_ldap_search_with_options(
     options: LdapSearchOptions,
 ) -> QidResult<Vec<LdapDirectoryEntry>> {
     use ldap3::SearchEntry;
-    use ldap3::controls::{Control, ControlType, PagedResults};
 
     if let Some(enabled_expr) = mapping.enabled.as_deref() {
         validate_enabled_expression(enabled_expr)?;
@@ -862,13 +849,13 @@ pub fn run_ldap_search_with_options(
         with_ldap_session(settings, &url, options.timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(options.timeout_secs);
             if options.use_sasl {
-                if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
+                if let Some(dn) = &bind_dn {
                     ldap.with_timeout(operation_timeout);
-                    ldap_sasl_scram_sha256_bind(ldap, dn, pw)
-                        .await
-                        .map_err(|e| qid_core::error::QidError::Internal {
+                    ldap_sasl_scram_sha256_bind(dn).await.map_err(|e| {
+                        qid_core::error::QidError::Internal {
                             message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
-                        })?;
+                        }
+                    })?;
                 }
             } else if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
@@ -880,7 +867,7 @@ pub fn run_ldap_search_with_options(
 
             loop {
                 if page_size > 0 {
-                    ldap.with_controls(PagedResults {
+                    ldap.with_controls(ldap3::controls::PagedResults {
                         size: page_size as i32,
                         cookie: cookie.clone(),
                     });
@@ -895,17 +882,7 @@ pub fn run_ldap_search_with_options(
                 )
                 .await?;
                 if page_size > 0 {
-                    let raw = res.ctrls.iter().find_map(|ctrl| {
-                        if let Control(Some(ControlType::PagedResults), raw) = ctrl {
-                            Some(raw)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(raw) = raw {
-                        let pr: PagedResults = raw.parse();
-                        cookie = pr.cookie;
-                    }
+                    cookie = paged_results_cookie(&res.ctrls)?;
                 }
                 for entry in entries {
                     let se = SearchEntry::construct(entry);
@@ -926,21 +903,34 @@ pub fn run_ldap_search_with_options(
     })
 }
 
-/// SASL SCRAM-SHA-256 bind helper. The `ldap3` 0.12.x crate does not
-/// ship a built-in SCRAM-SHA-256 implementation. This function provides
-/// a documented path: callers should enable the `scram` crate and
-/// use `ldap3::sasl::SaslAuthMechanism` with a custom SCRAM callback.
-/// For now, falls back to simple bind over TLS.
-pub async fn ldap_sasl_scram_sha256_bind(
-    ldap: &mut ldap3::Ldap,
-    username: &str,
-    password: &str,
-) -> Result<(), String> {
-    let result = ldap
-        .simple_bind(username, password)
-        .await
-        .map_err(|e| format!("SCRAM fallback bind failed: {e}"))?;
-    ensure_ldap_bind_success(result).map_err(|e| e.to_string())
+/// The cookie of the next page, taken from the PagedResults control the
+/// server must return for every requested page. A missing control is an
+/// error: reusing the previous cookie would repeat a page, and ending the
+/// search would truncate the result silently.
+pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidResult<Vec<u8>> {
+    use ldap3::controls::{Control, ControlType, PagedResults};
+    let raw = ctrls.iter().find_map(|ctrl| {
+        if let Control(Some(ControlType::PagedResults), raw) = ctrl {
+            Some(raw)
+        } else {
+            None
+        }
+    });
+    let Some(raw) = raw else {
+        return Err(QidError::Internal {
+            message: "LDAP paged search did not return a PagedResults control".to_string(),
+        });
+    };
+    let pr: PagedResults = raw.parse();
+    Ok(pr.cookie)
+}
+
+/// SASL SCRAM-SHA-256 bind. The `ldap3` 0.12.x crate does not ship a
+/// SCRAM-SHA-256 implementation, so this fails explicitly: substituting a
+/// simple bind would authenticate with a different mechanism than the
+/// operator asked for.
+pub async fn ldap_sasl_scram_sha256_bind(_username: &str) -> Result<(), String> {
+    Err("SASL SCRAM-SHA-256 bind is not implemented".to_string())
 }
 
 #[cfg(test)]

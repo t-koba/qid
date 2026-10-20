@@ -2198,3 +2198,81 @@ mod directory_http_truthfulness {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }
+
+#[test]
+fn preserves_the_configured_bind_dn() {
+    use qid_core::config::DirectoryConnectionConfig;
+    let config = DirectoryConnectionConfig {
+        url: "ldaps://ad.example.com:636".to_string(),
+        bind_dn: Some("CN=svc,OU=Users,DC=example,DC=com".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::connector::bind_dn_for(&config).unwrap(),
+        Some("CN=svc,OU=Users,DC=example,DC=com".to_string())
+    );
+}
+
+#[test]
+fn preserves_an_already_escaped_bind_dn() {
+    use qid_core::config::DirectoryConnectionConfig;
+    let config = DirectoryConnectionConfig {
+        url: "ldaps://ad.example.com:636".to_string(),
+        bind_dn: Some("CN=svc\\,ou,OU=Users,DC=example,DC=com".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::connector::bind_dn_for(&config).unwrap(),
+        Some("CN=svc\\,ou,OU=Users,DC=example,DC=com".to_string())
+    );
+}
+
+#[test]
+fn rejects_a_bind_dn_with_a_control_character() {
+    use qid_core::config::DirectoryConnectionConfig;
+    let config = DirectoryConnectionConfig {
+        url: "ldaps://ad.example.com:636".to_string(),
+        bind_dn: Some("CN=svc\u{1},DC=example".to_string()),
+        ..Default::default()
+    };
+    assert!(crate::connector::bind_dn_for(&config).is_err());
+}
+
+#[tokio::test]
+async fn sasl_bind_fails_instead_of_falling_back_to_a_simple_bind() {
+    let err = crate::connector::ldap_sasl_scram_sha256_bind("CN=svc")
+        .await
+        .unwrap_err();
+    assert!(err.contains("not implemented"), "{err}");
+}
+
+#[test]
+fn requires_the_paged_results_control() {
+    use ldap3::controls::Control;
+    let err = crate::connector::paged_results_cookie(&[]).unwrap_err();
+    assert!(err.message().contains("PagedResults"), "{}", err.message());
+    let other = Control(
+        None,
+        ldap3::controls::RawControl {
+            ctype: "1.2.3".to_string(),
+            crit: false,
+            val: None,
+        },
+    );
+    assert!(crate::connector::paged_results_cookie(&[other]).is_err());
+}
+
+#[test]
+fn reads_the_paged_results_cookie() {
+    use ldap3::controls::{Control, ControlType, PagedResults, RawControl};
+    let raw: RawControl = PagedResults {
+        size: 1,
+        cookie: vec![7],
+    }
+    .into();
+    let ctrls = vec![Control(Some(ControlType::PagedResults), raw)];
+    assert_eq!(
+        crate::connector::paged_results_cookie(&ctrls).unwrap(),
+        vec![7]
+    );
+}

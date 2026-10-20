@@ -2472,3 +2472,19 @@ async fn webhook_ingest_trims_the_manager_reference() {
     assert_eq!(users[0].manager_dn.as_deref(), Some("hr-mgr"));
     assert_eq!(users[1].manager_dn, None);
 }
+
+#[test]
+fn a_bind_credential_must_be_usable_in_both_directions() {
+    let err =
+        crate::connector::bind_credentials(Some(&"CN=svc".to_string()), Some(&"  ".to_string()))
+            .expect_err("a blank password is no credential");
+    assert!(err.message().contains("bind password"), "{}", err.message());
+    let err = crate::connector::bind_credentials(None, Some(&"secret".to_string()))
+        .expect_err("a password without a bind DN would search anonymously");
+    assert!(err.message().contains("bind DN"), "{}", err.message());
+    assert_eq!(
+        crate::connector::bind_credentials(None, Some(&"  ".to_string())).unwrap(),
+        None,
+        "a blank password is no credential either"
+    );
+}

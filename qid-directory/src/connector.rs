@@ -190,6 +190,9 @@ pub struct LdapSearchOptions {
     /// yet, so a requested SASL bind fails instead of falling back to a
     /// simple bind.
     pub use_sasl: bool,
+    /// Skip the TLS certificate verification. ldap3's flag disables the server
+    /// name check as well as the chain check, so it covers the whole connection.
+    pub tls_insecure: bool,
     pub timeout_secs: u64,
 }
 
@@ -198,6 +201,7 @@ impl Default for LdapSearchOptions {
         Self {
             page_size: None,
             use_sasl: false,
+            tls_insecure: false,
             timeout_secs: 10,
         }
     }
@@ -317,6 +321,36 @@ fn ensure_ldap_search_success(result: ldap3::SearchResult) -> QidResult<ldap3::S
         })
 }
 
+/// The connection settings a directory search uses. Both LDAP paths share
+/// the scheme check, the start-TLS decision and the TLS verification policy.
+fn ldap_search_settings(
+    url: &str,
+    tls_insecure: bool,
+) -> QidResult<(ldap3::LdapConnSettings, String)> {
+    if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
+        return Err(qid_core::error::QidError::BadRequest {
+            message: "LDAP URL must use ldaps:// or ldap:// scheme".to_string(),
+        });
+    }
+    let settings = ldap3::LdapConnSettings::new()
+        .set_starttls(url.starts_with("ldap://"))
+        .set_no_tls_verify(tls_insecure);
+    Ok((settings, url.to_string()))
+}
+
+/// Map one search entry into a directory entry with the attribute mapping.
+fn map_ldap_search_entry(
+    entry: ldap3::ResultEntry,
+    mapping: &DirectoryAttributeMapping,
+) -> QidResult<LdapDirectoryEntry> {
+    let se = ldap3::SearchEntry::construct(entry);
+    let mut attrs = std::collections::BTreeMap::new();
+    for (k, v) in se.attrs {
+        attrs.insert(k, v);
+    }
+    map_ldap_entry(&se.dn, &attrs, mapping, true)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_ldap_search(
     url: &str,
@@ -328,25 +362,12 @@ fn run_ldap_search(
     timeout_secs: u64,
     tls_insecure: bool,
 ) -> QidResult<Vec<LdapDirectoryEntry>> {
-    use ldap3::SearchEntry;
-
     if let Some(enabled_expr) = mapping.enabled.as_deref() {
         validate_enabled_expression(enabled_expr)?;
     }
-    // INTEROP §4513: enforce TLS for LDAP plain bind.
-    // Reject non-TLS URLs unless the connection uses a Unix socket.
-    if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
-        return Err(qid_core::error::QidError::BadRequest {
-            message: "LDAP URL must use ldaps:// or ldap:// scheme".to_string(),
-        });
-    }
-    let use_starttls = url.starts_with("ldap://");
-    let url = url.to_string();
+    let (settings, url) = ldap_search_settings(url, tls_insecure)?;
 
     shared_runtime().block_on(async {
-        let settings = ldap3::LdapConnSettings::new()
-            .set_starttls(use_starttls)
-            .set_no_tls_verify(tls_insecure);
         with_ldap_session(settings, &url, timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(timeout_secs);
             if let Some((dn, pw)) = bind_credentials(bind_dn.as_ref(), bind_pw.as_ref())? {
@@ -363,16 +384,9 @@ fn run_ldap_search(
             )
             .await?;
 
-            let result: Vec<LdapDirectoryEntry> = entries
+            let result = entries
                 .into_iter()
-                .map(|entry| {
-                    let se = SearchEntry::construct(entry);
-                    let mut attrs = std::collections::BTreeMap::new();
-                    for (k, v) in se.attrs {
-                        attrs.insert(k, v);
-                    }
-                    map_ldap_entry(&se.dn, &attrs, mapping, true)
-                })
+                .map(|entry| map_ldap_search_entry(entry, mapping))
                 .collect::<QidResult<Vec<_>>>()?;
 
             Ok(result)
@@ -849,25 +863,12 @@ pub fn run_ldap_search_with_options(
     mapping: &DirectoryAttributeMapping,
     options: LdapSearchOptions,
 ) -> QidResult<Vec<LdapDirectoryEntry>> {
-    use ldap3::SearchEntry;
-
     if let Some(enabled_expr) = mapping.enabled.as_deref() {
         validate_enabled_expression(enabled_expr)?;
     }
-    if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
-        return Err(qid_core::error::QidError::BadRequest {
-            message: "LDAP URL must use ldaps:// or ldap:// scheme".to_string(),
-        });
-    }
-    let use_starttls = url.starts_with("ldap://");
-    let url = url.to_string();
+    let (settings, url) = ldap_search_settings(url, options.tls_insecure)?;
 
     shared_runtime().block_on(async {
-        let settings = ldap3::LdapConnSettings::new()
-            .set_starttls(use_starttls)
-            .set_no_tls_verify(false);
-        // Note: tls_insecure is not passed into this function; the
-        // paged-search variant currently defaults to strict verification.
         with_ldap_session(settings, &url, options.timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(options.timeout_secs);
             if options.use_sasl {
@@ -906,12 +907,7 @@ pub fn run_ldap_search_with_options(
                     cookie = paged_results_cookie(&res.ctrls)?;
                 }
                 for entry in entries {
-                    let se = SearchEntry::construct(entry);
-                    let mut attrs = std::collections::BTreeMap::new();
-                    for (k, v) in se.attrs {
-                        attrs.insert(k, v);
-                    }
-                    all_entries.push(map_ldap_entry(&se.dn, &attrs, mapping, true)?);
+                    all_entries.push(map_ldap_search_entry(entry, mapping)?);
                 }
                 if page_size == 0 || cookie.is_empty() {
                     break;
@@ -943,12 +939,17 @@ pub(crate) fn bind_credentials<'a>(
     bind_dn: Option<&'a String>,
     bind_pw: Option<&'a String>,
 ) -> QidResult<Option<(&'a str, &'a str)>> {
-    let Some(dn) = bind_dn else {
+    let pw = bind_pw.map(|pw| pw.as_str()).unwrap_or_default();
+    let Some(dn) = bind_dn.map(|dn| dn.trim()) else {
+        // A password without a bind DN would leave the search anonymous.
+        if !pw.trim().is_empty() {
+            return Err(QidError::Internal {
+                message: "LDAP bind password requires a bind DN".to_string(),
+            });
+        }
         return Ok(None);
     };
-    let dn = dn.trim();
-    let pw = bind_pw.map(|pw| pw.as_str()).unwrap_or_default();
-    if dn.is_empty() || pw.is_empty() {
+    if dn.is_empty() || pw.trim().is_empty() {
         return Err(QidError::Internal {
             message: "LDAP bind DN and bind password must both be set and non-blank".to_string(),
         });

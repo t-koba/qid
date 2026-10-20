@@ -1045,7 +1045,7 @@ realms:
         let base_config = std::fs::read_to_string(&config).expect("base config");
         let disabled_directory_config = base_config.replace(
             "    issuer: \"https://id.example.com/realms/corp\"\n",
-            "    issuer: \"https://id.example.com/realms/corp\"\n    protocols:\n      directory:\n        enabled: false\n        providers:\n          - id: corp-ldap\n            type: ldap\n            enabled: true\n            connection:\n              url: \"not-an-ldap-url\"\n",
+            "    issuer: \"https://id.example.com/realms/corp\"\n    protocols:\n      directory:\n        enabled: false\n        providers:\n          - id: corp-ldap\n            type: ldap\n            enabled: true\n            connection:\n              url: \"ldap://dir.invalid\"\n",
         );
         std::fs::write(&config, disabled_directory_config).expect("disabled directory config");
 

@@ -30,7 +30,7 @@ realms:
             type: active-directory
             enabled: true
             connection:
-              url: "not-an-ldap-url"
+              url: "ldap://dir.invalid"
 "#
         ),
     )
@@ -43,7 +43,7 @@ realms:
             .await
             .expect("repository"),
     );
-    // The LDAP-specific URL error proves dispatch reached that connector.
+    // The LDAP-specific connect error proves dispatch reached that connector.
     let error = run_directory_sync_job(
         repo,
         &config,
@@ -62,12 +62,12 @@ realms:
     .to_string();
 
     assert!(
-        error.contains("LDAP URL must use ldaps:// or ldap://"),
+        error.contains("LDAP connect to"),
         "unexpected error: {error}"
     );
     assert!(
-        error.starts_with("config error:"),
-        "a misconfigured provider must be a configuration fault: {error}"
+        error.starts_with("internal error:"),
+        "an unreachable directory is a transport fault: {error}"
     );
     assert!(
         !error.contains("unsupported type"),

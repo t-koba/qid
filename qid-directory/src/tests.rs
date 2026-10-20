@@ -2364,3 +2364,33 @@ async fn hr_import_rejects_joiner_mover_repeated_key_before_any_create() {
         "the joiner prefix must not be created before the repeated-key conflict"
     );
 }
+
+#[test]
+fn rejects_a_paged_results_control_without_a_value() {
+    use ldap3::controls::{Control, ControlType, RawControl};
+    let ctrls = vec![Control(
+        Some(ControlType::PagedResults),
+        RawControl {
+            ctype: "1.2.840.113556.1.4.319".to_string(),
+            crit: false,
+            val: None,
+        },
+    )];
+    let err = crate::connector::paged_results_cookie(&ctrls)
+        .expect_err("a control without a value must fail closed");
+    assert!(
+        err.message().contains("without a value"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
+fn a_sasl_bind_without_a_bind_dn_is_an_error() {
+    let err = crate::connector::sasl_bind_dn(None).expect_err("a SASL bind needs a bind DN");
+    assert!(err.message().contains("bind DN"), "{}", err.message());
+    assert_eq!(
+        crate::connector::sasl_bind_dn(Some("CN=svc")).unwrap(),
+        "CN=svc"
+    );
+}

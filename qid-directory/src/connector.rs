@@ -859,14 +859,13 @@ pub fn run_ldap_search_with_options(
         with_ldap_session(settings, &url, options.timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(options.timeout_secs);
             if options.use_sasl {
-                if let Some(dn) = &bind_dn {
-                    ldap.with_timeout(operation_timeout);
-                    ldap_sasl_scram_sha256_bind(dn).await.map_err(|e| {
-                        qid_core::error::QidError::Internal {
-                            message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
-                        }
-                    })?;
-                }
+                let dn = sasl_bind_dn(bind_dn.as_deref())?;
+                ldap.with_timeout(operation_timeout);
+                ldap_sasl_scram_sha256_bind(dn).await.map_err(|e| {
+                    qid_core::error::QidError::Internal {
+                        message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
+                    }
+                })?;
             } else if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
@@ -913,6 +912,14 @@ pub fn run_ldap_search_with_options(
     })
 }
 
+/// The bind DN a requested SASL bind must use. A SASL bind without one is an
+/// error: falling through would run an anonymous search and report success.
+pub(crate) fn sasl_bind_dn(bind_dn: Option<&str>) -> QidResult<&str> {
+    bind_dn.ok_or_else(|| QidError::Internal {
+        message: "LDAP SASL bind requested without a configured bind DN".to_string(),
+    })
+}
+
 /// The cookie of the next page, taken from the PagedResults control the
 /// server must return for every requested page. A missing control is an
 /// error: reusing the previous cookie would repeat a page, and ending the
@@ -931,6 +938,12 @@ pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidRes
             message: "LDAP paged search did not return a PagedResults control".to_string(),
         });
     };
+    if raw.val.is_none() {
+        return Err(QidError::Internal {
+            message: "LDAP paged search returned a PagedResults control without a value"
+                .to_string(),
+        });
+    }
     let pr: PagedResults = raw.parse();
     Ok(pr.cookie)
 }

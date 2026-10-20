@@ -6,8 +6,9 @@
 //!
 //! The supported subset is equality, presence, substring, the ordering
 //! comparisons `>=` and `<=`, and the boolean operators `&`, `|` and `!`. An
-//! extensible match (`:`) is rejected rather than widened to an equality,
-//! because its matching rules are not implemented.
+//! extensible match (`:`) and an approximate match (`~=`) are rejected rather
+//! than widened to an equality, because their matching rules are not
+//! implemented.
 
 use qid_core::error::{QidError, QidResult};
 
@@ -144,22 +145,22 @@ impl<'a> Parser<'a> {
                 }
                 self.parse_equality_or_substring(attr)
             }
-            Some('~') => {
-                self.advance();
-                self.expect_char('=')?;
-                let value = self.parse_value();
-                Ok(LdapFilter::Equality(attr, value))
-            }
+            Some('~') => Err(QidError::BadRequest {
+                message: format!(
+                    "LDAP filter: approximate match on attribute '{}' is not supported",
+                    attr
+                ),
+            }),
             Some('>') => {
                 self.advance();
                 self.expect_char('=')?;
-                let value = self.parse_value();
+                let value = self.parse_value()?;
                 Ok(LdapFilter::GreaterOrEqual(attr, value))
             }
             Some('<') => {
                 self.advance();
                 self.expect_char('=')?;
-                let value = self.parse_value();
+                let value = self.parse_value()?;
                 Ok(LdapFilter::LessOrEqual(attr, value))
             }
             Some(':') => Err(QidError::BadRequest {
@@ -284,7 +285,7 @@ impl<'a> Parser<'a> {
         Ok(attr.to_string())
     }
 
-    fn parse_value(&mut self) -> String {
+    fn parse_value(&mut self) -> QidResult<String> {
         let start = self.pos;
         while let Some(c) = self.peek() {
             if c == ')' {
@@ -292,8 +293,7 @@ impl<'a> Parser<'a> {
             }
             self.advance();
         }
-        let raw = &self.input[start..self.pos];
-        unescape_filter_value(raw).unwrap_or(raw.to_string())
+        unescape_filter_value(&self.input[start..self.pos])
     }
 
     /// Check if remaining input is just `*` followed by `)`.
@@ -669,8 +669,18 @@ mod tests {
 
     #[test]
     fn rejects_an_approximate_match() {
+        let err = parse_ldap_filter("(cn~=alice)").unwrap_err();
+        assert!(err.message().contains("approximate"), "{}", err.message());
         let err = parse_ldap_filter("(cn≈alice)").unwrap_err();
         assert!(err.message().contains("LDAP filter"), "{}", err.message());
+    }
+
+    #[test]
+    fn rejects_an_invalid_escape_on_the_ordering_path() {
+        let err = parse_ldap_filter("(cn>=\\ff)").unwrap_err();
+        assert!(err.message().contains("UTF-8"), "{}", err.message());
+        let err = parse_ldap_filter("(cn<=\\ff)").unwrap_err();
+        assert!(err.message().contains("UTF-8"), "{}", err.message());
     }
 
     #[test]

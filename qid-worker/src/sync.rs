@@ -290,9 +290,9 @@ pub async fn run_directory_sync_job(
     )
     .await?;
 
-    let audit_event_id = if config.record_audit_event {
+    let (audit_event_id, audit_error) = if config.record_audit_event {
         let event_id = ulid::Ulid::new().to_string();
-        let _ = state
+        match state
             .repo
             .append_audit_event(&AuditEvent {
                 id: event_id.clone(),
@@ -315,10 +315,18 @@ pub async fn run_directory_sync_job(
                 previous_hash: None,
                 event_hash: None,
             })
-            .await;
-        Some(event_id)
+            .await
+        {
+            Ok(()) => (Some(event_id), None),
+            Err(e) => (
+                None,
+                Some(format!(
+                    "failed to persist directory sync audit event: {e}; directory sync mutations may already have occurred"
+                )),
+            ),
+        }
     } else {
-        None
+        (None, None)
     };
 
     Ok(DirectorySyncJobReport {
@@ -329,7 +337,7 @@ pub async fn run_directory_sync_job(
         unchanged: result.unchanged_user_ids.len() as u64,
         deactivated: result.deactivated_user_ids.len() as u64,
         skipped_break_glass: result.break_glass_skipped_user_ids.len() as u64,
-        errors: Vec::new(),
+        errors: audit_error.into_iter().collect(),
         audit_event_id,
         dry_run: config.dry_run,
     })

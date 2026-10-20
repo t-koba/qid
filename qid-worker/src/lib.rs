@@ -5,6 +5,8 @@ pub mod audit;
 pub mod key_rotation;
 pub mod notification;
 pub mod sync;
+#[cfg(test)]
+mod sync_audit_test;
 
 pub use audit::*;
 pub use key_rotation::*;

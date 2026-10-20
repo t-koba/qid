@@ -38,6 +38,7 @@ lettre = { workspace = true, optional = true, features = ["tokio1-rustls-tls"] }
 
 [dev-dependencies]
 base64 = { workspace = true }
+sqlx = { workspace = true }
 tokio = { workspace = true }
 
 [features]

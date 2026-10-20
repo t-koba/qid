@@ -156,6 +156,7 @@ pub(crate) async fn create_user_record<R: Repository>(
     // marker so storage never persists a forged value. SCIM create never
     // stamps a deprovision.
     crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
+    super::complex::validate_user_complex(req.name.as_ref(), req.emails.as_ref())?;
     let user = ScimUser {
         id: ulid::Ulid::new().to_string(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),
@@ -240,6 +241,7 @@ fn replace_user_value(existing: ScimUser, req: CreateUser) -> QidResult<ScimUser
     let mut enterprise_json = req.enterprise.unwrap_or(existing.enterprise_json);
     // Preserve the authoritative lifecycle timestamp, stripping any client-supplied marker.
     crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
+    super::complex::validate_user_complex(req.name.as_ref(), req.emails.as_ref())?;
     Ok(ScimUser {
         id: existing.id.clone(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),
@@ -332,6 +334,12 @@ fn owned_external_id_conflict(action: &str) -> QidError {
 fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidError> {
     let op_name = op.op.to_ascii_lowercase();
     let path = op.path.unwrap_or_default();
+    // The advertised complex containers are checked before they are stored.
+    match (path.as_str(), op.value.as_ref()) {
+        ("name", Some(value)) => super::complex::validate_name(value)?,
+        ("emails", Some(value)) => super::complex::validate_emails(value)?,
+        _ => {}
+    }
     let enterprise_path = format!("{ENTERPRISE_USER_SCHEMA}:");
     let core_path = format!("{}:", super::CORE_USER_SCHEMA);
     let unsupported_urn_path = super::has_urn_scheme(&path)

@@ -1,6 +1,7 @@
 //! Inbound SCIM 2.0 endpoint handlers.
 
 mod bulk;
+mod complex;
 mod groups;
 mod list;
 mod schemas;

@@ -89,6 +89,7 @@ pub(crate) async fn create_group_record<R: Repository>(
     state: &SharedState<R>,
     req: CreateGroup,
 ) -> QidResult<ScimGroup> {
+    super::complex::validate_group_complex(req.members.as_ref())?;
     let group = ScimGroup {
         id: ulid::Ulid::new().to_string(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),
@@ -146,6 +147,7 @@ pub(crate) async fn replace_group<R: Repository>(
 }
 
 fn replace_group_value(existing: ScimGroup, req: CreateGroup) -> QidResult<ScimGroup> {
+    super::complex::validate_group_complex(req.members.as_ref())?;
     Ok(ScimGroup {
         id: existing.id.clone(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),
@@ -222,13 +224,25 @@ fn apply_group_patch(group: &mut ScimGroup, op: PatchOperation) -> Result<(), Qi
         ("add", "members") => {
             let mut members = group.members_json.as_array().cloned().unwrap_or_default();
             match op.value {
-                Some(serde_json::Value::Array(values)) => members.extend(values),
-                Some(value) => members.push(value),
+                Some(serde_json::Value::Array(values)) => {
+                    for value in &values {
+                        super::complex::validate_member(value)?;
+                    }
+                    members.extend(values);
+                }
+                Some(value) => {
+                    super::complex::validate_member(&value)?;
+                    members.push(value);
+                }
                 None => {}
             }
             group.members_json = serde_json::Value::Array(members);
         }
-        ("replace", "members") => group.members_json = op.value.unwrap_or(serde_json::json!([])),
+        ("replace", "members") => {
+            let value = op.value.unwrap_or(serde_json::json!([]));
+            super::complex::validate_members(&value)?;
+            group.members_json = value;
+        }
         ("remove", "members") => group.members_json = serde_json::json!([]),
         _ => return Err(super::unsupported_patch(op.op.as_str(), path.as_str())),
     }

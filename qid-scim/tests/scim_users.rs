@@ -2321,27 +2321,13 @@ async fn scim_user_patch_add_appends_emails() {
     assert_eq!(after["emails"], before["emails"]);
     assert_eq!(after["meta"]["version"], before_version);
 
-    // A non-array stored shape also fails a later `add` without mutation.
+    // A malformed `replace` is a client error too, and the record is unchanged.
     let patch_request = Request::builder()
         .method(Method::PATCH)
         .uri(format!("/scim/v2/Users/{id}"))
         .header("Content-Type", "application/json")
         .body(Body::from(
             r#"{"Operations":[{"op":"replace","path":"emails","value":{"value":"stored"}}]}"#,
-        ))
-        .unwrap();
-    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
-    assert_eq!(patch_response.status(), StatusCode::OK);
-    let stored = response_json(patch_response).await;
-    assert_eq!(stored["emails"], serde_json::json!({"value": "stored"}));
-    let stored_version = stored["meta"]["version"].as_str().unwrap().to_string();
-
-    let patch_request = Request::builder()
-        .method(Method::PATCH)
-        .uri(format!("/scim/v2/Users/{id}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            r#"{"Operations":[{"op":"add","path":"emails","value":[{"value":"d@example.com"}]}]}"#,
         ))
         .unwrap();
     let patch_response = app.clone().oneshot(patch_request).await.unwrap();
@@ -2352,11 +2338,11 @@ async fn scim_user_patch_add_appends_emails() {
         .uri(format!("/scim/v2/Users/{id}"))
         .body(Body::empty())
         .unwrap();
-    let after_response = app.oneshot(after_request).await.unwrap();
+    let after_response = app.clone().oneshot(after_request).await.unwrap();
     assert_eq!(after_response.status(), StatusCode::OK);
     let after = response_json(after_response).await;
-    assert_eq!(after["emails"], serde_json::json!({"value": "stored"}));
-    assert_eq!(after["meta"]["version"], stored_version);
+    assert_eq!(after["emails"], before["emails"]);
+    assert_eq!(after["meta"]["version"], before_version);
 }
 
 #[tokio::test]
@@ -2546,4 +2532,153 @@ async fn scim_event_subscription_create_rejects_invalid_payloads() {
     assert_eq!(list_response.status(), StatusCode::OK);
     let listed = response_json(list_response).await;
     assert_eq!(listed["totalResults"], 0, "a rejected write stores nothing");
+}
+
+#[tokio::test]
+async fn scim_complex_containers_are_validated_before_storage() {
+    let app = setup().await;
+
+    // A User create with a malformed container is a client error and stores nothing.
+    for body in [
+        r#"{"realm":"corp","userName":"a@example.com","name":"Alice"}"#,
+        r#"{"realm":"corp","userName":"a@example.com","name":{"givenName":42}}"#,
+        r#"{"realm":"corp","userName":"a@example.com","emails":"a@example.com"}"#,
+        r#"{"realm":"corp","userName":"a@example.com","emails":[{"value":"a@example.com","primary":"yes"}]}"#,
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/scim/v2/Users")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "body must be rejected: {body}"
+        );
+    }
+
+    // The valid shape still round-trips.
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"a@example.com","name":{"givenName":"Alice"},"emails":[{"value":"a@example.com","primary":true}]}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let version = created["meta"]["version"].as_str().unwrap().to_string();
+
+    // A malformed replace keeps the stored record.
+    let replace_request = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"a@example.com","emails":{"value":"a@example.com"}}"#,
+        ))
+        .unwrap();
+    let replace_response = app.clone().oneshot(replace_request).await.unwrap();
+    assert_eq!(replace_response.status(), StatusCode::BAD_REQUEST);
+
+    // A malformed patch keeps the stored record.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"replace","path":"name","value":["Alice"]}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::BAD_REQUEST);
+
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = response_json(get_response).await;
+    assert_eq!(fetched["name"]["givenName"], "Alice");
+    assert_eq!(fetched["emails"][0]["value"], "a@example.com");
+    assert_eq!(fetched["meta"]["version"], version);
+
+    // Bulk shares the validation and creates nothing for a malformed body.
+    let bulk_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"failOnErrors":0,"Operations":[{"method":"POST","path":"/Users","data":{"realm":"corp","userName":"b@example.com","emails":"b@example.com"}}]}"#,
+        ))
+        .unwrap();
+    let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
+    assert_eq!(bulk_response.status(), StatusCode::OK);
+    let bulk = response_json(bulk_response).await;
+    assert_eq!(bulk["Operations"][0]["status"], "400");
+
+    // A Group container is validated the same way.
+    for body in [
+        r#"{"realm":"corp","displayName":"engineering","members":"user-1"}"#,
+        r#"{"realm":"corp","displayName":"engineering","members":["user-1"]}"#,
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/scim/v2/Groups")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "body must be rejected: {body}"
+        );
+    }
+
+    let group_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Groups")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","displayName":"engineering","members":[{"value":"user-1"}]}"#,
+        ))
+        .unwrap();
+    let group_response = app.clone().oneshot(group_request).await.unwrap();
+    assert_eq!(group_response.status(), StatusCode::CREATED);
+    let group = response_json(group_response).await;
+    let group_id = group["id"].as_str().unwrap().to_string();
+    let group_version = group["meta"]["version"].as_str().unwrap().to_string();
+
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Groups/{group_id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"add","path":"members","value":"user-2"}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::BAD_REQUEST);
+
+    let group_get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Groups/{group_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let group_get_response = app.clone().oneshot(group_get_request).await.unwrap();
+    assert_eq!(group_get_response.status(), StatusCode::OK);
+    let fetched_group = response_json(group_get_response).await;
+    assert_eq!(
+        fetched_group["members"],
+        serde_json::json!([{"value": "user-1"}])
+    );
+    assert_eq!(fetched_group["meta"]["version"], group_version);
 }

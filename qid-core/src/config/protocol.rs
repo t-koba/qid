@@ -1,34 +1,42 @@
 use super::*;
 
 /// A configuration that may be written as a bare boolean or as an object with
-/// `enabled` plus its own settings. One owned shape for that idiom: the
-/// settings keep their own defaults, and a bare boolean takes the defaults of
-/// the configuration itself.
+/// `enabled` plus its own settings. One owned shape for that idiom: the object
+/// form rejects an unknown key like every other configuration, the settings
+/// keep their own defaults, and a bare boolean takes the defaults of the
+/// configuration itself.
 macro_rules! enabled_or_object {
-    ($($field:ident : $ty:ty = $default:literal),* $(,)?) => {
+    (enabled = $enabled_default:literal; $($field:ident : $ty:ty = $default:literal),* $(,)?) => {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where
             D: Deserializer<'de>,
         {
             #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Settings {
+                #[serde(default = $enabled_default)]
+                enabled: bool,
+                $(
+                    #[serde(default = $default)]
+                    $field: $ty,
+                )*
+            }
+            #[derive(Deserialize)]
             #[serde(untagged)]
             enum Wire {
                 Bool(bool),
-                Object {
-                    #[serde(default)]
-                    enabled: bool,
-                    $(
-                        #[serde(default = $default)]
-                        $field: $ty,
-                    )*
-                },
+                Object(Settings),
             }
             match Wire::deserialize(deserializer)? {
-                Wire::Bool(enabled) => Ok(Self {
-                    enabled,
-                    ..Self::default()
+                Wire::Bool(enabled) => {
+                    let mut value = Self::default();
+                    value.enabled = enabled;
+                    Ok(value)
+                }
+                Wire::Object(settings) => Ok(Self {
+                    enabled: settings.enabled,
+                    $($field: settings.$field,)*
                 }),
-                Wire::Object { enabled, $($field,)* } => Ok(Self { enabled, $($field,)* }),
             }
         }
     };
@@ -318,7 +326,7 @@ impl ProtocolFeatureConfig {
 }
 
 impl<'de> Deserialize<'de> for ProtocolFeatureConfig {
-    enabled_or_object!(allow_open_registration: bool = "bool::default");
+    enabled_or_object!(enabled = "bool::default"; allow_open_registration: bool = "bool::default");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -345,7 +353,7 @@ impl Default for CibaConfig {
 }
 
 impl<'de> Deserialize<'de> for CibaConfig {
-    enabled_or_object!(mode: CibaMode = "CibaMode::default");
+    enabled_or_object!(enabled = "bool::default"; mode: CibaMode = "CibaMode::default");
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -355,7 +363,7 @@ pub struct ParConfig {
 }
 
 impl<'de> Deserialize<'de> for ParConfig {
-    enabled_or_object!(required_for: Vec<String> = "Vec::default");
+    enabled_or_object!(enabled = "bool::default"; required_for: Vec<String> = "Vec::default");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,7 +382,7 @@ impl Default for IntrospectionConfig {
 }
 
 impl<'de> Deserialize<'de> for IntrospectionConfig {
-    enabled_or_object!(jwt_response: bool = "bool::default");
+    enabled_or_object!(enabled = "bool::default"; jwt_response: bool = "bool::default");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,7 +403,7 @@ impl Default for DpopProtocolConfig {
 }
 
 impl<'de> Deserialize<'de> for DpopProtocolConfig {
-    enabled_or_object!(replay_cache: bool = "default_true", nonce: bool = "bool::default");
+    enabled_or_object!(enabled = "bool::default"; replay_cache: bool = "default_true", nonce: bool = "bool::default");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,31 +418,7 @@ impl Default for RevocationConfig {
 }
 
 impl<'de> Deserialize<'de> for RevocationConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RevocationObject {
-            #[serde(default = "default_true")]
-            enabled: bool,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Bool(bool),
-            Object(RevocationObject),
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Bool(enabled) => Ok(Self { enabled }),
-            Wire::Object(obj) => Ok(Self {
-                enabled: obj.enabled,
-            }),
-        }
-    }
+    enabled_or_object!(enabled = "default_true";);
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]

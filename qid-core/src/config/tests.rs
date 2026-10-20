@@ -1281,3 +1281,40 @@ fn protocol_features_accept_a_bare_boolean_or_an_object() {
         serde_json::from_str(r#"{"introspection":{"jwt_response":true}}"#).unwrap();
     assert!(introspection.introspection.jwt_response);
 }
+
+#[test]
+fn boolean_or_object_settings_reject_an_unknown_key() {
+    // The object form of every configuration in that family rejects an unknown
+    // key, like every other configuration.
+    for json in [
+        r#"{"oidc":{"implicit":{"typo":true}}}"#,
+        r#"{"oauth":{"introspection":{"typo":true}}}"#,
+        r#"{"oauth":{"dpop":{"typo":true}}}"#,
+        r#"{"oauth":{"ciba":{"typo":true}}}"#,
+        r#"{"oauth":{"par":{"typo":true}}}"#,
+        r#"{"oauth":{"revocation":{"typo":true}}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<ProtocolConfig>(json).is_err(),
+            "an unknown key must be rejected: {json}"
+        );
+    }
+}
+
+#[test]
+fn revocation_settings_keep_their_own_defaults() {
+    // The bare boolean form carries the enabled flag, and the object form
+    // keeps the same default of true.
+    let bare: OAuthProtocolConfig = serde_json::from_str(r#"{"revocation":false}"#).unwrap();
+    assert!(!bare.revocation.enabled);
+    let bare: OAuthProtocolConfig = serde_json::from_str(r#"{"revocation":true}"#).unwrap();
+    assert!(bare.revocation.enabled);
+    let object: OAuthProtocolConfig =
+        serde_json::from_str(r#"{"revocation":{"enabled":false}}"#).unwrap();
+    assert!(!object.revocation.enabled);
+    let object: OAuthProtocolConfig = serde_json::from_str(r#"{"revocation":{}}"#).unwrap();
+    assert!(
+        object.revocation.enabled,
+        "a missing enabled keeps the default"
+    );
+}

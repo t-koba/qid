@@ -700,6 +700,28 @@ async fn realm_request(
         .unwrap()
 }
 
+/// The advertised wire payload for a stored device or subscription record.
+/// The fixture keeps the stored-record shape, so the request body is derived
+/// from the names the schema discovery advertises.
+fn advertised_body(resource: &str, stored: &serde_json::Value) -> serde_json::Value {
+    let mut body = serde_json::json!({"id": stored["id"], "realm": stored["realm_id"]});
+    if resource == "Devices" {
+        body["displayName"] = stored["display_name"].clone();
+        body[DEVICE_EXTENSION_SCHEMA] = serde_json::json!({
+            "manufacturer": stored["manufacturer"],
+            "model": stored["model"],
+            "os": stored["os"],
+            "osVersion": stored["os_version"],
+            "lastSeen": stored["last_seen"],
+        });
+    } else {
+        body["callback"] = stored["callback_url"].clone();
+        body["eventTypes"] = stored["event_types"].clone();
+        body["enabled"] = stored["enabled"].clone();
+    }
+    body
+}
+
 async fn stored_resource<R: Repository>(repo: &R, resource: &str) -> serde_json::Value {
     if resource == "Devices" {
         serde_json::to_value(repo.get_scim_device("shared-id").await.unwrap().unwrap()).unwrap()
@@ -730,14 +752,14 @@ async fn assert_realm_upsert_contract<R: Repository>(repo: Arc<R>) {
         serde_json::from_str(include_str!("fixtures/upserts.json")).unwrap();
     for case in cases.as_array().unwrap() {
         let resource = case["resource"].as_str().unwrap();
-        let initial = case["initial"].clone();
-        let mut changed = case["changed"].clone();
+        let initial = advertised_body(resource, &case["initial"]);
+        let mut changed = advertised_body(resource, &case["changed"]);
         let response = realm_request(&app, Method::POST, resource, "corp", initial).await;
         assert_eq!(response.status(), StatusCode::CREATED);
         let incumbent = stored_resource(repo.as_ref(), resource).await;
         assert_eq!(incumbent["realm_id"], "corp");
         // A body claiming the incumbent realm must not override the other context.
-        changed["realm_id"] = "corp".into();
+        changed["realm"] = "corp".into();
         let response = realm_request(&app, Method::POST, resource, "other", changed.clone()).await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(
@@ -755,13 +777,12 @@ async fn assert_realm_upsert_contract<R: Repository>(repo: Arc<R>) {
             realm_request(&app, Method::GET, &path, "corp", serde_json::Value::Null).await;
         assert_eq!(response.status(), StatusCode::OK);
         // Same-realm POST remains an intentional update, even with a spoofed body realm.
-        changed["realm_id"] = "other".into();
+        changed["realm"] = "other".into();
         let response = realm_request(&app, Method::POST, resource, "corp", changed.clone()).await;
         assert_eq!(response.status(), StatusCode::CREATED);
         let updated = stored_resource(repo.as_ref(), resource).await;
         assert_ne!(updated, incumbent);
-        changed["realm_id"] = "corp".into();
-        for (key, value) in changed.as_object().unwrap() {
+        for (key, value) in case["changed"].as_object().unwrap() {
             if key != "created_at" {
                 assert_eq!(&updated[key], value, "{resource}.{key}");
             }
@@ -2336,4 +2357,193 @@ async fn scim_user_patch_add_appends_emails() {
     let after = response_json(after_response).await;
     assert_eq!(after["emails"], serde_json::json!({"value": "stored"}));
     assert_eq!(after["meta"]["version"], stored_version);
+}
+
+#[tokio::test]
+async fn scim_device_create_accepts_the_advertised_attribute_names() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Devices")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","displayName":"Lab device","urn:ietf:params:scim:schemas:extension:device:2.0:Device":{"manufacturer":"acme","model":"m1","os":"linux","osVersion":"13","lastSeen":1700000000}}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        !id.is_empty(),
+        "the server assigns an id when none is supplied"
+    );
+    assert_eq!(created["displayName"], "Lab device");
+    assert_eq!(created[DEVICE_EXTENSION_SCHEMA]["manufacturer"], "acme");
+    assert_eq!(created[DEVICE_EXTENSION_SCHEMA]["model"], "m1");
+    assert_eq!(created[DEVICE_EXTENSION_SCHEMA]["os"], "linux");
+    assert_eq!(created[DEVICE_EXTENSION_SCHEMA]["osVersion"], "13");
+    assert_eq!(created[DEVICE_EXTENSION_SCHEMA]["lastSeen"], 1700000000);
+    assert!(
+        created.get("realm").is_none(),
+        "the response carries no unadvertised realm attribute"
+    );
+
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Devices/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = response_json(get_response).await;
+    assert_eq!(fetched["displayName"], "Lab device");
+    assert_eq!(fetched[DEVICE_EXTENSION_SCHEMA]["osVersion"], "13");
+    assert_eq!(fetched[DEVICE_EXTENSION_SCHEMA]["lastSeen"], 1700000000);
+}
+
+#[tokio::test]
+async fn scim_device_create_uses_a_supplied_id() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Devices")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","id":"device-1","displayName":"Lab"}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    assert_eq!(created["id"], "device-1");
+}
+
+#[tokio::test]
+async fn scim_device_create_rejects_unknown_attribute_names() {
+    let app = setup().await;
+    for body in [
+        r#"{"realm":"corp","displayname":"Lab device"}"#,
+        r#"{"realm":"corp","realm_id":"corp"}"#,
+        r#"{"realm":"corp","urn:ietf:params:scim:schemas:extension:device:2.0:Device":{"osversion":"13"}}"#,
+        r#"{"realm":"corp","schemas":["urn:ietf:params:scim:schemas:core:2.0:User"]}"#,
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/scim/v2/Devices")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "body must be rejected: {body}"
+        );
+    }
+
+    let list_request = Request::builder()
+        .method(Method::GET)
+        .uri("/scim/v2/Devices")
+        .body(Body::empty())
+        .unwrap();
+    let list_response = app.clone().oneshot(list_request).await.unwrap();
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let listed = response_json(list_response).await;
+    assert_eq!(listed["totalResults"], 0, "a rejected write stores nothing");
+}
+
+#[tokio::test]
+async fn scim_event_subscription_create_accepts_the_advertised_attribute_names() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/EventSubscriptions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","callback":"https://events.example.com/hook","eventTypes":["user.created"],"enabled":true}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        !id.is_empty(),
+        "the server assigns an id when none is supplied"
+    );
+    assert_eq!(created["callback"], "https://events.example.com/hook");
+    assert_eq!(created["eventTypes"][0], "user.created");
+    assert_eq!(created["enabled"], true);
+    assert!(created["createdAt"].as_u64().unwrap() > 0);
+    assert!(
+        created.get("realm").is_none(),
+        "the response carries no unadvertised realm attribute"
+    );
+
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/EventSubscriptions/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = response_json(get_response).await;
+    assert_eq!(fetched["callback"], "https://events.example.com/hook");
+    assert_eq!(fetched["eventTypes"][0], "user.created");
+}
+
+#[tokio::test]
+async fn scim_event_subscription_created_at_is_server_owned() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/EventSubscriptions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","callback":"https://events.example.com/hook","eventTypes":["user.created"],"createdAt":1}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    assert_ne!(
+        created["createdAt"], 1,
+        "a supplied createdAt is ignored in favour of the server time"
+    );
+}
+
+#[tokio::test]
+async fn scim_event_subscription_create_rejects_invalid_payloads() {
+    let app = setup().await;
+    for body in [
+        r#"{"realm":"corp","eventTypes":["user.created"]}"#,
+        r#"{"realm":"corp","callback":"https://events.example.com/hook"}"#,
+        r#"{"realm":"corp","callback":"https://events.example.com/hook","eventTypes":["user.created"],"callBack":"https://events.example.com/other"}"#,
+        r#"{"realm":"corp","callback":"https://events.example.com/hook","eventTypes":"user.created"}"#,
+        r#"{"realm":"corp","callback":"https://events.example.com/hook","eventTypes":["user.created"],"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"]}"#,
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/scim/v2/EventSubscriptions")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "body must be rejected: {body}"
+        );
+    }
+
+    let list_request = Request::builder()
+        .method(Method::GET)
+        .uri("/scim/v2/EventSubscriptions")
+        .body(Body::empty())
+        .unwrap();
+    let list_response = app.clone().oneshot(list_request).await.unwrap();
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let listed = response_json(list_response).await;
+    assert_eq!(listed["totalResults"], 0, "a rejected write stores nothing");
 }

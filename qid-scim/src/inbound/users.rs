@@ -19,7 +19,7 @@ use crate::{ENTERPRISE_USER_SCHEMA, ScimRequestContext, filter, scoped_realm};
 
 use super::{
     CreateUser, DeleteQuery, ListQuery, PatchOperation, PatchRequest, bool_value,
-    reject_unsupported_user_extensions, string_value, unsupported_user_schema_error,
+    reject_unsupported_user_extensions, string_value, unsupported_schema_error,
 };
 
 pub(crate) async fn list_users<R: Repository>(
@@ -342,7 +342,7 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
     let bad =
         matches!(op.value.as_ref(), Some(v) if reject_unsupported_user_extensions(v).is_err());
     if unsupported_urn_path || bad {
-        return Err(unsupported_user_schema_error());
+        return Err(unsupported_schema_error());
     }
     match (op_name.as_str(), path.as_str()) {
         ("add" | "replace", "userName") => user.user_name = string_value(op.value, "userName")?,

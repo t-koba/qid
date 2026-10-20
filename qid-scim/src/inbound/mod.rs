@@ -20,11 +20,14 @@ use serde::Deserialize;
 pub(crate) const MAX_LIST_RESULTS: usize = 200;
 pub(crate) const MAX_BULK_OPERATIONS: usize = 100;
 
-fn default_realm() -> String {
+pub(crate) fn default_realm() -> String {
     "corp".to_string()
 }
 
-fn realm_opt(c: Option<&crate::ScimRequestContext>, r: Option<String>) -> Option<String> {
+pub(crate) fn realm_opt(
+    c: Option<&crate::ScimRequestContext>,
+    r: Option<String>,
+) -> Option<String> {
     c.map(|c| c.realm_id.clone()).or(r)
 }
 
@@ -104,6 +107,70 @@ pub(crate) struct CreateGroup {
     pub(crate) members: Option<serde_json::Value>,
 }
 
+/// SCIM Device create payload. The attribute names are the ones the schema
+/// discovery advertises, and an unknown name is rejected instead of dropped.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CreateDevice {
+    #[serde(default)]
+    pub(crate) realm: Option<String>,
+    /// Optional client-chosen id; the server assigns one when it is absent.
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default, rename = "schemas")]
+    pub(crate) schemas: Option<Vec<String>>,
+    #[serde(default, rename = "displayName")]
+    pub(crate) display_name: Option<String>,
+    #[serde(
+        default,
+        rename = "urn:ietf:params:scim:schemas:extension:device:2.0:Device"
+    )]
+    pub(crate) extension: Option<DeviceExtension>,
+}
+
+/// RFC 9944 device extension attributes.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeviceExtension {
+    #[serde(default)]
+    pub(crate) manufacturer: Option<String>,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) os: Option<String>,
+    #[serde(default, rename = "osVersion")]
+    pub(crate) os_version: Option<String>,
+    #[serde(default, rename = "lastSeen")]
+    pub(crate) last_seen: Option<u64>,
+}
+
+/// SCIM EventSubscription create payload. `createdAt` is server-owned, so a
+/// supplied value is accepted and ignored.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CreateEventSubscription {
+    #[serde(default)]
+    pub(crate) realm: Option<String>,
+    /// Optional client-chosen id; the server assigns one when it is absent.
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default, rename = "schemas")]
+    pub(crate) schemas: Option<Vec<String>>,
+    /// Server-owned: a supplied value is accepted and ignored.
+    #[serde(default, rename = "createdAt")]
+    pub(crate) _created_at: Option<u64>,
+    #[serde(rename = "callback")]
+    pub(crate) callback_url: String,
+    #[serde(rename = "eventTypes")]
+    pub(crate) event_types: Vec<String>,
+    #[serde(default = "default_enabled")]
+    pub(crate) enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
 pub(crate) fn string_value(
     value: Option<serde_json::Value>,
     field: &str,
@@ -134,14 +201,14 @@ pub(crate) const CORE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0
 pub(crate) const ENTERPRISE_SCHEMA: &str =
     "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
 
-/// Fail closed when a User payload carries an extension without behavior.
+/// Fail closed when a payload carries a schema without implemented behavior.
 ///
 /// `CreateUser` serde intentionally ignores unknown fields, so the raw value
 /// must be inspected first: an unsupported `schemas` entry or any top-level
 /// URN key other than the Enterprise extension is rejected with a static
 /// error that never echoes client-supplied values. Ordinary unknown fields
 /// without a URN keep their existing lenient behavior.
-pub(crate) fn unsupported_user_schema_error() -> QidError {
+pub(crate) fn unsupported_schema_error() -> QidError {
     QidError::BadRequest {
         message: "unsupported SCIM schema extension".to_string(),
     }
@@ -159,14 +226,14 @@ pub(crate) fn reject_unsupported_user_extensions(raw: &serde_json::Value) -> Res
     };
     if let Some(schemas) = object.get("schemas") {
         let Some(entries) = schemas.as_array() else {
-            return Err(unsupported_user_schema_error());
+            return Err(unsupported_schema_error());
         };
         for entry in entries {
             let supported = entry
                 .as_str()
                 .is_some_and(|id| id == CORE_USER_SCHEMA || id == ENTERPRISE_SCHEMA);
             if !supported {
-                return Err(unsupported_user_schema_error());
+                return Err(unsupported_schema_error());
             }
         }
     }
@@ -174,7 +241,7 @@ pub(crate) fn reject_unsupported_user_extensions(raw: &serde_json::Value) -> Res
         .keys()
         .any(|key| has_urn_scheme(key) && key != ENTERPRISE_SCHEMA)
     {
-        return Err(unsupported_user_schema_error());
+        return Err(unsupported_schema_error());
     }
     Ok(())
 }
@@ -186,4 +253,50 @@ pub(crate) fn parse_create_user(raw: serde_json::Value) -> Result<CreateUser, Qi
     serde_json::from_value::<CreateUser>(raw).map_err(|e| QidError::BadRequest {
         message: format!("invalid user data: {e}"),
     })
+}
+
+/// Reject a `schemas` array that names a schema the endpoint does not
+/// implement, so an unsupported schema never reaches storage.
+pub(crate) fn reject_unsupported_schemas(
+    schemas: Option<&[String]>,
+    supported: &[&str],
+) -> Result<(), QidError> {
+    let Some(entries) = schemas else {
+        return Ok(());
+    };
+    for entry in entries {
+        if !supported.contains(&entry.as_str()) {
+            return Err(unsupported_schema_error());
+        }
+    }
+    Ok(())
+}
+
+/// Validate the raw Device payload and deserialize it. The advertised
+/// attribute names are the only accepted ones.
+pub(crate) fn parse_create_device(raw: serde_json::Value) -> Result<CreateDevice, QidError> {
+    let req: CreateDevice = serde_json::from_value(raw).map_err(|e| QidError::BadRequest {
+        message: format!("invalid device data: {e}"),
+    })?;
+    reject_unsupported_schemas(
+        req.schemas.as_deref(),
+        &[crate::CORE_DEVICE_SCHEMA, crate::RFC_9944_DEVICE_SCHEMA],
+    )?;
+    Ok(req)
+}
+
+/// Validate the raw EventSubscription payload and deserialize it. The
+/// advertised attribute names are the only accepted ones.
+pub(crate) fn parse_create_event_subscription(
+    raw: serde_json::Value,
+) -> Result<CreateEventSubscription, QidError> {
+    let req: CreateEventSubscription =
+        serde_json::from_value(raw).map_err(|e| QidError::BadRequest {
+            message: format!("invalid event subscription data: {e}"),
+        })?;
+    reject_unsupported_schemas(
+        req.schemas.as_deref(),
+        &[crate::RFC_9967_EVENT_SUBSCRIPTION_SCHEMA],
+    )?;
+    Ok(req)
 }

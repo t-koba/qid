@@ -9,6 +9,12 @@ fn attr(name: &str, ty: &str, multi: bool, required: bool) -> serde_json::Value 
     serde_json::json!({"name": name, "type": ty, "multiValued": multi, "required": required})
 }
 
+/// A server-owned attribute: it is returned to clients, and a value supplied
+/// in a request is accepted and ignored.
+fn read_only_attr(name: &str, ty: &str, multi: bool, required: bool) -> serde_json::Value {
+    serde_json::json!({"name": name, "type": ty, "multiValued": multi, "required": required, "readOnly": true})
+}
+
 fn complex(name: &str, multi: bool, subs: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({"name": name, "type": "complex", "multiValued": multi, "required": false, "subAttributes": subs})
 }
@@ -82,7 +88,8 @@ pub(crate) async fn schemas() -> impl IntoResponse {
         "description": "Event subscription (implemented subset)",
         "attributes": [
             attr("callback", "string", false, true), attr("eventTypes", "string", true, true),
-            attr("enabled", "boolean", false, true), attr("createdAt", "integer", false, false),
+            attr("enabled", "boolean", false, true),
+            read_only_attr("createdAt", "integer", false, false),
             ]}),
     ];
     Json(serde_json::json!({

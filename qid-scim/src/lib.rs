@@ -30,7 +30,6 @@ use axum::{
 use qid_core::state::SharedState;
 use qid_core::tenant::RealmId;
 use qid_storage::{ScimDeviceRecord, ScimEventSubscriptionRecord, prelude::*};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub(crate) const ENTERPRISE_USER_SCHEMA: &str =
@@ -125,32 +124,30 @@ fn scim_path(base_path: &str, suffix: &str) -> String {
     format!("{base_path}{suffix}")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScimDevice {
-    pub id: String,
-    #[serde(default = "default_realm")]
-    pub realm_id: String,
-    pub display_name: Option<String>,
-    pub manufacturer: Option<String>,
-    pub model: Option<String>,
-    pub os: Option<String>,
-    pub os_version: Option<String>,
-    pub last_seen: Option<u64>,
+/// The stored Device resource. The wire representation is the advertised
+/// attribute set, parsed by `inbound::parse_create_device`.
+#[derive(Debug, Clone)]
+pub(crate) struct ScimDevice {
+    pub(crate) id: String,
+    pub(crate) realm_id: String,
+    pub(crate) display_name: Option<String>,
+    pub(crate) manufacturer: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) os: Option<String>,
+    pub(crate) os_version: Option<String>,
+    pub(crate) last_seen: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScimEventSubscription {
-    pub id: String,
-    #[serde(default = "default_realm")]
-    pub realm_id: String,
-    pub callback_url: String,
-    pub event_types: Vec<String>,
-    pub enabled: bool,
-    pub created_at: u64,
-}
-
-fn default_realm() -> String {
-    "test".to_string()
+/// The stored EventSubscription resource. The wire representation is the
+/// advertised attribute set, parsed by `inbound::parse_create_event_subscription`.
+#[derive(Debug, Clone)]
+pub(crate) struct ScimEventSubscription {
+    pub(crate) id: String,
+    pub(crate) realm_id: String,
+    pub(crate) callback_url: String,
+    pub(crate) event_types: Vec<String>,
+    pub(crate) enabled: bool,
+    pub(crate) created_at: u64,
 }
 
 async fn list_devices<R: Repository>(
@@ -179,12 +176,26 @@ async fn list_devices<R: Repository>(
 async fn create_device<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     context: Option<Extension<ScimRequestContext>>,
-    Json(req): Json<ScimDevice>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let req = match inbound::parse_create_device(raw) {
+        Ok(req) => req,
+        Err(error) => return qid_http::error_response(error),
+    };
+    let extension = req.extension.unwrap_or_default();
     let device = ScimDevice {
-        id: req.id,
-        realm_id: scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm_id),
-        ..req
+        id: req
+            .id
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| ulid::Ulid::new().to_string()),
+        realm_id: inbound::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm)
+            .unwrap_or_else(inbound::default_realm),
+        display_name: req.display_name,
+        manufacturer: extension.manufacturer,
+        model: extension.model,
+        os: extension.os,
+        os_version: extension.os_version,
+        last_seen: extension.last_seen,
     };
     if let Err(error) = state
         .repo
@@ -252,7 +263,6 @@ fn rfc_9944_device_response(device: ScimDevice) -> serde_json::Value {
     serde_json::json!({
         "schemas": [CORE_DEVICE_SCHEMA, RFC_9944_DEVICE_SCHEMA],
         "id": device.id,
-        "realm": device.realm_id,
         "displayName": device.display_name,
         RFC_9944_DEVICE_SCHEMA: {
             "manufacturer": device.manufacturer,
@@ -296,9 +306,14 @@ async fn list_event_subscriptions<R: Repository>(
 async fn create_event_subscription<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     context: Option<Extension<ScimRequestContext>>,
-    Json(req): Json<ScimEventSubscription>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let realm_id = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm_id);
+    let req = match inbound::parse_create_event_subscription(raw) {
+        Ok(req) => req,
+        Err(error) => return qid_http::error_response(error),
+    };
+    let realm_id = inbound::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm)
+        .unwrap_or_else(inbound::default_realm);
     let allowed_hosts = match state
         .config
         .realms
@@ -316,15 +331,15 @@ async fn create_event_subscription<R: Repository>(
         return qid_http::error_response(error);
     }
     let sub = ScimEventSubscription {
-        id: if req.id.is_empty() {
-            ulid::Ulid::new().to_string()
-        } else {
-            req.id
-        },
+        id: req
+            .id
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| ulid::Ulid::new().to_string()),
         realm_id,
         callback_url: req.callback_url,
         event_types: req.event_types,
         enabled: req.enabled,
+        // Server-owned: a client-supplied `createdAt` is ignored.
         created_at: qid_core::util::now_seconds(),
     };
     if let Err(error) = state
@@ -463,7 +478,6 @@ fn rfc_9967_subscription_response(sub: ScimEventSubscription) -> serde_json::Val
     serde_json::json!({
         "schemas": [RFC_9967_EVENT_SUBSCRIPTION_SCHEMA],
         "id": sub.id,
-        "realm": sub.realm_id,
         "callback": sub.callback_url,
         "eventTypes": sub.event_types,
         "enabled": sub.enabled,

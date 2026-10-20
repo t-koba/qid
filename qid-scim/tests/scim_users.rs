@@ -268,7 +268,7 @@ async fn scim_users_support_external_id_filter_and_pagination() {
 
     let page_request = Request::builder()
         .method(Method::GET)
-        .uri("/scim/v2/Users?realm=corp&start_index=2&count=1")
+        .uri("/scim/v2/Users?realm=corp&startIndex=2&count=1")
         .body(Body::empty())
         .unwrap();
     let page_response = app.clone().oneshot(page_request).await.unwrap();
@@ -293,7 +293,7 @@ async fn scim_pagination_extreme_start_index_is_safe_for_users_and_groups() {
     let app = setup().await;
     for resource in ["Users", "Groups"] {
         let uri = format!(
-            "/scim/v2/{resource}?realm=corp&start_index={}&count=200",
+            "/scim/v2/{resource}?realm=corp&startIndex={}&count=200",
             usize::MAX
         );
         let page = get_json(&app, &uri, None).await;
@@ -2750,5 +2750,57 @@ async fn scim_write_bodies_must_be_json_objects() {
         assert_eq!(response.status(), StatusCode::OK);
         let listed = response_json(response).await;
         assert_eq!(listed["totalResults"], 0, "a rejected write stores nothing");
+    }
+}
+
+#[tokio::test]
+async fn scim_start_index_wire_name_pages_users_and_groups() {
+    let app = setup().await;
+    for (resource, payload) in [
+        ("Users", r#"{"realm":"corp","userName":"a@example.com"}"#),
+        ("Users", r#"{"realm":"corp","userName":"b@example.com"}"#),
+        ("Groups", r#"{"realm":"corp","displayName":"first"}"#),
+        ("Groups", r#"{"realm":"corp","displayName":"second"}"#),
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/scim/v2/{resource}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    for resource in ["Users", "Groups"] {
+        let first = get_json(
+            &app,
+            &format!("/scim/v2/{resource}?realm=corp&startIndex=1&count=1"),
+            None,
+        )
+        .await;
+        let second = get_json(
+            &app,
+            &format!("/scim/v2/{resource}?realm=corp&startIndex=2&count=1"),
+            None,
+        )
+        .await;
+        assert_eq!(first["startIndex"], 1);
+        assert_eq!(second["startIndex"], 2);
+        assert_ne!(
+            first["Resources"], second["Resources"],
+            "{resource} page two must differ from page one"
+        );
+
+        // A cursor still takes precedence over the index.
+        let cursor = first["nextCursor"].as_str().unwrap().to_string();
+        let paged = get_json(
+            &app,
+            &format!("/scim/v2/{resource}?realm=corp&startIndex=1&count=1&cursor={cursor}"),
+            None,
+        )
+        .await;
+        assert_eq!(paged["startIndex"], 2);
+        assert_eq!(paged["Resources"], second["Resources"]);
     }
 }

@@ -40,7 +40,9 @@ fn default_bulk_fail_on_errors() -> usize {
 pub(crate) struct ListQuery {
     #[serde(default = "default_realm")]
     pub(crate) realm: String,
-    #[serde(default)]
+    /// RFC 7644 §3.4.2.4: `startIndex` is the contract; the former
+    /// snake-case spelling stays accepted so no client is silently re-paged.
+    #[serde(default, rename = "startIndex", alias = "start_index")]
     pub(crate) start_index: Option<usize>,
     #[serde(default)]
     pub(crate) count: Option<usize>,

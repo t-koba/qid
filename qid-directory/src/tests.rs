@@ -2488,3 +2488,31 @@ fn a_bind_credential_must_be_usable_in_both_directions() {
         "a blank password is no credential either"
     );
 }
+
+#[tokio::test]
+async fn webhook_ingest_normalizes_every_attribute_like_the_csv_connector() {
+    use crate::connector::{DirectoryConnector, WebhookHrConnector};
+    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
+    let mut connector = WebhookHrConnector::new();
+    connector
+        .ingest_json(&serde_json::json!([
+            {"external_id": "hr-1", "event": "joiner", "email": "  hr@example.com  ",
+             "display_name": "  HR Person  ", "department": "  Research  "},
+            {"external_id": "hr-2", "event": "joiner", "email": "   ", "display_name": "",
+             "department": "  "}
+        ]))
+        .expect("the records are accepted");
+    let users = connector
+        .fetch_users(
+            &DirectorySyncConfig::default(),
+            &DirectoryAttributeMapping::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(users[0].mail.as_deref(), Some("hr@example.com"));
+    assert_eq!(users[0].display_name.as_deref(), Some("HR Person"));
+    assert_eq!(users[0].department.as_deref(), Some("Research"));
+    assert_eq!(users[1].mail, None);
+    assert_eq!(users[1].display_name, None);
+    assert_eq!(users[1].department, None);
+}

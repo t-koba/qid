@@ -479,6 +479,13 @@ impl DirectoryConnector for CsvHrConnector {
     }
 }
 
+/// A directory attribute value. Every value is trimmed and an empty value is
+/// no value, so the two HR connectors store the same record for one person.
+fn optional_attribute(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 /// Parse CSV HR content into `LdapDirectoryEntry` vectors.
 fn parse_csv_hr_records(content: &str) -> QidResult<Vec<LdapDirectoryEntry>> {
     let mut lines = content.lines().filter(|l| !l.trim().is_empty());
@@ -544,26 +551,10 @@ fn parse_csv_hr_records(content: &str) -> QidResult<Vec<LdapDirectoryEntry>> {
         entries.push(LdapDirectoryEntry {
             dn: external_id.to_string(),
             uid: external_id.to_string(),
-            mail: if email.is_empty() {
-                None
-            } else {
-                Some(email.to_string())
-            },
-            display_name: if display_name.is_empty() {
-                None
-            } else {
-                Some(display_name.to_string())
-            },
-            department: if department.is_empty() {
-                None
-            } else {
-                Some(department.to_string())
-            },
-            manager_dn: if manager_external_id.is_empty() {
-                None
-            } else {
-                Some(manager_external_id.to_string())
-            },
+            mail: optional_attribute(email),
+            display_name: optional_attribute(display_name),
+            department: optional_attribute(department),
+            manager_dn: optional_attribute(manager_external_id),
             enabled,
         });
     }
@@ -665,25 +656,26 @@ impl WebhookHrConnector {
                 }
             };
 
-            let email = obj
-                .get("email")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let display_name = obj
-                .get("display_name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let department = obj
-                .get("department")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            // The manager reference is trimmed like the identity key, and an empty one is none.
-            let manager_external_id = obj
-                .get("manager_external_id")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
+            let email = optional_attribute(
+                obj.get("email")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+            );
+            let display_name = optional_attribute(
+                obj.get("display_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+            );
+            let department = optional_attribute(
+                obj.get("department")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+            );
+            let manager_external_id = optional_attribute(
+                obj.get("manager_external_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+            );
 
             ingested.push(LdapDirectoryEntry {
                 dn: external_id.to_string(),

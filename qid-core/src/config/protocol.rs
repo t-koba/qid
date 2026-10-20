@@ -833,7 +833,20 @@ pub fn bind_credentials<'a>(
             message: "bind DN and bind password must both be set and non-blank".to_string(),
         });
     }
+    valid_bind_dn(dn)?;
     Ok(Some((dn, password)))
+}
+
+/// Whether a bind DN carries a character a distinguished name cannot hold.
+pub fn valid_bind_dn(dn: &str) -> QidResult<()> {
+    for ch in dn.chars() {
+        if (ch as u32) < 0x20 {
+            return Err(QidError::Config {
+                message: format!("bind DN contains control character U+{:04X}", ch as u32),
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Default for DirectoryConnectionConfig {

@@ -5,7 +5,7 @@
 //! entries into the canonical [`LdapDirectoryEntry`] used by qid's sync engine.
 
 use async_trait::async_trait;
-use qid_core::config::bind_credentials;
+use qid_core::config::{bind_credentials, valid_bind_dn};
 use qid_core::{
     config::{DirectoryAttributeMapping, DirectoryConnectionConfig, DirectorySyncConfig},
     error::{QidError, QidResult},
@@ -46,34 +46,12 @@ pub fn escape_ldap_search_filter(input: &str) -> QidResult<String> {
     Ok(out)
 }
 
-/// Validate a configured bind DN (RFC 4514). The bind DN is used as it is
-/// configured: it is a sequence of attribute values, not a single value, so
-/// escaping it as one value would corrupt an ordinary full DN.
-fn validate_ldap_dn(input: &str) -> QidResult<()> {
-    for ch in input.chars() {
-        if ch == '\0' {
-            return Err(QidError::Internal {
-                message: "LDAP bind DN contains NUL byte".to_string(),
-            });
-        }
-        if (ch as u32) < 0x20 {
-            return Err(QidError::Internal {
-                message: format!(
-                    "LDAP bind DN contains control character U+{:04X}",
-                    ch as u32
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 /// The bind DN to use, preserved as configured.
 pub(crate) fn bind_dn_for(config: &DirectoryConnectionConfig) -> QidResult<Option<String>> {
     let Some(dn) = &config.bind_dn else {
         return Ok(None);
     };
-    validate_ldap_dn(dn)?;
+    valid_bind_dn(dn)?;
     Ok(Some(dn.clone()))
 }
 
@@ -942,9 +920,25 @@ pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidRes
             message: "LDAP paged search did not return a PagedResults control".to_string(),
         });
     };
-    // The ldap3 parser panics on a malformed control value, so the parse is
-    // contained and reported as an error.
+    // A PagedResults control value is a BER sequence, and the ldap3 parser
+    // panics on a missing value or on a value that is not a sequence, so both
+    // are rejected before the parse.
+    let Some(value) = raw.val.as_deref() else {
+        return Err(QidError::Internal {
+            message: "LDAP paged search returned an unusable PagedResults control".to_string(),
+        });
+    };
+    if value.first() != Some(&0x30) {
+        return Err(QidError::Internal {
+            message: "LDAP paged search returned an unusable PagedResults control".to_string(),
+        });
+    }
+    // The remaining parse is contained, and the panic hook is silenced while it
+    // runs, so an unusable control produces an error and no panic output.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
     let parsed = std::panic::catch_unwind(|| raw.parse::<PagedResults>());
+    std::panic::set_hook(previous);
     let Ok(pr) = parsed else {
         return Err(QidError::Internal {
             message: "LDAP paged search returned an unusable PagedResults control".to_string(),

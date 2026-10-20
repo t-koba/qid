@@ -2605,3 +2605,46 @@ async fn webhook_ingest_reads_the_event_like_the_csv_connector() {
     assert!(users[0].enabled, "a joiner is an enabled user");
     assert!(!users[1].enabled, "a leaver is a disabled user");
 }
+
+#[test]
+fn an_unusable_paged_results_control_is_an_error_and_not_a_panic() {
+    use ldap3::controls::{Control, ControlType, RawControl};
+    use std::sync::{Mutex, OnceLock};
+
+    // The panic hook records what would have been printed.
+    static PANICS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    let panics = PANICS.get_or_init(|| Mutex::new(Vec::new()));
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|info| {
+        panics
+            .lock()
+            .expect("the panic record")
+            .push(info.to_string());
+    }));
+
+    let raw = RawControl {
+        ctype: "1.2.840.113556.1.4.319".to_string(),
+        crit: false,
+        val: Some(vec![0x04, 0x01, 0x00]),
+    };
+    let ctrls = vec![Control(Some(ControlType::PagedResults), raw)];
+    let err = crate::connector::paged_results_cookie(&ctrls)
+        .expect_err("an unusable control is an error");
+    assert!(err.message().contains("unusable PagedResults control"));
+
+    let missing = RawControl {
+        ctype: "1.2.840.113556.1.4.319".to_string(),
+        crit: false,
+        val: None,
+    };
+    let ctrls = vec![Control(Some(ControlType::PagedResults), missing)];
+    let err = crate::connector::paged_results_cookie(&ctrls)
+        .expect_err("a control without a value is an error");
+    std::panic::set_hook(previous);
+
+    assert!(err.message().contains("unusable PagedResults control"));
+    assert!(
+        panics.lock().expect("the panic record").is_empty(),
+        "an unusable control must not reach the panic hook"
+    );
+}

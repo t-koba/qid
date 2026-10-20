@@ -35,6 +35,8 @@ use qid_core::{
 
 static ARTIFACTS: LazyLock<Mutex<HashMap<String, StoredArtifact>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static LAST_ARTIFACT_SWEEP: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
 
 pub const ARTIFACT_BINDING: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Artifact";
 
@@ -52,12 +54,17 @@ pub(crate) struct SamlArtifact {
     pub artifact: String,
 }
 
-/// Current timestamp in seconds for expiry checks.
 fn now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn evict_expired_artifacts(store: &mut HashMap<String, StoredArtifact>, now: u64) {
+    if LAST_ARTIFACT_SWEEP.swap(now, std::sync::atomic::Ordering::Relaxed) != now {
+        store.retain(|_, entry| entry.expires_at >= now);
+    }
 }
 
 /// Generate a SAML 2.0 artifact and store the associated response.
@@ -86,10 +93,12 @@ pub(crate) fn store_artifact(
     let artifact = base64::engine::general_purpose::STANDARD.encode(&raw);
     let handle_hex = hex::encode(random_handle);
 
-    let expires_at = now_seconds().saturating_add(ttl_seconds);
     let mut store = ARTIFACTS.lock().map_err(|_| QidError::Internal {
         message: "SAML artifact store lock is poisoned".to_string(),
     })?;
+    let now = now_seconds();
+    evict_expired_artifacts(&mut store, now);
+    let expires_at = now.saturating_add(ttl_seconds);
     store.insert(
         handle_hex,
         StoredArtifact {
@@ -138,7 +147,9 @@ pub(crate) fn resolve_artifact(
         return Err(artifact_denied());
     }
     let entry = store.remove(&handle_hex).ok_or_else(artifact_denied)?;
-    if now_seconds() > entry.expires_at {
+    let now = now_seconds();
+    evict_expired_artifacts(&mut store, now);
+    if now > entry.expires_at {
         return Err(QidError::BadRequest {
             message: "SAML artifact has expired".to_string(),
         });
@@ -385,73 +396,5 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn issue_instant_uses_parsed_rfc3339_and_xml_schema_timezone_bounds() {
-        assert!(valid_issue_instant("2026-10-18T00:00:00Z"));
-        assert!(valid_issue_instant("2026-10-18T00:00:00+14:00"));
-        assert!(!valid_issue_instant("2026-10-18T00:00:00+14:01"));
-        assert!(!valid_issue_instant("2026-10-18T00:00:00+00:00💥"));
-    }
-
-    #[test]
-    fn artifact_roundtrip() {
-        let stored = store_artifact("<saml:Response/>", 3600, "realm", "sp").unwrap();
-        let resolved = resolve_artifact(&stored.artifact, "realm", "sp").unwrap();
-        assert_eq!(resolved, "<saml:Response/>");
-    }
-
-    #[test]
-    fn artifact_expired() {
-        let stored = store_artifact("<saml:Response/>", 0, "realm", "sp").unwrap();
-        {
-            let mut store = ARTIFACTS.lock().unwrap_or_else(|e| e.into_inner());
-            let handle_hex = {
-                let raw = base64::engine::general_purpose::STANDARD
-                    .decode(&stored.artifact)
-                    .unwrap();
-                hex::encode(&raw[4..])
-            };
-            if let Some(entry) = store.get_mut(&handle_hex) {
-                entry.expires_at = 0;
-            }
-        }
-        let result = resolve_artifact(&stored.artifact, "realm", "sp");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn artifact_invalid_base64() {
-        let result = resolve_artifact("!!!not-base64!!!", "realm", "sp");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn artifact_wrong_type_code() {
-        let raw = base64::engine::general_purpose::STANDARD.encode([
-            0xffu8, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
-        let result = resolve_artifact(&raw, "realm", "sp");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn build_artifact_response_contains_elements() {
-        let xml = build_artifact_response("_req123", "https://idp.example.com", "<saml:Response/>");
-        assert!(xml.contains("ArtifactResponse"));
-        assert!(xml.contains("_req123"));
-        assert!(xml.contains("https://idp.example.com"));
-        assert!(xml.contains("<saml:Response/>"));
-        assert!(xml.contains("soap:Envelope"));
-    }
-
-    #[test]
-    fn iso_now_format() {
-        let s = iso_now_utc();
-        assert!(s.len() >= 24, "ISO string too short: {s}");
-        assert!(s.ends_with('Z'), "should end with Z: {s}");
-    }
-}
+#[path = "artifact_tests.rs"]
+mod tests;

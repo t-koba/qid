@@ -2394,3 +2394,23 @@ fn a_sasl_bind_without_a_bind_dn_is_an_error() {
         "CN=svc"
     );
 }
+
+#[tokio::test]
+async fn webhook_ingest_trims_the_external_id_it_stores() {
+    use crate::connector::{DirectoryConnector, WebhookHrConnector};
+    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
+    let mut connector = WebhookHrConnector::new();
+    connector
+        .ingest_json(&serde_json::json!([{"external_id": "  hr-1  ", "event": "joiner"}]))
+        .expect("a padded identifier is accepted");
+    let users = connector
+        .fetch_users(
+            &DirectorySyncConfig::default(),
+            &DirectoryAttributeMapping::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].uid, "hr-1");
+    assert_eq!(users[0].dn, "hr-1");
+}

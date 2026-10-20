@@ -182,7 +182,13 @@ fn sanitize_admin_search_filter(filter: &str) -> QidResult<String> {
 }
 
 pub struct LdapSearchOptions {
+    /// Requested RFC 2696 page size. A directory that does not implement
+    /// RFC 2696 paging must be read without a page size: the search then
+    /// expects no PagedResults control and returns the whole result set.
     pub page_size: Option<u32>,
+    /// Request a SASL SCRAM-SHA-256 bind. The mechanism is not implemented
+    /// yet, so a requested SASL bind fails instead of falling back to a
+    /// simple bind.
     pub use_sasl: bool,
     pub timeout_secs: u64,
 }
@@ -620,7 +626,10 @@ impl WebhookHrConnector {
                     message: "webhook record missing external_id".to_string(),
                 })?;
 
-            if external_id.trim().is_empty() {
+            // The identity key is stored trimmed, like the CSV connector, so
+            // both connectors agree on the key they write.
+            let external_id = external_id.trim();
+            if external_id.is_empty() {
                 return Err(qid_core::error::QidError::BadRequest {
                     message: "webhook record has empty external_id".to_string(),
                 });

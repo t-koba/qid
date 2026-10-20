@@ -2450,3 +2450,25 @@ fn a_configured_bind_dn_needs_a_usable_password() {
         "no bind DN means an anonymous search"
     );
 }
+
+#[tokio::test]
+async fn webhook_ingest_trims_the_manager_reference() {
+    use crate::connector::{DirectoryConnector, WebhookHrConnector};
+    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
+    let mut connector = WebhookHrConnector::new();
+    connector
+        .ingest_json(&serde_json::json!([
+            {"external_id": "hr-1", "event": "joiner", "manager_external_id": "  hr-mgr  "},
+            {"external_id": "hr-2", "event": "joiner", "manager_external_id": "  "}
+        ]))
+        .expect("the records are accepted");
+    let users = connector
+        .fetch_users(
+            &DirectorySyncConfig::default(),
+            &DirectoryAttributeMapping::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(users[0].manager_dn.as_deref(), Some("hr-mgr"));
+    assert_eq!(users[1].manager_dn, None);
+}

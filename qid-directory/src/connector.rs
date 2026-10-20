@@ -663,9 +663,12 @@ impl WebhookHrConnector {
                 .get("department")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            // The manager reference is trimmed like the identity key, and an empty one is none.
             let manager_external_id = obj
                 .get("manager_external_id")
                 .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
 
             ingested.push(LdapDirectoryEntry {

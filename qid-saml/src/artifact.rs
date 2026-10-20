@@ -32,6 +32,7 @@ use qid_core::{
     config::SamlServiceProviderConfig,
     error::{QidError, QidResult},
 };
+use sha1::{Digest, Sha1};
 
 static ARTIFACTS: LazyLock<Mutex<HashMap<String, StoredArtifact>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -69,15 +70,15 @@ fn evict_expired_artifacts(store: &mut HashMap<String, StoredArtifact>, now: u64
 
 /// Generate a SAML 2.0 artifact and store the associated response.
 ///
-/// Format: base64(TypeCode || EndpointIndex || RandomHandle)
-/// where the handle is 20 random bytes (SHA-1 sized).
+/// Type 0x0004 format: base64(TypeCode[2] || EndpointIndex[2] ||
+/// SHA-1(IdP entity ID UTF-8)[20] || MessageHandle[20]), exactly 44 bytes.
 pub(crate) fn store_artifact(
     response_xml: &str,
     ttl_seconds: u64,
     realm_id: &str,
     sp_entity_id: &str,
+    idp_entity_id: &str,
 ) -> QidResult<SamlArtifact> {
-    use sha2::Digest;
     let random_handle = {
         let mut bytes = [0u8; 20];
         let now = now_seconds();
@@ -85,9 +86,10 @@ pub(crate) fn store_artifact(
         bytes.copy_from_slice(&hash[..20]);
         bytes
     };
-    let mut raw = Vec::with_capacity(2 + 2 + 20);
+    let mut raw = Vec::with_capacity(44);
     raw.extend_from_slice(ARTIFACT_TYPE_CODE);
     raw.extend_from_slice(ARTIFACT_ENDPOINT_INDEX);
+    raw.extend_from_slice(&Sha1::digest(idp_entity_id.as_bytes()));
     raw.extend_from_slice(&random_handle);
 
     let artifact = base64::engine::general_purpose::STANDARD.encode(&raw);
@@ -113,20 +115,22 @@ pub(crate) fn store_artifact(
 }
 
 /// Resolve a SAML 2.0 artifact and return the stored response.
-/// `sp_entity_id` must come from the authenticated request's configured SP.
+/// `sp_entity_id` must come from the authenticated request's configured SP;
+/// `idp_entity_id` is the configured issuer for this realm.
 pub(crate) fn resolve_artifact(
     artifact: &str,
     realm_id: &str,
     sp_entity_id: &str,
+    idp_entity_id: &str,
 ) -> QidResult<String> {
     let raw = base64::engine::general_purpose::STANDARD
         .decode(artifact)
         .map_err(|_| QidError::BadRequest {
             message: "SAML artifact is not valid base64".to_string(),
         })?;
-    if raw.len() < 24 {
+    if raw.len() != 44 {
         return Err(QidError::BadRequest {
-            message: "SAML artifact is too short".to_string(),
+            message: "SAML artifact must be exactly 44 bytes".to_string(),
         });
     }
     if raw[..2] != *ARTIFACT_TYPE_CODE {
@@ -134,7 +138,17 @@ pub(crate) fn resolve_artifact(
             message: "SAML artifact type code mismatch".to_string(),
         });
     }
-    let handle_hex = hex::encode(&raw[4..]);
+    if raw[2..4] != *ARTIFACT_ENDPOINT_INDEX {
+        return Err(QidError::BadRequest {
+            message: "SAML artifact endpoint index mismatch".to_string(),
+        });
+    }
+    if raw[4..24] != Sha1::digest(idp_entity_id.as_bytes())[..] {
+        return Err(QidError::BadRequest {
+            message: "SAML artifact source ID mismatch".to_string(),
+        });
+    }
+    let handle_hex = hex::encode(&raw[24..]);
     let mut store = ARTIFACTS.lock().map_err(|_| QidError::Internal {
         message: "SAML artifact store lock is poisoned".to_string(),
     })?;

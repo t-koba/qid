@@ -425,20 +425,25 @@ async fn sso<R: Repository>(
         };
         let uses_artifact = req.protocol_binding.as_deref() == Some(ARTIFACT_BINDING);
         if uses_artifact {
-            let artifact =
-                match crate::artifact::store_artifact(&issued.xml, 300, &realm, &sp.entity_id) {
-                    Ok(artifact) => artifact,
-                    Err(err) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({
-                                "error": "saml_artifact_store_failed",
-                                "message": err.message(),
-                            })),
-                        )
-                            .into_response();
-                    }
-                };
+            let artifact = match crate::artifact::store_artifact(
+                &issued.xml,
+                300,
+                &realm,
+                &sp.entity_id,
+                &realm_config.issuer,
+            ) {
+                Ok(artifact) => artifact,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "saml_artifact_store_failed",
+                            "message": err.message(),
+                        })),
+                    )
+                        .into_response();
+                }
+            };
             let redirect = format!(
                 "{}?SAMLart={}&RelayState={}",
                 sp.acs_url,
@@ -774,20 +779,23 @@ async fn artifact_resolve<R: Repository>(
                 .into_response();
         }
     };
-    let saml_response =
-        match crate::artifact::resolve_artifact(&resolve.artifact, &realm, &sp.entity_id) {
-            Ok(response) => response,
-            Err(e) => {
-                let error_xml =
-                    artifact_error_soap(&resolve.id, &realm_config.issuer, e.to_string());
-                return (
-                    StatusCode::OK,
-                    [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-                    error_xml,
-                )
-                    .into_response();
-            }
-        };
+    let saml_response = match crate::artifact::resolve_artifact(
+        &resolve.artifact,
+        &realm,
+        &sp.entity_id,
+        &realm_config.issuer,
+    ) {
+        Ok(response) => response,
+        Err(e) => {
+            let error_xml = artifact_error_soap(&resolve.id, &realm_config.issuer, e.to_string());
+            return (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
+                error_xml,
+            )
+                .into_response();
+        }
+    };
     let soap =
         crate::artifact::build_artifact_response(&resolve.id, &realm_config.issuer, &saml_response);
     (

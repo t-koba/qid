@@ -28,6 +28,7 @@ roxmltree = { workspace = true }
 rsa = { workspace = true, features = ["sha2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha1.workspace = true
 sha2 = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }

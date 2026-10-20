@@ -89,7 +89,7 @@ async fn recover_once(app: &Router, artifact: &str) {
 }
 
 fn store() -> String {
-    crate::artifact::store_artifact(RESPONSE, 300, "test", A)
+    crate::artifact::store_artifact(RESPONSE, 300, "test", A, IDP)
         .unwrap()
         .artifact
 }

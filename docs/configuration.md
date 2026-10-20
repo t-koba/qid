@@ -6,7 +6,7 @@ The configuration model describes qid as an IdP, authorization server, lifecycle
 
 ## Placeholders
 
-The shipped samples mark the values an operator must supply with a placeholder: either `secret://<name>` or `change-me-<name>`. Both are plain text. qid does not resolve `secret://` references, so a placeholder is sent literally to the service it configures - a directory bind password placeholder is presented to the directory as that literal string - and it must be replaced with the real value before the deployment runs.
+The shipped samples mark the values an operator must supply with a placeholder: either `secret://<name>` or `change-me-<name>`. Both are plain text. qid does not resolve `secret://` references, so a placeholder is sent literally to the service it configures - a directory bind password placeholder is presented to the directory as that literal string - and it must be replaced with the real value before the deployment runs. Some samples ship a literal example value instead of a marker, such as the hex string a shared secret or a cursor secret uses; every sample value is plain text that qid uses as it stands, so such an example value must be replaced with the real value before the deployment runs.
 
 ## Loading Order
 

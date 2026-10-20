@@ -3,6 +3,11 @@
 //! Implements a recursive-descent parser that converts an LDAP filter
 //! string into an AST, validates it, and can re-serialize with proper
 //! value escaping. Replaces the ad-hoc `sanitize_admin_search_filter`.
+//!
+//! The supported subset is equality, presence, substring, the ordering
+//! comparisons `>=` and `<=`, and the boolean operators `&`, `|` and `!`. An
+//! extensible match (`:`) is rejected rather than widened to an equality,
+//! because its matching rules are not implemented.
 
 use qid_core::error::{QidError, QidResult};
 
@@ -157,17 +162,12 @@ impl<'a> Parser<'a> {
                 let value = self.parse_value();
                 Ok(LdapFilter::LessOrEqual(attr, value))
             }
-            Some(':') => {
-                // extensible match (basic form): attr:=value or attr:dn:=value
-                // For simplicity, parse as equality.
-                self.advance();
-                while self.peek() == Some(':') || self.peek() == Some('.') {
-                    self.advance();
-                }
-                self.expect_char('=')?;
-                let value = self.parse_value();
-                Ok(LdapFilter::Equality(attr, value))
-            }
+            Some(':') => Err(QidError::BadRequest {
+                message: format!(
+                    "LDAP filter: extensible match on attribute '{}' is not supported",
+                    attr
+                ),
+            }),
             Some(c) => Err(QidError::BadRequest {
                 message: format!(
                     "LDAP filter: unexpected character '{}' after attribute '{}' at position {}",
@@ -184,24 +184,30 @@ impl<'a> Parser<'a> {
         let value_start = self.pos;
         let mut has_wildcard = false;
 
-        let mut chars = self.remaining().chars().peekable();
-        while let Some(&c) = chars.peek() {
+        // The cursor counts bytes, so a value with non-ASCII characters ends
+        // at the same place as the character after it.
+        let mut pos = self.pos;
+        while let Some(c) = self.input[pos..].chars().next() {
             if c == ')' {
                 break;
             }
             if c == '\\' {
-                chars.next();
-                chars.next();
-                chars.next();
-            } else if c == '*' {
-                has_wildcard = true;
-                chars.next();
+                // An escape is a backslash and the two characters it quotes.
+                pos += c.len_utf8();
+                for _ in 0..2 {
+                    match self.input[pos..].chars().next() {
+                        Some(quoted) => pos += quoted.len_utf8(),
+                        None => break,
+                    }
+                }
             } else {
-                chars.next();
+                if c == '*' {
+                    has_wildcard = true;
+                }
+                pos += c.len_utf8();
             }
         }
-        let consumed = self.remaining().len() - chars.count();
-        self.pos += consumed;
+        self.pos = pos;
 
         if !has_wildcard {
             let value = &self.input[value_start..self.pos];
@@ -298,15 +304,18 @@ impl<'a> Parser<'a> {
 }
 
 /// Unescape RFC 4515 hex-escaped characters (e.g. `\2a` → `*`).
+///
+/// The escaped octets form one UTF-8 sequence, so an escaped non-ASCII value
+/// keeps its characters instead of turning into one code point per byte.
 fn unescape_filter_value(raw: &str) -> QidResult<String> {
-    let mut out = String::with_capacity(raw.len());
+    let mut bytes: Vec<u8> = Vec::with_capacity(raw.len());
     let mut chars = raw.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
             let hi = chars.next().and_then(|c| c.to_digit(16));
             let lo = chars.next().and_then(|c| c.to_digit(16));
             match (hi, lo) {
-                (Some(h), Some(l)) => out.push(char::from((h * 16 + l) as u8)),
+                (Some(h), Some(l)) => bytes.push((h * 16 + l) as u8),
                 _ => {
                     return Err(QidError::BadRequest {
                         message: "LDAP filter: invalid escape sequence in filter value".to_string(),
@@ -314,10 +323,13 @@ fn unescape_filter_value(raw: &str) -> QidResult<String> {
                 }
             }
         } else {
-            out.push(c);
+            let mut buffer = [0u8; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
         }
     }
-    Ok(out)
+    String::from_utf8(bytes).map_err(|_| QidError::BadRequest {
+        message: "LDAP filter: escaped value is not valid UTF-8".to_string(),
+    })
 }
 
 /// Escape a filter value for safe inclusion in an LDAP search filter.
@@ -332,6 +344,13 @@ fn escape_filter_value_value(input: &str) -> String {
             '\0' => out.push_str("\\00"),
             c if (c as u32) < 0x20 => {
                 out.push_str(&format!("\\{:02x}", c as u32));
+            }
+            c if (c as u32) > 0x7f => {
+                // RFC 4515 §3: a non-ASCII character is escaped as its octets.
+                let mut buffer = [0u8; 4];
+                for byte in c.encode_utf8(&mut buffer).as_bytes() {
+                    out.push_str(&format!("\\{byte:02x}"));
+                }
             }
             c => out.push(c),
         }
@@ -606,6 +625,52 @@ mod tests {
         // Parentheses in values must be escaped per RFC 4515.
         let result = sanitize_admin_search_filter("(cn=foo\\28bar\\29)").unwrap();
         assert_eq!(result, "(cn=foo\\28bar\\29)");
+    }
+
+    #[test]
+    fn decodes_escaped_utf8_octets() {
+        let escaped = parse_ldap_filter("(cn=\\c3\\a9)").unwrap();
+        assert_eq!(
+            escaped,
+            LdapFilter::Equality("cn".to_string(), "é".to_string())
+        );
+        // The escaped and the literal form are the same value.
+        assert_eq!(escaped, parse_ldap_filter("(cn=é)").unwrap());
+        // The value round-trips through its escaped form.
+        assert_eq!(
+            sanitize_admin_search_filter("(cn=é)").unwrap(),
+            "(cn=\\c3\\a9)"
+        );
+    }
+
+    #[test]
+    fn rejects_an_escaped_value_that_is_not_utf8() {
+        let err = parse_ldap_filter("(cn=\\ff)").unwrap_err();
+        assert!(err.message().contains("UTF-8"), "{}", err.message());
+    }
+
+    #[test]
+    fn parses_a_non_ascii_value_before_another_sibling() {
+        let ast = parse_ldap_filter("(&(cn=é)(uid=bob))").unwrap();
+        assert_eq!(
+            ast,
+            LdapFilter::And(vec![
+                LdapFilter::Equality("cn".to_string(), "é".to_string()),
+                LdapFilter::Equality("uid".to_string(), "bob".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_an_extensible_match() {
+        let err = parse_ldap_filter("(cn:dn:=alice)").unwrap_err();
+        assert!(err.message().contains("extensible"), "{}", err.message());
+    }
+
+    #[test]
+    fn rejects_an_approximate_match() {
+        let err = parse_ldap_filter("(cn≈alice)").unwrap_err();
+        assert!(err.message().contains("LDAP filter"), "{}", err.message());
     }
 
     #[test]

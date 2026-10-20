@@ -95,3 +95,27 @@ async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
     }
     std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
 }
+
+#[test]
+fn a_directory_fetch_fault_keeps_the_connectors_kind() {
+    use qid_core::error::QidError;
+    // The classification is outside the production-only branch, so the kind
+    // a connector reports is the kind the operator sees.
+    let config = QidError::Config {
+        message: "bind DN and bind password must both be set".to_string(),
+    };
+    let error = crate::sync::directory_fetch_error(config);
+    assert!(
+        matches!(error, QidError::Config { .. }),
+        "a configuration fault stays a configuration fault"
+    );
+    assert!(error.message().contains("directory fetch failed"));
+    let internal = QidError::Internal {
+        message: "the directory is unreachable".to_string(),
+    };
+    let error = crate::sync::directory_fetch_error(internal);
+    assert!(
+        matches!(error, QidError::Internal { .. }),
+        "a transport fault stays a server fault"
+    );
+}

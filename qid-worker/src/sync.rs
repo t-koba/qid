@@ -190,8 +190,17 @@ pub struct DirectorySyncJobReport {
     pub dry_run: bool,
 }
 
-/// Run a directory sync job: connect to a configured directory provider,
-/// fetch users, and synchronize them into the local SCIM user store.
+/// The error a directory sync reports for a failed fetch, keeping the kind.
+pub(crate) fn directory_fetch_error(err: QidError) -> QidError {
+    let message = format!("directory fetch failed: {err}");
+    match err {
+        QidError::Config { .. } => QidError::Config { message },
+        QidError::Internal { .. } => QidError::Internal { message },
+        other => other,
+    }
+}
+
+/// Run a directory sync job against a configured directory provider.
 pub async fn run_directory_sync_job(
     repo: Arc<AnyRepository>,
     qid_config: &QidConfig,
@@ -260,11 +269,7 @@ pub async fn run_directory_sync_job(
                 fallback.connect(&provider.connection).await.ok();
                 fallback.fetch_users(&sync_config, &mapping).await?
             } else {
-                let message = format!("directory fetch failed: {err}");
-                return Err(match err {
-                    QidError::Config { .. } => QidError::Config { message },
-                    _ => QidError::Internal { message },
-                });
+                return Err(directory_fetch_error(err));
             }
         }
     };

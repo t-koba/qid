@@ -66,6 +66,10 @@ realms:
         "unexpected error: {error}"
     );
     assert!(
+        error.starts_with("config error:"),
+        "a misconfigured provider must be a configuration fault: {error}"
+    );
+    assert!(
         !error.contains("unsupported type"),
         "canonical active-directory type was rejected: {error}"
     );

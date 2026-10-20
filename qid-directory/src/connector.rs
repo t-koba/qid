@@ -321,14 +321,13 @@ fn ensure_ldap_search_success(result: ldap3::SearchResult) -> QidResult<ldap3::S
         })
 }
 
-/// The connection settings a directory search uses. Both LDAP paths share
-/// the scheme check, the start-TLS decision and the TLS verification policy.
+/// The connection settings a directory search uses, shared by both paths.
 fn ldap_search_settings(
     url: &str,
     tls_insecure: bool,
 ) -> QidResult<(ldap3::LdapConnSettings, String)> {
     if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
-        return Err(qid_core::error::QidError::BadRequest {
+        return Err(qid_core::error::QidError::Config {
             message: "LDAP URL must use ldaps:// or ldap:// scheme".to_string(),
         });
     }
@@ -489,8 +488,7 @@ fn hr_event_enabled(event: &str) -> Option<bool> {
     }
 }
 
-/// A directory attribute value. Every value is trimmed and an empty value is
-/// no value, so the two HR connectors store the same record for one person.
+/// A directory attribute value: trimmed, and absent when it is empty.
 fn optional_attribute(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())

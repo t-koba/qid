@@ -123,6 +123,12 @@ pub(crate) fn bool_value(value: Option<serde_json::Value>, field: &str) -> Resul
         })
 }
 
+pub(crate) fn unsupported_patch(op: &str, path: &str) -> QidError {
+    QidError::BadRequest {
+        message: format!("unsupported SCIM PATCH operation {op} {path}"),
+    }
+}
+
 /// Schemas with implemented User behavior.
 pub(crate) const CORE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
 pub(crate) const ENTERPRISE_SCHEMA: &str =

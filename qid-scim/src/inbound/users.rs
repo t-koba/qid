@@ -349,7 +349,6 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
         ("add" | "replace", "externalId") => {
             let new_value = string_value(op.value, "externalId")?;
             if user.directory_provider_id.is_some() {
-                // Directory sync owns this raw DN; only an identical round-trip is allowed.
                 if user.external_id.as_deref() != Some(new_value.as_str()) {
                     return Err(owned_external_id_conflict("changed"));
                 }
@@ -360,9 +359,8 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
         ("add" | "replace", "active") => user.active = bool_value(op.value, "active")?,
         ("replace", "name") => user.name_json = op.value.unwrap_or(serde_json::json!({})),
         ("add", "name") => merge_complex_add(&mut user.name_json, op.value, "name")?,
-        ("add" | "replace", "emails") => {
-            user.emails_json = op.value.unwrap_or(serde_json::json!([]))
-        }
+        ("add", "emails") => merge_complex_add(&mut user.emails_json, op.value, "emails")?,
+        ("replace", "emails") => user.emails_json = op.value.unwrap_or(serde_json::json!([])),
         ("replace", ENTERPRISE_USER_SCHEMA) | ("replace", "enterprise") => {
             user.enterprise_json = op.value.unwrap_or(serde_json::json!({}));
         }
@@ -391,11 +389,20 @@ fn merge_complex_add(
     value: Option<serde_json::Value>,
     attribute: &str,
 ) -> Result<(), QidError> {
+    let bad = |expected: &str| QidError::BadRequest {
+        message: format!("{attribute} must be {expected}"),
+    };
+    if target.is_array() || value.as_ref().is_some_and(|v| v.is_array()) {
+        let (Some(stored), Some(serde_json::Value::Array(added))) = (target.as_array_mut(), value)
+        else {
+            return Err(bad("an array"));
+        };
+        stored.extend(added);
+        return Ok(());
+    }
     let (Some(serde_json::Value::Object(added)), Some(stored)) = (value, target.as_object_mut())
     else {
-        return Err(QidError::BadRequest {
-            message: format!("{attribute} must be an object"),
-        });
+        return Err(bad("an object"));
     };
     stored.extend(added);
     Ok(())
@@ -411,9 +418,7 @@ fn apply_enterprise_patch(
         .strip_prefix(&(ENTERPRISE_USER_SCHEMA.to_string() + ":"))
         .or_else(|| path.strip_prefix("enterprise."))
     else {
-        return Err(QidError::BadRequest {
-            message: format!("unsupported SCIM PATCH operation {op_name} {path}"),
-        });
+        return Err(super::unsupported_patch(op_name, path));
     };
     let Some(object) = user.enterprise_json.as_object_mut() else {
         user.enterprise_json = serde_json::json!({});
@@ -421,21 +426,15 @@ fn apply_enterprise_patch(
     };
     match op_name {
         "add" | "replace" => {
-            object.insert(
-                attribute.to_string(),
-                value.ok_or_else(|| QidError::BadRequest {
-                    message: format!("{attribute} value is required"),
-                })?,
-            );
+            let value = value.ok_or_else(|| QidError::BadRequest {
+                message: format!("{attribute} value is required"),
+            })?;
+            object.insert(attribute.to_string(), value);
         }
         "remove" => {
             object.remove(attribute);
         }
-        _ => {
-            return Err(QidError::BadRequest {
-                message: format!("unsupported SCIM PATCH operation {op_name} {path}"),
-            });
-        }
+        _ => return Err(super::unsupported_patch(op_name, path)),
     }
     Ok(())
 }

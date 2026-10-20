@@ -1971,3 +1971,156 @@ async fn scim_user_patch_add_merges_complex_attributes() {
     );
     assert_eq!(after["meta"]["version"], before_version);
 }
+
+#[tokio::test]
+async fn scim_user_patch_add_appends_emails() {
+    let app = setup().await;
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"append@example.com","emails":[{"value":"a@example.com","primary":true}]}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let created = response_json(create_response).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    fn email_values(user: &serde_json::Value) -> Vec<&str> {
+        user["emails"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["value"].as_str().unwrap())
+            .collect()
+    }
+
+    // Direct `add` appends without dropping the stored entry.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"add","path":"emails","value":[{"value":"b@example.com"}]}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(
+        email_values(&patched),
+        vec!["a@example.com", "b@example.com"]
+    );
+    assert_eq!(patched["emails"][0]["primary"], true);
+
+    // Bulk PATCH shares the helper and must append as well.
+    let bulk_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Bulk")
+        .header("Content-Type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"Operations":[{{"method":"PATCH","path":"/Users/{id}","data":{{"Operations":[{{"op":"add","path":"emails","value":[{{"value":"c@example.com"}}]}}]}}}}]}}"#
+        )))
+        .unwrap();
+    let bulk_response = app.clone().oneshot(bulk_request).await.unwrap();
+    assert_eq!(bulk_response.status(), StatusCode::OK);
+    let bulk = response_json(bulk_response).await;
+    assert_eq!(bulk["Operations"][0]["status"], "200");
+    assert_eq!(
+        email_values(&bulk["Operations"][0]["response"]),
+        vec!["a@example.com", "b@example.com", "c@example.com"]
+    );
+
+    // Explicit `replace` stays whole-array replacement.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"replace","path":"emails","value":[{"value":"solo@example.com"}]}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patched = response_json(patch_response).await;
+    assert_eq!(
+        patched["emails"],
+        serde_json::json!([{"value": "solo@example.com"}])
+    );
+
+    // Malformed `add` values fail closed and keep stored entries.
+    let before_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let before_response = app.clone().oneshot(before_request).await.unwrap();
+    assert_eq!(before_response.status(), StatusCode::OK);
+    let before = response_json(before_response).await;
+    let before_version = before["meta"]["version"].as_str().unwrap().to_string();
+
+    for body in [
+        r#"{"Operations":[{"op":"add","path":"emails"}]}"#.to_string(),
+        r#"{"Operations":[{"op":"add","path":"emails","value":"oops"}]}"#.to_string(),
+        r#"{"Operations":[{"op":"add","path":"emails","value":{"value":"oops"}}]}"#.to_string(),
+    ] {
+        let patch_request = Request::builder()
+            .method(Method::PATCH)
+            .uri(format!("/scim/v2/Users/{id}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+        assert_eq!(patch_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let after_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let after_response = app.clone().oneshot(after_request).await.unwrap();
+    assert_eq!(after_response.status(), StatusCode::OK);
+    let after = response_json(after_response).await;
+    assert_eq!(after["emails"], before["emails"]);
+    assert_eq!(after["meta"]["version"], before_version);
+
+    // A non-array stored shape also fails a later `add` without mutation.
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"replace","path":"emails","value":{"value":"stored"}}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let stored = response_json(patch_response).await;
+    assert_eq!(stored["emails"], serde_json::json!({"value": "stored"}));
+    let stored_version = stored["meta"]["version"].as_str().unwrap().to_string();
+
+    let patch_request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"Operations":[{"op":"add","path":"emails","value":[{"value":"d@example.com"}]}]}"#,
+        ))
+        .unwrap();
+    let patch_response = app.clone().oneshot(patch_request).await.unwrap();
+    assert_eq!(patch_response.status(), StatusCode::BAD_REQUEST);
+
+    let after_request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/scim/v2/Users/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let after_response = app.oneshot(after_request).await.unwrap();
+    assert_eq!(after_response.status(), StatusCode::OK);
+    let after = response_json(after_response).await;
+    assert_eq!(after["emails"], serde_json::json!({"value": "stored"}));
+    assert_eq!(after["meta"]["version"], stored_version);
+}

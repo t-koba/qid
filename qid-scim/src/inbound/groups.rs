@@ -217,7 +217,7 @@ fn apply_group_patch(group: &mut ScimGroup, op: PatchOperation) -> Result<(), Qi
     let path = op.path.unwrap_or_default();
     match (op_name.as_str(), path.as_str()) {
         ("add" | "replace", "displayName") => {
-            group.display_name = string_value(op.value, "displayName")?;
+            group.display_name = string_value(op.value, "displayName")?
         }
         ("add", "members") => {
             let mut members = group.members_json.as_array().cloned().unwrap_or_default();
@@ -228,17 +228,9 @@ fn apply_group_patch(group: &mut ScimGroup, op: PatchOperation) -> Result<(), Qi
             }
             group.members_json = serde_json::Value::Array(members);
         }
-        ("replace", "members") => {
-            group.members_json = op.value.unwrap_or_else(|| serde_json::json!([]));
-        }
-        ("remove", "members") => {
-            group.members_json = serde_json::json!([]);
-        }
-        _ => {
-            return Err(QidError::BadRequest {
-                message: format!("unsupported SCIM PATCH operation {} {}", op.op, path),
-            });
-        }
+        ("replace", "members") => group.members_json = op.value.unwrap_or(serde_json::json!([])),
+        ("remove", "members") => group.members_json = serde_json::json!([]),
+        _ => return Err(super::unsupported_patch(op.op.as_str(), path.as_str())),
     }
     Ok(())
 }

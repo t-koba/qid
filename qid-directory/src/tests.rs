@@ -2430,22 +2430,21 @@ fn rejects_a_malformed_paged_results_control() {
 #[test]
 fn a_configured_bind_dn_needs_a_usable_password() {
     let dn = "CN=svc".to_string();
-    let err = crate::connector::bind_credentials(Some(&dn), None)
+    let err = qid_core::config::bind_credentials(Some(dn.as_str()), None)
         .expect_err("a bind DN needs a password");
     assert!(err.message().contains("bind password"), "{}", err.message());
-    let err = crate::connector::bind_credentials(Some(&dn), Some(&"".to_string()))
+    let err = qid_core::config::bind_credentials(Some(dn.as_str()), Some(""))
         .expect_err("an empty password is an unauthenticated bind");
     assert!(err.message().contains("bind password"), "{}", err.message());
-    let err =
-        crate::connector::bind_credentials(Some(&"  ".to_string()), Some(&"secret".to_string()))
-            .expect_err("a blank bind DN is no bind DN");
+    let err = qid_core::config::bind_credentials(Some("  "), Some("secret"))
+        .expect_err("a blank bind DN is no bind DN");
     assert!(err.message().contains("bind DN"), "{}", err.message());
     assert_eq!(
-        crate::connector::bind_credentials(Some(&dn), Some(&"secret".to_string())).unwrap(),
+        qid_core::config::bind_credentials(Some(dn.as_str()), Some("secret")).unwrap(),
         Some(("CN=svc", "secret"))
     );
     assert_eq!(
-        crate::connector::bind_credentials(None, None).unwrap(),
+        qid_core::config::bind_credentials(None, None).unwrap(),
         None,
         "no bind DN means an anonymous search"
     );
@@ -2475,15 +2474,14 @@ async fn webhook_ingest_trims_the_manager_reference() {
 
 #[test]
 fn a_bind_credential_must_be_usable_in_both_directions() {
-    let err =
-        crate::connector::bind_credentials(Some(&"CN=svc".to_string()), Some(&"  ".to_string()))
-            .expect_err("a blank password is no credential");
+    let err = qid_core::config::bind_credentials(Some("CN=svc"), Some("  "))
+        .expect_err("a blank password is no credential");
     assert!(err.message().contains("bind password"), "{}", err.message());
-    let err = crate::connector::bind_credentials(None, Some(&"secret".to_string()))
+    let err = qid_core::config::bind_credentials(None, Some("secret"))
         .expect_err("a password without a bind DN would search anonymously");
     assert!(err.message().contains("bind DN"), "{}", err.message());
     assert_eq!(
-        crate::connector::bind_credentials(None, Some(&"  ".to_string())).unwrap(),
+        qid_core::config::bind_credentials(None, Some("  ")).unwrap(),
         None,
         "a blank password is no credential either"
     );
@@ -2521,13 +2519,13 @@ async fn webhook_ingest_normalizes_every_attribute_like_the_csv_connector() {
 fn a_bind_credential_fault_is_a_configuration_error() {
     // A misconfigured provider is the operator's configuration, not a server
     // fault, so it must not surface as an internal error.
-    let err = crate::connector::bind_credentials(Some(&"CN=svc".to_string()), None)
+    let err = qid_core::config::bind_credentials(Some("CN=svc"), None)
         .expect_err("a bind DN needs a password");
     assert!(
         matches!(err, qid_core::error::QidError::Config { .. }),
         "the fault must be a configuration error"
     );
-    let err = crate::connector::bind_credentials(None, Some(&"secret".to_string()))
+    let err = qid_core::config::bind_credentials(None, Some("secret"))
         .expect_err("a password needs a bind DN");
     assert!(
         matches!(err, qid_core::error::QidError::Config { .. }),

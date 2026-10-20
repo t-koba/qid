@@ -813,6 +813,29 @@ pub struct DirectoryConnectionConfig {
     pub tls_insecure_skip_verify: bool,
 }
 
+/// The bind credentials a directory search uses, if any.
+pub fn bind_credentials<'a>(
+    bind_dn: Option<&'a str>,
+    bind_password: Option<&'a str>,
+) -> QidResult<Option<(&'a str, &'a str)>> {
+    let password = bind_password.unwrap_or_default();
+    let Some(dn) = bind_dn.map(str::trim) else {
+        // A password without a bind DN would leave the search anonymous.
+        if !password.trim().is_empty() {
+            return Err(QidError::Config {
+                message: "bind DN and bind password must both be set and non-blank".to_string(),
+            });
+        }
+        return Ok(None);
+    };
+    if dn.is_empty() || password.trim().is_empty() {
+        return Err(QidError::Config {
+            message: "bind DN and bind password must both be set and non-blank".to_string(),
+        });
+    }
+    Ok(Some((dn, password)))
+}
+
 impl Default for DirectoryConnectionConfig {
     fn default() -> Self {
         Self {

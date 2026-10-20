@@ -5,6 +5,7 @@
 //! entries into the canonical [`LdapDirectoryEntry`] used by qid's sync engine.
 
 use async_trait::async_trait;
+use qid_core::config::bind_credentials;
 use qid_core::{
     config::{DirectoryAttributeMapping, DirectoryConnectionConfig, DirectorySyncConfig},
     error::{QidError, QidResult},
@@ -369,7 +370,7 @@ fn run_ldap_search(
     shared_runtime().block_on(async {
         with_ldap_session(settings, &url, timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(timeout_secs);
-            if let Some((dn, pw)) = bind_credentials(bind_dn.as_ref(), bind_pw.as_ref())? {
+            if let Some((dn, pw)) = bind_credentials(bind_dn.as_deref(), bind_pw.as_deref())? {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
@@ -870,7 +871,8 @@ pub fn run_ldap_search_with_options(
                         message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
                     }
                 })?;
-            } else if let Some((dn, pw)) = bind_credentials(bind_dn.as_ref(), bind_pw.as_ref())? {
+            } else if let Some((dn, pw)) = bind_credentials(bind_dn.as_deref(), bind_pw.as_deref())?
+            {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
@@ -920,32 +922,6 @@ pub(crate) fn sasl_bind_dn(bind_dn: Option<&str>) -> QidResult<&str> {
         .ok_or_else(|| QidError::Config {
             message: "LDAP SASL bind requested without a configured bind DN".to_string(),
         })
-}
-
-/// The credentials a directory search binds with. A configured bind DN and
-/// password must both be non-blank: an empty password is an unauthenticated
-/// bind that RFC 4513 reports as success, and a blank or missing credential
-/// would leave the search anonymous.
-pub(crate) fn bind_credentials<'a>(
-    bind_dn: Option<&'a String>,
-    bind_pw: Option<&'a String>,
-) -> QidResult<Option<(&'a str, &'a str)>> {
-    let pw = bind_pw.map(|pw| pw.as_str()).unwrap_or_default();
-    let Some(dn) = bind_dn.map(|dn| dn.trim()) else {
-        // A password without a bind DN would leave the search anonymous.
-        if !pw.trim().is_empty() {
-            return Err(QidError::Config {
-                message: "LDAP bind password requires a bind DN".to_string(),
-            });
-        }
-        return Ok(None);
-    };
-    if dn.is_empty() || pw.trim().is_empty() {
-        return Err(QidError::Config {
-            message: "LDAP bind DN and bind password must both be set and non-blank".to_string(),
-        });
-    }
-    Ok(Some((dn, pw)))
 }
 
 /// The cookie of the next page, taken from the PagedResults control the

@@ -141,6 +141,7 @@ impl QidConfig {
         self.crypto.validate()?;
         self.ops.validate()?;
         self.profile.validate_config(self)?;
+        validate_directory_providers(self)?;
         validate_metrics_listen(&self.observability)?;
 
         Ok(())
@@ -262,6 +263,20 @@ impl DeploymentProfile {
             Self::Ciam => validate_ciam_profile(config),
         }
     }
+}
+
+/// A directory provider must state usable bind credentials.
+fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
+    for realm in &config.realms {
+        let providers = &realm.protocols.directory.providers;
+        for provider in providers.iter().filter(|p| p.enabled) {
+            let connection = &provider.connection;
+            let dn = connection.bind_dn.as_deref();
+            let password = connection.bind_password.as_deref();
+            bind_credentials(dn, password)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_oidc_profile(config: &QidConfig) -> QidResult<()> {

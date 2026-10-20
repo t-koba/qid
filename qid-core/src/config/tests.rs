@@ -1329,3 +1329,26 @@ fn introspection_object_form_keeps_the_endpoint_enabled() {
     assert!(config.introspection.enabled);
     assert!(config.introspection.jwt_response);
 }
+
+#[test]
+fn a_directory_provider_needs_usable_bind_credentials() {
+    let mut config = minimal_config();
+    config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+        id: "corp-ldap".to_string(),
+        provider_type: "ldap".to_string(),
+        enabled: true,
+        connection: DirectoryConnectionConfig {
+            url: "ldaps://dir.example.com".to_string(),
+            bind_dn: Some("CN=svc".to_string()),
+            ..DirectoryConnectionConfig::default()
+        },
+        sync: DirectorySyncConfig::default(),
+        attribute_mapping: DirectoryAttributeMapping::default(),
+    }];
+    // The provider must fail when the configuration loads, not at the first
+    // sync: a bind DN without a password is an unauthenticated bind.
+    let err = config
+        .validate()
+        .expect_err("a bind DN without a password is a configuration fault");
+    assert!(err.message().contains("bind password"), "{}", err.message());
+}

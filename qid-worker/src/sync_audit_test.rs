@@ -119,3 +119,17 @@ fn a_directory_fetch_fault_keeps_the_connectors_kind() {
         "a transport fault stays a server fault"
     );
 }
+
+#[test]
+fn a_directory_fetch_fault_keeps_every_kind() {
+    use qid_core::error::QidError;
+    // The third arm passes every other kind through unchanged.
+    let storage = QidError::Storage {
+        message: "the store is unavailable".to_string(),
+    };
+    let error = crate::sync::directory_fetch_error(storage);
+    assert!(
+        matches!(error, QidError::Storage { .. }),
+        "a storage fault keeps its kind"
+    );
+}

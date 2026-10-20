@@ -17,6 +17,9 @@ use tower::ServiceExt;
 
 const ENTERPRISE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
 const CORE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
+const CORE_DEVICE_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:Device";
+const DEVICE_EXTENSION_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:device:2.0:Device";
+const EVENT_SUBSCRIPTION_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:EventSubscription";
 
 async fn setup() -> Router {
     setup_with_store().await.0
@@ -815,7 +818,7 @@ async fn scim_schema_discovery_advertises_only_supported_schemas() {
     let app = setup().await;
     for realm in [Some("corp"), Some("other"), None, Some("unknown")] {
         let schemas = get_json(&app, "/scim/v2/Schemas", realm).await;
-        assert_eq!(schemas["totalResults"], 3);
+        assert_eq!(schemas["totalResults"], 6);
         let ids: Vec<&str> = schemas["Resources"]
             .as_array()
             .unwrap()
@@ -825,6 +828,9 @@ async fn scim_schema_discovery_advertises_only_supported_schemas() {
         assert!(ids.contains(&"urn:ietf:params:scim:schemas:core:2.0:User"));
         assert!(ids.contains(&"urn:ietf:params:scim:schemas:core:2.0:Group"));
         assert!(ids.contains(&ENTERPRISE_USER_SCHEMA));
+        assert!(ids.contains(&CORE_DEVICE_SCHEMA));
+        assert!(ids.contains(&DEVICE_EXTENSION_SCHEMA));
+        assert!(ids.contains(&EVENT_SUBSCRIPTION_SCHEMA));
         assert!(
             !schemas.to_string().contains("example:"),
             "no custom extension is advertised"
@@ -856,6 +862,112 @@ async fn scim_schema_discovery_advertises_only_supported_schemas() {
                     .any(|a| a["name"] == "department")
         }),
         "built-in enterprise extension stays advertised"
+    );
+}
+
+#[tokio::test]
+async fn scim_resource_types_resolve_in_schemas_with_scoped_subset() {
+    let app = setup().await;
+    let schemas = get_json(&app, "/scim/v2/Schemas", None).await;
+    let by_id = |id: &str| {
+        schemas["Resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is advertised"))
+            .clone()
+    };
+    let names = |schema: &serde_json::Value| {
+        let mut names: Vec<String> = schema["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort_unstable();
+        names
+    };
+    let types = get_json(&app, "/scim/v2/ResourceTypes", None).await;
+    let resources = types["Resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 4);
+    for resource in resources {
+        let schema = resource["schema"].as_str().unwrap();
+        assert!(
+            by_id(schema)["id"] == schema,
+            "ResourceTypes schema {schema} resolves in /Schemas"
+        );
+        for extension in resource
+            .get("schemaExtensions")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let schema = extension["schema"].as_str().unwrap();
+            assert!(
+                by_id(schema)["id"] == schema,
+                "ResourceTypes extension {schema} resolves in /Schemas"
+            );
+        }
+    }
+    let device = resources
+        .iter()
+        .find(|r| r["id"] == "Device")
+        .expect("Device resource type is advertised");
+    assert_eq!(device["schema"], CORE_DEVICE_SCHEMA);
+    assert_eq!(
+        device["schemaExtensions"],
+        serde_json::json!([{"schema": DEVICE_EXTENSION_SCHEMA, "required": false}])
+    );
+    let subscription = resources
+        .iter()
+        .find(|r| r["id"] == "EventSubscription")
+        .expect("EventSubscription resource type is advertised");
+    assert_eq!(subscription["schema"], EVENT_SUBSCRIPTION_SCHEMA);
+    assert!(subscription.get("schemaExtensions").is_none());
+    let core_device = by_id(CORE_DEVICE_SCHEMA);
+    assert_eq!(names(&core_device), ["displayName".to_string()]);
+    assert!(
+        core_device["description"]
+            .as_str()
+            .unwrap()
+            .contains("implemented subset"),
+        "scoped Device description must not claim full conformance"
+    );
+    let extension = by_id(DEVICE_EXTENSION_SCHEMA);
+    assert_eq!(
+        names(&extension),
+        [
+            "lastSeen".to_string(),
+            "manufacturer".to_string(),
+            "model".to_string(),
+            "os".to_string(),
+            "osVersion".to_string()
+        ]
+    );
+    assert!(
+        extension["description"]
+            .as_str()
+            .unwrap()
+            .contains("implemented subset"),
+        "scoped device extension must not claim full conformance"
+    );
+    let subscription_schema = by_id(EVENT_SUBSCRIPTION_SCHEMA);
+    assert_eq!(
+        names(&subscription_schema),
+        [
+            "callback".to_string(),
+            "createdAt".to_string(),
+            "enabled".to_string(),
+            "eventTypes".to_string()
+        ]
+    );
+    assert!(
+        subscription_schema["description"]
+            .as_str()
+            .unwrap()
+            .contains("implemented subset"),
+        "scoped subscription description must not claim full conformance"
     );
 }
 

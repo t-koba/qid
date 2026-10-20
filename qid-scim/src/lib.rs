@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 pub(crate) const ENTERPRISE_USER_SCHEMA: &str =
     "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
+pub(crate) const CORE_DEVICE_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:Device";
 pub const RFC_9944_DEVICE_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:device:2.0:Device";
 pub const RFC_9967_EVENT_SUBSCRIPTION_SCHEMA: &str =
     "urn:ietf:params:scim:schemas:core:2.0:EventSubscription";
@@ -249,10 +250,7 @@ fn rfc_9944_device_response_ref(device: &ScimDevice) -> serde_json::Value {
 
 fn rfc_9944_device_response(device: ScimDevice) -> serde_json::Value {
     serde_json::json!({
-        "schemas": [
-            "urn:ietf:params:scim:schemas:core:2.0:Device",
-            RFC_9944_DEVICE_SCHEMA,
-        ],
+        "schemas": [CORE_DEVICE_SCHEMA, RFC_9944_DEVICE_SCHEMA],
         "id": device.id,
         "realm": device.realm_id,
         "displayName": device.display_name,

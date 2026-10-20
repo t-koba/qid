@@ -989,6 +989,9 @@ fn cmd_coverage(min_pct: f64) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+mod budget_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

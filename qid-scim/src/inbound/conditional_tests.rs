@@ -27,6 +27,22 @@ fn assert_stale<T: std::fmt::Debug>(result: Result<T, WriteError>) {
     );
 }
 
+/// Deterministically release every backend handle before the temp directory is
+/// deleted. Windows fails `remove_dir_all` with ERROR_SHARING_VIOLATION while
+/// any handle is open: the file backend holds an exclusive `.lock` file and
+/// SQLite holds the database file in its pool. Each variant is released
+/// explicitly so the drop is sequenced before directory removal.
+async fn close_repository_for_cleanup(repo: std::sync::Arc<AnyRepository>) {
+    let repo = std::sync::Arc::try_unwrap(repo).ok().unwrap();
+    match repo {
+        AnyRepository::Sql(repo) => repo.close().await,
+        AnyRepository::File(repo) => {
+            repo.flush().await.unwrap();
+            drop(repo);
+        }
+    }
+}
+
 #[tokio::test]
 async fn conditions_match_current_resources_on_both_backends() {
     for sql in [false, true] {
@@ -159,10 +175,7 @@ async fn conditions_match_current_resources_on_both_backends() {
             }
         }
         drop(state);
-        let repo = Arc::try_unwrap(repo).ok().unwrap();
-        if let AnyRepository::Sql(repo) = repo {
-            repo.close().await;
-        }
+        close_repository_for_cleanup(repo).await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
@@ -558,10 +571,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             assert_eq!(kept.display_name, "ctx");
         }
         drop(state);
-        let repo = std::sync::Arc::try_unwrap(repo).ok().unwrap();
-        if let AnyRepository::Sql(repo) = repo {
-            repo.close().await;
-        }
+        close_repository_for_cleanup(repo).await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

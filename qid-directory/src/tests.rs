@@ -2428,11 +2428,25 @@ fn rejects_a_malformed_paged_results_control() {
 }
 
 #[test]
-fn a_configured_bind_dn_needs_a_password() {
-    let err = crate::connector::bind_password(None).expect_err("a bind DN needs a password");
+fn a_configured_bind_dn_needs_a_usable_password() {
+    let dn = "CN=svc".to_string();
+    let err = crate::connector::bind_credentials(Some(&dn), None)
+        .expect_err("a bind DN needs a password");
     assert!(err.message().contains("bind password"), "{}", err.message());
+    let err = crate::connector::bind_credentials(Some(&dn), Some(&"".to_string()))
+        .expect_err("an empty password is an unauthenticated bind");
+    assert!(err.message().contains("bind password"), "{}", err.message());
+    let err =
+        crate::connector::bind_credentials(Some(&"  ".to_string()), Some(&"secret".to_string()))
+            .expect_err("a blank bind DN is no bind DN");
+    assert!(err.message().contains("bind DN"), "{}", err.message());
     assert_eq!(
-        crate::connector::bind_password(Some(&"secret".to_string())).unwrap(),
-        "secret"
+        crate::connector::bind_credentials(Some(&dn), Some(&"secret".to_string())).unwrap(),
+        Some(("CN=svc", "secret"))
+    );
+    assert_eq!(
+        crate::connector::bind_credentials(None, None).unwrap(),
+        None,
+        "no bind DN means an anonymous search"
     );
 }

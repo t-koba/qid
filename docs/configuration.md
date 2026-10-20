@@ -4,6 +4,10 @@ qid loads YAML or TOML into `qid_core::config::QidConfig`. Configuration is a ca
 
 The configuration model describes qid as an IdP, authorization server, lifecycle service, PDP, and provider-neutral PEP integration point.
 
+## Placeholders
+
+The shipped samples mark the values an operator must supply with a placeholder: either `secret://<name>` or `change-me-<name>`. Both are plain text. qid does not resolve `secret://` references, so a placeholder is sent literally to the service it configures - a directory bind password placeholder is presented to the directory as that literal string - and it must be replaced with the real value before the deployment runs.
+
 ## Loading Order
 
 `QidConfig::from_files` accepts one or more paths.

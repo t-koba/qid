@@ -349,7 +349,7 @@ fn run_ldap_search(
             .set_no_tls_verify(tls_insecure);
         with_ldap_session(settings, &url, timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(timeout_secs);
-            if let (Some(dn), Some(pw)) = (&bind_dn, &bind_pw) {
+            if let Some((dn, pw)) = bind_credentials(bind_dn.as_ref(), bind_pw.as_ref())? {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
@@ -875,8 +875,7 @@ pub fn run_ldap_search_with_options(
                         message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
                     }
                 })?;
-            } else if let Some(dn) = &bind_dn {
-                let pw = bind_password(bind_pw.as_ref())?;
+            } else if let Some((dn, pw)) = bind_credentials(bind_dn.as_ref(), bind_pw.as_ref())? {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
@@ -925,20 +924,33 @@ pub fn run_ldap_search_with_options(
 /// The bind DN a requested SASL bind must use. A SASL bind without one is an
 /// error: falling through would run an anonymous search and report success.
 pub(crate) fn sasl_bind_dn(bind_dn: Option<&str>) -> QidResult<&str> {
-    bind_dn.ok_or_else(|| QidError::Internal {
-        message: "LDAP SASL bind requested without a configured bind DN".to_string(),
-    })
+    bind_dn
+        .map(str::trim)
+        .filter(|dn| !dn.is_empty())
+        .ok_or_else(|| QidError::Internal {
+            message: "LDAP SASL bind requested without a configured bind DN".to_string(),
+        })
 }
 
-/// The password a configured bind DN must have. A bind DN without a password
-/// is an error: falling through would run an anonymous search and report a
-/// successful sync.
-pub(crate) fn bind_password(bind_pw: Option<&String>) -> QidResult<&str> {
-    bind_pw
-        .map(String::as_str)
-        .ok_or_else(|| QidError::Internal {
-            message: "LDAP bind DN is configured without a bind password".to_string(),
-        })
+/// The credentials a directory search binds with. A configured bind DN and
+/// password must both be non-blank: an empty password is an unauthenticated
+/// bind that RFC 4513 reports as success, and a blank or missing credential
+/// would leave the search anonymous.
+pub(crate) fn bind_credentials<'a>(
+    bind_dn: Option<&'a String>,
+    bind_pw: Option<&'a String>,
+) -> QidResult<Option<(&'a str, &'a str)>> {
+    let Some(dn) = bind_dn else {
+        return Ok(None);
+    };
+    let dn = dn.trim();
+    let pw = bind_pw.map(|pw| pw.as_str()).unwrap_or_default();
+    if dn.is_empty() || pw.is_empty() {
+        return Err(QidError::Internal {
+            message: "LDAP bind DN and bind password must both be set and non-blank".to_string(),
+        });
+    }
+    Ok(Some((dn, pw)))
 }
 
 /// The cookie of the next page, taken from the PagedResults control the

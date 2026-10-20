@@ -1,3 +1,4 @@
+use super::AdminPermission as Perm;
 use super::*;
 
 #[derive(Deserialize)]
@@ -44,6 +45,34 @@ pub(super) async fn load_custom_domain<R: Repository>(
         .ok_or_else(|| QidError::NotFound {
             resource: format!("custom domain {domain_id}"),
         })
+}
+
+/// Defines a tenant-scoped list handler: authorize the caller for the tenant
+/// with the given permission and return the repository listing as JSON. The
+/// repository listing method shares the handler name; a handler whose listing
+/// is bounded passes the query identifier so the limit is extracted and
+/// clamped.
+macro_rules! tenant_list {
+    ($name:ident, $permission:expr $(, $query:ident)?) => {
+        pub(super) async fn $name<R: Repository>(
+            State(state): State<Arc<SharedState<R>>>,
+            headers: HeaderMap,
+            Path(tenant): Path<String>,
+            $(Query($query): Query<UsageBillingQuery>,)?
+        ) -> impl IntoResponse {
+            let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
+                &state,
+                &headers,
+                $permission,
+                &state.config.admin.security,
+                &tenant,
+            ));
+            match state.repo.$name(&tenant $(, audit_limit($query.limit))?).await {
+                Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+                Err(e) => qid_http::error_response(e),
+            }
+        }
+    };
 }
 
 pub(super) async fn list_custom_domains<R: Repository>(
@@ -263,23 +292,7 @@ pub(super) async fn delete_custom_domain<R: Repository>(
     .await
 }
 
-pub(super) async fn list_app_catalog_entries<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    headers: HeaderMap,
-    Path(tenant): Path<String>,
-) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-        &state,
-        &headers,
-        AdminPermission::TenantAdmin,
-        &state.config.admin.security,
-        &tenant,
-    ));
-    match state.repo.list_app_catalog_entries(&tenant).await {
-        Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
-        Err(e) => qid_http::error_response(e),
-    }
-}
+tenant_list!(list_app_catalog_entries, Perm::TenantAdmin);
 
 pub(super) async fn create_app_catalog_entry<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -399,23 +412,7 @@ pub(super) async fn delete_app_catalog_entry<R: Repository>(
     .await
 }
 
-pub(super) async fn list_ciam_brands<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    headers: HeaderMap,
-    Path(tenant): Path<String>,
-) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-        &state,
-        &headers,
-        AdminPermission::TenantAdmin,
-        &state.config.admin.security,
-        &tenant,
-    ));
-    match state.repo.list_ciam_brands(&tenant).await {
-        Ok(brands) => (StatusCode::OK, Json(brands)).into_response(),
-        Err(e) => qid_http::error_response(e),
-    }
-}
+tenant_list!(list_ciam_brands, Perm::TenantAdmin);
 
 pub(super) async fn create_ciam_brand<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -491,23 +488,7 @@ pub(super) async fn delete_ciam_brand<R: Repository>(
     .await
 }
 
-pub(super) async fn list_marketplace_connectors<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    headers: HeaderMap,
-    Path(tenant): Path<String>,
-) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-        &state,
-        &headers,
-        AdminPermission::TenantAdmin,
-        &state.config.admin.security,
-        &tenant,
-    ));
-    match state.repo.list_marketplace_connectors(&tenant).await {
-        Ok(connectors) => (StatusCode::OK, Json(connectors)).into_response(),
-        Err(e) => qid_http::error_response(e),
-    }
-}
+tenant_list!(list_marketplace_connectors, Perm::TenantAdmin);
 
 pub(super) async fn create_marketplace_connector<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -587,28 +568,7 @@ pub(super) async fn delete_marketplace_connector<R: Repository>(
     .await
 }
 
-pub(super) async fn list_usage_billing_events<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    headers: HeaderMap,
-    Path(tenant): Path<String>,
-    Query(query): Query<UsageBillingQuery>,
-) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-        &state,
-        &headers,
-        AdminPermission::TenantAdmin,
-        &state.config.admin.security,
-        &tenant,
-    ));
-    match state
-        .repo
-        .list_usage_billing_events(&tenant, audit_limit(query.limit))
-        .await
-    {
-        Ok(events) => (StatusCode::OK, Json(events)).into_response(),
-        Err(e) => qid_http::error_response(e),
-    }
-}
+tenant_list!(list_usage_billing_events, Perm::TenantAdmin, query);
 
 pub(super) async fn create_usage_billing_event<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -656,23 +616,7 @@ pub(super) async fn create_usage_billing_event<R: Repository>(
     }
 }
 
-pub(super) async fn list_compliance_evidence_packs<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    headers: HeaderMap,
-    Path(tenant): Path<String>,
-) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-        &state,
-        &headers,
-        AdminPermission::AuditRead,
-        &state.config.admin.security,
-        &tenant,
-    ));
-    match state.repo.list_compliance_evidence_packs(&tenant).await {
-        Ok(packs) => (StatusCode::OK, Json(packs)).into_response(),
-        Err(e) => qid_http::error_response(e),
-    }
-}
+tenant_list!(list_compliance_evidence_packs, Perm::AuditRead);
 
 pub(super) async fn create_compliance_evidence_pack<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -722,23 +666,7 @@ pub(super) async fn create_compliance_evidence_pack<R: Repository>(
     }
 }
 
-pub(super) async fn list_delegated_tenant_admins<R: Repository>(
-    State(state): State<Arc<SharedState<R>>>,
-    headers: HeaderMap,
-    Path(tenant): Path<String>,
-) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-        &state,
-        &headers,
-        AdminPermission::TenantAdmin,
-        &state.config.admin.security,
-        &tenant,
-    ));
-    match state.repo.list_delegated_tenant_admins(&tenant).await {
-        Ok(admins) => (StatusCode::OK, Json(admins)).into_response(),
-        Err(e) => qid_http::error_response(e),
-    }
-}
+tenant_list!(list_delegated_tenant_admins, Perm::TenantAdmin);
 
 pub(super) async fn create_delegated_tenant_admin<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,

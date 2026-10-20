@@ -190,13 +190,22 @@ pub struct DirectorySyncJobReport {
     pub dry_run: bool,
 }
 
-/// The error a directory sync reports for a failed fetch, keeping the kind.
+/// The error a directory sync reports for a failed fetch. The connector's
+/// own kind is kept, so an operator configuration fault stays a
+/// configuration fault, and the fetch context is added to every kind.
 pub(crate) fn directory_fetch_error(err: QidError) -> QidError {
     let message = format!("directory fetch failed: {err}");
     match err {
         QidError::Config { .. } => QidError::Config { message },
+        QidError::Crypto { .. } => QidError::Crypto { message },
+        QidError::Storage { .. } => QidError::Storage { message },
+        QidError::NotFound { .. } => QidError::NotFound { resource: message },
+        QidError::Unauthorized { .. } => QidError::Unauthorized { message },
+        QidError::BadRequest { .. } => QidError::BadRequest { message },
         QidError::Internal { .. } => QidError::Internal { message },
-        other => other,
+        QidError::TooManyRequests { .. } => QidError::TooManyRequests { message },
+        QidError::Conflict { .. } => QidError::Conflict { message },
+        QidError::DpopNonce { .. } => QidError::DpopNonce { message },
     }
 }
 

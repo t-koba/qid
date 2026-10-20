@@ -60,13 +60,7 @@ macro_rules! tenant_list {
             Path(tenant): Path<String>,
             $(Query($query): Query<UsageBillingQuery>,)?
         ) -> impl IntoResponse {
-            let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-                &state,
-                &headers,
-                $permission,
-                &state.config.admin.security,
-                &tenant,
-            ));
+            let (_admin, _elevation) = admin_tenant_read!(state, &headers, $permission, &tenant);
             match state.repo.$name(&tenant $(, audit_limit($query.limit))?).await {
                 Ok(items) => (StatusCode::OK, Json(items)).into_response(),
                 Err(e) => qid_http::error_response(e),
@@ -80,13 +74,7 @@ pub(super) async fn list_custom_domains<R: Repository>(
     headers: HeaderMap,
     Path(tenant): Path<String>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_for_tenant(
-        &state,
-        &headers,
-        AdminPermission::TenantAdmin,
-        &state.config.admin.security,
-        &tenant,
-    ));
+    let (_admin, _elevation) = admin_tenant_read!(state, &headers, Perm::TenantAdmin, &tenant);
     match state.repo.list_custom_domains(&tenant).await {
         Ok(domains) => (StatusCode::OK, Json(domains)).into_response(),
         Err(e) => qid_http::error_response(e),
@@ -99,14 +87,7 @@ pub(super) async fn create_custom_domain<R: Repository>(
     headers: HeaderMap,
     Json(domain): Json<CustomDomain>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &domain.tenant_id).and_then(|_| domain.validate())
     {
         return qid_http::error_response(e);
@@ -150,14 +131,7 @@ pub(super) async fn activate_custom_domain<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CustomDomainActivationRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     let mut domain = match load_custom_domain(&state, &tenant, &domain_id).await {
         Ok(domain) => domain,
         Err(e) => return qid_http::error_response(e),
@@ -212,14 +186,7 @@ pub(super) async fn renew_custom_domain_certificate<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<CustomDomainCertificateRenewalRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     let mut domain = match load_custom_domain(&state, &tenant, &domain_id).await {
         Ok(domain) => domain,
         Err(e) => return qid_http::error_response(e),
@@ -269,14 +236,7 @@ pub(super) async fn delete_custom_domain<R: Repository>(
     Path((tenant, domain_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     audit_no_content(
         state.repo.delete_custom_domain(&tenant, &domain_id).await,
         &state,
@@ -300,14 +260,7 @@ pub(super) async fn create_app_catalog_entry<R: Repository>(
     headers: HeaderMap,
     Json(entry): Json<AppCatalogEntry>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &entry.tenant_id)
         .and_then(|_| entry.validate())
         .and_then(|_| validate_app_catalog_saml_reference(&state.config, &entry))
@@ -386,14 +339,7 @@ pub(super) async fn delete_app_catalog_entry<R: Repository>(
     Path((tenant, entry_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     audit_no_content(
         state
             .repo
@@ -420,14 +366,7 @@ pub(super) async fn create_ciam_brand<R: Repository>(
     headers: HeaderMap,
     Json(brand): Json<CiamBrand>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &brand.tenant_id).and_then(|_| brand.validate()) {
         return qid_http::error_response(e);
     }
@@ -465,14 +404,7 @@ pub(super) async fn delete_ciam_brand<R: Repository>(
     Path((tenant, brand_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     audit_no_content(
         state.repo.delete_ciam_brand(&tenant, &brand_id).await,
         &state,
@@ -496,14 +428,7 @@ pub(super) async fn create_marketplace_connector<R: Repository>(
     headers: HeaderMap,
     Json(connector): Json<MarketplaceConnector>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) =
         validate_tenant_path(&tenant, &connector.tenant_id).and_then(|_| connector.validate())
     {
@@ -542,14 +467,7 @@ pub(super) async fn delete_marketplace_connector<R: Repository>(
     Path((tenant, connector_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     audit_no_content(
         state
             .repo
@@ -576,14 +494,7 @@ pub(super) async fn create_usage_billing_event<R: Repository>(
     headers: HeaderMap,
     Json(event): Json<UsageBillingEvent>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &event.tenant_id).and_then(|_| event.validate()) {
         return qid_http::error_response(e);
     }
@@ -624,14 +535,7 @@ pub(super) async fn create_compliance_evidence_pack<R: Repository>(
     headers: HeaderMap,
     Json(pack): Json<ComplianceEvidencePack>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &pack.tenant_id).and_then(|_| pack.validate()) {
         return qid_http::error_response(e);
     }
@@ -674,14 +578,7 @@ pub(super) async fn create_delegated_tenant_admin<R: Repository>(
     headers: HeaderMap,
     Json(admin): Json<DelegatedTenantAdmin>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &admin.tenant_id).and_then(|_| admin.validate()) {
         return qid_http::error_response(e);
     }
@@ -722,14 +619,7 @@ pub(super) async fn revoke_delegated_tenant_admin<R: Repository>(
     Path((tenant, admin_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) =
-        crate::authorize_admin_or_return!(authorize_admin_mutation_for_tenant(
-            &state,
-            &headers,
-            AdminPermission::TenantAdmin,
-            &state.config.admin.security,
-            &tenant,
-        ));
+    let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     match state
         .repo
         .revoke_delegated_tenant_admin(&tenant, &admin_id)

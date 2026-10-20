@@ -1,3 +1,4 @@
+use super::AdminPermission as Perm;
 use super::*;
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct BreakglassSessionRevokeRequest {
@@ -103,13 +104,7 @@ pub(crate) async fn plan_key_rotation_admin<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<KeyRotationPlanRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
-        &state,
-        &headers,
-        AdminPermission::SecurityAdmin,
-        &state.config.admin.security,
-        None,
-    ));
+    let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::SecurityAdmin, None);
     if req.requirements.is_empty() {
         return qid_http::error_response(QidError::BadRequest {
             message: "key rotation plan requires at least one requirement".to_string(),

@@ -1,3 +1,4 @@
+use super::AdminPermission as Perm;
 use super::*;
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct PolicySimulationRequest {
@@ -178,13 +179,7 @@ pub(crate) async fn admin_dashboard<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin(
-        &state,
-        &headers,
-        AdminPermission::PlatformAdmin,
-        &state.config.admin.security,
-        None,
-    ));
+    let (_admin, _elevation) = admin_read!(state, &headers, Perm::PlatformAdmin, None);
     match build_admin_dashboard(&state).await {
         Ok(dashboard) => (StatusCode::OK, Json(dashboard)).into_response(),
         Err(e) => qid_http::error_response(e),
@@ -242,13 +237,7 @@ pub(crate) async fn simulate_policy<R: Repository>(
     headers: HeaderMap,
     Json(req): Json<PolicySimulationRequest>,
 ) -> impl IntoResponse {
-    let (_admin, _elevation) = crate::authorize_admin_or_return!(authorize_admin_mutation(
-        &state,
-        &headers,
-        AdminPermission::SecurityAdmin,
-        &state.config.admin.security,
-        Some(&realm),
-    ));
+    let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::SecurityAdmin, Some(&realm));
     match run_policy_simulation(&state, &realm, req).await {
         Ok(response) => {
             if let Err(e) = append_admin_audit(

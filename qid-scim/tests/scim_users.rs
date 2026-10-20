@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 const ENTERPRISE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
+const CORE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
 
 async fn setup() -> Router {
     setup_with_store().await.0
@@ -841,6 +842,91 @@ async fn scim_schema_discovery_advertises_only_supported_schemas() {
         }),
         "built-in enterprise extension stays advertised"
     );
+}
+
+#[tokio::test]
+async fn scim_user_schema_discovery_matches_created_and_returned_name_and_emails() {
+    let app = setup().await;
+    let schemas = get_json(&app, "/scim/v2/Schemas", None).await;
+    let user_schema = schemas["Resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource| resource["id"] == CORE_USER_SCHEMA)
+        .expect("core User schema is advertised");
+    let user_attributes = user_schema["attributes"].as_array().unwrap();
+    let discovered = |name: &str| {
+        user_attributes
+            .iter()
+            .find(|attribute| attribute["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is advertised"))
+    };
+
+    assert_eq!(
+        discovered("name"),
+        &serde_json::json!({
+            "name": "name",
+            "type": "complex",
+            "multiValued": false,
+            "required": false,
+            "subAttributes": [
+                {"name": "formatted", "type": "string", "multiValued": false, "required": false},
+                {"name": "familyName", "type": "string", "multiValued": false, "required": false},
+                {"name": "givenName", "type": "string", "multiValued": false, "required": false},
+                {"name": "middleName", "type": "string", "multiValued": false, "required": false},
+                {"name": "honorificPrefix", "type": "string", "multiValued": false, "required": false},
+                {"name": "honorificSuffix", "type": "string", "multiValued": false, "required": false}
+            ]
+        })
+    );
+    assert_eq!(
+        discovered("emails"),
+        &serde_json::json!({
+            "name": "emails",
+            "type": "complex",
+            "multiValued": true,
+            "required": false,
+            "subAttributes": [
+                {"name": "value", "type": "string", "multiValued": false, "required": false},
+                {"name": "display", "type": "string", "multiValued": false, "required": false},
+                {"name": "type", "type": "string", "multiValued": false, "required": false},
+                {"name": "primary", "type": "boolean", "multiValued": false, "required": false}
+            ]
+        })
+    );
+
+    let request = serde_json::json!({
+        "realm": "corp",
+        "schemas": [CORE_USER_SCHEMA],
+        "userName": "schema-discovery@example.com",
+        "name": {
+            "formatted": "Dr. Ada Lovelace",
+            "familyName": "Lovelace",
+            "givenName": "Ada",
+            "middleName": "Byron",
+            "honorificPrefix": "Dr.",
+            "honorificSuffix": "III"
+        },
+        "emails": [
+            {"value": "ada@example.com", "display": "Work", "type": "work", "primary": true},
+            {"value": "ada.home@example.com", "display": "Home", "type": "home", "primary": false}
+        ]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/scim/v2/Users")
+                .header("Content-Type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = response_json(response).await;
+    assert_eq!(created["name"], request["name"]);
+    assert_eq!(created["emails"], request["emails"]);
 }
 
 #[tokio::test]

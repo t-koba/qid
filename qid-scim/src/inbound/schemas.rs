@@ -28,7 +28,33 @@ pub(crate) async fn schemas() -> impl IntoResponse {
             "attributes": [
                 { "name": "userName", "type": "string", "multiValued": false, "required": true },
                 { "name": "externalId", "type": "string", "multiValued": false, "required": false },
-                { "name": "active", "type": "boolean", "multiValued": false, "required": false }
+                { "name": "active", "type": "boolean", "multiValued": false, "required": false },
+                {
+                    "name": "name",
+                    "type": "complex",
+                    "multiValued": false,
+                    "required": false,
+                    "subAttributes": [
+                        { "name": "formatted", "type": "string", "multiValued": false, "required": false },
+                        { "name": "familyName", "type": "string", "multiValued": false, "required": false },
+                        { "name": "givenName", "type": "string", "multiValued": false, "required": false },
+                        { "name": "middleName", "type": "string", "multiValued": false, "required": false },
+                        { "name": "honorificPrefix", "type": "string", "multiValued": false, "required": false },
+                        { "name": "honorificSuffix", "type": "string", "multiValued": false, "required": false }
+                    ]
+                },
+                {
+                    "name": "emails",
+                    "type": "complex",
+                    "multiValued": true,
+                    "required": false,
+                    "subAttributes": [
+                        { "name": "value", "type": "string", "multiValued": false, "required": false },
+                        { "name": "display", "type": "string", "multiValued": false, "required": false },
+                        { "name": "type", "type": "string", "multiValued": false, "required": false },
+                        { "name": "primary", "type": "boolean", "multiValued": false, "required": false }
+                    ]
+                }
             ]
         }),
         serde_json::json!({

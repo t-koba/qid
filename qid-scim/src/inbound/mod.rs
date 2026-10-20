@@ -2,8 +2,10 @@
 
 mod bulk;
 mod groups;
+mod list;
 mod schemas;
 mod users;
+mod write;
 
 pub(crate) use bulk::bulk;
 pub(crate) use groups::{

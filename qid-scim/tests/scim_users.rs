@@ -1531,7 +1531,33 @@ async fn version_test_get(app: &Router, path: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn scim_bulk_checks_user_and_group_versions_before_mutating() {
-    let app = setup().await;
+    assert_conditional_user_and_group_routes(setup().await).await;
+}
+
+#[tokio::test]
+async fn sql_scim_checks_user_and_group_versions_before_mutating() {
+    let dir = std::env::temp_dir().join(format!("qid-scim-versions-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = Arc::new(
+        SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
+            .await
+            .unwrap(),
+    );
+    repo.migrate().await.unwrap();
+    repo.create_realm(
+        &"tenant".into(),
+        &"corp".into(),
+        "https://corp.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_conditional_user_and_group_routes(test_app(repo.clone())).await;
+    Arc::try_unwrap(repo).ok().unwrap().close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+async fn assert_conditional_user_and_group_routes(app: Router) {
     for (resource, attribute) in [("Users", "userName"), ("Groups", "displayName")] {
         let created = version_test_bulk(
             &app,
@@ -1573,6 +1599,25 @@ async fn scim_bulk_checks_user_and_group_versions_before_mutating() {
                 "method": method, "path": path, "bulkId": "conditional",
                 "version": original_version, "data": data
             });
+            let direct = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("Content-Type", "application/json")
+                        .header(IF_MATCH, original_version.as_str().unwrap())
+                        .body(Body::from(operation["data"].to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                direct.status(),
+                StatusCode::PRECONDITION_FAILED,
+                "direct {resource} {method}"
+            );
+            assert_eq!(response_json(direct).await["status"], "412");
             let stale = version_test_bulk(
                 &app,
                 serde_json::json!({

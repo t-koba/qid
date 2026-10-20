@@ -1,3 +1,4 @@
+use super::write::{Condition, WriteError, WriteResult};
 use axum::{
     Json,
     extract::{Extension, Path, Query, State},
@@ -11,16 +12,15 @@ use qid_core::{
     state::SharedState,
     tenant::RealmId,
 };
-use qid_storage::prelude::*;
+use qid_storage::{ScimMutation, prelude::*};
 use std::sync::Arc;
 
 use crate::ENTERPRISE_USER_SCHEMA;
 use crate::filter;
-use crate::response::{decode_cursor, encode_cursor, filter_fingerprint};
 use crate::{ScimRequestContext, scoped_realm};
 
 use super::{
-    CreateUser, DeleteQuery, ListQuery, MAX_LIST_RESULTS, PatchOperation, PatchRequest, bool_value,
+    CreateUser, DeleteQuery, ListQuery, PatchOperation, PatchRequest, bool_value,
     reject_unsupported_user_extensions, string_value, unsupported_user_schema_error,
 };
 
@@ -30,29 +30,12 @@ pub(crate) async fn list_users<R: Repository>(
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "list_users").increment(1);
-    let realm = scoped_realm(context.as_ref().map(|ext| &ext.0), query.realm);
-    let cursor_secret = match scim_cursor_secret(&state, &realm) {
-        Ok(secret) => secret,
-        Err(e) => return qid_http::error_response(e),
+    let realm = scoped_realm(context.as_ref().map(|ext| &ext.0), query.realm.clone());
+    let pagination = match super::list::Pagination::new(&state, &realm, &query) {
+        Ok(value) => value,
+        Err(error) => return qid_http::error_response(error),
     };
-    let applied_filter = query.filter.clone();
-    let filter_fingerprint = filter_fingerprint(applied_filter.as_deref());
-    // RFC 9865 §4.2: cursors take precedence over `startIndex`/`count`.
-    let (start, count) = if let Some(cursor) = query.cursor.as_deref() {
-        match decode_cursor(cursor_secret.as_bytes(), cursor, &filter_fingerprint) {
-            Some(state) => (state.start, state.count.min(MAX_LIST_RESULTS)),
-            None => {
-                return qid_http::error_response(QidError::BadRequest {
-                    message: "invalid or expired SCIM pagination cursor".to_string(),
-                });
-            }
-        }
-    } else {
-        (
-            query.start_index.unwrap_or(1).saturating_sub(1),
-            query.count.unwrap_or(100).min(MAX_LIST_RESULTS),
-        )
-    };
+    let (start, count) = (pagination.start, pagination.count);
     let realm_id = RealmId(realm);
     let (total, page) = if let Some(filter) = query.filter.as_deref() {
         let mut users = match state.repo.list_scim_users(&realm_id).await {
@@ -123,28 +106,8 @@ pub(crate) async fn list_users<R: Repository>(
         };
         (total, page)
     };
-    let next_cursor = if start + count < total {
-        Some(encode_cursor(
-            cursor_secret.as_bytes(),
-            start + count,
-            count,
-            &filter_fingerprint,
-        ))
-    } else {
-        None
-    };
-    let resources: Vec<_> = page.into_iter().map(crate::response::scim_user).collect();
-    let mut body = serde_json::json!({
-        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        "totalResults": total,
-        "startIndex": start + 1,
-        "itemsPerPage": resources.len(),
-        "Resources": resources
-    });
-    if let Some(cursor) = next_cursor {
-        body["nextCursor"] = serde_json::Value::String(cursor);
-    }
-    Json(body).into_response()
+    let resources = page.into_iter().map(crate::response::scim_user).collect();
+    pagination.response(total, resources)
 }
 
 pub(crate) fn scim_cursor_secret<R: Repository>(
@@ -209,17 +172,7 @@ pub(crate) async fn create_user_record<R: Repository>(
         active: req.active.unwrap_or(true),
     };
     state.repo.create_scim_user(&user).await?;
-    GLOBAL_EVENT_BUS.publish(Event {
-        kind: EventKind::ScimProvisioned,
-        realm_id: Some(user.realm_id.clone()),
-        tenant_id: None,
-        payload: serde_json::json!({
-            "scim_user_id": user.id,
-            "user_name": user.user_name,
-            "operation": "created",
-        }),
-        timestamp: qid_core::util::now_seconds(),
-    });
+    publish_user_write(&user, "created");
     Ok(user)
 }
 
@@ -229,21 +182,16 @@ pub(crate) async fn get_user<R: Repository>(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "get_user").increment(1);
-    match state.repo.get_scim_user(&id).await {
-        Ok(Some(user))
-            if context
-                .as_ref()
-                .is_none_or(|ctx| ctx.realm_id == user.realm_id) =>
-        {
-            crate::response::scim_user_response(StatusCode::OK, user)
-        }
-        Ok(Some(_)) => qid_http::error_response(QidError::NotFound {
-            resource: "scim user".to_string(),
-        }),
-        Ok(None) => qid_http::error_response(QidError::NotFound {
-            resource: "scim user".to_string(),
-        }),
-        Err(e) => qid_http::error_response(e),
+    match super::write::checked_resource(
+        state.repo.get_scim_user(&id).await,
+        context.as_ref().map(|ctx| ctx.realm_id.as_str()),
+        None,
+        "scim user",
+        |value| &value.realm_id,
+        crate::response::scim_user_version,
+    ) {
+        Ok(value) => crate::response::scim_user_response(StatusCode::OK, value),
+        Err(response) => *response,
     }
 }
 
@@ -255,53 +203,31 @@ pub(crate) async fn replace_user<R: Repository>(
     Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "replace_user").increment(1);
-    let existing = match state.repo.get_scim_user(&id).await {
-        Ok(Some(user)) => user,
-        Ok(None) => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: "scim user".to_string(),
-            });
-        }
-        Err(e) => return qid_http::error_response(e),
+    let existing = match super::write::checked_resource(
+        state.repo.get_scim_user(&id).await,
+        context.as_ref().map(|ctx| ctx.realm_id.as_str()),
+        Some(&headers),
+        "scim user",
+        |value| &value.realm_id,
+        crate::response::scim_user_version,
+    ) {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
-    if let Some(ctx) = context.as_ref()
-        && existing.realm_id != ctx.realm_id
-    {
-        return qid_http::error_response(QidError::NotFound {
-            resource: "scim user".to_string(),
-        });
-    }
-    if let Err(detail) =
-        crate::response::check_if_match(&headers, &crate::response::scim_user_version(&existing))
-    {
-        return crate::response::precondition_failed(detail);
-    }
     let mut req = match super::parse_create_user(raw) {
         Ok(req) => req,
         Err(e) => return qid_http::error_response(e),
     };
     req.realm = scoped_realm(context.as_ref().map(|ext| &ext.0), req.realm);
-    match replace_user_record(&state, &id, req).await {
+    let expected = Condition::from_headers(existing.realm_id, &headers);
+    match replace_user_record(&state, &id, req, expected).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
-        Err(e) => qid_http::error_response(e),
+        Err(e) => e.into_response(),
     }
 }
 
-pub(crate) async fn replace_user_record<R: Repository>(
-    state: &SharedState<R>,
-    id: &str,
-    req: CreateUser,
-) -> QidResult<ScimUser> {
-    let existing = state
-        .repo
-        .get_scim_user(id)
-        .await?
-        .ok_or_else(|| QidError::NotFound {
-            resource: "scim user".to_string(),
-        })?;
-    // Provider-owned rows keep the server-owned raw-DN `external_id`: PUT
-    // preserves it and rejects any supplied different value. Omitted or
-    // identical round-trips are allowed so existing clients keep working.
+fn replace_user_value(existing: ScimUser, req: CreateUser) -> QidResult<ScimUser> {
+    // PUT preserves provider-owned raw-DN externalId; only identical round-trips are allowed.
     if existing.directory_provider_id.is_some()
         && let Some(supplied) = req.external_id.as_deref()
         && existing.external_id.as_deref() != Some(supplied)
@@ -314,36 +240,38 @@ pub(crate) async fn replace_user_record<R: Repository>(
         req.external_id.or(existing.external_id)
     };
     let mut enterprise_json = req.enterprise.unwrap_or(existing.enterprise_json);
-    // Preserve the server-owned lifecycle timestamp across PUT: SCIM can
-    // neither forge nor clear it, and the stored enterprise marker is
-    // stripped so forged values never persist.
+    // Preserve the authoritative lifecycle timestamp, stripping any client-supplied marker.
     crate::response::strip_stored_enterprise_marker(&mut enterprise_json);
-    let user = ScimUser {
-        id: id.to_string(),
+    Ok(ScimUser {
+        id: existing.id.clone(),
         realm_id: req.realm,
         external_id,
         user_name: req.user_name,
         name_json: req.name.unwrap_or(existing.name_json),
         emails_json: req.emails.unwrap_or(existing.emails_json),
         enterprise_json,
-        // Server-owned: PUT never accepts ownership; preserve the stored value
-        // so enterprise_json from the client cannot forge or clear it.
+        // PUT cannot forge or clear directory ownership.
         directory_provider_id: existing.directory_provider_id,
         deprovisioned_at: existing.deprovisioned_at,
         active: req.active.unwrap_or(existing.active),
-    };
-    state.repo.update_scim_user(&user).await?;
-    GLOBAL_EVENT_BUS.publish(Event {
-        kind: EventKind::ScimProvisioned,
-        realm_id: Some(user.realm_id.clone()),
-        tenant_id: None,
-        payload: serde_json::json!({
-            "scim_user_id": user.id,
-            "user_name": user.user_name,
-            "operation": "replaced",
-        }),
-        timestamp: qid_core::util::now_seconds(),
-    });
+    })
+}
+
+pub(crate) async fn replace_user_record<R: Repository>(
+    state: &SharedState<R>,
+    id: &str,
+    req: CreateUser,
+    expected: Option<Condition>,
+) -> WriteResult<ScimUser> {
+    let user = write_user(state, id, expected, move |current, conditional| {
+        let mut req = req;
+        if conditional {
+            req.realm = current.realm_id.clone();
+        }
+        replace_user_value(current, req)
+    })
+    .await?;
+    publish_user_write(&user, "replaced");
     Ok(user)
 }
 
@@ -355,30 +283,21 @@ pub(crate) async fn patch_user<R: Repository>(
     Json(req): Json<PatchRequest>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "patch_user").increment(1);
-    let user = match state.repo.get_scim_user(&id).await {
-        Ok(Some(user)) => user,
-        Ok(None) => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: "scim user".to_string(),
-            });
-        }
-        Err(e) => return qid_http::error_response(e),
+    let user = match super::write::checked_resource(
+        state.repo.get_scim_user(&id).await,
+        context.as_ref().map(|ctx| ctx.realm_id.as_str()),
+        Some(&headers),
+        "scim user",
+        |value| &value.realm_id,
+        crate::response::scim_user_version,
+    ) {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
-    if let Some(ctx) = context.as_ref()
-        && user.realm_id != ctx.realm_id
-    {
-        return qid_http::error_response(QidError::NotFound {
-            resource: "scim user".to_string(),
-        });
-    }
-    if let Err(detail) =
-        crate::response::check_if_match(&headers, &crate::response::scim_user_version(&user))
-    {
-        return crate::response::precondition_failed(detail);
-    }
-    match patch_user_record(&state, &id, req).await {
+    let expected = Condition::from_headers(user.realm_id, &headers);
+    match patch_user_record(&state, &id, req, expected).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
-        Err(e) => qid_http::error_response(e),
+        Err(e) => e.into_response(),
     }
 }
 
@@ -386,36 +305,23 @@ pub(crate) async fn patch_user_record<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     req: PatchRequest,
-) -> QidResult<ScimUser> {
-    // PATCH starts from the stored user so the server-owned
-    // `directory_provider_id` is preserved; enterprise edits stay informational.
-    let mut user = state
-        .repo
-        .get_scim_user(id)
-        .await?
-        .ok_or_else(|| QidError::NotFound {
-            resource: "scim user".to_string(),
-        })?;
-    let trusted_deprovisioned_at = user.deprovisioned_at;
-    for op in req.operations {
-        apply_user_patch(&mut user, op)?;
-    }
-    // SCIM PATCH can neither forge, change, nor remove the authoritative
-    // timestamp; unrelated enterprise attributes still apply.
-    user.deprovisioned_at = trusted_deprovisioned_at;
-    crate::response::strip_stored_enterprise_marker(&mut user.enterprise_json);
-    state.repo.update_scim_user(&user).await?;
-    GLOBAL_EVENT_BUS.publish(Event {
-        kind: EventKind::ScimProvisioned,
-        realm_id: Some(user.realm_id.clone()),
-        tenant_id: None,
-        payload: serde_json::json!({
-            "scim_user_id": user.id,
-            "user_name": user.user_name,
-            "operation": "patched",
-        }),
-        timestamp: qid_core::util::now_seconds(),
-    });
+    expected: Option<Condition>,
+) -> WriteResult<ScimUser> {
+    // PATCH preserves stored directory ownership; enterprise edits stay informational.
+    let user = write_user(state, id, expected, move |current, _| {
+        let mut user = current;
+        let trusted_deprovisioned_at = user.deprovisioned_at;
+        for op in req.operations {
+            apply_user_patch(&mut user, op)?;
+        }
+        // SCIM PATCH can neither forge, change, nor remove the authoritative
+        // timestamp; unrelated enterprise attributes still apply.
+        user.deprovisioned_at = trusted_deprovisioned_at;
+        crate::response::strip_stored_enterprise_marker(&mut user.enterprise_json);
+        Ok(user)
+    })
+    .await?;
+    publish_user_write(&user, "patched");
     Ok(user)
 }
 
@@ -452,9 +358,7 @@ fn apply_user_patch(user: &mut ScimUser, op: PatchOperation) -> Result<(), QidEr
         ("add" | "replace", "externalId") => {
             let new_value = string_value(op.value, "externalId")?;
             if user.directory_provider_id.is_some() {
-                // Provider-owned `external_id` is the raw DN used for
-                // reconciliation: only an identical round-trip is allowed.
-                // A different value, or a missing stored value, fails closed.
+                // Directory sync owns this raw DN; only an identical round-trip is allowed.
                 if user.external_id.as_deref() != Some(new_value.as_str()) {
                     return Err(owned_external_id_conflict("changed"));
                 }
@@ -546,36 +450,21 @@ pub(crate) async fn delete_user<R: Repository>(
     Query(query): Query<DeleteQuery>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "delete_user").increment(1);
-    let user = match state.repo.get_scim_user(&id).await {
-        Ok(Some(user)) => user,
-        Ok(None) => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: "scim user".to_string(),
-            });
-        }
-        Err(e) => return qid_http::error_response(e),
+    let user = match super::write::checked_resource(
+        state.repo.get_scim_user(&id).await,
+        context.as_ref().map(|ctx| ctx.realm_id.as_str()),
+        Some(&headers),
+        "scim user",
+        |value| &value.realm_id,
+        crate::response::scim_user_version,
+    ) {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
-    if let Some(ctx) = context.as_ref()
-        && user.realm_id != ctx.realm_id
-    {
-        return qid_http::error_response(QidError::NotFound {
-            resource: "scim user".to_string(),
-        });
-    }
-    if let Err(detail) =
-        crate::response::check_if_match(&headers, &crate::response::scim_user_version(&user))
-    {
-        return crate::response::precondition_failed(detail);
-    }
-    if query.hard_delete {
-        return match delete_user_record(&state, &id, true).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(e) => qid_http::error_response(e),
-        };
-    }
-    match delete_user_record(&state, &id, false).await {
+    let expected = Condition::from_headers(user.realm_id, &headers);
+    match delete_user_record(&state, &id, query.hard_delete, expected).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => qid_http::error_response(e),
+        Err(e) => e.into_response(),
     }
 }
 
@@ -583,42 +472,99 @@ pub(crate) async fn delete_user_record<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     hard_delete: bool,
-) -> QidResult<()> {
-    if hard_delete {
+    expected: Option<Condition>,
+) -> WriteResult<()> {
+    let realm_id = if let Some(condition) = expected {
+        let user = state
+            .repo
+            .mutate_scim_user(
+                id,
+                Box::new(move |current| {
+                    if !condition.matches_user(current) {
+                        return Ok(ScimMutation::Reject);
+                    }
+                    Ok(if hard_delete {
+                        ScimMutation::Delete
+                    } else {
+                        let mut user = current.clone();
+                        user.active = false;
+                        ScimMutation::Replace(user)
+                    })
+                }),
+            )
+            .await?
+            .ok_or(WriteError::PreconditionFailed)?;
+        Some(user.realm_id)
+    } else if hard_delete {
         let user = state.repo.get_scim_user(id).await?;
-        let realm_id = user.as_ref().map(|u| u.realm_id.clone());
         state.repo.delete_scim_user(id).await?;
-        GLOBAL_EVENT_BUS.publish(Event {
-            kind: EventKind::ScimProvisioned,
-            realm_id,
-            tenant_id: None,
-            payload: serde_json::json!({
-                "scim_user_id": id,
-                "operation": "hard_deleted",
-            }),
-            timestamp: qid_core::util::now_seconds(),
-        });
+        user.map(|u| u.realm_id)
     } else {
-        let mut user = state
+        let user = write_user(state, id, None, |mut user, _| {
+            user.active = false;
+            Ok(user)
+        })
+        .await?;
+        Some(user.realm_id)
+    };
+    GLOBAL_EVENT_BUS.publish(Event {
+        kind: EventKind::ScimProvisioned,
+        realm_id,
+        tenant_id: None,
+        payload: serde_json::json!({
+            "scim_user_id": id,
+            "operation": if hard_delete { "hard_deleted" } else { "soft_deleted" },
+        }),
+        timestamp: qid_core::util::now_seconds(),
+    });
+    Ok(())
+}
+
+/// Transform the locked row conditionally, or retain ordinary read/update behavior.
+async fn write_user<R: Repository>(
+    state: &SharedState<R>,
+    id: &str,
+    expected: Option<Condition>,
+    transform: impl FnOnce(ScimUser, bool) -> QidResult<ScimUser> + Send,
+) -> WriteResult<ScimUser> {
+    if let Some(condition) = expected {
+        state
+            .repo
+            .mutate_scim_user(
+                id,
+                Box::new(move |current| {
+                    if !condition.matches_user(current) {
+                        return Ok(ScimMutation::Reject);
+                    }
+                    Ok(ScimMutation::Replace(transform(current.clone(), true)?))
+                }),
+            )
+            .await?
+            .ok_or(WriteError::PreconditionFailed)
+    } else {
+        let current = state
             .repo
             .get_scim_user(id)
             .await?
             .ok_or_else(|| QidError::NotFound {
                 resource: "scim user".to_string(),
             })?;
-        let realm_id = user.realm_id.clone();
-        user.active = false;
-        state.repo.update_scim_user(&user).await?;
-        GLOBAL_EVENT_BUS.publish(Event {
-            kind: EventKind::ScimProvisioned,
-            realm_id: Some(realm_id),
-            tenant_id: None,
-            payload: serde_json::json!({
-                "scim_user_id": id,
-                "operation": "soft_deleted",
-            }),
-            timestamp: qid_core::util::now_seconds(),
-        });
+        let value = transform(current, false)?;
+        state.repo.update_scim_user(&value).await?;
+        Ok(value)
     }
-    Ok(())
+}
+
+fn publish_user_write(user: &ScimUser, operation: &str) {
+    GLOBAL_EVENT_BUS.publish(Event {
+        kind: EventKind::ScimProvisioned,
+        realm_id: Some(user.realm_id.clone()),
+        tenant_id: None,
+        payload: serde_json::json!({
+            "scim_user_id": user.id,
+            "user_name": user.user_name,
+            "operation": operation,
+        }),
+        timestamp: qid_core::util::now_seconds(),
+    });
 }

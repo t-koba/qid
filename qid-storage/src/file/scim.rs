@@ -1,14 +1,12 @@
 use async_trait::async_trait;
 
 use super::*;
+use crate::{ScimMutation, ScimMutator};
 
 #[async_trait]
 impl ScimRepository for FileRepository {
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.scim_users.insert(user.id.clone(), user.clone());
-        drop(store);
-        self.save().await
+        self.update_scim_user(user).await
     }
 
     async fn get_scim_user(&self, id: &str) -> QidResult<Option<ScimUser>> {
@@ -53,6 +51,20 @@ impl ScimRepository for FileRepository {
         self.save().await
     }
 
+    async fn mutate_scim_user(
+        &self,
+        id: &str,
+        mutation: ScimMutator<'_, ScimUser>,
+    ) -> QidResult<Option<ScimUser>> {
+        self.mutate_resource(
+            id,
+            mutation,
+            |store| &mut store.scim_users,
+            |a, b| a.id == b.id && a.realm_id == b.realm_id,
+        )
+        .await
+    }
+
     async fn delete_scim_user(&self, id: &str) -> QidResult<()> {
         let mut store = self.store.write().await;
         store.scim_users.remove(id);
@@ -61,10 +73,7 @@ impl ScimRepository for FileRepository {
     }
 
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.scim_groups.insert(group.id.clone(), group.clone());
-        drop(store);
-        self.save().await
+        self.update_scim_group(group).await
     }
 
     async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {
@@ -107,6 +116,20 @@ impl ScimRepository for FileRepository {
         store.scim_groups.insert(group.id.clone(), group.clone());
         drop(store);
         self.save().await
+    }
+
+    async fn mutate_scim_group(
+        &self,
+        id: &str,
+        mutation: ScimMutator<'_, ScimGroup>,
+    ) -> QidResult<Option<ScimGroup>> {
+        self.mutate_resource(
+            id,
+            mutation,
+            |store| &mut store.scim_groups,
+            |a, b| a.id == b.id && a.realm_id == b.realm_id,
+        )
+        .await
     }
 
     async fn delete_scim_group(&self, id: &str) -> QidResult<()> {
@@ -209,5 +232,38 @@ impl ScimRepository for FileRepository {
             self.save().await?;
         }
         Ok(removed)
+    }
+}
+
+impl FileRepository {
+    /// Apply the callback under the exclusive store lock and flush applied writes.
+    async fn mutate_resource<T: Clone>(
+        &self,
+        id: &str,
+        mutation: ScimMutator<'_, T>,
+        resources: fn(&mut Store) -> &mut HashMap<String, T>,
+        same_identity: fn(&T, &T) -> bool,
+    ) -> QidResult<Option<T>> {
+        let mut store = self.store.write().await;
+        let resources = resources(&mut store);
+        let Some(current) = resources.get(id) else {
+            return Ok(None);
+        };
+        let result = match mutation(current)? {
+            ScimMutation::Reject => return Ok(None),
+            ScimMutation::Replace(replacement) => {
+                if !same_identity(current, &replacement) {
+                    return Err(QidError::BadRequest {
+                        message: "serialized mutation cannot change resource identity".into(),
+                    });
+                }
+                resources.insert(id.to_string(), replacement.clone());
+                replacement
+            }
+            ScimMutation::Delete => resources.remove(id).expect("locked row exists"),
+        };
+        drop(store);
+        self.save().await?;
+        Ok(Some(result))
     }
 }

@@ -325,6 +325,16 @@ pub trait DeviceRepository: Send + Sync + 'static {
     async fn update_device_last_seen(&self, device_id: &str, last_seen_at: u64) -> QidResult<()>;
 }
 
+/// A synchronous caller decision evaluated at the storage serialization point.
+/// Storage deliberately knows nothing about ETags or SCIM match policy.
+pub enum ScimMutation<T> {
+    Reject,
+    Replace(T),
+    Delete,
+}
+
+pub type ScimMutator<'a, T> = Box<dyn FnOnce(&T) -> QidResult<ScimMutation<T>> + Send + 'a>;
+
 #[async_trait]
 pub trait ScimRepository: Send + Sync + 'static {
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()>;
@@ -343,6 +353,15 @@ pub trait ScimRepository: Send + Sync + 'static {
     }
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()>;
     async fn delete_scim_user(&self, id: &str) -> QidResult<()>;
+    /// Evaluate against the current row under the storage lock/transaction.
+    /// Missing/rejected rows return None; replacement returns the new row,
+    /// deletion the removed row. Callbacks must not re-enter storage and must
+    /// preserve id and realm. SQL errors/cancellation roll back the transaction.
+    async fn mutate_scim_user(
+        &self,
+        id: &str,
+        mutation: ScimMutator<'_, ScimUser>,
+    ) -> QidResult<Option<ScimUser>>;
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()>;
     async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {
         self.list_scim_groups_page(realm_id, 0, usize::MAX).await
@@ -359,6 +378,12 @@ pub trait ScimRepository: Send + Sync + 'static {
     async fn get_scim_group(&self, id: &str) -> QidResult<Option<ScimGroup>>;
     async fn update_scim_group(&self, group: &ScimGroup) -> QidResult<()>;
     async fn delete_scim_group(&self, id: &str) -> QidResult<()>;
+    /// Group counterpart of `mutate_scim_user`.
+    async fn mutate_scim_group(
+        &self,
+        id: &str,
+        mutation: ScimMutator<'_, ScimGroup>,
+    ) -> QidResult<Option<ScimGroup>>;
     /// Insert or update within the owning realm. A globally colliding ID from another
     /// realm must atomically return `QidError::Conflict` without changing the record.
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()>;

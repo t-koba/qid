@@ -8,7 +8,9 @@ use qid_storage::prelude::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use super::groups::{create_group_record, patch_group_record, replace_group_record};
+use super::groups::{
+    create_group_record, delete_group_record, patch_group_record, replace_group_record,
+};
 use super::users::{
     create_user_record, delete_user_record, patch_user_record, replace_user_record,
 };
@@ -108,9 +110,25 @@ async fn apply_bulk_operation<R: Repository>(
         );
     }
     match (method.as_str(), path.as_str()) {
-        ("POST", "/Users") | ("POST", "Users") => {
+        (verb, path)
+            if (verb == "POST" && matches!(path, "/Users" | "Users"))
+                || (verb == "PUT" && path.starts_with("/Users/")) =>
+        {
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
+            };
+            let id = (verb == "PUT").then(|| path.trim_start_matches("/Users/"));
+            let expected = if let Some(id) = id {
+                match check_user_preconditions(state, id, context_realm, op.version.as_deref())
+                    .await
+                {
+                    Ok(expected) => expected,
+                    Err((status, detail)) => {
+                        return bulk_error(op.bulk_id, &status.to_string(), &detail);
+                    }
+                }
+            } else {
+                None
             };
             let mut req = match super::parse_create_user(data) {
                 Ok(req) => req,
@@ -121,41 +139,19 @@ async fn apply_bulk_operation<R: Repository>(
             if let Some(realm_id) = context_realm {
                 req.realm = realm_id.to_string();
             }
-            match create_user_record(state, req).await {
+            let result = if let Some(id) = id {
+                replace_user_record(state, id, req, expected).await
+            } else {
+                create_user_record(state, req)
+                    .await
+                    .map_err(super::write::WriteError::from)
+            };
+            let status = if id.is_some() { "200" } else { "201" };
+            match result {
                 Ok(user) => bulk_success(
                     method,
                     op.bulk_id,
-                    "201",
-                    Some(format!("/scim/v2/Users/{}", user.id)),
-                    Some(crate::response::scim_user(user)),
-                ),
-                Err(e) => bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message()),
-            }
-        }
-        ("PUT", path) if path.starts_with("/Users/") => {
-            let id = path.trim_start_matches("/Users/");
-            let Some(data) = op.data else {
-                return bulk_error(op.bulk_id, "400", "data required");
-            };
-            if let Err((status, detail)) =
-                check_user_preconditions(state, id, context_realm, op.version.as_deref()).await
-            {
-                return bulk_error(op.bulk_id, &status.to_string(), &detail);
-            }
-            let mut req = match super::parse_create_user(data) {
-                Ok(req) => req,
-                Err(e) => {
-                    return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
-                }
-            };
-            if let Some(realm_id) = context_realm {
-                req.realm = realm_id.to_string();
-            }
-            match replace_user_record(state, id, req).await {
-                Ok(user) => bulk_success(
-                    method,
-                    op.bulk_id,
-                    "200",
+                    status,
                     Some(format!("/scim/v2/Users/{}", user.id)),
                     Some(crate::response::scim_user(user)),
                 ),
@@ -164,25 +160,25 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("PATCH", path) if path.starts_with("/Users/") => {
             let id = path.trim_start_matches("/Users/");
-            if let Err((status, detail)) =
-                check_user_preconditions(state, id, context_realm, op.version.as_deref()).await
-            {
-                return bulk_error(op.bulk_id, &status.to_string(), &detail);
-            }
+            let expected =
+                match check_user_preconditions(state, id, context_realm, op.version.as_deref())
+                    .await
+                {
+                    Ok(expected) => expected,
+                    Err((status, detail)) => {
+                        return bulk_error(op.bulk_id, &status.to_string(), &detail);
+                    }
+                };
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            let req = match serde_json::from_value::<PatchRequest>(data).map_err(|e| {
-                qid_core::error::QidError::BadRequest {
-                    message: format!("invalid user patch data: {e}"),
-                }
-            }) {
+            let req = match parse_bulk_data::<PatchRequest>(data, "user patch") {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
                 }
             };
-            match patch_user_record(state, id, req).await {
+            match patch_user_record(state, id, req, expected).await {
                 Ok(user) => bulk_success(
                     method,
                     op.bulk_id,
@@ -193,15 +189,27 @@ async fn apply_bulk_operation<R: Repository>(
                 Err(e) => bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message()),
             }
         }
-        ("POST", "/Groups") | ("POST", "Groups") => {
+        (verb, path)
+            if (verb == "POST" && matches!(path, "/Groups" | "Groups"))
+                || (verb == "PUT" && path.starts_with("/Groups/")) =>
+        {
+            let id = (verb == "PUT").then(|| path.trim_start_matches("/Groups/"));
+            let expected = if let Some(id) = id {
+                match check_group_preconditions(state, id, context_realm, op.version.as_deref())
+                    .await
+                {
+                    Ok(expected) => expected,
+                    Err((status, detail)) => {
+                        return bulk_error(op.bulk_id, &status.to_string(), &detail);
+                    }
+                }
+            } else {
+                None
+            };
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            let mut req = match serde_json::from_value::<CreateGroup>(data).map_err(|e| {
-                qid_core::error::QidError::BadRequest {
-                    message: format!("invalid group data: {e}"),
-                }
-            }) {
+            let mut req = match parse_bulk_data::<CreateGroup>(data, "group") {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
@@ -210,45 +218,19 @@ async fn apply_bulk_operation<R: Repository>(
             if let Some(realm_id) = context_realm {
                 req.realm = realm_id.to_string();
             }
-            match create_group_record(state, req).await {
+            let result = if let Some(id) = id {
+                replace_group_record(state, id, req, expected).await
+            } else {
+                create_group_record(state, req)
+                    .await
+                    .map_err(super::write::WriteError::from)
+            };
+            let status = if id.is_some() { "200" } else { "201" };
+            match result {
                 Ok(group) => bulk_success(
                     method,
                     op.bulk_id,
-                    "201",
-                    Some(format!("/scim/v2/Groups/{}", group.id)),
-                    Some(crate::response::scim_group(group)),
-                ),
-                Err(e) => bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message()),
-            }
-        }
-        ("PUT", path) if path.starts_with("/Groups/") => {
-            let id = path.trim_start_matches("/Groups/");
-            if let Err((status, detail)) =
-                check_group_preconditions(state, id, context_realm, op.version.as_deref()).await
-            {
-                return bulk_error(op.bulk_id, &status.to_string(), &detail);
-            }
-            let Some(data) = op.data else {
-                return bulk_error(op.bulk_id, "400", "data required");
-            };
-            let mut req = match serde_json::from_value::<CreateGroup>(data).map_err(|e| {
-                qid_core::error::QidError::BadRequest {
-                    message: format!("invalid group data: {e}"),
-                }
-            }) {
-                Ok(req) => req,
-                Err(e) => {
-                    return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
-                }
-            };
-            if let Some(realm_id) = context_realm {
-                req.realm = realm_id.to_string();
-            }
-            match replace_group_record(state, id, req).await {
-                Ok(group) => bulk_success(
-                    method,
-                    op.bulk_id,
-                    "200",
+                    status,
                     Some(format!("/scim/v2/Groups/{}", group.id)),
                     Some(crate::response::scim_group(group)),
                 ),
@@ -257,25 +239,25 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("PATCH", path) if path.starts_with("/Groups/") => {
             let id = path.trim_start_matches("/Groups/");
-            if let Err((status, detail)) =
-                check_group_preconditions(state, id, context_realm, op.version.as_deref()).await
-            {
-                return bulk_error(op.bulk_id, &status.to_string(), &detail);
-            }
+            let expected =
+                match check_group_preconditions(state, id, context_realm, op.version.as_deref())
+                    .await
+                {
+                    Ok(expected) => expected,
+                    Err((status, detail)) => {
+                        return bulk_error(op.bulk_id, &status.to_string(), &detail);
+                    }
+                };
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            let req = match serde_json::from_value::<PatchRequest>(data).map_err(|e| {
-                qid_core::error::QidError::BadRequest {
-                    message: format!("invalid group patch data: {e}"),
-                }
-            }) {
+            let req = match parse_bulk_data::<PatchRequest>(data, "group patch") {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
                 }
             };
-            match patch_group_record(state, id, req).await {
+            match patch_group_record(state, id, req, expected).await {
                 Ok(group) => bulk_success(
                     method,
                     op.bulk_id,
@@ -288,25 +270,33 @@ async fn apply_bulk_operation<R: Repository>(
         }
         ("DELETE", path) if path.starts_with("/Users/") => {
             let id = path.trim_start_matches("/Users/");
-            if let Err((status, detail)) =
-                check_user_preconditions(state, id, context_realm, op.version.as_deref()).await
-            {
-                return bulk_error(op.bulk_id, &status.to_string(), &detail);
-            }
+            let expected =
+                match check_user_preconditions(state, id, context_realm, op.version.as_deref())
+                    .await
+                {
+                    Ok(expected) => expected,
+                    Err((status, detail)) => {
+                        return bulk_error(op.bulk_id, &status.to_string(), &detail);
+                    }
+                };
             let hard_delete = query.as_deref() == Some("hard_delete=true");
-            match delete_user_record(state, id, hard_delete).await {
+            match delete_user_record(state, id, hard_delete, expected).await {
                 Ok(()) => bulk_success(method, op.bulk_id, "204", None, None),
                 Err(e) => bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message()),
             }
         }
         ("DELETE", path) if path.starts_with("/Groups/") => {
             let id = path.trim_start_matches("/Groups/");
-            if let Err((status, detail)) =
-                check_group_preconditions(state, id, context_realm, op.version.as_deref()).await
-            {
-                return bulk_error(op.bulk_id, &status.to_string(), &detail);
-            }
-            match state.repo.delete_scim_group(id).await {
+            let expected =
+                match check_group_preconditions(state, id, context_realm, op.version.as_deref())
+                    .await
+                {
+                    Ok(expected) => expected,
+                    Err((status, detail)) => {
+                        return bulk_error(op.bulk_id, &status.to_string(), &detail);
+                    }
+                };
+            match delete_group_record(state, id, expected).await {
                 Ok(()) => bulk_success(method, op.bulk_id, "204", None, None),
                 Err(e) => bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message()),
             }
@@ -315,16 +305,15 @@ async fn apply_bulk_operation<R: Repository>(
     }
 }
 
-// These checks intentionally precede, rather than form an atomic unit with, the
-// record mutation, just like individual-route If-Match checks.
+// Carry the full condition into the serialized mutation for revalidation.
 async fn check_user_preconditions<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     context_realm: Option<&str>,
     version: Option<&str>,
-) -> Result<(), (u16, String)> {
+) -> Result<Option<super::write::Condition>, (u16, String)> {
     if context_realm.is_none() && version.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     let user = state
         .repo
@@ -342,7 +331,7 @@ async fn check_user_preconditions<R: Repository>(
         )
         .map_err(|detail| (412, detail.to_string()))?;
     }
-    Ok(())
+    Ok(version.map(|version| super::write::Condition::new(user.realm_id, version)))
 }
 
 async fn check_group_preconditions<R: Repository>(
@@ -350,9 +339,9 @@ async fn check_group_preconditions<R: Repository>(
     id: &str,
     context_realm: Option<&str>,
     version: Option<&str>,
-) -> Result<(), (u16, String)> {
+) -> Result<Option<super::write::Condition>, (u16, String)> {
     if context_realm.is_none() && version.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     let group = state
         .repo
@@ -370,7 +359,7 @@ async fn check_group_preconditions<R: Repository>(
         )
         .map_err(|detail| (412, detail.to_string()))?;
     }
-    Ok(())
+    Ok(version.map(|version| super::write::Condition::new(group.realm_id, version)))
 }
 
 fn normalize_bulk_path(path: &str) -> (String, Option<String>) {
@@ -416,3 +405,16 @@ fn bulk_error(bulk_id: Option<String>, status: &str, detail: &str) -> serde_json
     }
     item
 }
+
+fn parse_bulk_data<T: serde::de::DeserializeOwned>(
+    data: serde_json::Value,
+    description: &str,
+) -> qid_core::error::QidResult<T> {
+    serde_json::from_value(data).map_err(|error| qid_core::error::QidError::BadRequest {
+        message: format!("invalid {description} data: {error}"),
+    })
+}
+
+#[cfg(test)]
+#[path = "conditional_tests.rs"]
+mod conditional_tests;

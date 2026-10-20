@@ -219,6 +219,12 @@ Validation rules:
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |
 | `network_aaa` | RADIUS/TLS/EAP/CAPPORT/CoA/accounting/directory authority. |
 
+A directory provider's `connection.bind_dn` and `connection.bind_password` must both be
+set and non-blank, or both be absent. A configured bind DN without a password is an
+unauthenticated bind that RFC 4513 answers with success, and a password without a bind DN
+would leave the search anonymous, so a provider with only one of them is rejected when the
+configuration loads.
+
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 
 Example:

@@ -12,8 +12,7 @@ impl UserRepository for FileRepository {
     }
 
     async fn get_user_by_id(&self, id: &str) -> QidResult<Option<User>> {
-        let store = self.store.read().await;
-        Ok(store.users.get(id).cloned())
+        Ok(self.map_get(|store| store.users.get(id)).await)
     }
 
     async fn get_user_by_id_in_realm(
@@ -67,10 +66,8 @@ impl UserRepository for FileRepository {
     }
 
     async fn update_user(&self, user: &User) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.users.insert(user.id.clone(), user.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.users.insert(user.id.clone(), user.clone()))
+            .await
     }
 
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()> {

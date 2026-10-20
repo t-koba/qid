@@ -190,6 +190,28 @@ pub enum FileFlushMode {
 }
 
 impl FileRepository {
+    /// The record a store map holds under an id, read under the shared lock.
+    async fn map_get<T, F>(&self, select: F) -> Option<T>
+    where
+        T: Clone,
+        F: Fn(&Store) -> Option<&T>,
+    {
+        let store = self.store.read().await;
+        select(&store).cloned()
+    }
+
+    /// Change one of the store's maps under the shared write lock, then
+    /// persist the store.
+    async fn map_write<F, T>(&self, write: F) -> QidResult<()>
+    where
+        F: FnOnce(&mut Store) -> Option<T>,
+    {
+        let mut store = self.store.write().await;
+        let _ = write(&mut store);
+        drop(store);
+        self.save().await
+    }
+
     pub async fn new(path: &str) -> QidResult<Self> {
         Self::new_with_flush_mode(path, FileFlushMode::Immediate).await
     }

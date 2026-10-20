@@ -12,8 +12,7 @@ impl DeviceRepository for FileRepository {
     }
 
     async fn get_device(&self, device_id: &str) -> QidResult<Option<Device>> {
-        let store = self.store.read().await;
-        Ok(store.devices.get(device_id).cloned())
+        Ok(self.map_get(|store| store.devices.get(device_id)).await)
     }
 
     async fn get_user_devices(&self, user_id: &str) -> QidResult<Vec<Device>> {

@@ -55,10 +55,8 @@ impl CredentialRepository for FileRepository {
     }
 
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.totp_credentials.insert(cred.id.clone(), cred.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.totp_credentials.insert(cred.id.clone(), cred.clone()))
+            .await
     }
 
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>> {

@@ -37,9 +37,7 @@ impl ServiceAccountRepository for FileRepository {
     }
 
     async fn delete_service_account(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.service_accounts.remove(id);
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.service_accounts.remove(id))
+            .await
     }
 }

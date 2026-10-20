@@ -12,10 +12,8 @@ impl ClientRepository for FileRepository {
     }
 
     async fn update_client(&self, client: &Client) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.clients.insert(client.id.clone(), client.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.clients.insert(client.id.clone(), client.clone()))
+            .await
     }
 
     async fn get_client_by_client_id(
@@ -53,9 +51,6 @@ impl ClientRepository for FileRepository {
     }
 
     async fn delete_client(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.clients.remove(id);
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.clients.remove(id)).await
     }
 }

@@ -38,9 +38,7 @@ impl PolicyRepository for FileRepository {
     }
 
     async fn delete_policy_bundle(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.policy_bundles.remove(id);
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.policy_bundles.remove(id))
+            .await
     }
 }

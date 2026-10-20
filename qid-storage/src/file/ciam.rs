@@ -218,8 +218,9 @@ impl CiamRepository for FileRepository {
     }
 
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>> {
-        let store = self.store.read().await;
-        Ok(store.password_reset_tokens.get(id).cloned())
+        Ok(self
+            .map_get(|store| store.password_reset_tokens.get(id))
+            .await)
     }
 
     async fn consume_password_reset_token(&self, id: &str, consumed_at: u64) -> QidResult<()> {

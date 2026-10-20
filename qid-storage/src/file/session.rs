@@ -13,8 +13,7 @@ impl SessionRepository for FileRepository {
     }
 
     async fn get_session(&self, id: &str) -> QidResult<Option<Session>> {
-        let store = self.store.read().await;
-        Ok(store.sessions.get(id).cloned())
+        Ok(self.map_get(|store| store.sessions.get(id)).await)
     }
 
     async fn update_session_idle_expiry(&self, id: &str, idle_expires_at: u64) -> QidResult<()> {

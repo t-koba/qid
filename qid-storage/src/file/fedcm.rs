@@ -5,12 +5,12 @@ use super::*;
 #[async_trait]
 impl FedCmRepository for FileRepository {
     async fn store_fedcm_identity(&self, identity: &FedCmIdentity) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store
-            .fedcm_identities
-            .insert(identity.id.clone(), identity.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| {
+            store
+                .fedcm_identities
+                .insert(identity.id.clone(), identity.clone())
+        })
+        .await
     }
 
     async fn get_fedcm_identities(
@@ -30,9 +30,7 @@ impl FedCmRepository for FileRepository {
     }
 
     async fn delete_fedcm_identity(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.fedcm_identities.remove(id);
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.fedcm_identities.remove(id))
+            .await
     }
 }

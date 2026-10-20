@@ -23,8 +23,7 @@ impl SiemDeliveryRepository for FileRepository {
     }
 
     async fn get_siem_delivery(&self, id: &str) -> QidResult<Option<SiemDeliveryRecord>> {
-        let store = self.store.read().await;
-        Ok(store.siem_deliveries.get(id).cloned())
+        Ok(self.map_get(|store| store.siem_deliveries.get(id)).await)
     }
 
     async fn list_siem_deliveries(

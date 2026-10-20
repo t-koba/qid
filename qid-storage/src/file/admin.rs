@@ -14,8 +14,7 @@ impl AdminRepository for FileRepository {
     }
 
     async fn get_admin_by_id(&self, id: &str) -> QidResult<Option<Admin>> {
-        let store = self.store.read().await;
-        Ok(store.admins.get(id).cloned())
+        Ok(self.map_get(|store| store.admins.get(id)).await)
     }
 
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()> {
@@ -30,31 +29,29 @@ impl AdminRepository for FileRepository {
     }
 
     async fn get_admin_elevation(&self, id: &str) -> QidResult<Option<AdminElevation>> {
-        let store = self.store.read().await;
-        Ok(store.admin_elevations.get(id).cloned())
+        Ok(self.map_get(|store| store.admin_elevations.get(id)).await)
     }
 
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store
-            .admin_elevations
-            .insert(elevation.id.clone(), elevation.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| {
+            store
+                .admin_elevations
+                .insert(elevation.id.clone(), elevation.clone())
+        })
+        .await
     }
 
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {
-        let store = self.store.read().await;
-        Ok(store.admin_approvals.get(id).cloned())
+        Ok(self.map_get(|store| store.admin_approvals.get(id)).await)
     }
 
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store
-            .admin_approvals
-            .insert(approval.id.clone(), approval.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| {
+            store
+                .admin_approvals
+                .insert(approval.id.clone(), approval.clone())
+        })
+        .await
     }
 
     async fn consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool> {

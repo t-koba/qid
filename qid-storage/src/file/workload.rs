@@ -40,10 +40,8 @@ impl WorkloadRepository for FileRepository {
     }
 
     async fn delete_workload_identity(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.workload_identities.remove(id);
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.workload_identities.remove(id))
+            .await
     }
 
     async fn store_workload_certificate(&self, certificate: &WorkloadCertificate) -> QidResult<()> {

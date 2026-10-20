@@ -10,8 +10,7 @@ impl ScimRepository for FileRepository {
     }
 
     async fn get_scim_user(&self, id: &str) -> QidResult<Option<ScimUser>> {
-        let store = self.store.read().await;
-        Ok(store.scim_users.get(id).cloned())
+        Ok(self.map_get(|store| store.scim_users.get(id)).await)
     }
 
     async fn list_scim_users(&self, realm_id: &RealmId) -> QidResult<Vec<ScimUser>> {
@@ -45,10 +44,8 @@ impl ScimRepository for FileRepository {
     }
 
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.scim_users.insert(user.id.clone(), user.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.scim_users.insert(user.id.clone(), user.clone()))
+            .await
     }
 
     async fn mutate_scim_user(
@@ -66,10 +63,7 @@ impl ScimRepository for FileRepository {
     }
 
     async fn delete_scim_user(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.scim_users.remove(id);
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.scim_users.remove(id)).await
     }
 
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
@@ -107,15 +101,12 @@ impl ScimRepository for FileRepository {
     }
 
     async fn get_scim_group(&self, id: &str) -> QidResult<Option<ScimGroup>> {
-        let store = self.store.read().await;
-        Ok(store.scim_groups.get(id).cloned())
+        Ok(self.map_get(|store| store.scim_groups.get(id)).await)
     }
 
     async fn update_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.scim_groups.insert(group.id.clone(), group.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.scim_groups.insert(group.id.clone(), group.clone()))
+            .await
     }
 
     async fn mutate_scim_group(
@@ -133,10 +124,7 @@ impl ScimRepository for FileRepository {
     }
 
     async fn delete_scim_group(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.scim_groups.remove(id);
-        drop(store);
-        self.save().await
+        self.map_write(|store| store.scim_groups.remove(id)).await
     }
 
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()> {
@@ -155,8 +143,7 @@ impl ScimRepository for FileRepository {
     }
 
     async fn get_scim_device(&self, id: &str) -> QidResult<Option<ScimDeviceRecord>> {
-        let store = self.store.read().await;
-        Ok(store.scim_devices.get(id).cloned())
+        Ok(self.map_get(|store| store.scim_devices.get(id)).await)
     }
 
     async fn list_scim_devices(&self, realm_id: &RealmId) -> QidResult<Vec<ScimDeviceRecord>> {

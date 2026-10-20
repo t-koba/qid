@@ -59,8 +59,7 @@ impl TokenRepository for FileRepository {
     }
 
     async fn get_token_family(&self, id: &str) -> QidResult<Option<TokenFamily>> {
-        let store = self.store.read().await;
-        Ok(store.token_families.get(id).cloned())
+        Ok(self.map_get(|store| store.token_families.get(id)).await)
     }
 
     async fn update_token_family_refresh_hash(
@@ -152,8 +151,7 @@ impl TokenRepository for FileRepository {
     }
 
     async fn get_access_token(&self, jti: &str) -> QidResult<Option<AccessToken>> {
-        let store = self.store.read().await;
-        Ok(store.access_tokens.get(jti).cloned())
+        Ok(self.map_get(|store| store.access_tokens.get(jti)).await)
     }
 
     async fn revoke_access_token(&self, jti: &str) -> QidResult<()> {
@@ -175,8 +173,9 @@ impl TokenRepository for FileRepository {
     }
 
     async fn get_par_request(&self, request_uri: &str) -> QidResult<Option<ParRequest>> {
-        let store = self.store.read().await;
-        Ok(store.par_requests.get(request_uri).cloned())
+        Ok(self
+            .map_get(|store| store.par_requests.get(request_uri))
+            .await)
     }
 
     async fn mark_par_request_used(&self, request_uri: &str) -> QidResult<()> {

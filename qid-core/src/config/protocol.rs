@@ -1,5 +1,39 @@
 use super::*;
 
+/// A configuration that may be written as a bare boolean or as an object with
+/// `enabled` plus its own settings. One owned shape for that idiom: the
+/// settings keep their own defaults, and a bare boolean takes the defaults of
+/// the configuration itself.
+macro_rules! enabled_or_object {
+    ($($field:ident : $ty:ty = $default:literal),* $(,)?) => {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Wire {
+                Bool(bool),
+                Object {
+                    #[serde(default)]
+                    enabled: bool,
+                    $(
+                        #[serde(default = $default)]
+                        $field: $ty,
+                    )*
+                },
+            }
+            match Wire::deserialize(deserializer)? {
+                Wire::Bool(enabled) => Ok(Self {
+                    enabled,
+                    ..Self::default()
+                }),
+                Wire::Object { enabled, $($field,)* } => Ok(Self { enabled, $($field,)* }),
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProtocolConfig {
@@ -284,36 +318,7 @@ impl ProtocolFeatureConfig {
 }
 
 impl<'de> Deserialize<'de> for ProtocolFeatureConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Bool(bool),
-            Object {
-                #[serde(default)]
-                enabled: bool,
-                #[serde(default)]
-                allow_open_registration: bool,
-            },
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Bool(enabled) => Ok(Self {
-                enabled,
-                allow_open_registration: false,
-            }),
-            Wire::Object {
-                enabled,
-                allow_open_registration,
-            } => Ok(Self {
-                enabled,
-                allow_open_registration,
-            }),
-        }
-    }
+    enabled_or_object!(allow_open_registration: bool = "bool::default");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -340,30 +345,7 @@ impl Default for CibaConfig {
 }
 
 impl<'de> Deserialize<'de> for CibaConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Bool(bool),
-            Object {
-                #[serde(default)]
-                enabled: bool,
-                #[serde(default)]
-                mode: CibaMode,
-            },
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Bool(enabled) => Ok(Self {
-                enabled,
-                mode: CibaMode::Poll,
-            }),
-            Wire::Object { enabled, mode } => Ok(Self { enabled, mode }),
-        }
-    }
+    enabled_or_object!(mode: CibaMode = "CibaMode::default");
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -373,36 +355,7 @@ pub struct ParConfig {
 }
 
 impl<'de> Deserialize<'de> for ParConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Bool(bool),
-            Object {
-                #[serde(default)]
-                enabled: bool,
-                #[serde(default)]
-                required_for: Vec<String>,
-            },
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Bool(enabled) => Ok(Self {
-                enabled,
-                required_for: Vec::new(),
-            }),
-            Wire::Object {
-                enabled,
-                required_for,
-            } => Ok(Self {
-                enabled,
-                required_for,
-            }),
-        }
-    }
+    enabled_or_object!(required_for: Vec<String> = "Vec::default");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,36 +374,7 @@ impl Default for IntrospectionConfig {
 }
 
 impl<'de> Deserialize<'de> for IntrospectionConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Bool(bool),
-            Object {
-                #[serde(default)]
-                enabled: bool,
-                #[serde(default)]
-                jwt_response: bool,
-            },
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Bool(enabled) => Ok(Self {
-                enabled,
-                jwt_response: false,
-            }),
-            Wire::Object {
-                enabled,
-                jwt_response,
-            } => Ok(Self {
-                enabled,
-                jwt_response,
-            }),
-        }
-    }
+    enabled_or_object!(jwt_response: bool = "bool::default");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,41 +395,7 @@ impl Default for DpopProtocolConfig {
 }
 
 impl<'de> Deserialize<'de> for DpopProtocolConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Bool(bool),
-            Object {
-                #[serde(default)]
-                enabled: bool,
-                #[serde(default = "default_true")]
-                replay_cache: bool,
-                #[serde(default)]
-                nonce: bool,
-            },
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Bool(enabled) => Ok(Self {
-                enabled,
-                replay_cache: true,
-                nonce: false,
-            }),
-            Wire::Object {
-                enabled,
-                replay_cache,
-                nonce,
-            } => Ok(Self {
-                enabled,
-                replay_cache,
-                nonce,
-            }),
-        }
-    }
+    enabled_or_object!(replay_cache: bool = "default_true", nonce: bool = "bool::default");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

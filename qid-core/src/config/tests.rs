@@ -1248,3 +1248,36 @@ fn server_quic_enabled_config_validates_fail_closed() {
     let err = config.validate().unwrap_err();
     assert!(err.message().contains("max_bidi_streams"));
 }
+
+#[test]
+fn protocol_features_accept_a_bare_boolean_or_an_object() {
+    // A bare boolean takes the configuration's own defaults.
+    let bare: OAuthProtocolConfig = serde_json::from_str(r#"{"dpop":true}"#).unwrap();
+    assert!(bare.dpop.enabled);
+    assert!(bare.dpop.replay_cache);
+    assert!(!bare.dpop.nonce);
+    // An object carries the settings, and a missing one keeps its default.
+    let object: OAuthProtocolConfig =
+        serde_json::from_str(r#"{"dpop":{"enabled":true,"nonce":true}}"#).unwrap();
+    assert!(object.dpop.enabled);
+    assert!(object.dpop.replay_cache);
+    assert!(object.dpop.nonce);
+    let partial: OAuthProtocolConfig = serde_json::from_str(r#"{"dpop":{"nonce":true}}"#).unwrap();
+    assert!(!partial.dpop.enabled);
+    assert!(partial.dpop.replay_cache);
+    assert!(partial.dpop.nonce);
+    // The same shape serves the other feature configurations.
+    let oidc: OidcProtocolConfig =
+        serde_json::from_str(r#"{"implicit":{"allow_open_registration":true}}"#).unwrap();
+    assert!(!oidc.implicit.enabled);
+    assert!(oidc.implicit.allow_open_registration);
+    let ciba: OAuthProtocolConfig = serde_json::from_str(r#"{"ciba":true}"#).unwrap();
+    assert!(ciba.ciba.enabled);
+    assert_eq!(ciba.ciba.mode, CibaMode::Poll);
+    let par: OAuthProtocolConfig =
+        serde_json::from_str(r#"{"par":{"required_for":["openid"]}}"#).unwrap();
+    assert_eq!(par.par.required_for, vec!["openid".to_string()]);
+    let introspection: OAuthProtocolConfig =
+        serde_json::from_str(r#"{"introspection":{"jwt_response":true}}"#).unwrap();
+    assert!(introspection.introspection.jwt_response);
+}

@@ -172,7 +172,7 @@ async fn apply_bulk_operation<R: Repository>(
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            let req = match parse_bulk_data::<PatchRequest>(data, "user patch") {
+            let req = match super::parse_object::<PatchRequest>(data, "user patch") {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
@@ -209,7 +209,7 @@ async fn apply_bulk_operation<R: Repository>(
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            let mut req = match parse_bulk_data::<CreateGroup>(data, "group") {
+            let mut req = match super::parse_object::<CreateGroup>(data, "group") {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
@@ -251,7 +251,7 @@ async fn apply_bulk_operation<R: Repository>(
             let Some(data) = op.data else {
                 return bulk_error(op.bulk_id, "400", "data required");
             };
-            let req = match parse_bulk_data::<PatchRequest>(data, "group patch") {
+            let req = match super::parse_object::<PatchRequest>(data, "group patch") {
                 Ok(req) => req,
                 Err(e) => {
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
@@ -404,13 +404,6 @@ fn bulk_error(bulk_id: Option<String>, status: &str, detail: &str) -> serde_json
         item["bulkId"] = serde_json::Value::String(bulk_id);
     }
     item
-}
-
-fn parse_bulk_data<T: serde::de::DeserializeOwned>(
-    data: serde_json::Value,
-    description: &str,
-) -> qid_core::error::QidResult<T> {
-    super::parse_object(data, description)
 }
 
 #[cfg(test)]

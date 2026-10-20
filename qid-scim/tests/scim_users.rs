@@ -2804,3 +2804,71 @@ async fn scim_start_index_wire_name_pages_users_and_groups() {
         assert_eq!(paged["Resources"], second["Resources"]);
     }
 }
+
+#[tokio::test]
+async fn scim_patch_bodies_must_be_json_objects() {
+    let app = setup().await;
+    let user_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Users")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","userName":"alice@example.com"}"#,
+        ))
+        .unwrap();
+    let user_response = app.clone().oneshot(user_request).await.unwrap();
+    assert_eq!(user_response.status(), StatusCode::CREATED);
+    let user_id = response_json(user_response).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let group_request = Request::builder()
+        .method(Method::POST)
+        .uri("/scim/v2/Groups")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"realm":"corp","displayName":"engineering"}"#,
+        ))
+        .unwrap();
+    let group_response = app.clone().oneshot(group_request).await.unwrap();
+    assert_eq!(group_response.status(), StatusCode::CREATED);
+    let group_id = response_json(group_response).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A JSON sequence must not be mapped positionally onto the operations list.
+    for (resource, id, body) in [
+        (
+            "Users",
+            &user_id,
+            r#"[[{"op":"replace","path":"userName","value":"hacked"}]]"#,
+        ),
+        ("Users", &user_id, "[]"),
+        (
+            "Groups",
+            &group_id,
+            r#"[[{"op":"replace","path":"displayName","value":"hacked"}]]"#,
+        ),
+        ("Groups", &group_id, "[]"),
+    ] {
+        let request = Request::builder()
+            .method(Method::PATCH)
+            .uri(format!("/scim/v2/{resource}/{id}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "body must be rejected: {body}"
+        );
+    }
+
+    let user = get_json(&app, &format!("/scim/v2/Users/{user_id}"), None).await;
+    assert_eq!(user["userName"], "alice@example.com");
+    let group = get_json(&app, &format!("/scim/v2/Groups/{group_id}"), None).await;
+    assert_eq!(group["displayName"], "engineering");
+}

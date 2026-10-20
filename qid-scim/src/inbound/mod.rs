@@ -1,5 +1,16 @@
 //! Inbound SCIM 2.0 endpoint handlers.
 
+/// Parse a request body that must be a JSON object, answering the client
+/// when it is not.
+macro_rules! parse_body {
+    ($raw:expr, $parse:expr) => {
+        match $parse($raw) {
+            Ok(body) => body,
+            Err(error) => return qid_http::error_response(error),
+        }
+    };
+}
+
 mod bulk;
 mod complex;
 mod groups;
@@ -180,14 +191,11 @@ pub(crate) fn parse_object<T: serde::de::DeserializeOwned>(
     raw: serde_json::Value,
     description: &str,
 ) -> Result<T, QidError> {
+    let bad = |message: String| QidError::BadRequest { message };
     if !raw.is_object() {
-        return Err(QidError::BadRequest {
-            message: format!("{description} must be a JSON object"),
-        });
+        return Err(bad(format!("{description} must be a JSON object")));
     }
-    serde_json::from_value(raw).map_err(|e| QidError::BadRequest {
-        message: format!("invalid {description} data: {e}"),
-    })
+    serde_json::from_value(raw).map_err(|e| bad(format!("invalid {description} data: {e}")))
 }
 
 pub(crate) fn string_value(

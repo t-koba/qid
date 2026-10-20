@@ -136,10 +136,7 @@ pub(crate) async fn create_user<R: Repository>(
     Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "create_user").increment(1);
-    let mut req = match super::parse_create_user(raw) {
-        Ok(req) => req,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let mut req = parse_body!(raw, super::parse_create_user);
     req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
     match create_user_record(&state, req).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::CREATED, user),
@@ -214,10 +211,7 @@ pub(crate) async fn replace_user<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let mut req = match super::parse_create_user(raw) {
-        Ok(req) => req,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let mut req = parse_body!(raw, super::parse_create_user);
     req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
     let expected = Condition::from_headers(existing.realm_id, &headers);
     match replace_user_record(&state, &id, req, expected).await {
@@ -282,9 +276,13 @@ pub(crate) async fn patch_user<R: Repository>(
     context: Option<Extension<ScimRequestContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(req): Json<PatchRequest>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "patch_user").increment(1);
+    let req = parse_body!(raw, |body| super::parse_object::<PatchRequest>(
+        body,
+        "patch request"
+    ));
     let user = match super::write::checked_resource(
         state.repo.get_scim_user(&id).await,
         context.as_ref().map(|ctx| ctx.realm_id.as_str()),

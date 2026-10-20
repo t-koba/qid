@@ -78,10 +78,7 @@ pub(crate) async fn create_group<R: Repository>(
     Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "create_group").increment(1);
-    let mut req = match super::parse_create_group(raw) {
-        Ok(req) => req,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let mut req = parse_body!(raw, super::parse_create_group);
     req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
     match create_group_record(&state, req).await {
         Ok(group) => crate::response::scim_group_response(StatusCode::CREATED, group),
@@ -131,10 +128,7 @@ pub(crate) async fn replace_group<R: Repository>(
     Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "replace_group").increment(1);
-    let mut req = match super::parse_create_group(raw) {
-        Ok(req) => req,
-        Err(e) => return qid_http::error_response(e),
-    };
+    let mut req = parse_body!(raw, super::parse_create_group);
     let existing = match super::write::checked_resource(
         state.repo.get_scim_group(&id).await,
         context.as_ref().map(|ctx| ctx.realm_id.as_str()),
@@ -185,9 +179,13 @@ pub(crate) async fn patch_group<R: Repository>(
     context: Option<Extension<ScimRequestContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(req): Json<PatchRequest>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     metrics::counter!("qid_scim_operations_total", "operation" => "patch_group").increment(1);
+    let req = parse_body!(raw, |body| super::parse_object::<PatchRequest>(
+        body,
+        "patch request"
+    ));
     let group = match super::write::checked_resource(
         state.repo.get_scim_group(&id).await,
         context.as_ref().map(|ctx| ctx.realm_id.as_str()),

@@ -21,19 +21,37 @@ macro_rules! enabled_or_object {
                     $field: $ty,
                 )*
             }
-            #[derive(Deserialize)]
-            #[serde(untagged)]
-            enum Wire {
+            // The two forms are read without an untagged enum, so an unknown
+            // key or a wrong type is reported as itself.
+            enum Form {
                 Bool(bool),
                 Object(Settings),
             }
-            match Wire::deserialize(deserializer)? {
-                Wire::Bool(enabled) => {
+            struct FormVisitor;
+            impl<'de> serde::de::Visitor<'de> for FormVisitor {
+                type Value = Form;
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    formatter.write_str("a boolean or a map of settings")
+                }
+                fn visit_bool<E: serde::de::Error>(self, enabled: bool) -> Result<Form, E> {
+                    Ok(Form::Bool(enabled))
+                }
+                fn visit_map<M: serde::de::MapAccess<'de>>(
+                    self,
+                    map: M,
+                ) -> Result<Form, M::Error> {
+                    let settings =
+                        Settings::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                    Ok(Form::Object(settings))
+                }
+            }
+            match deserializer.deserialize_any(FormVisitor)? {
+                Form::Bool(enabled) => {
                     let mut value = Self::default();
                     value.enabled = enabled;
                     Ok(value)
                 }
-                Wire::Object(settings) => Ok(Self {
+                Form::Object(settings) => Ok(Self {
                     enabled: settings.enabled,
                     $($field: settings.$field,)*
                 }),

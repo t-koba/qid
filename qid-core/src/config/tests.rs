@@ -1391,3 +1391,23 @@ fn a_directory_provider_must_be_one_the_sync_can_connect() {
         .expect_err("a mistyped URL scheme is a configuration fault");
     assert!(err.message().contains("ldaps://"), "{}", err.message());
 }
+
+#[test]
+fn the_boolean_or_object_form_names_the_offending_field() {
+    // The object form reports an unknown key by name and a wrong type as
+    // itself, like every other configuration.
+    let err = serde_json::from_value::<OAuthProtocolConfig>(serde_json::json!({
+        "dpop": {"unknown_key": true}
+    }))
+    .expect_err("an unknown key is rejected");
+    assert!(err.to_string().contains("unknown_key"), "{err}");
+    let err = serde_json::from_value::<OAuthProtocolConfig>(serde_json::json!({
+        "dpop": 5
+    }))
+    .expect_err("a wrong type is rejected");
+    assert!(err.to_string().contains("boolean"), "{err}");
+    // The boolean form still works.
+    let config: OAuthProtocolConfig =
+        serde_json::from_value(serde_json::json!({"dpop": true})).expect("the boolean form");
+    assert!(config.dpop.enabled);
+}

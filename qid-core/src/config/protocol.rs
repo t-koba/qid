@@ -382,7 +382,7 @@ impl Default for IntrospectionConfig {
 }
 
 impl<'de> Deserialize<'de> for IntrospectionConfig {
-    enabled_or_object!(enabled = "bool::default"; jwt_response: bool = "bool::default");
+    enabled_or_object!(enabled = "default_true"; jwt_response: bool = "bool::default");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

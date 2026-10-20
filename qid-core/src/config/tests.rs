@@ -1318,3 +1318,14 @@ fn revocation_settings_keep_their_own_defaults() {
         "a missing enabled keeps the default"
     );
 }
+
+#[test]
+fn introspection_object_form_keeps_the_endpoint_enabled() {
+    // The object form must not contradict the configuration's own default.
+    let config: OAuthProtocolConfig = serde_json::from_str(r#"{"introspection":{}}"#).unwrap();
+    assert!(config.introspection.enabled);
+    let config: OAuthProtocolConfig =
+        serde_json::from_str(r#"{"introspection":{"jwt_response":true}}"#).unwrap();
+    assert!(config.introspection.enabled);
+    assert!(config.introspection.jwt_response);
+}

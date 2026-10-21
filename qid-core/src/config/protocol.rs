@@ -897,23 +897,17 @@ pub struct DirectorySyncConfig {
     #[serde(default)]
     pub user_search_filter: Option<String>,
     #[serde(default)]
-    pub group_search_filter: Option<String>,
-    #[serde(default)]
     pub sync_interval_minutes: Option<u64>,
     #[serde(default)]
     pub deactivate_missing: bool,
-    #[serde(default)]
-    pub full_sync_on_start: bool,
 }
 
 impl Default for DirectorySyncConfig {
     fn default() -> Self {
         Self {
             user_search_filter: Some("(objectClass=user)".to_string()),
-            group_search_filter: None,
             sync_interval_minutes: Some(60),
             deactivate_missing: true,
-            full_sync_on_start: true,
         }
     }
 }
@@ -949,24 +943,6 @@ impl Default for DirectoryAttributeMapping {
             enabled: Some("!(userAccountControl:1.2.840.113556.1.4.803:=2)".to_string()),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DirectoryProviderStatus {
-    Disconnected,
-    Connected,
-    Syncing,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DirectoryProviderState {
-    pub provider_id: String,
-    pub status: DirectoryProviderStatus,
-    pub last_sync_at: Option<u64>,
-    pub last_sync_result: Option<String>,
-    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

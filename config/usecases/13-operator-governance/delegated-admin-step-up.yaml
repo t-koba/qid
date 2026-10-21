@@ -63,10 +63,8 @@ realms:
               tls_insecure_skip_verify: false
             sync:
               user_search_filter: "(objectClass=person)"
-              group_search_filter: "(objectClass=groupOfNames)"
               sync_interval_minutes: 15
               deactivate_missing: true
-              full_sync_on_start: true
     authentication:
       passkeys:
         enabled: true

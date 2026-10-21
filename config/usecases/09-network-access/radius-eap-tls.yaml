@@ -91,10 +91,8 @@ realms:
               tls_insecure_skip_verify: false
             sync:
               user_search_filter: "(&(objectClass=user)(memberOf=CN=NetworkUsers,OU=Groups,DC=example,DC=com))"
-              group_search_filter: "(objectClass=group)"
               sync_interval_minutes: 5
               deactivate_missing: true
-              full_sync_on_start: true
             attribute_mapping:
               uid: sAMAccountName
               mail: mail

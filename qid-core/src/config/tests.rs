@@ -1346,6 +1346,27 @@ fn the_removed_directory_default_provider_key_is_rejected() {
 }
 
 #[test]
+fn the_removed_directory_sync_keys_are_rejected() {
+    // `group_search_filter` and `full_sync_on_start` named behaviour the
+    // product never had: there is no group search, and a sync always runs
+    // its full pass. A configuration that still sets them is a configuration
+    // error, not a silently ignored key.
+    for (key, value) in [
+        ("group_search_filter", "\"(objectClass=group)\""),
+        ("full_sync_on_start", "true"),
+    ] {
+        let err = serde_json::from_str::<ProtocolConfig>(&format!(
+            r#"{{"directory":{{"providers":[{{"id":"corp-ldap","type":"ldap","sync":{{"{key}":{value}}}}}]}}}}"#
+        ))
+        .expect_err("the removed key is rejected");
+        assert!(
+            err.to_string().contains(key),
+            "the error names the removed key: {err}"
+        );
+    }
+}
+
+#[test]
 fn a_directory_provider_needs_usable_bind_credentials() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {

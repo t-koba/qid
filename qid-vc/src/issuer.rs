@@ -4,6 +4,7 @@ use axum::{
     http::{HeaderMap, Method},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     config::VcProtocolConfig,
     error::{QidError, QidResult},
@@ -582,7 +583,7 @@ pub(crate) async fn credential_issuer_metadata<R: Repository>(
 pub(crate) async fn credential_endpoint<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(request): Json<CredentialRequest>,
+    JsonObject(request): JsonObject<CredentialRequest>,
 ) -> Response {
     match issue_credential_from_bearer(&state, &headers, request).await {
         Ok(response) => Json(response).into_response(),

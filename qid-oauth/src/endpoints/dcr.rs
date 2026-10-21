@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use qid_core::web::JsonObject;
 use qid_core::{
     error::{QidError, QidResult},
     jwt::{Audience, JwtClaims},
@@ -104,7 +105,7 @@ struct DynamicClientMetadata {
 pub async fn dynamic_client_registration<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<DynamicClientRegistrationRequest>,
+    JsonObject(req): JsonObject<DynamicClientRegistrationRequest>,
 ) -> Response {
     let realm = match extract_bearer_token(&headers) {
         Some(token) if !token.is_empty() => {
@@ -696,7 +697,7 @@ pub async fn dynamic_client_registration_update<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(client_id): Path<String>,
-    Json(req): Json<DynamicClientRegistrationRequest>,
+    JsonObject(req): JsonObject<DynamicClientRegistrationRequest>,
 ) -> Response {
     if req
         .client_id

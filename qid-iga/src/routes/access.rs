@@ -1,4 +1,5 @@
 use super::*;
+use qid_core::web::JsonObject;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AccessRequest {
@@ -18,7 +19,7 @@ pub(super) struct AccessRequest {
 pub(super) async fn access_request<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<AccessRequest>,
+    JsonObject(req): JsonObject<AccessRequest>,
 ) -> impl IntoResponse {
     let bearer_token = qid_oauth::endpoints::extract_bearer_token(&headers)
         .ok()
@@ -286,7 +287,7 @@ pub(super) struct ApprovalValidationRequest {
 pub(super) async fn validate_approvals<R: Repository>(
     headers: HeaderMap,
     State(state): State<Arc<SharedState<R>>>,
-    Json(req): Json<ApprovalValidationRequest>,
+    JsonObject(req): JsonObject<ApprovalValidationRequest>,
 ) -> impl IntoResponse {
     let (admin, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -582,7 +583,7 @@ pub(super) async fn revoke_access_grant<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
-    Json(req): Json<AccessGrantRevokeRequest>,
+    JsonObject(req): JsonObject<AccessGrantRevokeRequest>,
 ) -> impl IntoResponse {
     let (_, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -664,7 +665,7 @@ pub(super) struct JitPrivilegeRequest {
 pub(super) async fn issue_jit_privilege<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<JitPrivilegeRequest>,
+    JsonObject(req): JsonObject<JitPrivilegeRequest>,
 ) -> impl IntoResponse {
     let (admin, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -793,7 +794,7 @@ pub(super) async fn revoke_jit_privilege<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
-    Json(req): Json<JitPrivilegeRevokeRequest>,
+    JsonObject(req): JsonObject<JitPrivilegeRevokeRequest>,
 ) -> impl IntoResponse {
     let (_, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {

@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use qid_core::web::JsonObject;
 use qid_core::{
     QidError, QidResult,
     models::{PasswordCredential, PasswordResetToken},
@@ -149,7 +150,7 @@ pub struct CiamProtectionDecision {
 pub async fn verification_issue<R: Repository>(
     State(_state): State<Arc<SharedState<R>>>,
     Path(_realm): Path<String>,
-    Json(_req): Json<VerificationIssueRequest>,
+    JsonObject(_req): JsonObject<VerificationIssueRequest>,
 ) -> Response {
     ciam_challenge_unavailable("challenge delivery is not implemented")
 }
@@ -157,7 +158,7 @@ pub async fn verification_issue<R: Repository>(
 pub async fn verification_confirm<R: Repository>(
     State(_state): State<Arc<SharedState<R>>>,
     Path(_realm): Path<String>,
-    Json(_req): Json<VerificationConfirmRequest>,
+    JsonObject(_req): JsonObject<VerificationConfirmRequest>,
 ) -> Response {
     ciam_challenge_unavailable("verification delivery and attempt protection are not implemented")
 }
@@ -165,7 +166,7 @@ pub async fn verification_confirm<R: Repository>(
 pub async fn password_reset_issue<R: Repository>(
     State(_state): State<Arc<SharedState<R>>>,
     Path(_realm): Path<String>,
-    Json(_req): Json<PasswordResetIssueRequest>,
+    JsonObject(_req): JsonObject<PasswordResetIssueRequest>,
 ) -> Response {
     ciam_challenge_unavailable("challenge delivery is not implemented")
 }
@@ -181,7 +182,7 @@ fn ciam_challenge_unavailable(message: &'static str) -> Response {
 pub async fn password_reset_consume<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
-    Json(req): Json<PasswordResetConsumeRequest>,
+    JsonObject(req): JsonObject<PasswordResetConsumeRequest>,
 ) -> Response {
     let record = match state.repo.get_password_reset_token(&req.token_id).await {
         Ok(Some(record)) => record,
@@ -233,7 +234,7 @@ pub async fn protection_evaluate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<CiamProtectionRequest>,
+    JsonObject(req): JsonObject<CiamProtectionRequest>,
 ) -> Response {
     let actor = match crate::session_auth::require_any_session(&headers, &state, &realm).await {
         Ok(user_id) => user_id,

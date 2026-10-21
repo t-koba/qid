@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use qid_core::state::SharedState;
+use qid_core::web::JsonObject;
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
@@ -57,7 +58,7 @@ pub async fn entity_statement<R: Repository>(State(state): State<Arc<SharedState
 pub async fn discover_provider<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
-    Json(req): Json<HomeRealmDiscoveryRequest>,
+    JsonObject(req): JsonObject<HomeRealmDiscoveryRequest>,
 ) -> Response {
     let realm_config = match state.config.realms.iter().find(|r| r.id == realm) {
         Some(cfg) => cfg,

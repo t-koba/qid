@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use qid_core::web::JsonObject;
 use qid_core::{config::ServerPaths, error::QidError, models::TotpCredential, state::SharedState};
 use qid_crypto::totp::TotpVerifier;
 use qid_mfa::verify_totp_at_with_step;
@@ -118,7 +119,7 @@ async fn totp_verify<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<TotpVerifyRequest>,
+    JsonObject(req): JsonObject<TotpVerifyRequest>,
 ) -> Response {
     let BrowserSessionContext { session, .. } =
         match load_browser_session(&state, &realm, &headers).await {
@@ -180,7 +181,7 @@ async fn totp_authenticate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<TotpAuthenticateRequest>,
+    JsonObject(req): JsonObject<TotpAuthenticateRequest>,
 ) -> Response {
     let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,

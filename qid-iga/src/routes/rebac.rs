@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     models::{
         CheckRequest, CheckResponse, ExpandRequest, ExpandResponse, ReadRequest, ReadResponse,
@@ -34,7 +35,7 @@ pub fn rebac_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
 async fn check_handler<R: AdminRepository + RebacRepository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<CheckRequest>,
+    JsonObject(req): JsonObject<CheckRequest>,
 ) -> impl IntoResponse {
     let admin = match require_admin_session(&headers, &state).await {
         Ok(admin) => admin,
@@ -61,7 +62,7 @@ async fn check_handler<R: AdminRepository + RebacRepository>(
 async fn expand_handler<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<ExpandRequest>,
+    JsonObject(req): JsonObject<ExpandRequest>,
 ) -> impl IntoResponse {
     let admin = match require_admin_session(&headers, &state).await {
         Ok(admin) => admin,
@@ -78,7 +79,7 @@ async fn expand_handler<R: Repository>(
 async fn write_tuples_handler<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<TupleWriteRequest>,
+    JsonObject(req): JsonObject<TupleWriteRequest>,
 ) -> impl IntoResponse {
     let admin = match require_admin_session(&headers, &state).await {
         Ok(admin) => admin,
@@ -94,7 +95,7 @@ async fn write_tuples_handler<R: Repository>(
 async fn delete_tuples_handler<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<TupleDeleteRequest>,
+    JsonObject(req): JsonObject<TupleDeleteRequest>,
 ) -> impl IntoResponse {
     let admin = match require_admin_session(&headers, &state).await {
         Ok(admin) => admin,
@@ -121,7 +122,7 @@ fn rebac_error_response(error: qid_core::error::QidError) -> Response {
 async fn read_tuples_handler<R: AdminRepository + RebacRepository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<ReadRequest>,
+    JsonObject(req): JsonObject<ReadRequest>,
 ) -> impl IntoResponse {
     let admin = match require_admin_session(&headers, &state).await {
         Ok(admin) => admin,

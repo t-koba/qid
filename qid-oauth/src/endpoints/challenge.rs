@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use qid_core::state::SharedState;
+use qid_core::web::JsonObject;
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -46,7 +47,7 @@ pub struct AcrClaim {
 
 pub async fn challenge<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
-    Json(req): Json<ChallengeRequest>,
+    JsonObject(req): JsonObject<ChallengeRequest>,
 ) -> Response {
     let token_info = match decode_and_inspect_token::<R>(&state, &req.access_token).await {
         Some(info) => info,

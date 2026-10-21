@@ -1,5 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
+use qid_core::web::JsonObject;
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct BreakglassSessionRevokeRequest {
     incident_id: String,
@@ -10,7 +11,7 @@ pub(crate) async fn breakglass_revoke_session<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
-    Json(req): Json<BreakglassSessionRevokeRequest>,
+    JsonObject(req): JsonObject<BreakglassSessionRevokeRequest>,
 ) -> impl IntoResponse {
     let (admin, elevation) =
         match authorize_breakglass_mutation(&state, &headers, &state.config.admin.security, None)
@@ -102,7 +103,7 @@ pub(crate) struct KeyRotationPlanRequest {
 pub(crate) async fn plan_key_rotation_admin<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<KeyRotationPlanRequest>,
+    JsonObject(req): JsonObject<KeyRotationPlanRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::SecurityAdmin, None);
     if req.requirements.is_empty() {

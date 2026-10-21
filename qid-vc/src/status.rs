@@ -4,6 +4,7 @@ use axum::{
     http::{HeaderMap, Method},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     error::{QidError, QidResult},
     models::VcCredentialStatusRecord,
@@ -193,7 +194,7 @@ pub(crate) async fn revoke_credential_status<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(credential_id): Path<String>,
     headers: HeaderMap,
-    Json(request): Json<CredentialRevocationRequest>,
+    JsonObject(request): JsonObject<CredentialRevocationRequest>,
 ) -> Response {
     match revoke_credential_from_bearer(&state, &headers, &credential_id, request).await {
         Ok(status) => Json(CredentialStatusResponse::from(status)).into_response(),

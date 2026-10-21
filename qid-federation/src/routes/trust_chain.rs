@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{QidError, models::AuditEvent, state::SharedState};
 use qid_storage::prelude::*;
 use serde::Deserialize;
@@ -37,7 +38,7 @@ pub struct TrustChainValidationResponse {
 
 pub async fn validate_trust_chain_endpoint<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
-    Json(req): Json<TrustChainValidationRequest>,
+    JsonObject(req): JsonObject<TrustChainValidationRequest>,
 ) -> Response {
     let now = qid_core::util::now_seconds();
     let result = validate_signed_trust_chain(

@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::Engine;
+use qid_core::web::JsonObject;
 use qid_core::{QidError, state::SharedState, tenant::RealmId};
 use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
 use qid_storage::prelude::*;
@@ -42,7 +43,7 @@ pub struct ParRequestParams {
 pub async fn push_authorization_request<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<ParRequestParams>,
+    JsonObject(req): JsonObject<ParRequestParams>,
 ) -> Response {
     if let Some(details) = &req.authorization_details
         && let Err(e) = qid_core::oauth::validate_authorization_details(details)

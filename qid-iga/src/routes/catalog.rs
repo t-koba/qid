@@ -1,4 +1,5 @@
 use super::*;
+use qid_core::web::JsonObject;
 
 pub(super) async fn entitlements<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -37,7 +38,7 @@ pub(super) struct EntitlementRequest {
 pub(super) async fn upsert_entitlement<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<EntitlementRequest>,
+    JsonObject(req): JsonObject<EntitlementRequest>,
 ) -> impl IntoResponse {
     let (admin, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -142,7 +143,7 @@ pub(super) struct AccessPackageRequest {
 pub(super) async fn upsert_access_package<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<AccessPackageRequest>,
+    JsonObject(req): JsonObject<AccessPackageRequest>,
 ) -> impl IntoResponse {
     let (_, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {

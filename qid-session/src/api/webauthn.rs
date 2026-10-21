@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{error::QidError, state::SharedState, tenant::RealmId};
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -76,7 +77,7 @@ pub async fn webauthn_register_start<R: Repository>(
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<WebAuthnStartRequest>,
+    JsonObject(req): JsonObject<WebAuthnStartRequest>,
 ) -> Response {
     let webauthn = match build_webauthn_service(&state, &realm) {
         Ok(w) => w,
@@ -129,7 +130,7 @@ pub async fn webauthn_register_finish<R: Repository>(
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<WebAuthnFinishRequest>,
+    JsonObject(req): JsonObject<WebAuthnFinishRequest>,
 ) -> Response {
     let session_user_id =
         match require_webauthn_registration_session(&state, &realm, &headers).await {
@@ -218,7 +219,7 @@ pub async fn webauthn_auth_start<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
     Path(realm): Path<String>,
-    Json(req): Json<WebAuthnAuthStartRequest>,
+    JsonObject(req): JsonObject<WebAuthnAuthStartRequest>,
 ) -> Response {
     let user = match state
         .repo
@@ -275,7 +276,7 @@ pub async fn webauthn_auth_finish<R: Repository>(
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<WebAuthnAuthFinishRequest>,
+    JsonObject(req): JsonObject<WebAuthnAuthFinishRequest>,
 ) -> Response {
     let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,
@@ -413,7 +414,7 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<WebAuthnDiscoverableFinishRequest>,
+    JsonObject(req): JsonObject<WebAuthnDiscoverableFinishRequest>,
 ) -> Response {
     let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,

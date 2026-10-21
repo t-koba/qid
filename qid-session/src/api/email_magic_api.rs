@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use qid_core::web::JsonObject;
 use qid_core::{config::ServerPaths, error::QidError, state::SharedState, tenant::RealmId};
 use qid_http::ratelimit::{RateLimitConfig, RateLimiter};
 use qid_mfa::email_magic::{
@@ -65,7 +66,7 @@ async fn email_magic_link_send<R: Repository>(
     Path(realm): Path<String>,
     State(state): State<Arc<SharedState<R>>>,
     _headers: HeaderMap,
-    Json(req): Json<EmailMagicLinkSendRequest>,
+    JsonObject(req): JsonObject<EmailMagicLinkSendRequest>,
 ) -> Response {
     // Do not trust forwarded IP headers unless an authenticated edge has normalized them.
     let client_ip: Option<String> = None;
@@ -116,7 +117,7 @@ async fn email_magic_link_verify<R: Repository>(
     Path(realm): Path<String>,
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<EmailMagicLinkVerifyRequest>,
+    JsonObject(req): JsonObject<EmailMagicLinkVerifyRequest>,
 ) -> Response {
     let challenge = match verify_email_magic_link(&req.challenge_id, &req.token) {
         Ok(c) => c,

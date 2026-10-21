@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     models::{CiamConsentGrant, CiamProgressiveProfile},
     state::SharedState,
@@ -96,7 +97,7 @@ fn progressive_profile_id(realm: &str, user: &str) -> String {
 
 pub async fn profile_plan(
     Path(realm): Path<String>,
-    Json(req): Json<ProgressiveProfileRequest>,
+    JsonObject(req): JsonObject<ProgressiveProfileRequest>,
 ) -> Response {
     Json(serde_json::json!({
         "realm": realm,
@@ -109,7 +110,7 @@ pub async fn profile_submit<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<ProgressiveProfileSubmit>,
+    JsonObject(req): JsonObject<ProgressiveProfileSubmit>,
 ) -> Response {
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.user_id).await {
         return e;
@@ -226,7 +227,7 @@ pub async fn consent_evaluate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<ConsentEvaluationRequest>,
+    JsonObject(req): JsonObject<ConsentEvaluationRequest>,
 ) -> Response {
     if let Some(user_id) = &req.user_id
         && let Err(e) = session_auth::require_session(&headers, &state, &realm, user_id).await
@@ -287,7 +288,7 @@ pub async fn consent_grant<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<CiamConsentGrant>,
+    JsonObject(req): JsonObject<CiamConsentGrant>,
 ) -> Response {
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.user_id).await {
         return e;
@@ -337,7 +338,7 @@ pub async fn passwordless_migrate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<serde_json::Value>,
+    JsonObject(req): JsonObject<serde_json::Value>,
 ) -> Response {
     let user_id = req.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, user_id).await {

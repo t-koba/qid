@@ -1,5 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
+use qid_core::web::JsonObject;
 
 #[derive(Deserialize)]
 pub(super) struct UsageBillingQuery {
@@ -85,7 +86,7 @@ pub(super) async fn create_custom_domain<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    Json(domain): Json<CustomDomain>,
+    JsonObject(domain): JsonObject<CustomDomain>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &domain.tenant_id).and_then(|_| domain.validate())
@@ -129,7 +130,7 @@ pub(super) async fn activate_custom_domain<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path((tenant, domain_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(req): Json<CustomDomainActivationRequest>,
+    JsonObject(req): JsonObject<CustomDomainActivationRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     let mut domain = match load_custom_domain(&state, &tenant, &domain_id).await {
@@ -184,7 +185,7 @@ pub(super) async fn renew_custom_domain_certificate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path((tenant, domain_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(req): Json<CustomDomainCertificateRenewalRequest>,
+    JsonObject(req): JsonObject<CustomDomainCertificateRenewalRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     let mut domain = match load_custom_domain(&state, &tenant, &domain_id).await {
@@ -258,7 +259,7 @@ pub(super) async fn create_app_catalog_entry<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    Json(entry): Json<AppCatalogEntry>,
+    JsonObject(entry): JsonObject<AppCatalogEntry>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &entry.tenant_id)
@@ -364,7 +365,7 @@ pub(super) async fn create_ciam_brand<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    Json(brand): Json<CiamBrand>,
+    JsonObject(brand): JsonObject<CiamBrand>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &brand.tenant_id).and_then(|_| brand.validate()) {
@@ -426,7 +427,7 @@ pub(super) async fn create_marketplace_connector<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    Json(connector): Json<MarketplaceConnector>,
+    JsonObject(connector): JsonObject<MarketplaceConnector>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) =
@@ -492,7 +493,7 @@ pub(super) async fn create_usage_billing_event<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    Json(event): Json<UsageBillingEvent>,
+    JsonObject(event): JsonObject<UsageBillingEvent>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &event.tenant_id).and_then(|_| event.validate()) {
@@ -533,7 +534,7 @@ pub(super) async fn create_compliance_evidence_pack<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    Json(pack): Json<ComplianceEvidencePack>,
+    JsonObject(pack): JsonObject<ComplianceEvidencePack>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &pack.tenant_id).and_then(|_| pack.validate()) {
@@ -576,7 +577,7 @@ pub(super) async fn create_delegated_tenant_admin<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
-    Json(admin): Json<DelegatedTenantAdmin>,
+    JsonObject(admin): JsonObject<DelegatedTenantAdmin>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_tenant_mutation!(state, &headers, Perm::TenantAdmin, &tenant);
     if let Err(e) = validate_tenant_path(&tenant, &admin.tenant_id).and_then(|_| admin.validate()) {

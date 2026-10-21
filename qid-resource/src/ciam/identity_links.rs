@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     models::{AuditEvent, CiamIdentityLink},
     state::SharedState,
@@ -25,7 +26,7 @@ pub async fn identity_link_create<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<CiamIdentityLink>,
+    JsonObject(req): JsonObject<CiamIdentityLink>,
 ) -> Response {
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.user_id).await {
         return e;
@@ -59,7 +60,7 @@ pub async fn identity_link_lookup<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<ExternalIdentityLookupRequest>,
+    JsonObject(req): JsonObject<ExternalIdentityLookupRequest>,
 ) -> Response {
     if let Err(e) = session_auth::require_any_session(&headers, &state, &realm).await {
         return e;

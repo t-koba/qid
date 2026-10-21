@@ -13,6 +13,7 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use qid_core::web::JsonObject;
 
 use crate::{bad_request, internal_error, not_found, unauthorized};
 use qid_core::{
@@ -376,7 +377,7 @@ async fn list_streams_for_realm(
 async fn create_stream(
     State(state): State<Arc<SharedState<impl Repository>>>,
     headers: HeaderMap,
-    Json(payload): Json<SsfCreateStreamRequest>,
+    JsonObject(payload): JsonObject<SsfCreateStreamRequest>,
 ) -> impl IntoResponse {
     let realm = match ssf_realm(&state, None) {
         Ok(realm) => realm,
@@ -394,7 +395,7 @@ async fn create_stream_for_realm(
     State(state): State<Arc<SharedState<impl Repository>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(payload): Json<SsfCreateStreamRequest>,
+    JsonObject(payload): JsonObject<SsfCreateStreamRequest>,
 ) -> impl IntoResponse {
     let realm_config = match ssf_realm(&state, Some(&realm)) {
         Ok(realm) => realm,

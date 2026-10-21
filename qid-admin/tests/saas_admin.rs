@@ -1739,3 +1739,31 @@ async fn saas_admin_routes_reject_self_or_stale_approval() {
     let stale_approval_response = app.oneshot(stale_approval).await.unwrap();
     assert_eq!(stale_approval_response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn a_json_array_body_is_rejected_and_no_user_is_created() {
+    let (app, state) = setup().await;
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/realm-1/users",
+            r#"["chosen-id","user@example.com"]"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must be a JSON object"),
+        "unexpected body: {body}"
+    );
+    let users = state
+        .repo
+        .list_users(&RealmId::from("realm-1"))
+        .await
+        .expect("the users of the realm are listed");
+    assert!(users.is_empty(), "no user may be created: {users:?}");
+}

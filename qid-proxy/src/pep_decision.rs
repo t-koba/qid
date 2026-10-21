@@ -7,6 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     config::{QidConfig, ServerPaths},
     error::{QidError, QidResult},
@@ -598,7 +599,7 @@ fn deny_response(_err: &QidError) -> axum::response::Response {
 async fn authzen_evaluate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<AuthZenEvaluationRequest>,
+    JsonObject(req): JsonObject<AuthZenEvaluationRequest>,
 ) -> impl IntoResponse {
     let auth = match authenticate_authzen_adapter(&headers, &state) {
         Ok(auth) => auth,

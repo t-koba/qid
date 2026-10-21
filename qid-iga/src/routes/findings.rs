@@ -1,4 +1,5 @@
 use super::*;
+use qid_core::web::JsonObject;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct FindingQuery {
@@ -45,7 +46,7 @@ pub(super) struct FindingDetectionRequest {
 pub(super) async fn detect_findings<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<FindingDetectionRequest>,
+    JsonObject(req): JsonObject<FindingDetectionRequest>,
 ) -> impl IntoResponse {
     let (_, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -118,7 +119,7 @@ pub(super) async fn resolve_finding<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
-    Json(req): Json<ResolveFindingRequest>,
+    JsonObject(req): JsonObject<ResolveFindingRequest>,
 ) -> impl IntoResponse {
     let (_, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {

@@ -4,6 +4,7 @@ use axum::{
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     error::{QidError, QidResult},
     models::DeviceAuthorizationGrant,
@@ -215,7 +216,7 @@ fn verification_page_for_grant(
 pub async fn device_authorization_approve<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<DeviceAuthorizationApprovalRequest>,
+    JsonObject(req): JsonObject<DeviceAuthorizationApprovalRequest>,
 ) -> Response {
     if !state.config.realms.iter().any(|realm| {
         oauth_feature_enabled(&state, &realm.id, |oauth| {

@@ -1,5 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
+use qid_core::web::JsonObject;
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct PolicySimulationRequest {
     #[serde(default)]
@@ -235,7 +236,7 @@ pub(crate) async fn simulate_policy<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<PolicySimulationRequest>,
+    JsonObject(req): JsonObject<PolicySimulationRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::SecurityAdmin, Some(&realm));
     match run_policy_simulation(&state, &realm, req).await {

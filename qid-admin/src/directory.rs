@@ -1,5 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
+use qid_core::web::JsonObject;
 
 pub(crate) async fn list_realms<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -28,7 +29,7 @@ pub(crate) struct CreateRealmRequest {
 pub(crate) async fn create_realm<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<CreateRealmRequest>,
+    JsonObject(req): JsonObject<CreateRealmRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::RealmAdmin, None);
     let realm_id = RealmId(req.id.clone());
@@ -180,7 +181,7 @@ pub(crate) async fn create_user<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<CreateUserRequest>,
+    JsonObject(req): JsonObject<CreateUserRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::DirectoryAdmin, Some(&realm));
     let user_id = req.id.unwrap_or_else(|| Ulid::new().to_string());
@@ -272,7 +273,7 @@ pub(crate) async fn update_user<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path((realm, user_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(req): Json<UpdateUserRequest>,
+    JsonObject(req): JsonObject<UpdateUserRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::DirectoryAdmin, Some(&realm));
     let existing = match state.repo.get_user_by_id(&user_id).await {
@@ -429,7 +430,7 @@ pub(crate) async fn create_client<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<CreateClientRequest>,
+    JsonObject(req): JsonObject<CreateClientRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::AppAdmin, Some(&realm));
     let token_endpoint_auth_method = match req.client_type {

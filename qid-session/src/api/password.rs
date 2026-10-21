@@ -6,6 +6,7 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{error::QidError, state::SharedState, tenant::RealmId};
 use qid_http::ratelimit::{RateLimitConfig, RateLimiter};
 use qid_storage::prelude::*;
@@ -30,7 +31,7 @@ pub async fn password_auth<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<PasswordAuthRequest>,
+    JsonObject(req): JsonObject<PasswordAuthRequest>,
 ) -> Response {
     let realm_config = match state.require_realm(&realm) {
         Ok(config) => config,

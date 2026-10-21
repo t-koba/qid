@@ -1,4 +1,5 @@
 use super::*;
+use qid_core::web::JsonObject;
 
 #[derive(Debug, Deserialize)]
 /// Review evidence comes from stored grants and findings only. Assignments
@@ -14,7 +15,7 @@ pub(super) struct AccessReviewRequest {
 pub(super) async fn create_access_review<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<AccessReviewRequest>,
+    JsonObject(req): JsonObject<AccessReviewRequest>,
 ) -> impl IntoResponse {
     let (admin, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -107,7 +108,7 @@ pub(super) async fn close_access_review<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
-    Json(req): Json<CloseAccessReviewRequest>,
+    JsonObject(req): JsonObject<CloseAccessReviewRequest>,
 ) -> impl IntoResponse {
     let (_, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -146,7 +147,7 @@ pub(super) async fn create_access_review_decision<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     axum::extract::Path(campaign_id): axum::extract::Path<String>,
-    Json(req): Json<AccessReviewDecisionRequest>,
+    JsonObject(req): JsonObject<AccessReviewDecisionRequest>,
 ) -> impl IntoResponse {
     let (admin, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {
@@ -298,7 +299,7 @@ pub(super) async fn list_certifications<R: Repository>(
 pub(super) async fn create_certification<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<CertificationRequest>,
+    JsonObject(req): JsonObject<CertificationRequest>,
 ) -> impl IntoResponse {
     let (admin, tenant_id) =
         match require_admin_tenant_context(&headers, &state, req.tenant_id.as_deref()).await {

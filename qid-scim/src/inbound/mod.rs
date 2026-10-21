@@ -192,9 +192,7 @@ pub(crate) fn parse_object<T: serde::de::DeserializeOwned>(
     description: &str,
 ) -> Result<T, QidError> {
     let bad = |message: String| QidError::BadRequest { message };
-    if !raw.is_object() {
-        return Err(bad(format!("{description} must be a JSON object")));
-    }
+    qid_core::web::require_json_object(&raw, description)?;
     serde_json::from_value(raw).map_err(|e| bad(format!("invalid {description} data: {e}")))
 }
 

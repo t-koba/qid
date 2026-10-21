@@ -4,6 +4,7 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     config::CibaMode,
     error::{QidError, QidResult},
@@ -158,7 +159,7 @@ fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 pub async fn backchannel_authentication_approve<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<BackchannelAuthenticationApprovalRequest>,
+    JsonObject(req): JsonObject<BackchannelAuthenticationApprovalRequest>,
 ) -> Response {
     let auth_req_id_hash = qid_core::util::sha256_base64url(&req.auth_req_id);
     let grant = match super::error_response_or_return!(

@@ -8,6 +8,7 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     error::{QidError, QidResult},
     models::AuditEvent,
@@ -220,7 +221,7 @@ pub fn risk_events() -> Vec<RiskEventRecord> {
 async fn evaluate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(input): Json<RiskInput>,
+    JsonObject(input): JsonObject<RiskInput>,
 ) -> impl IntoResponse {
     let adapter = match authenticate_risk_adapter(&headers, &state) {
         Ok(adapter) => adapter,

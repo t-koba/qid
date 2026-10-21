@@ -1,5 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
+use qid_core::web::JsonObject;
 
 /// Core audit function.
 #[allow(clippy::too_many_arguments)]
@@ -321,7 +322,7 @@ pub(crate) async fn get_realm_audit_retention<R: Repository>(
 pub(crate) async fn put_global_audit_retention<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<AuditRetentionRequest>,
+    JsonObject(req): JsonObject<AuditRetentionRequest>,
 ) -> impl IntoResponse {
     put_audit_retention(state, headers, None, req).await
 }
@@ -330,7 +331,7 @@ pub(crate) async fn put_realm_audit_retention<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<AuditRetentionRequest>,
+    JsonObject(req): JsonObject<AuditRetentionRequest>,
 ) -> impl IntoResponse {
     put_audit_retention(state, headers, Some(realm), req).await
 }

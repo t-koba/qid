@@ -7,6 +7,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{state::SharedState, tenant::RealmId};
 use qid_storage::prelude::*;
 use serde::Deserialize;
@@ -53,7 +54,7 @@ pub async fn create_workload_identity<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<CreateWorkloadIdentityRequest>,
+    JsonObject(req): JsonObject<CreateWorkloadIdentityRequest>,
 ) -> Response {
     if let Err(e) = workload_auth::require_workload_provisioning_for_spiffe(
         &headers,
@@ -104,7 +105,7 @@ pub async fn issue_workload_certificate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<IssueWorkloadCertificateRequest>,
+    JsonObject(req): JsonObject<IssueWorkloadCertificateRequest>,
 ) -> Response {
     let realm_id = RealmId(realm.clone());
     let workload = match state
@@ -288,7 +289,7 @@ pub async fn revoke_workload_certificate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path((realm, certificate_id)): Path<(String, String)>,
-    Json(req): Json<RevokeWorkloadCertificateRequest>,
+    JsonObject(req): JsonObject<RevokeWorkloadCertificateRequest>,
 ) -> Response {
     let caller = match workload_auth::authenticate_workload(&headers, &state, &realm).await {
         Ok(caller) => caller,

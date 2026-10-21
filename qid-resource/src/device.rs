@@ -8,6 +8,7 @@ use axum::{
 };
 use qid_core::error::QidError;
 use qid_core::state::SharedState;
+use qid_core::web::JsonObject;
 use qid_storage::prelude::*;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -50,7 +51,7 @@ pub async fn register_device<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<RegisterDeviceRequest>,
+    JsonObject(req): JsonObject<RegisterDeviceRequest>,
 ) -> Response {
     if let Err(response) =
         session_auth::require_session(&headers, &state, &realm, &req.user_id).await

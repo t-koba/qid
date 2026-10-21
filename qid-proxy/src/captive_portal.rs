@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     config::{CAPPORT_BIND_PATH, CAPPORT_LOOKUP_PATH, CAPPORT_UNBIND_PATH, QidConfig, ServerPaths},
     error::{QidError, QidResult},
@@ -185,7 +186,7 @@ async fn captive_portal_bind<R: Repository>(
     Path(realm): Path<String>,
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<BindRequest>,
+    JsonObject(req): JsonObject<BindRequest>,
 ) -> Response {
     if let Err(error) = authenticate_capport_control_adapter(&headers, &state, &realm) {
         return qid_http::error_response(error);
@@ -252,7 +253,7 @@ async fn captive_portal_unbind<R: Repository>(
     Path(realm): Path<String>,
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(req): Json<serde_json::Value>,
+    JsonObject(req): JsonObject<serde_json::Value>,
 ) -> Response {
     if let Err(error) = authenticate_capport_control_adapter(&headers, &state, &realm) {
         return qid_http::error_response(error);

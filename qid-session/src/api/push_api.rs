@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use qid_core::web::JsonObject;
 use qid_core::{error::QidError, state::SharedState};
 use qid_mfa::push::{
     PushChallenge, PushChallengeStatus, PushDevice, PushFatigueState, PushMfaConfig,
@@ -118,7 +119,7 @@ async fn push_register<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
     Extension(push_state): Extension<Arc<PushMfaState>>,
-    Json(req): Json<PushRegisterRequest>,
+    JsonObject(req): JsonObject<PushRegisterRequest>,
 ) -> Response {
     if req.device_name.trim().is_empty() || req.push_token.trim().is_empty() {
         return qid_http::error_response(QidError::BadRequest {
@@ -181,7 +182,7 @@ async fn push_challenge<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
     Extension(push_state): Extension<Arc<PushMfaState>>,
-    Json(req): Json<PushChallengeRequest>,
+    JsonObject(req): JsonObject<PushChallengeRequest>,
 ) -> Response {
     let user_id = match get_session_user_id(&state, &realm, &headers).await {
         Ok(v) => v,
@@ -282,7 +283,7 @@ async fn push_verify<R: Repository>(
     Path(realm): Path<String>,
     headers: HeaderMap,
     Extension(push_state): Extension<Arc<PushMfaState>>,
-    Json(req): Json<PushVerifyRequest>,
+    JsonObject(req): JsonObject<PushVerifyRequest>,
 ) -> Response {
     let user_id = match get_session_user_id(&state, &realm, &headers).await {
         Ok(v) => v,

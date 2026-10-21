@@ -1,5 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
+use qid_core::web::JsonObject;
 #[derive(Debug, Deserialize)]
 pub(crate) struct SessionListQuery {
     user_id: Option<String>,
@@ -288,7 +289,7 @@ pub(crate) async fn create_service_account_handler<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<CreateServiceAccountRequest>,
+    JsonObject(req): JsonObject<CreateServiceAccountRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::AppAdmin, Some(&realm));
     let sa = qid_core::models::ServiceAccount {

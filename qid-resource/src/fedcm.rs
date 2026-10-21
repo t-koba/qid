@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     jwt::{Audience, JwtClaims},
     state::SharedState,
@@ -79,7 +80,7 @@ pub async fn create_fedcm_identity<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<CreateFedCmIdentityRequest>,
+    JsonObject(req): JsonObject<CreateFedCmIdentityRequest>,
 ) -> Response {
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.account_id).await {
         return e;
@@ -110,7 +111,7 @@ pub async fn generate_fedcm_token<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     Path(realm): Path<String>,
-    Json(req): Json<FedCmTokenRequest>,
+    JsonObject(req): JsonObject<FedCmTokenRequest>,
 ) -> Response {
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.account_id).await {
         return e;

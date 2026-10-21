@@ -75,7 +75,7 @@ flowchart LR
 | `qid-webauthn` | WebAuthn ceremony helpers and tests. |
 | `qid-saml` | SAML metadata, SSO/SLO, artifact, XMLDSig, encryption, and strict signed SOAP AttributeQuery with realm-local SP trust and subject lookup. |
 | `qid-scim` | SCIM 2.0 server surface and outbound reconcile helpers. |
-| `qid-directory` | LDAP/AD/HR connectors, directory routes, sync logic, filter handling. |
+| `qid-directory` | LDAP/AD connectors, directory routes, sync logic, filter handling. |
 | `qid-federation` | Inbound OIDC/SAML/social broker, OpenID Federation discovery and trust-chain validation. |
 | `qid-resource` | Device registry, PAR resource endpoint, FedCM, CIAM, SPIFFE/workload identity routes. |
 | `qid-proxy` | Generic PEP decision/AuthZEN, PEP assertion, captive portal bridge. |

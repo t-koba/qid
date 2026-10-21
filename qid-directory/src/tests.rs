@@ -2606,6 +2606,9 @@ async fn webhook_ingest_reads_the_event_like_the_csv_connector() {
     assert!(!users[1].enabled, "a leaver is a disabled user");
 }
 
+/// The panic hook is process-wide, so only one test may own it at a time.
+static PANIC_HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn an_unusable_paged_results_control_is_an_error_and_not_a_panic() {
     use ldap3::controls::{Control, ControlType, RawControl};
@@ -2614,12 +2617,18 @@ fn an_unusable_paged_results_control_is_an_error_and_not_a_panic() {
     // The panic hook records what would have been printed.
     static PANICS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
     let panics = PANICS.get_or_init(|| Mutex::new(Vec::new()));
+    let _guard = PANIC_HOOK_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = std::thread::current().id();
     let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|info| {
-        panics
-            .lock()
-            .expect("the panic record")
-            .push(info.to_string());
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().id() == owner {
+            panics
+                .lock()
+                .expect("the panic record")
+                .push(info.to_string());
+        }
     }));
 
     // A sequence with no elements reaches the parse, and the parse panics.
@@ -2656,22 +2665,51 @@ fn concurrent_paging_control_parses_leave_the_panic_hook_installed() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // The panic hook is process-wide: two callers must not leave the silent
-    // hook installed for the rest of the process.
+    // hook installed for the rest of the process. Hold the lock so the other
+    // hook test does not replace the hook while this one runs, and restore
+    // the hook so this test leaves the process as it found it.
     static PANIC_SEEN: AtomicBool = AtomicBool::new(false);
+    let _guard = PANIC_HOOK_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {
         PANIC_SEEN.store(true, Ordering::SeqCst);
     }));
 
-    let handles: Vec<_> = (0..2)
+    // The race needs the swaps to overlap, so the parses run in parallel and
+    // repeat. Every thread checks the hook after its own parse: without the
+    // serialized swap a parse can leave the silent hook installed, and the
+    // next check sees it.
+    static SILENT_HOOK_SEEN: AtomicBool = AtomicBool::new(false);
+    let handles: Vec<_> = (0..8)
         .map(|_| {
             std::thread::spawn(|| {
-                let raw = RawControl {
-                    ctype: "1.2.840.113556.1.4.319".to_string(),
-                    crit: false,
-                    val: Some(vec![0x30, 0x00]),
-                };
-                let ctrls = vec![Control(Some(ControlType::PagedResults), raw)];
-                let _ = crate::connector::paged_results_cookie(&ctrls);
+                for _ in 0..50 {
+                    let raw = RawControl {
+                        ctype: "1.2.840.113556.1.4.319".to_string(),
+                        crit: false,
+                        val: Some(vec![0x30, 0x00]),
+                    };
+                    let ctrls = vec![Control(Some(ControlType::PagedResults), raw)];
+                    let _ = crate::connector::paged_results_cookie(&ctrls);
+
+                    // The hook must still be the one this test installed. A
+                    // concurrent parse elsewhere in the test binary can hold
+                    // the silent hook for a moment, so the check is retried.
+                    for _ in 0..20 {
+                        PANIC_SEEN.store(false, Ordering::SeqCst);
+                        let _ = std::panic::catch_unwind(|| panic!("the test panic"));
+                        if PANIC_SEEN.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    if !PANIC_SEEN.load(Ordering::SeqCst) {
+                        SILENT_HOOK_SEEN.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
             })
         })
         .collect();
@@ -2679,10 +2717,23 @@ fn concurrent_paging_control_parses_leave_the_panic_hook_installed() {
         handle.join().expect("the parse thread finishes");
     }
 
-    PANIC_SEEN.store(false, Ordering::SeqCst);
-    let _ = std::panic::catch_unwind(|| panic!("the test panic"));
+    // The hook must also be intact once every parse is done.
+    for _ in 0..20 {
+        PANIC_SEEN.store(false, Ordering::SeqCst);
+        let _ = std::panic::catch_unwind(|| panic!("the test panic"));
+        if PANIC_SEEN.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    if !PANIC_SEEN.load(Ordering::SeqCst) {
+        SILENT_HOOK_SEEN.store(true, Ordering::SeqCst);
+    }
+
+    let silent = SILENT_HOOK_SEEN.load(Ordering::SeqCst);
+    std::panic::set_hook(previous);
     assert!(
-        PANIC_SEEN.load(Ordering::SeqCst),
+        !silent,
         "the panic hook must be restored after concurrent parses"
     );
 }

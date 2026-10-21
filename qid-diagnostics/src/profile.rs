@@ -1,4 +1,5 @@
 use super::*;
+use qid_core::config::DIRECTORY_PROVIDER_TYPES;
 
 fn push_fapi_profile_checks(checks: &mut Vec<CheckItem>, config: &QidConfig, profile_name: &str) {
     checks.push(if config.server.http_message_signatures.enabled {
@@ -261,10 +262,7 @@ pub(crate) fn check_profile_obligations(config: &QidConfig) -> Vec<CheckItem> {
                 let has_enterprise_directory =
                     realm.protocols.directory.providers.iter().any(|provider| {
                         provider.enabled
-                            && matches!(
-                                provider.provider_type.as_str(),
-                                "ldap" | "active-directory"
-                            )
+                            && DIRECTORY_PROVIDER_TYPES.contains(&provider.provider_type.as_str())
                             && provider.connection.url.starts_with("ldaps://")
                             && provider.connection.bind_dn.is_some()
                             && provider.connection.bind_password.is_some()

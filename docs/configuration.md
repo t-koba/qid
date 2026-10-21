@@ -259,7 +259,9 @@ rejected when the configuration loads unless it is between 1 and 10,000,000.
 The pages a search may fetch follow from the ceiling and the requested page
 size, so a directory that keeps handing back a paging cookie fails the sync
 with the bound in the error instead of running forever. Without `page_size` the
-search is one request, so it returns what that request returned.
+search is one request, so it returns what that request returned; the entry
+ceiling still applies to it, so a directory that answers with more entries
+than the ceiling allows fails the sync rather than filling the memory.
 
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 

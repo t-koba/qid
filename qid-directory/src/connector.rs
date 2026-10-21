@@ -603,17 +603,14 @@ impl PagedSearch {
         self.pages += 1;
         if self.pages > self.max_pages {
             return Err(QidError::Internal {
-                message: format!(
-                    "LDAP paged search fetched more than {} pages",
-                    self.max_pages
-                ),
+                message: format!("LDAP search fetched more than {} pages", self.max_pages),
             });
         }
         self.entries += entries;
         if self.entries > self.max_entries {
             return Err(QidError::Internal {
                 message: format!(
-                    "LDAP paged search returned more than {} entries",
+                    "LDAP search returned more than {} entries",
                     self.max_entries
                 ),
             });

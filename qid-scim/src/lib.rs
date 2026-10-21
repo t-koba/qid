@@ -1,7 +1,7 @@
 //! SCIM 2.0 server endpoints.
 #![forbid(unsafe_code)]
 
-mod filter;
+pub mod filter;
 #[cfg(test)]
 mod filter_tests;
 mod inbound;

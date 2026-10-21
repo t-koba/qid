@@ -935,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn ldap_search_entrypoints_reject_unsupported_enabled_expression_before_connecting() {
+    fn the_ldap_search_rejects_an_unsupported_enabled_expression_before_connecting() {
         let mapping = DirectoryAttributeMapping {
             enabled: Some("(userAccountControl:1.2.840.113556.1.4.803:=2)".to_string()),
             ..Default::default()

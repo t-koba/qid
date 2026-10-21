@@ -3,13 +3,13 @@
 use qid_core::error::{QidError, QidResult};
 
 #[derive(Debug)]
-pub(crate) struct EqFilter<'a> {
-    pub(crate) attribute: &'a str,
-    pub(crate) value: EqFilterValue,
+pub struct EqFilter<'a> {
+    pub attribute: &'a str,
+    pub value: EqFilterValue,
 }
 
 #[derive(Debug)]
-pub(crate) enum EqFilterValue {
+pub enum EqFilterValue {
     String(String),
     Bool(bool),
 }
@@ -19,7 +19,7 @@ const ENTERPRISE_USER_SCHEMA_FILTER_PREFIX: &str =
 
 const MAX_FILTER_LENGTH: usize = 2048;
 
-pub(crate) fn parse_eq_filter<'a>(
+pub fn parse_eq_filter<'a>(
     filter: &'a str,
     allowed_attributes: &[&str],
 ) -> QidResult<EqFilter<'a>> {

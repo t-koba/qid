@@ -16,6 +16,7 @@ qid-core = { path = "../qid-core" }
 qid-network = { path = "../qid-network" }
 qid-policy = { path = "../qid-policy" }
 qid-saml = { path = "../qid-saml" }
+qid-scim = { path = "../qid-scim" }
 serde_json = "1"
 
 [[bin]]

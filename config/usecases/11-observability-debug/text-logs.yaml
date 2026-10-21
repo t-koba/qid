@@ -3,7 +3,7 @@ profile: oidc
 storage:
   primary:
     type: file
-    url: "config/usecases/data/runtime/11-observability-debug/otlp-tracing.json"
+    url: "config/usecases/data/runtime/11-observability-debug/text-logs.json"
 
 crypto:
   default_alg: ES256
@@ -23,28 +23,21 @@ server:
 
 observability:
   logs:
-    format: json
-    redact_pii: true
+    format: text
   metrics:
     listen: "127.0.0.1:9464"
-  tracing:
-    otlp_endpoint_env: QID_OTLP_ENDPOINT
-  audit:
-    sink:
-      type: file
-      path: "/var/log/qid/audit.jsonl"
 
 realms:
   - id: corp
     issuer: "https://id.example.com/realms/corp"
-    display_name: "Traced Realm"
+    display_name: "Text Log Realm"
     clients:
-      - client_id: "corp-web"
+      - client_id: "text-logs-client"
         client_type: confidential
         token_endpoint_auth_method: client_secret_basic
-        client_secret: "change-me-corp-web-secret"
+        client_secret: "change-me-text-logs-client-secret"
         redirect_uris:
-          - "https://app.example.com/callback"
+          - "https://text-logs.example.com/callback"
         grant_types:
           - authorization_code
     policy:

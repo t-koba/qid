@@ -174,13 +174,15 @@ fn log_and_reject_diagnostic_checks(checks: &[CheckItem], phase: &str) -> anyhow
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    qid_observability::init_logging(true);
-
     let primary_config_path = args
         .config
         .last()
         .context("at least one config path is required")?;
     let config = QidConfig::from_files(&args.config).context("failed to load config")?;
+
+    // The configured format decides how the daemon writes its logs, so logging
+    // starts once the configuration is known.
+    qid_observability::init_logging(config.observability.logs.json());
     let plan = qid_core::plan::RuntimePlan::from_config(&config)
         .context("runtime plan validation failed")?;
     let diagnostics = build_check_report(&config, &plan, primary_config_path);

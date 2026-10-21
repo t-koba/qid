@@ -108,13 +108,12 @@ When a PEP cannot reach qid, cannot authenticate, receives an invalid response, 
 
 ## Metrics and Logs
 
-`qid_observability::init_logging(true)` initializes JSON-friendly logging. Configure:
+The daemon writes its logs in the format the configuration selects, `json` by default. It does not redact personally identifiable information from them. Configure:
 
 ```yaml
 observability:
   logs:
     format: json
-    redact_pii: true
   metrics:
     listen: "127.0.0.1:9464"
 ```

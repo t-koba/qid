@@ -522,17 +522,6 @@ pub struct ObservabilityConfig {
     pub logs: LogConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
-    #[serde(default)]
-    pub tracing: TracingConfig,
-    #[serde(default)]
-    pub audit: AuditConfig,
-}
-
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct TracingConfig {
-    #[serde(default)]
-    pub otlp_endpoint_env: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -540,16 +529,21 @@ pub struct TracingConfig {
 pub struct LogConfig {
     #[serde(default = "default_log_format")]
     pub format: String,
-    #[serde(default = "default_false")]
-    pub redact_pii: bool,
 }
 
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
             format: default_log_format(),
-            redact_pii: default_false(),
         }
+    }
+}
+
+impl LogConfig {
+    /// Whether the daemon writes JSON logs. The format is validated when the
+    /// configuration is loaded, so only `json` and `text` reach this point.
+    pub fn json(&self) -> bool {
+        self.format == "json"
     }
 }
 
@@ -574,21 +568,4 @@ impl Default for MetricsConfig {
 
 fn default_metrics_listen() -> String {
     "127.0.0.1:9464".to_string()
-}
-
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct AuditConfig {
-    #[serde(default)]
-    pub sink: Option<AuditSinkConfig>,
-    #[serde(default)]
-    pub include: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct AuditSinkConfig {
-    pub r#type: String,
-    #[serde(default)]
-    pub path: Option<String>,
 }

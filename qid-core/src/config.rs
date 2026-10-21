@@ -143,6 +143,7 @@ impl QidConfig {
         self.profile.validate_config(self)?;
         validate_directory_providers(self)?;
         validate_metrics_listen(&self.observability)?;
+        validate_observability_log_format(&self.observability)?;
 
         Ok(())
     }
@@ -1601,6 +1602,18 @@ fn validate_scim_event_callback_allowed_host(host: &str, realm_id: &str) -> QidR
         });
     }
     Ok(())
+}
+
+/// Validate the log format: the daemon writes either JSON or plain text logs.
+fn validate_observability_log_format(obs: &ObservabilityConfig) -> QidResult<()> {
+    match obs.logs.format.as_str() {
+        "json" | "text" => Ok(()),
+        other => Err(QidError::Config {
+            message: format!(
+                "observability.logs.format {other} is not a supported log format; use json or text"
+            ),
+        }),
+    }
 }
 
 /// Validate metrics listen address: must be loopback or explicitly allowlisted.

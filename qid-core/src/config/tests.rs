@@ -1576,3 +1576,59 @@ fn a_directory_page_size_must_be_within_the_supported_range() {
         .validate()
         .expect("a page size within the range is accepted");
 }
+
+#[test]
+fn the_log_format_selects_the_daemon_log_shape() {
+    // The daemon writes the logs the configuration asks for: `json` writes
+    // structured logs, `text` writes plain ones, and any other value is a
+    // load-time error naming the key.
+    let mut config = minimal_config();
+    config.observability.logs.format = "text".to_string();
+    config.validate().expect("the text format is accepted");
+    assert!(!config.observability.logs.json());
+
+    config.observability.logs.format = "json".to_string();
+    config.validate().expect("the json format is accepted");
+    assert!(config.observability.logs.json());
+
+    config.observability.logs.format = "xml".to_string();
+    let err = config
+        .validate()
+        .expect_err("an unsupported log format is rejected");
+    assert!(
+        err.message().contains("observability.logs.format"),
+        "the error names the key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_observability_keys_are_rejected() {
+    // `redact_pii` named a redaction the product never performed, the OTLP
+    // endpoint named an environment variable nothing read, and the audit sink
+    // named a file the product never wrote. A configuration that still sets
+    // them is a configuration error, not a silently ignored key.
+    let err = serde_json::from_str::<ObservabilityConfig>(r#"{"logs":{"redact_pii":true}}"#)
+        .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("redact_pii"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<ObservabilityConfig>(
+        r#"{"tracing":{"otlp_endpoint_env":"QID_OTLP_ENDPOINT"}}"#,
+    )
+    .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("tracing"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<ObservabilityConfig>(
+        r#"{"audit":{"sink":{"type":"file","path":"/var/log/qid/audit.jsonl"}}}"#,
+    )
+    .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("audit"),
+        "the error names the removed key: {err}"
+    );
+}

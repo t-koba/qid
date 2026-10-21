@@ -37,7 +37,7 @@ cargo run --bin qidc -- --config base.yaml --config prod.yaml plan
 | `storage` | no | Primary repository and cache settings. |
 | `crypto` | no | Default signing algorithm and keyrings. |
 | `realms` | yes | Realm definitions. At least one realm is required. |
-| `observability` | no | Logs, metrics, tracing, audit sink. |
+| `observability` | no | Log format and metrics listener. |
 | `ops` | no | Ops cache, cluster, backup, emergency read-only mode. |
 
 ## Profiles
@@ -337,11 +337,13 @@ request.
 
 ## Observability
 
-`observability.logs.format` defaults to `json`; `redact_pii` can be enabled.
+`observability.logs.format` selects how the daemon writes its logs: `json` (the default) or `text`. Any other value is a configuration error naming the key.
 
 `observability.metrics.listen` defaults to `127.0.0.1:9464`. It must be a valid socket address and cannot bind to all interfaces.
 
-`observability.audit.sink` can point to a file sink.
+These two settings are the whole observability block. The daemon does not export traces to an OpenTelemetry collector.
+
+Audit events are not configured here. They are stored in the audit store of the configured primary repository, scoped to their realm and chained by hash, and the admin API exports them as JSONL.
 
 Metrics should stay low-cardinality. User IDs, email addresses, raw host/path values, tokens, and selected header values do not belong in labels.
 

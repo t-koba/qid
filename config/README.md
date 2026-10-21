@@ -126,10 +126,9 @@ smallest interoperable OIDC authorization-code deployment, then move to
 
 ### 11-observability-debug
 
-- `json-audit-file.yaml`: JSON logs and file audit sink.
-- `otlp-tracing.yaml`: OTLP tracing endpoint from environment.
+- `json-logs.yaml`: JSON logs with an explicit metrics listener.
+- `text-logs.yaml`: plain-text logs with an explicit metrics listener.
 - `metrics-loopback.yaml`: explicit loopback metrics listener.
-- `pii-redaction.yaml`: PII-redacted logs with audit field inclusion.
 
 ### 12-composition
 

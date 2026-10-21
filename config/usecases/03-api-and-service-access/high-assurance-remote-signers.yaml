@@ -195,16 +195,5 @@ realms:
 observability:
   logs:
     format: json
-    redact_pii: true
   metrics:
     listen: "127.0.0.1:9464"
-  audit:
-    sink:
-      type: file
-      path: "/var/log/qid/high-assurance-audit.jsonl"
-    include:
-      - subject
-      - client_id
-      - acr
-      - amr
-      - policy_decision

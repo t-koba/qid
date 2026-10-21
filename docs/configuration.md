@@ -234,14 +234,15 @@ A provider's `type` must be `ldap` or `active-directory`; another type is reject
 configuration loads. The URL scheme and the credential rules below are checked for an enabled
 provider of a realm whose directory sync is on: a provider that is disabled, or a realm whose
 directory sync is off, is not checked for them. Every provider, enabled or not, still needs a
-unique id and a URL. A bind DN that carries a control character is rejected when the
-configuration loads.
+unique id and a URL. A bind DN that carries a control character is rejected with the
+credential rules.
 
 An enabled provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
 bind DN must be absent and the bind password blank. A bind DN without a usable password is
 an unauthenticated bind that RFC 4513 answers with success, and a password without a bind DN
 would leave the search anonymous, so a provider with only one of them is rejected when the
-configuration loads. A disabled provider is not checked, because no sync reads it.
+configuration loads. A disabled provider is not checked for credentials, because no sync
+reads it.
 
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 

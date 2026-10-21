@@ -2649,3 +2649,40 @@ fn an_unusable_paged_results_control_is_an_error_and_not_a_panic() {
         "an unusable control must not reach the panic hook"
     );
 }
+
+#[test]
+fn concurrent_paging_control_parses_leave_the_panic_hook_installed() {
+    use ldap3::controls::{Control, ControlType, RawControl};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // The panic hook is process-wide: two callers must not leave the silent
+    // hook installed for the rest of the process.
+    static PANIC_SEEN: AtomicBool = AtomicBool::new(false);
+    std::panic::set_hook(Box::new(|_| {
+        PANIC_SEEN.store(true, Ordering::SeqCst);
+    }));
+
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            std::thread::spawn(|| {
+                let raw = RawControl {
+                    ctype: "1.2.840.113556.1.4.319".to_string(),
+                    crit: false,
+                    val: Some(vec![0x30, 0x00]),
+                };
+                let ctrls = vec![Control(Some(ControlType::PagedResults), raw)];
+                let _ = crate::connector::paged_results_cookie(&ctrls);
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("the parse thread finishes");
+    }
+
+    PANIC_SEEN.store(false, Ordering::SeqCst);
+    let _ = std::panic::catch_unwind(|| panic!("the test panic"));
+    assert!(
+        PANIC_SEEN.load(Ordering::SeqCst),
+        "the panic hook must be restored after concurrent parses"
+    );
+}

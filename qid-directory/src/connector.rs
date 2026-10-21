@@ -934,7 +934,11 @@ pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidRes
         });
     }
     // The remaining parse is contained, and the panic hook is silenced while it
-    // runs, so an unusable control produces an error and no panic output.
+    // runs, so an unusable control produces an error and no panic output. The
+    // hook is process-wide, so the swap is serialized: a second caller must
+    // not restore the silent hook.
+    static PANIC_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = PANIC_HOOK.lock().unwrap_or_else(|error| error.into_inner());
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let parsed = std::panic::catch_unwind(|| raw.parse::<PagedResults>());

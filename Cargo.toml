@@ -35,7 +35,7 @@ members = [
     "xtask",
 ]
 resolver = "3"
-exclude = ["vendor/ldap3", "vendor/rustls"]
+exclude = ["vendor/rustls"]
 
 # Product-source line limits; test code is reported separately and is not capped.
 # Inline #[cfg(test)] modules in mixed source files remain in source counts.
@@ -182,5 +182,4 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [patch.crates-io]
-ldap3 = { path = "vendor/ldap3" }
 rustls = { path = "vendor/rustls" }

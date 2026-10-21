@@ -24,6 +24,11 @@ fn message(id: u8, op: Vec<u8>) -> Vec<u8> {
     ber(0x30, &[vec![0x02, 0x01, id], op].concat())
 }
 
+/// An LDAP message with the response controls beside the operation.
+fn message_with_controls(id: u8, op: Vec<u8>, controls: Vec<u8>) -> Vec<u8> {
+    ber(0x30, &[vec![0x02, 0x01, id], op, controls].concat())
+}
+
 /// Read one LDAP message and return its id, operation tag and operation.
 async fn read_message(socket: &mut TcpStream) -> (u8, u8, Vec<u8>) {
     assert_eq!(socket.read_u8().await.unwrap(), 0x30);
@@ -130,28 +135,30 @@ fn search_entry(dn: &str, uid: &str) -> Vec<u8> {
     ber(0x64, &[ber(0x04, dn.as_bytes()), attrs].concat())
 }
 
-/// A search result done message, with the paging cookie the server sends.
+/// A search result done message.
+fn search_done() -> Vec<u8> {
+    ber(0x65, &[0x0a, 1, 0, 4, 0, 4, 0])
+}
+
+/// The PagedResults response control with the paging cookie.
 ///
-/// The cookie travels in the PagedResults response control, and RFC 4511
-/// puts the response controls inside the LDAPResult.
-fn search_done(cookie: &[u8]) -> Vec<u8> {
-    let mut body = vec![0x0a, 1, 0, 4, 0, 4, 0];
-    {
-        let value = ber(0x30, &[ber(0x02, &[0x00]), ber(0x04, cookie)].concat());
-        let control = ber(
-            0x30,
-            &[ber(0x04, b"1.2.840.113556.1.4.319"), ber(0x04, &value)].concat(),
-        );
-        body.extend(ber(0xa0, &control));
-    }
-    ber(0x65, &body)
+/// RFC 4511 attaches the response controls to the LDAPMessage, so the
+/// control travels beside the operation rather than inside it.
+fn paged_results_control(cookie: &[u8]) -> Vec<u8> {
+    let value = ber(0x30, &[ber(0x02, &[0x00]), ber(0x04, cookie)].concat());
+    let control = ber(
+        0x30,
+        &[ber(0x04, b"1.2.840.113556.1.4.319"), ber(0x04, &value)].concat(),
+    );
+    ber(0xa0, &control)
 }
 
 #[tokio::test]
 async fn a_paged_search_follows_the_cookie_the_server_sent() {
     // The peer answers the first search with a paging cookie and the second
-    // with none. The search must follow the cookie and collect both pages,
-    // so a directory that holds more objects than one page returns syncs.
+    // with none, with the control in the place RFC 4511 puts the response
+    // controls. The search must follow the cookie and collect both pages, so
+    // a directory that holds more objects than one page returns syncs.
     tokio::time::timeout(DEADLINE, async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ldap://{}", listener.local_addr().unwrap());
@@ -164,7 +171,11 @@ async fn a_paged_search_follows_the_cookie_the_server_sent() {
                 .await
                 .unwrap();
             socket
-                .write_all(&message(id, search_done(&[7])))
+                .write_all(&message_with_controls(
+                    id,
+                    search_done(),
+                    paged_results_control(&[7]),
+                ))
                 .await
                 .unwrap();
             let (id, op, _) = read_message(&mut socket).await;
@@ -178,7 +189,11 @@ async fn a_paged_search_follows_the_cookie_the_server_sent() {
                 .await
                 .unwrap();
             socket
-                .write_all(&message(id, search_done(&[])))
+                .write_all(&message_with_controls(
+                    id,
+                    search_done(),
+                    paged_results_control(&[]),
+                ))
                 .await
                 .unwrap();
             // The client unbinds and closes the connection.

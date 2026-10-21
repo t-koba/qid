@@ -345,10 +345,6 @@ RFC 9966 and RFC 6961 require rustls capabilities absent from the pinned upstrea
 
 Do not introduce a native TLS backend as an implicit fallback. Any future platform-native adapter must be an explicit feature with an independently reviewed use case and must not weaken the RFC 9966, RFC 6961, certificate-path, revocation, or fail-closed guarantees.
 
-## LDAP Client Policy
-
-The LDAP client is a reviewed source fork of `ldap3` 0.12.1, wired through `[patch.crates-io]`; its provenance, patch boundary, and update procedure are recorded in `vendor/ldap3/QID-PATCHES.md`. The upstream client reads the controls of the LDAPMessage alone, so it drops the response control that RFC 4511 places in the LDAPResult - the RFC 2696 paging cookie among them - and a paged directory search cannot read the cookie the server sent. The fork reads that control and changes nothing else. The fork must pass qid's paging regression, which drives a loopback directory that answers with a conformant paging cookie, and the workspace suites before an update is accepted.
-
 ## Dependency and Quality Gates
 
 The baseline gate includes `cargo-deny` and `cargo-audit`. `deny.toml` allows common permissive licenses and currently ignores a specific advisory entry. Review advisory ignores periodically.

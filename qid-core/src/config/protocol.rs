@@ -828,7 +828,7 @@ pub struct DirectoryConnectionConfig {
     #[serde(default)]
     pub connect_timeout_seconds: Option<u64>,
     /// The page size an RFC 2696 paged search requests. A directory that does
-    /// not implement the paging control is read unpaged.
+    /// not implement the paging control fails the sync.
     #[serde(default)]
     pub page_size: Option<u32>,
     #[serde(default)]

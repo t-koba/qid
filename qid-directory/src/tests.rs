@@ -2294,14 +2294,6 @@ fn rejects_a_bind_dn_with_a_control_character() {
     assert!(crate::connector::bind_dn_for(&config).is_err());
 }
 
-#[tokio::test]
-async fn sasl_bind_fails_instead_of_falling_back_to_a_simple_bind() {
-    let err = crate::connector::ldap_sasl_scram_sha256_bind("CN=svc")
-        .await
-        .unwrap_err();
-    assert!(err.contains("not implemented"), "{err}");
-}
-
 #[test]
 fn requires_the_paged_results_control() {
     use ldap3::controls::Control;
@@ -2435,16 +2427,6 @@ fn rejects_a_paged_results_control_without_a_value() {
     let err = crate::connector::paged_results_cookie(&ctrls)
         .expect_err("a control without a value must fail closed");
     assert!(err.message().contains("unusable"), "{}", err.message());
-}
-
-#[test]
-fn a_sasl_bind_without_a_bind_dn_is_an_error() {
-    let err = crate::connector::sasl_bind_dn(None).expect_err("a SASL bind needs a bind DN");
-    assert!(err.message().contains("bind DN"), "{}", err.message());
-    assert_eq!(
-        crate::connector::sasl_bind_dn(Some("CN=svc")).unwrap(),
-        "CN=svc"
-    );
 }
 
 #[tokio::test]

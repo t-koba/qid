@@ -228,6 +228,7 @@ An LDAP or Active Directory provider's `connection` holds:
 | `bind_password` | The bind password for that DN. |
 | `base_dn` | The subtree the sync reads. |
 | `connect_timeout_seconds` | The timeout in seconds for the bind, the search and the unbind. Defaults to 10; the connect itself is not bounded by it. |
+| `page_size` | The page size an RFC 2696 paged search requests. Between 1 and 1000; a value outside that range is rejected when the configuration loads. |
 | `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
 
 The provider rules apply to a realm whose directory sync is on; a realm whose directory sync is
@@ -243,13 +244,11 @@ would leave the search anonymous, so a provider with only one of them is rejecte
 configuration loads. A disabled provider is not checked for credentials, because no sync
 reads it.
 
-A provider's connection can ask for RFC 2696 paging with `page_size`, a page
-size between 1 and 1000. The setting is a request: a directory that does not
-return the paging control is read unpaged, and a request that the directory
-cannot answer is an error rather than a silent truncation.
-`tls_insecure_skip_verify` disables the server name check as well as the
-certificate chain check for the whole connection, so it belongs only to a
-directory the operator controls.
+A provider's connection can ask for RFC 2696 paging with `page_size`. The
+setting is a requirement on the directory, not a hint: with a page size the
+search expects the PagedResults control on every page, so a directory that does
+not implement RFC 2696 paging must be read without a page size. A directory
+that ignores the request fails the sync rather than returning a partial result.
 
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 

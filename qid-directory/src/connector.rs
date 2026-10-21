@@ -155,15 +155,12 @@ impl DirectoryConnector for LdapDirectoryConnector {
     }
 }
 
-/// The search options a provider connection asks for. The page size is the
-/// operator's request: a directory that does not implement RFC 2696 paging is
-/// read unpaged.
+/// The search options a provider connection asks for. The page size is a
+/// requirement on the directory: with a page size the search expects the
+/// PagedResults control on every page.
 fn search_options(config: &DirectoryConnectionConfig) -> LdapSearchOptions {
     LdapSearchOptions {
         page_size: config.page_size,
-        // SASL is not a configuration option until the SCRAM mechanism
-        // exists, because a requested SASL bind could only fail.
-        use_sasl: false,
         tls_insecure: config.tls_insecure_skip_verify,
         timeout_secs: config.connect_timeout_seconds.unwrap_or(10),
     }
@@ -177,13 +174,10 @@ fn sanitize_admin_search_filter(filter: &str) -> QidResult<String> {
 
 pub struct LdapSearchOptions {
     /// Requested RFC 2696 page size. A directory that does not implement
-    /// RFC 2696 paging must be read without a page size: the search then
-    /// expects no PagedResults control and returns the whole result set.
+    /// RFC 2696 paging must be read without a page size: with a page size the
+    /// search expects the PagedResults control on every page and fails when
+    /// the directory does not return it.
     pub page_size: Option<u32>,
-    /// Request a SASL SCRAM-SHA-256 bind. The mechanism is not implemented
-    /// yet, so a requested SASL bind fails instead of falling back to a
-    /// simple bind.
-    pub use_sasl: bool,
     /// Skip the TLS certificate verification. ldap3's flag disables the server
     /// name check as well as the chain check, so it covers the whole connection.
     pub tls_insecure: bool,
@@ -194,7 +188,6 @@ impl Default for LdapSearchOptions {
     fn default() -> Self {
         Self {
             page_size: None,
-            use_sasl: false,
             tls_insecure: false,
             timeout_secs: 10,
         }
@@ -812,16 +805,7 @@ pub fn run_ldap_search_with_options(
     shared_runtime().block_on(async {
         with_ldap_session(settings, &url, options.timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(options.timeout_secs);
-            if options.use_sasl {
-                let dn = sasl_bind_dn(bind_dn.as_deref())?;
-                ldap.with_timeout(operation_timeout);
-                ldap_sasl_scram_sha256_bind(dn).await.map_err(|e| {
-                    qid_core::error::QidError::Internal {
-                        message: format!("LDAP SASL SCRAM-SHA-256 bind failed: {e}"),
-                    }
-                })?;
-            } else if let Some((dn, pw)) = bind_credentials(bind_dn.as_deref(), bind_pw.as_deref())?
-            {
+            if let Some((dn, pw)) = bind_credentials(bind_dn.as_deref(), bind_pw.as_deref())? {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
 
@@ -860,17 +844,6 @@ pub fn run_ldap_search_with_options(
         })
         .await
     })
-}
-
-/// The bind DN a requested SASL bind must use. A SASL bind without one is an
-/// error: falling through would run an anonymous search and report success.
-pub(crate) fn sasl_bind_dn(bind_dn: Option<&str>) -> QidResult<&str> {
-    bind_dn
-        .map(str::trim)
-        .filter(|dn| !dn.is_empty())
-        .ok_or_else(|| QidError::Config {
-            message: "LDAP SASL bind requested without a configured bind DN".to_string(),
-        })
 }
 
 /// The cookie of the next page, taken from the PagedResults control the
@@ -920,14 +893,6 @@ pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidRes
         });
     };
     Ok(pr.cookie)
-}
-
-/// SASL SCRAM-SHA-256 bind. The `ldap3` 0.12.x crate does not ship a
-/// SCRAM-SHA-256 implementation, so this fails explicitly: substituting a
-/// simple bind would authenticate with a different mechanism than the
-/// operator asked for.
-pub async fn ldap_sasl_scram_sha256_bind(_username: &str) -> Result<(), String> {
-    Err("SASL SCRAM-SHA-256 bind is not implemented".to_string())
 }
 
 #[cfg(test)]
@@ -1310,7 +1275,6 @@ mod tests {
     fn ldap_search_options_default() {
         let opts = LdapSearchOptions::default();
         assert_eq!(opts.page_size, None);
-        assert!(!opts.use_sasl);
     }
 
     #[test]

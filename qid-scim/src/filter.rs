@@ -5,12 +5,12 @@ use qid_core::error::{QidError, QidResult};
 #[derive(Debug)]
 pub(crate) struct EqFilter<'a> {
     pub(crate) attribute: &'a str,
-    pub(crate) value: EqFilterValue<'a>,
+    pub(crate) value: EqFilterValue,
 }
 
 #[derive(Debug)]
-pub(crate) enum EqFilterValue<'a> {
-    String(&'a str),
+pub(crate) enum EqFilterValue {
+    String(String),
     Bool(bool),
 }
 
@@ -77,9 +77,9 @@ fn without_quoted_values(filter: &str) -> String {
     out
 }
 
-pub(crate) fn parse_eq_filter_value(value: &str) -> QidResult<EqFilterValue<'_>> {
+pub(crate) fn parse_eq_filter_value(value: &str) -> QidResult<EqFilterValue> {
     if let Some(value) = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        return Ok(EqFilterValue::String(value));
+        return Ok(EqFilterValue::String(unescape_filter_value(value)?));
     }
     match value {
         "true" => Ok(EqFilterValue::Bool(true)),
@@ -90,11 +90,19 @@ pub(crate) fn parse_eq_filter_value(value: &str) -> QidResult<EqFilterValue<'_>>
     }
 }
 
-pub(crate) fn string_filter_matches(filter: &EqFilterValue<'_>, value: &str) -> bool {
+/// The value of a quoted filter value, with its JSON escapes decoded, so a
+/// value that carries a quote matches the stored value.
+fn unescape_filter_value(value: &str) -> QidResult<String> {
+    serde_json::from_str(&format!("\"{value}\"")).map_err(|e| QidError::BadRequest {
+        message: format!("SCIM filter value is not a valid quoted string: {e}"),
+    })
+}
+
+pub(crate) fn string_filter_matches(filter: &EqFilterValue, value: &str) -> bool {
     matches!(filter, EqFilterValue::String(expected) if *expected == value)
 }
 
-pub(crate) fn bool_filter_matches(filter: &EqFilterValue<'_>, value: bool) -> bool {
+pub(crate) fn bool_filter_matches(filter: &EqFilterValue, value: bool) -> bool {
     matches!(filter, EqFilterValue::Bool(expected) if *expected == value)
 }
 

@@ -11,5 +11,4 @@ fn the_connection_page_size_reaches_the_search_options() {
     config.page_size = Some(500);
     let options = search_options(&config);
     assert_eq!(options.page_size, Some(500));
-    assert!(!options.use_sasl, "SASL is not a configuration option");
 }

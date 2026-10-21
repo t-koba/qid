@@ -1767,3 +1767,25 @@ async fn a_json_array_body_is_rejected_and_no_user_is_created() {
         .expect("the users of the realm are listed");
     assert!(users.is_empty(), "no user may be created: {users:?}");
 }
+
+#[tokio::test]
+async fn a_json_array_body_is_rejected_on_a_non_identity_admin_route() {
+    let (app, _state) = setup().await;
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/realm-1/service-accounts",
+            r#"["chosen-id"]"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must be a JSON object"),
+        "unexpected body: {body}"
+    );
+}

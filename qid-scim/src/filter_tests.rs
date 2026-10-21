@@ -38,3 +38,10 @@ fn a_filter_over_the_length_cap_is_rejected() {
         parse_eq_filter(&filter, &["displayName"]).expect_err("an over-long filter is rejected");
     assert!(error.message().contains("maximum length"));
 }
+
+#[test]
+fn a_quoted_value_decodes_its_escapes() {
+    let filter = parse_eq_filter("displayName eq \"a \\\" b\"", &["displayName"])
+        .expect("a quoted value is accepted");
+    assert!(string_filter_matches(&filter.value, "a \" b"));
+}

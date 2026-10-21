@@ -821,6 +821,12 @@ pub struct DirectoryConnectionConfig {
 /// search round's work and memory finite.
 pub const MAX_DIRECTORY_PAGE_SIZE: u32 = 1000;
 
+/// The most entries one directory search may collect. The bound keeps a
+/// search's memory finite and is above the number of objects the supported
+/// directory servers are documented to hold, so an ordinary large
+/// directory still syncs.
+pub const MAX_DIRECTORY_SEARCH_ENTRIES: u32 = 1_000_000;
+
 /// The bind credentials a directory search uses, if any.
 pub fn bind_credentials<'a>(
     bind_dn: Option<&'a str>,

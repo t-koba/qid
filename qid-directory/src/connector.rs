@@ -5,7 +5,7 @@
 //! entries into the canonical [`LdapDirectoryEntry`] used by qid's sync engine.
 
 use async_trait::async_trait;
-use qid_core::config::{bind_credentials, valid_bind_dn};
+use qid_core::config::{MAX_DIRECTORY_SEARCH_ENTRIES, bind_credentials, valid_bind_dn};
 use qid_core::{
     config::{DirectoryAttributeMapping, DirectoryConnectionConfig, DirectorySyncConfig},
     error::{QidError, QidResult},
@@ -165,11 +165,6 @@ fn search_options(config: &DirectoryConnectionConfig) -> LdapSearchOptions {
         timeout_secs: config.connect_timeout_seconds.unwrap_or(10),
     }
 }
-
-/// The most pages one paged search may fetch and the most entries it may
-/// collect, so a directory that repeats a paging cookie cannot loop forever.
-const MAX_PAGED_SEARCH_PAGES: usize = 1_000;
-const MAX_PAGED_SEARCH_ENTRIES: usize = 100_000;
 
 /// Parse and re-serialize an LDAP filter with proper value escaping.
 /// Delegates to the RFC 4515 parser in `ldap_filter`.
@@ -490,7 +485,7 @@ pub fn run_ldap_search_with_options(
             let page_size = options.page_size.unwrap_or(0);
             let mut all_entries = Vec::new();
             let mut cookie = Vec::new();
-            let mut pages = 0usize;
+            let mut progress = PagedSearch::new(page_size as usize);
 
             loop {
                 if page_size > 0 {
@@ -511,23 +506,11 @@ pub fn run_ldap_search_with_options(
                 if page_size > 0 {
                     cookie = paged_results_cookie(&res.ctrls)?;
                 }
+                // The bound is checked before the entries are mapped, so a
+                // search that outgrows it fails without doing the work.
+                progress.record_page(entries.len())?;
                 for entry in entries {
                     all_entries.push(map_ldap_search_entry(entry, mapping)?);
-                }
-                pages += 1;
-                if pages > MAX_PAGED_SEARCH_PAGES {
-                    return Err(QidError::Internal {
-                        message: format!(
-                            "LDAP paged search fetched more than {MAX_PAGED_SEARCH_PAGES} pages"
-                        ),
-                    });
-                }
-                if all_entries.len() > MAX_PAGED_SEARCH_ENTRIES {
-                    return Err(QidError::Internal {
-                        message: format!(
-                            "LDAP paged search returned more than {MAX_PAGED_SEARCH_ENTRIES} entries"
-                        ),
-                    });
                 }
                 if page_size == 0 || cookie.is_empty() {
                     break;
@@ -538,6 +521,67 @@ pub fn run_ldap_search_with_options(
         })
         .await
     })
+}
+
+/// The progress of one directory search, against the bounds it must
+/// respect.
+///
+/// The entry ceiling is the product's guarantee: a search collects at most
+/// [`MAX_DIRECTORY_SEARCH_ENTRIES`] entries, which is above the size of the
+/// directories the supported servers are documented to hold. The pages a
+/// search may fetch follow from the entry ceiling and the requested page
+/// size, so a directory that keeps handing back a paging cookie fails the
+/// sync with a clear error instead of looping forever, and a small page
+/// size does not shrink what a directory may hold.
+struct PagedSearch {
+    pages: usize,
+    entries: usize,
+    max_pages: usize,
+    max_entries: usize,
+}
+
+impl PagedSearch {
+    /// The bounds for a search that requests `page_size` entries per page.
+    fn new(page_size: usize) -> Self {
+        let max_entries = MAX_DIRECTORY_SEARCH_ENTRIES as usize;
+        // A search without paging fetches one page, so the page bound is
+        // one; a paged search may fetch the pages the entry ceiling allows
+        // at the requested page size.
+        let max_pages = if page_size == 0 {
+            1
+        } else {
+            max_entries.div_ceil(page_size)
+        };
+        Self {
+            pages: 0,
+            entries: 0,
+            max_pages,
+            max_entries,
+        }
+    }
+
+    /// Record one fetched page of `entries` entries.
+    fn record_page(&mut self, entries: usize) -> QidResult<()> {
+        self.pages += 1;
+        if self.pages > self.max_pages {
+            return Err(QidError::Internal {
+                message: format!(
+                    "LDAP paged search fetched more than {} pages",
+                    self.max_pages
+                ),
+            });
+        }
+        self.entries += entries;
+        if self.entries > self.max_entries {
+            return Err(QidError::Internal {
+                message: format!(
+                    "LDAP paged search returned more than {} entries",
+                    self.max_entries
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// The cookie of the next page, taken from the PagedResults control the

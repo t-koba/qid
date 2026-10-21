@@ -160,6 +160,9 @@ For policy bundles:
 - Write only the documented keys. A bundle with an unknown key is rejected
   by name, so a misspelled `conditions` key cannot leave an allow rule with
   no conditions and therefore matching every request.
+- Keep a synced subtree within the search ceiling of 1,000,000 entries. A
+  larger subtree fails the sync with the bound in the error rather than
+  returning a partial result.
 
 ## SCIM and Provisioning
 

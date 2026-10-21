@@ -1,4 +1,5 @@
 use super::*;
+use qid_core::config::MAX_DIRECTORY_SEARCH_ENTRIES;
 
 /// In-memory test connector that returns pre-configured entries.
 pub(super) struct TestDirectoryConnector {
@@ -41,4 +42,73 @@ fn the_connection_page_size_reaches_the_search_options() {
     config.page_size = Some(500);
     let options = search_options(&config);
     assert_eq!(options.page_size, Some(500));
+}
+
+#[test]
+fn a_search_that_keeps_returning_a_cookie_fails_instead_of_looping() {
+    // A directory that always hands back a paging cookie must not keep the
+    // sync running: the search fails with the bound in the message.
+    let mut progress = PagedSearch::new(1000);
+    let error = (|| -> QidResult<()> {
+        for _ in 0..10_000 {
+            progress.record_page(1)?;
+        }
+        Ok(())
+    })()
+    .expect_err("a search that never ends fails");
+    assert!(
+        error.message().contains("fetched more than"),
+        "the failure names the bound: {}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_search_that_collects_more_entries_than_the_ceiling_fails() {
+    // The entry ceiling is the product's guarantee, and it is above the
+    // number of objects the supported servers are documented to hold.
+    let mut progress = PagedSearch::new(1000);
+    progress
+        .record_page(MAX_DIRECTORY_SEARCH_ENTRIES as usize)
+        .expect("the ceiling itself is allowed");
+    let error = progress
+        .record_page(1)
+        .expect_err("one entry beyond the ceiling fails");
+    assert!(
+        error.message().contains("returned more than"),
+        "the failure names the bound: {}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_search_without_paging_fetches_one_page() {
+    // An unpaged search is one request, so it collects what that request
+    // returns; the page bound does not turn a large directory into a
+    // failure.
+    let mut progress = PagedSearch::new(0);
+    progress
+        .record_page(MAX_DIRECTORY_SEARCH_ENTRIES as usize)
+        .expect("a large unpaged result is allowed");
+    let error = progress
+        .record_page(1)
+        .expect_err("one page is the bound without paging");
+    assert!(
+        error.message().contains("fetched more than"),
+        "the failure names the bound: {}",
+        error.message()
+    );
+}
+
+#[test]
+fn the_page_bound_follows_the_requested_page_size() {
+    // A small page size must not shrink what a directory may hold: the
+    // pages a search may fetch follow from the entry ceiling.
+    let small = PagedSearch::new(10);
+    let large = PagedSearch::new(1000);
+    assert!(
+        small.max_pages > large.max_pages,
+        "a smaller page allows more pages"
+    );
+    assert_eq!(small.max_entries, large.max_entries);
 }

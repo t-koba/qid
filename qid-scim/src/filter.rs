@@ -77,7 +77,12 @@ fn without_quoted_values(filter: &str) -> String {
     out
 }
 
-pub(crate) fn parse_eq_filter_value(value: &str) -> QidResult<EqFilterValue> {
+/// Parse the value of an equality filter.
+///
+/// A quoted value is unquoted and its JSON escapes are decoded, so a value
+/// that carries a quote matches the stored value. The function is public so
+/// the fuzz target can feed bytes straight into the decoder.
+pub fn parse_eq_filter_value(value: &str) -> QidResult<EqFilterValue> {
     if let Some(value) = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         return Ok(EqFilterValue::String(unescape_filter_value(value)?));
     }

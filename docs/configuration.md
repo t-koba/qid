@@ -250,6 +250,14 @@ search expects the PagedResults control on every page, so a directory that does
 not implement RFC 2696 paging must be read without a page size. A directory
 that ignores the request fails the sync rather than returning a partial result.
 
+One search collects at most 1,000,000 entries. That ceiling is above the
+number of objects the supported directory servers are documented to hold, so an
+ordinary large directory still syncs. The pages a search may fetch follow from
+the ceiling and the requested page size, so a directory that keeps handing back
+a paging cookie fails the sync with the bound in the error instead of running
+forever. Without `page_size` the search is one request, so it returns what that
+request returned.
+
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 
 Example:

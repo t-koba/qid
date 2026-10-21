@@ -1364,10 +1364,10 @@ fn the_removed_directory_sync_keys_are_rejected() {
 }
 
 #[test]
-fn the_refresh_token_reuse_detection_mode_must_name_the_enforced_behaviour() {
-    // The refresh path always revokes the family of a superseded token, so a
-    // configured mode has to name that behaviour, and detection needs
-    // rotation to have a superseded token to compare against.
+fn the_refresh_token_settings_must_name_the_enforced_behaviour() {
+    // The refresh path always rotates the token on every use and always
+    // revokes the family of a superseded or concurrently redeemed token, so a
+    // configured setting may only state that behaviour.
     let mut config = minimal_config();
     config.realms[0].sessions.refresh_tokens.reuse_detection =
         Some(REFRESH_REUSE_DETECTION_REVOKE_FAMILY.to_string());
@@ -1383,15 +1383,24 @@ fn the_refresh_token_reuse_detection_mode_must_name_the_enforced_behaviour() {
         "the error names the key: {err}"
     );
 
+    // Rotation is not a setting: the product has no mode without it, so a
+    // configuration that turns it off is rejected on the key that contradicts
+    // the product, not on the reuse-detection mode the product still enforces.
+    let mut config = minimal_config();
+    config.realms[0].sessions.refresh_tokens.rotation = false;
+    let err = config.validate().expect_err("rotation cannot be disabled");
+    assert!(
+        err.message().contains("rotation"),
+        "the error names the key: {err}"
+    );
+
     let mut config = minimal_config();
     config.realms[0].sessions.refresh_tokens.reuse_detection =
         Some(REFRESH_REUSE_DETECTION_REVOKE_FAMILY.to_string());
     config.realms[0].sessions.refresh_tokens.rotation = false;
-    let err = config
-        .validate()
-        .expect_err("reuse detection without rotation is rejected");
+    let err = config.validate().expect_err("rotation cannot be disabled");
     assert!(
-        err.message().contains("reuse_detection"),
+        err.message().contains("rotation"),
         "the error names the key: {err}"
     );
 }

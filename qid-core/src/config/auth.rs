@@ -263,11 +263,20 @@ impl Default for RefreshTokenConfig {
 }
 
 impl RefreshTokenConfig {
-    /// The refresh path always detects a superseded token and revokes the
-    /// family, so a configured mode must name that behaviour and rotation
-    /// must be on, because detection compares the presented token with the
-    /// family's current one.
+    /// The refresh path always rotates the token on every use, and a
+    /// superseded or concurrently redeemed token always revokes the whole
+    /// family. A configured setting may only state that behaviour: rotation
+    /// cannot be turned off, and a reuse-detection mode must be the one the
+    /// product enforces.
     pub(crate) fn validate(&self, realm_id: &str) -> QidResult<()> {
+        if !self.rotation {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} sessions.refresh_tokens.rotation cannot be disabled: \
+                     the refresh path always rotates the token on every use"
+                ),
+            });
+        }
         let Some(mode) = self.reuse_detection.as_deref() else {
             return Ok(());
         };
@@ -276,14 +285,6 @@ impl RefreshTokenConfig {
                 message: format!(
                     "realm {realm_id} sessions.refresh_tokens.reuse_detection must be \
                      {REFRESH_REUSE_DETECTION_REVOKE_FAMILY} (got {mode})"
-                ),
-            });
-        }
-        if !self.rotation {
-            return Err(QidError::Config {
-                message: format!(
-                    "realm {realm_id} sessions.refresh_tokens.reuse_detection requires \
-                     sessions.refresh_tokens.rotation"
                 ),
             });
         }

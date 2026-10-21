@@ -1,6 +1,6 @@
 use crate::config::{
     BrowserSessionConfig, DeploymentProfile, PasskeyConfig, PepRegistrationsConfig, PolicyConfig,
-    QidConfig, RefreshTokenConfig, TokenTtlConfig,
+    QidConfig, TokenTtlConfig,
 };
 use crate::error::{QidError, QidResult};
 
@@ -58,7 +58,6 @@ pub struct RuntimeRealm {
     pub oidc_default_scope: String,
     pub pkce_required: bool,
     pub browser_session: BrowserSessionConfig,
-    pub refresh_token: RefreshTokenConfig,
     pub passkeys: PasskeyConfig,
     pub pep_registrations: PepRegistrationsConfig,
     pub policy: PolicyConfig,
@@ -82,7 +81,6 @@ impl RuntimeRealm {
             oidc_default_scope: config.protocols.oidc.default_scope.clone(),
             pkce_required: config.protocols.oidc.authorization_code.pkce_required,
             browser_session: config.sessions.browser.clone(),
-            refresh_token: config.sessions.refresh_tokens.clone(),
             passkeys: config.authentication.passkeys.clone(),
             pep_registrations: config.pep_registrations.clone(),
             policy: config.policy.clone(),

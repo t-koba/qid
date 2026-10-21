@@ -291,7 +291,7 @@ Validation rules:
 - If `passwordless_only` is true, passkeys must be enabled.
 - Otherwise, at least one of passkeys or password must be enabled.
 
-`sessions` includes browser cookie name, SameSite, idle/absolute timeout, refresh token rotation, and reuse detection. The refresh path always detects a superseded refresh token and revokes the whole token family. `refresh_tokens.reuse_detection` names that mode and accepts only `revoke_family`; it also requires `refresh_tokens.rotation` to be on, because detection compares the presented token with the family's current one. Any other mode, or reuse detection without rotation, is a configuration error.
+`sessions` includes browser cookie name, SameSite, idle/absolute timeout, refresh token rotation, and reuse detection. The refresh path always rotates the refresh token on every use, and a superseded or concurrently redeemed token always revokes the whole token family. `refresh_tokens.rotation` states that behaviour and cannot be turned off: a configuration that disables it is an error, because the product has no mode without rotation. `refresh_tokens.reuse_detection` names the mode the product enforces and accepts only `revoke_family`; any other mode is a configuration error.
 
 ## PEP Registrations and Policy
 

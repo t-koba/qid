@@ -3,7 +3,7 @@ profile: oidc
 storage:
   primary:
     type: file
-    url: "config/usecases/data/runtime/02-application-sign-in/enterprise-webauthn-attestation.json"
+    url: "config/usecases/data/runtime/02-application-sign-in/enterprise-webauthn-passkeys.json"
 
 crypto:
   default_alg: ES256
@@ -24,7 +24,7 @@ server:
 realms:
   - id: workforce
     issuer: "https://id.example.com/realms/workforce"
-    display_name: "Managed Passkey Attestation"
+    display_name: "Managed Workforce Passkeys"
     clients:
       - client_id: "workforce-portal"
         client_type: confidential
@@ -38,17 +38,9 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: true
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
         rp_name: "Managed Workforce"
-        attestation: enterprise
-      mfa:
-        allowed:
-          - passkey
-          - client_certificate
-        client_certificate:
-          enabled: true
       password:
         enabled: true
     policy:

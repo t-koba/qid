@@ -722,7 +722,6 @@ async fn test_password_credential_crud() {
         user_id: "user-pwd".to_string(),
         hash: "$argon2id$v=19$m=19456,t=2,p=1$testhash".to_string(),
         algorithm: "argon2id".to_string(),
-        pepper_ref: None,
     };
     repo.store_password_credential(&cred)
         .await
@@ -738,7 +737,6 @@ async fn test_password_credential_crud() {
         user_id: "user-pwd".to_string(),
         hash: "$argon2id$v=19$m=19456,t=2,p=1$updatedhash".to_string(),
         algorithm: "argon2id".to_string(),
-        pepper_ref: Some("kms://alias/qid-password-pepper".to_string()),
     };
     repo.store_password_credential(&updated)
         .await
@@ -749,7 +747,6 @@ async fn test_password_credential_crud() {
         .unwrap()
         .expect("updated credential not found");
     assert_eq!(fetched.hash, updated.hash);
-    assert_eq!(fetched.pepper_ref, updated.pepper_ref);
 }
 
 async fn assert_ciam_repository_round_trip(
@@ -970,7 +967,6 @@ impl CiamDeletionFixture {
                 user_id: id.into(),
                 hash: format!("hash-{id}"),
                 algorithm: "argon2id".into(),
-                pepper_ref: None,
             },
             profile: CiamProgressiveProfile {
                 id: format!("profile-{id}"),

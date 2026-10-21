@@ -1,9 +1,6 @@
 //! Multi-factor authentication primitives for qid.
 #![forbid(unsafe_code)]
 
-pub mod email_magic;
-pub mod push;
-
 use qid_core::{
     error::{QidError, QidResult},
     models::TotpCredential,
@@ -19,8 +16,6 @@ use std::collections::BTreeSet;
 pub enum MfaFactorKind {
     WebAuthn,
     Totp,
-    Push,
-    EmailMagicLink,
     RecoveryCode,
     ClientCertificate,
 }
@@ -30,8 +25,6 @@ impl MfaFactorKind {
         match self {
             Self::WebAuthn => "urn:qid:amr:webauthn",
             Self::Totp => "urn:qid:amr:totp",
-            Self::Push => "urn:qid:amr:push",
-            Self::EmailMagicLink => "urn:qid:amr:email_magic_link",
             Self::RecoveryCode => "urn:qid:amr:recovery_code",
             Self::ClientCertificate => "urn:qid:amr:client_certificate",
         }
@@ -47,12 +40,6 @@ pub struct MfaPolicy {
     pub allowed: BTreeSet<MfaFactorKind>,
     pub require_phishing_resistant_for_admin: bool,
     pub allow_recovery_code_for_step_up: bool,
-    /// Cooldown between push notification resends (seconds). Default: 30.
-    pub push_resend_cooldown_seconds: u64,
-    /// Max pending push challenges per user before fatigue blocking. Default: 5.
-    pub push_fatigue_max_pending: usize,
-    /// Window for push fatigue detection (seconds). Default: 300.
-    pub push_fatigue_window_seconds: u64,
 }
 
 impl Default for MfaPolicy {
@@ -61,14 +48,10 @@ impl Default for MfaPolicy {
             allowed: BTreeSet::from([
                 MfaFactorKind::WebAuthn,
                 MfaFactorKind::Totp,
-                MfaFactorKind::Push,
                 MfaFactorKind::RecoveryCode,
             ]),
             require_phishing_resistant_for_admin: true,
             allow_recovery_code_for_step_up: true,
-            push_resend_cooldown_seconds: 30,
-            push_fatigue_max_pending: 5,
-            push_fatigue_window_seconds: 300,
         }
     }
 }
@@ -89,21 +72,6 @@ impl MfaPolicy {
             return Err(QidError::Config {
                 message: "admin MFA policy requires at least one phishing-resistant factor"
                     .to_string(),
-            });
-        }
-        if self.push_resend_cooldown_seconds < 5 {
-            return Err(QidError::Config {
-                message: "push MFA resend cooldown must be at least 5 seconds".to_string(),
-            });
-        }
-        if self.push_fatigue_max_pending < 1 {
-            return Err(QidError::Config {
-                message: "push MFA fatigue max pending must be at least 1".to_string(),
-            });
-        }
-        if self.push_fatigue_window_seconds < 30 {
-            return Err(QidError::Config {
-                message: "push MFA fatigue window must be at least 30 seconds".to_string(),
             });
         }
         Ok(())
@@ -133,15 +101,6 @@ impl MfaPolicy {
                 .any(|factor| used.contains(factor.amr()));
         }
         true
-    }
-
-    pub fn push_config(&self) -> push::PushMfaConfig {
-        push::PushMfaConfig {
-            challenge_ttl_seconds: 120,
-            resend_cooldown_seconds: self.push_resend_cooldown_seconds,
-            fatigue_max_pending: self.push_fatigue_max_pending,
-            fatigue_window_seconds: self.push_fatigue_window_seconds,
-        }
     }
 }
 
@@ -362,9 +321,6 @@ mod tests {
             allowed: BTreeSet::from([MfaFactorKind::Totp, MfaFactorKind::RecoveryCode]),
             require_phishing_resistant_for_admin: true,
             allow_recovery_code_for_step_up: true,
-            push_resend_cooldown_seconds: 30,
-            push_fatigue_max_pending: 5,
-            push_fatigue_window_seconds: 300,
         };
         assert!(policy.validate().is_err());
 

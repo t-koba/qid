@@ -81,7 +81,7 @@ Important subkeys:
 - `http_message_signatures`: enables RFC 9421-style verification around signed back-channel routes.
 - `cors.allowed_origins`: absolute HTTP(S) origins or `*`.
 - `cors.allow_credentials`: cannot be combined with wildcard origin.
-- `paths`: configurable canonical paths for health, discovery, OAuth, session auth, WebAuthn, PEP, logout, email magic link, CAPPORT details, and related endpoints.
+- `paths`: configurable canonical paths for health, discovery, OAuth, session auth, WebAuthn, PEP, logout, CAPPORT details, and related endpoints.
 - `quic`: opt-in QUIC listener, disabled by default. When `enabled`, `bind` (default `[::]:4433`) must be a valid socket address, `certificate_path` and `private_key_path` must point at readable certificate/key material, and `max_bidi_streams` must be positive. `qidd` only serves QUIC when built with its `quic` cargo feature; otherwise enabling `server.quic` fails startup. This remains a helper-level transport: it accepts and drains bidirectional streams and makes no mdoc/OID4VP interoperability claim.
 
 Path values must start with `/`, must not be empty, and must be unique. `paths.capport_details` must additionally contain an Axum `:realm` segment and must not reuse the fixed CAPPORT bind, unbind, or lookup path.
@@ -279,9 +279,9 @@ oauth:
 
 `authentication` includes:
 
-- `passkeys.enabled`, `preferred`, `rp_id`, `rp_origin`, `rp_name`, `attestation`
-- `password.enabled`, `hash`, `pepper_ref`, lockout settings, Argon2id cost
-- `mfa.allowed`, `totp`, `sms`, `client_certificate`
+- `passkeys.enabled`, `rp_id`, `rp_origin`, `rp_name`
+- `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `argon2id`
+- `mfa.totp.enabled`
 - `passwordless_only`
 
 Validation rules:
@@ -290,6 +290,16 @@ Validation rules:
 - Authorization code requires PKCE.
 - If `passwordless_only` is true, passkeys must be enabled.
 - Otherwise, at least one of passkeys or password must be enabled.
+- A realm that disables password authentication, or that is passwordless, refuses every password login: the session API and the OIDC authorization endpoint both refuse it.
+- `password.hash` must be `argon2id`: it names the one algorithm the product creates.
+- `password.max_failed_attempts` and `password.lockout_duration_seconds` must be at least 1.
+- `password.argon2id` must be a usable cost: `time_cost` and `parallelism` at least 1, and `memory_kib` at least 8 KiB per lane.
+
+`passkeys` names the realm's WebAuthn relying party. `enabled` states whether the realm offers the factor, `rp_id` and `rp_origin` override the relying-party ID and origin the ceremony uses, and `rp_name` names the relying party to the authenticator. The ceremony always requests attestation `none` and the product verifies no attestation statement, so there is no attestation setting: `passkeys.attestation` was removed, and a configuration that still sets it is a configuration error naming the key. There is no preference setting either: the product serves the passkey and the password routes side by side and never orders one factor over another, so `passkeys.preferred` was removed, and a configuration that still sets it is a configuration error naming the key.
+
+`password` is the realm's password policy, and every setting in it has an effect. `hash` names the algorithm the product creates credentials with, so any other value is a configuration error naming the key. `max_failed_attempts` and `lockout_duration_seconds` are the limits the realm's password logins enforce: the session API and the OIDC authorization endpoint both lock the account after that many failed attempts and refuse even the correct password until the lockout expires. They are the only attempt limits a password login has - the session API adds no limit of its own, so both paths enforce the same numbers. `argon2id` is the cost the product hashes with whenever it creates a credential - a user the CLI creates, a user a seed writes, a password a reset consumes - and the cost every credential of the realm ends up carrying: a credential whose stored parameters differ from the realm's is rehashed with the realm's cost at the next successful login, so an imported credential and a credential created at an older cost both reach it; verification always honours the parameters stored in the hash. A `pepper_ref` was removed: the product has no pepper resolver, so a realm pepper could never resolve, and a configuration that still sets it is a configuration error naming the key.
+
+`mfa.totp.enabled` states whether the realm offers the TOTP factor, and every path that performs the factor honours it: a realm that does not enable TOTP refuses enrolment, confirmation and challenges on the routes and refuses the `qidc totp enroll` command, while a realm that enables it performs them. The switch is off by default, so a realm offers TOTP only when it says so. The preflight check requires TOTP or passkeys for high-risk audiences and reports the factors the realm can actually use. `mfa.sms.enabled` was removed: the product has no SMS factor, no SMS delivery adapter and no SMS route, so a configuration that still sets it is a configuration error naming the key. The factors the product can perform are TOTP and passkeys (WebAuthn). Push MFA and email magic link were removed: the product has no delivery adapter for either channel, so a challenge it created could never be completed, and their endpoints and path settings are gone - a configuration that still sets `server.paths.auth_email_magic_link_send` is a configuration error naming the key. A TOTP credential carries its own digits and period from the moment it is enrolled. A client certificate is a client authentication method (`tls_client_auth`) and a TLS trust decision (`server.tls.client_ca`); it is not a realm MFA factor, so the realm configuration has no client-certificate switch.
 
 `sessions` includes browser cookie name, SameSite, idle/absolute timeout, refresh token rotation, and reuse detection. The refresh path always rotates the refresh token on every use, and a superseded or concurrently redeemed token always revokes the whole token family. `refresh_tokens.rotation` states that behaviour and cannot be turned off: a configuration that disables it is an error, because the product has no mode without rotation. `refresh_tokens.reuse_detection` names the mode the product enforces and accepts only `revoke_family`; any other mode is a configuration error.
 
@@ -309,6 +319,8 @@ Important rules:
 - Credential-bound registration identity, audience, replay protection, and capability checks are the trusted basis.
 
 Capabilities declare the qid effects a PEP says it can accept. They do not remove the PEP's responsibility to validate and enforce its own local policy. qid should return only effects within the registration capabilities; the PEP must still reject unsupported or malformed effects fail-closed.
+
+A registration carries the audience it is identified by, the effects it accepts in `capabilities[].effect`, the lifetime of the assertions qid issues for it in `assertion.ttl_seconds`, how qid answers when it cannot decide in `decision.fail_policy`, the decision cache in `decision.cache`, and the credential the PEP authenticates with in `auth`, where `auth.active_method` names the method - only `bearer_jwt` is implemented - and `auth.replay_protection`, `auth.token_max_age_seconds` and `auth.clock_skew_seconds` bound the presented token. `auth.key_rotation` and `auth.http_message_signatures` were removed from that block: a configuration that sets either is a load-time error naming it. The endpoints are served at the server paths `server.paths.pep_decision`, `server.paths.authzen_evaluation` and `server.paths.assertion`; a registration does not name its own endpoint, and the assertion qid issues is signed with the realm's `pep_assertion` keyring and returned in the response body.
 
 Policy bundles are declared with:
 

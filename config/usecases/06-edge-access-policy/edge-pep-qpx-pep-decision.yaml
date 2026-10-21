@@ -87,11 +87,8 @@ realms:
             - effect: rate_limit_profile
             - effect: policy_tags
           assertion:
-            header: "x-qid-assertion"
             ttl_seconds: 45
-            alg: ES256
           decision:
-            endpoint: "/pep/decision/v1/evaluate"
             fail_policy: deny
             cache:
               positive_ttl_seconds: 15

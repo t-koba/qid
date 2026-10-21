@@ -7,7 +7,6 @@ members = [
     "qid-http",
     "qid-session",
     "qid-mfa",
-    "qid-webauthn",
     "qid-oidc",
     "qid-oauth",
     "qid-oauth-token-tests",
@@ -120,7 +119,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 hmac = "0.12"
 data-encoding = "2"
 hex = "0.4"
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "sqlite", "migrate", "any"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "migrate", "any"] }
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
@@ -137,7 +136,6 @@ x25519-dalek = { version = "2", features = ["reusable_secrets", "static_secrets"
 subtle = "2"
 zeroize = { version = "1", features = ["derive"] }
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
-lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
 lru = "0.18.2"
 proptest = "1.6"
 quinn = "0.11"
@@ -156,7 +154,6 @@ qid-http = { version = "0.1.0", path = "qid-http" }
 qid-observability = { version = "0.1.0", path = "qid-observability" }
 qid-mfa = { version = "0.1.0", path = "qid-mfa" }
 qid-network = { version = "0.1.0", path = "qid-network" }
-qid-webauthn = { version = "0.1.0", path = "qid-webauthn" }
 qid-oauth = { version = "0.1.0", path = "qid-oauth" }
 qid-oidc = { version = "0.1.0", path = "qid-oidc" }
 qid-policy = { version = "0.1.0", path = "qid-policy" }

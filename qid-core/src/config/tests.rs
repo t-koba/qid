@@ -36,8 +36,6 @@ fn minimal_config() -> QidConfig {
 
 fn pep_capability(effect: &str) -> PepCapabilityConfig {
     PepCapabilityConfig {
-        mode: None,
-        phase: None,
         effect: effect.to_string(),
     }
 }
@@ -230,12 +228,9 @@ fn rust_defaults_match_serde_defaults_for_nested_config() {
         serde_json::from_value::<PepDecisionConfig>(serde_json::json!({})).unwrap(),
         PepDecisionConfig::default()
     );
-    let decision: PepDecisionConfig = serde_json::from_value(serde_json::json!({
-        "endpoint": "/pep/decision/v1/evaluate",
-        "fail_policy": "deny"
-    }))
-    .unwrap();
-    assert_eq!(decision.endpoint, "/pep/decision/v1/evaluate");
+    let decision: PepDecisionConfig =
+        serde_json::from_value(serde_json::json!({ "fail_policy": "deny" })).unwrap();
+    assert_eq!(decision.fail_policy, "deny");
     assert_eq!(
         serde_json::from_value::<PepDecisionCacheConfig>(serde_json::json!({})).unwrap(),
         PepDecisionCacheConfig::default()
@@ -1410,8 +1405,11 @@ fn the_removed_mfa_keys_are_rejected() {
     // `required_for_admins` named a realm policy the product never applied:
     // administrators are tenant records whose elevation carries the
     // authentication methods, and `admin.security` owns that requirement.
-    // `allowed_certificate_attributes` named an allowlist nothing consulted:
-    // the client-certificate path matches registered fingerprints. A
+    // `allowed_certificate_attributes` named an allowlist for a factor the
+    // product cannot perform: the client-certificate factor has no route and
+    // no registry of user certificates, so the switch is gone with it. The
+    // `allowed` list was a label nothing read, and the TOTP digits and period
+    // belong to the credential rather than to the realm configuration. A
     // configuration that still sets them is a configuration error, not a
     // silently ignored key.
     let err =
@@ -1422,14 +1420,104 @@ fn the_removed_mfa_keys_are_rejected() {
         "the error names the removed key: {err}"
     );
 
+    // The whole client-certificate block is gone, so the error names the
+    // block the operator set.
     let err = serde_json::from_str::<AuthenticationConfig>(
         r#"{"mfa":{"client_certificate":{"allowed_certificate_attributes":["san_uri"]}}}"#,
     )
     .expect_err("the removed key is rejected");
     assert!(
-        err.to_string().contains("allowed_certificate_attributes"),
+        err.to_string().contains("client_certificate"),
         "the error names the removed key: {err}"
     );
+
+    let err = serde_json::from_str::<AuthenticationConfig>(
+        r#"{"mfa":{"client_certificate":{"enabled":true}}}"#,
+    )
+    .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("client_certificate"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<AuthenticationConfig>(r#"{"mfa":{"allowed":["totp"]}}"#)
+        .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("allowed"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<AuthenticationConfig>(r#"{"mfa":{"totp":{"digits":8}}}"#)
+        .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("digits"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<AuthenticationConfig>(r#"{"mfa":{"totp":{"period":60}}}"#)
+        .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("period"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_sms_mfa_switch_is_rejected() {
+    // The product has no SMS factor, no SMS delivery adapter and no SMS
+    // route, so the switch named a factor the deployment could never
+    // perform. A configuration that still sets it is a configuration error
+    // naming the key.
+    let err = serde_json::from_str::<AuthenticationConfig>(r#"{"mfa":{"sms":{"enabled":true}}}"#)
+        .expect_err("the removed switch is rejected");
+    assert!(
+        err.to_string().contains("sms"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_passkey_attestation_setting_is_rejected() {
+    // The registration ceremony requests attestation "none" and the product
+    // verifies no attestation statement, so a setting that chose an
+    // attestation policy named a capability the product does not have: any
+    // value but "none" was refused at the ceremony. A configuration that
+    // still sets it is a configuration error naming the key.
+    let err = serde_json::from_str::<AuthenticationConfig>(
+        r#"{"passkeys":{"enabled":true,"attestation":"enterprise"}}"#,
+    )
+    .expect_err("the removed setting is rejected");
+    assert!(
+        err.to_string().contains("attestation"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_passkey_preferred_setting_is_rejected() {
+    // The product offers the passkey and the password routes side by side
+    // and never orders one factor over another, so a setting that stated
+    // a preference named a behaviour the product does not have. A
+    // configuration that still sets it is a configuration error naming the
+    // key.
+    let err = serde_json::from_str::<AuthenticationConfig>(
+        r#"{"passkeys":{"enabled":true,"preferred":true}}"#,
+    )
+    .expect_err("the removed setting is rejected");
+    assert!(
+        err.to_string().contains("preferred"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_totp_switch_is_read() {
+    let enabled: AuthenticationConfig =
+        serde_json::from_str(r#"{"mfa":{"totp":{"enabled":true}}}"#).expect("the switch parses");
+    assert!(enabled.mfa.totp.enabled);
+    let disabled: AuthenticationConfig =
+        serde_json::from_str(r#"{"mfa":{"totp":{"enabled":false}}}"#).expect("the switch parses");
+    assert!(!disabled.mfa.totp.enabled);
 }
 
 #[test]
@@ -1639,5 +1727,189 @@ fn the_removed_observability_keys_are_rejected() {
     assert!(
         err.to_string().contains("audit"),
         "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_pep_registration_keys_are_rejected() {
+    // The capability mode and phase describe the enforcement point, which qid
+    // never consults; the assertion header and algorithm name a delivery and
+    // a signing choice the product does not make - the assertion is returned
+    // in the response body and signed with the realm's pep_assertion
+    // keyring; and the per-registration decision endpoint duplicates the
+    // server path that owns it. A configuration that still sets them is a
+    // configuration error, not a silently ignored key.
+    for (key, value) in [("mode", "\"enforce\""), ("phase", "\"steady\"")] {
+        let err = serde_json::from_str::<PepCapabilityConfig>(&format!(
+            r#"{{"{key}":{value},"effect":"authzen"}}"#
+        ))
+        .expect_err("the removed key is rejected");
+        assert!(
+            err.to_string().contains(key),
+            "the error names the removed key: {err}"
+        );
+    }
+
+    let err = serde_json::from_str::<ProxyAssertionConfig>(r#"{"header":"x-qid-assertion"}"#)
+        .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("header"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<ProxyAssertionConfig>(r#"{"alg":"ES256"}"#)
+        .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("alg"),
+        "the error names the removed key: {err}"
+    );
+
+    let err =
+        serde_json::from_str::<PepDecisionConfig>(r#"{"endpoint":"/pep/decision/v1/evaluate"}"#)
+            .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("endpoint"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_pep_credential_keys_are_rejected() {
+    // `key_rotation` named a rotation policy for the PEP credential that
+    // nothing applied, and the message-signature settings belonged to a
+    // method the product does not implement - `auth.active_method` accepts
+    // only `bearer_jwt` - so they were unreachable as well as unread. A
+    // configuration that still sets them is a configuration error, not a
+    // silently ignored key.
+    let err = serde_json::from_str::<PepRegistrationAuthConfig>(r#"{"key_rotation":"off"}"#)
+        .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("key_rotation"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<PepRegistrationAuthConfig>(
+        r#"{"http_message_signatures":{"content_digest_required":false}}"#,
+    )
+    .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("http_message_signatures"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_password_pepper_key_is_rejected() {
+    // The product has no pepper resolver, so a realm pepper could never
+    // resolve: the key named a capability the product does not have. It
+    // was removed, and a configuration that still sets it is a
+    // configuration error naming the key rather than a silently ignored
+    // setting.
+    let err = serde_json::from_str::<PasswordConfig>(
+        r#"{"pepper_ref":"secret://qid/retail/password-pepper"}"#,
+    )
+    .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("pepper_ref"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn a_realm_password_hash_the_product_cannot_create_is_rejected() {
+    // `hash` names the algorithm the product creates credentials with,
+    // and the product creates Argon2id only. Any other value names a
+    // capability the product does not have, so it is a configuration
+    // error naming the key.
+    let mut config = minimal_config();
+    config.realms[0].authentication.password.hash = "bcrypt".to_string();
+    let err = config
+        .validate()
+        .expect_err("the hash algorithm is rejected");
+    let message = err.message();
+    assert!(
+        message.contains("hash"),
+        "the error names the key: {message}"
+    );
+    assert!(
+        message.contains("argon2id"),
+        "the error names the accepted algorithm: {message}"
+    );
+}
+
+#[test]
+fn a_realm_password_lockout_limit_of_zero_is_rejected() {
+    // A realm that locks the account after zero failed attempts would
+    // lock every account on the first login, so the limit must be a
+    // usable number.
+    let mut config = minimal_config();
+    config.realms[0].authentication.password.max_failed_attempts = 0;
+    let err = config
+        .validate()
+        .expect_err("a zero failed-attempt limit is rejected");
+    let message = err.message();
+    assert!(
+        message.contains("max_failed_attempts"),
+        "the error names the key: {message}"
+    );
+
+    let mut config = minimal_config();
+    config.realms[0]
+        .authentication
+        .password
+        .lockout_duration_seconds = 0;
+    let err = config
+        .validate()
+        .expect_err("a zero lockout duration is rejected");
+    assert!(
+        err.message().contains("lockout_duration_seconds"),
+        "the error names the key: {}",
+        err.message()
+    );
+}
+
+#[test]
+fn a_realm_password_argon2id_cost_the_product_cannot_use_is_rejected() {
+    // The cost is the calibration the product hashes with, so a cost the
+    // Argon2id parameters cannot express must fail at load time rather
+    // than at the first password the realm creates.
+    let mut config = minimal_config();
+    config.realms[0].authentication.password.argon2id.time_cost = 0;
+    let err = config.validate().expect_err("a zero time cost is rejected");
+    assert!(
+        err.message().contains("time_cost"),
+        "the error names the key: {}",
+        err.message()
+    );
+
+    let mut config = minimal_config();
+    config.realms[0]
+        .authentication
+        .password
+        .argon2id
+        .parallelism = 0;
+    let err = config
+        .validate()
+        .expect_err("a zero parallelism is rejected");
+    assert!(
+        err.message().contains("parallelism"),
+        "the error names the key: {}",
+        err.message()
+    );
+
+    let mut config = minimal_config();
+    config.realms[0].authentication.password.argon2id.memory_kib = 8;
+    config.realms[0]
+        .authentication
+        .password
+        .argon2id
+        .parallelism = 2;
+    let err = config
+        .validate()
+        .expect_err("a memory cost below 8 KiB per lane is rejected");
+    assert!(
+        err.message().contains("memory_kib"),
+        "the error names the key: {}",
+        err.message()
     );
 }

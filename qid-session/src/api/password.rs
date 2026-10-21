@@ -8,24 +8,12 @@ use axum::{
 };
 use qid_core::web::JsonObject;
 use qid_core::{error::QidError, state::SharedState, tenant::RealmId};
-use qid_http::ratelimit::{RateLimitConfig, RateLimiter};
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
 use super::{Authenticator, PasswordAuthRequest, PasswordAuthResponse, UserResponse};
+use crate::auth::PasswordPolicy;
 use crate::browser::SessionManager;
-
-/// Global rate limiter for password authentication.
-static PASSWORD_RATE_LIMITER: std::sync::LazyLock<RateLimiter> = std::sync::LazyLock::new(|| {
-    RateLimiter::new(RateLimitConfig {
-        max_per_user: 5,
-        max_per_ip: 20,
-        max_per_asn: 50,
-        max_per_device: 10,
-        max_per_tenant: 100,
-        window_seconds: 300,
-    })
-});
 
 pub async fn password_auth<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -38,28 +26,22 @@ pub async fn password_auth<R: Repository>(
         Err(error) => return qid_http::error_response(error),
     };
 
-    if realm_config.passwordless_only {
+    if !realm_config.accepts_password_authentication() {
         return qid_http::error_response(QidError::Unauthorized {
             message: "password authentication is disabled for this realm".to_string(),
         });
     }
 
-    // Rate limiting: multi-axis (user, tenant). Do not trust forwarded IP headers here.
-    let client_ip: Option<String> = None;
-    if !PASSWORD_RATE_LIMITER.check(
-        Some(&req.email),
-        client_ip.as_deref(),
-        None, // device_id: not available at password auth stage
-        None, // asn: not available
-        Some(&realm),
-    ) {
-        metrics::counter!("qid_authn_rate_limited_total", "method" => "password").increment(1);
-        return qid_http::error_response(QidError::TooManyRequests {
-            message: "too many login attempts, please wait and try again".to_string(),
-        });
-    }
-
-    let authenticator = Authenticator::new(state.repo.clone());
+    // The realm's password policy is the only attempt limit a password
+    // login has. The authenticator locks the account after the realm's
+    // `max_failed_attempts` failures and refuses even the correct
+    // password until the lockout expires, and the OIDC authorization
+    // endpoint enforces the same numbers, so this route adds no second
+    // limit of its own.
+    let authenticator = Authenticator::new(
+        state.repo.clone(),
+        PasswordPolicy::from_config(&realm_config.password),
+    );
     metrics::counter!("qid_authn_attempts_total", "method" => "password").increment(1);
     let auth_result = match authenticator
         .authenticate_password(&RealmId(realm.clone()), &req.email, &req.password)
@@ -67,8 +49,6 @@ pub async fn password_auth<R: Repository>(
     {
         Ok(r) => {
             metrics::counter!("qid_authn_success_total", "method" => "password").increment(1);
-            // Reset rate limit on successful login
-            PASSWORD_RATE_LIMITER.reset_user(&req.email);
             r
         }
         Err(e) => {

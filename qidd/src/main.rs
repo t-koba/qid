@@ -28,7 +28,7 @@ use qid_policy::NativePolicyEngine;
 use qid_proxy::{
     capport_routes_enabled, captive_portal_routes, issue_assertion, pep_decision_routes,
 };
-use qid_session::auth_routes_with_push;
+use qid_session::auth_routes;
 use qid_storage::prelude::*;
 use qid_storage::{AnyRepository, FileFlushMode};
 use serde_json::json;
@@ -288,7 +288,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(oidc_routes::<AnyRepository>(paths))
         .merge(oauth_router)
         .merge(qid_admin::admin_routes::<AnyRepository>(paths))
-        .merge(auth_routes_with_push::<AnyRepository>(paths))
+        .merge(auth_routes::<AnyRepository>(paths))
         .merge(qid_session::totp_api::totp_routes::<AnyRepository>(paths))
         .merge(qid_directory::directory_routes::<AnyRepository>())
         .merge(qid_risk::risk_routes::<AnyRepository>())

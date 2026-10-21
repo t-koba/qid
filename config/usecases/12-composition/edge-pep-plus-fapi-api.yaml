@@ -92,13 +92,9 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: true
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
       mfa:
-        allowed:
-          - webauthn
-          - totp
         totp:
           enabled: true
     pep_registrations:
@@ -112,11 +108,8 @@ realms:
             - effect: local_response
             - effect: policy_tags
           assertion:
-            header: "x-qid-assertion"
             ttl_seconds: 45
-            alg: ES256
           decision:
-            endpoint: "/pep/decision/v1/evaluate"
             fail_policy: deny
     policy:
       default_decision: deny

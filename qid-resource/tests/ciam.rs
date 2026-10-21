@@ -3,7 +3,13 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use qid_core::{models::User, state::SharedState, tenant::RealmId, test_helpers};
+use qid_core::{
+    config::{Argon2idCostConfig, QidConfig},
+    models::{PasswordResetToken, User},
+    state::SharedState,
+    tenant::RealmId,
+    test_helpers,
+};
 use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
 use std::sync::Arc;
@@ -38,7 +44,13 @@ async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
 async fn setup_with_realms(
     extra_realms: &[&str],
 ) -> (axum::Router, Arc<SharedState<SqlRepository>>) {
-    let mut config = test_helpers::test_config();
+    setup_with_config(test_helpers::test_config(), extra_realms).await
+}
+
+async fn setup_with_config(
+    mut config: QidConfig,
+    extra_realms: &[&str],
+) -> (axum::Router, Arc<SharedState<SqlRepository>>) {
     for realm in extra_realms {
         let mut realm_config = config.realms[0].clone();
         realm_config.id = (*realm).to_string();
@@ -977,4 +989,73 @@ async fn ciam_progressive_profiles_keep_concatenation_collision_owners_independe
             assert!(profile.passwordless_migrated_at.is_some());
         }
     }
+}
+
+#[tokio::test]
+async fn ciam_password_reset_creates_the_credential_with_the_realm_argon2id_cost() {
+    // The realm states the cost the product hashes with, so the credential
+    // a reset creates carries that cost rather than a library default.
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.password.argon2id = Argon2idCostConfig {
+        memory_kib: 32768,
+        time_cost: 3,
+        parallelism: 1,
+    };
+    let (app, state) = setup_with_config(config, &[]).await;
+    let now = qid_core::util::now_seconds();
+    let token = PasswordResetToken {
+        id: "reset-cost".to_string(),
+        realm_id: "test".to_string(),
+        user_id: "user-ciam".to_string(),
+        token_hash: qid_core::util::sha256_base64url("known-valid-reset-token"),
+        device_id: Some("device-1".to_string()),
+        risk_json: serde_json::json!({"score":10}),
+        expires_at_epoch_seconds: now + 900,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: now,
+    };
+    state
+        .repo
+        .store_password_reset_token(&token)
+        .await
+        .expect("seed password reset token failed");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/test/ciam/password-reset/consume")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "token_id":"reset-cost",
+                        "token":"known-valid-reset-token",
+                        "device_id":"device-1",
+                        "new_password":"new-secure-password",
+                        "now_epoch_seconds":1800000200
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let credential = state
+        .repo
+        .get_password_credential("user-ciam")
+        .await
+        .unwrap()
+        .expect("the reset stored a credential");
+    assert!(
+        credential.hash.contains("m=32768"),
+        "the realm's memory cost applies: {}",
+        credential.hash
+    );
+    assert!(
+        credential.hash.contains("t=3"),
+        "the realm's time cost applies: {}",
+        credential.hash
+    );
 }

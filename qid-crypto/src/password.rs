@@ -5,12 +5,15 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use qid_core::models::PasswordCredential;
+use qid_core::{config::Argon2idCostConfig, models::PasswordCredential};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-pub const ARGON2ID_ALGORITHM: &str = "argon2id";
+/// The algorithm the product creates password credentials with. It is the
+/// configuration crate's constant, so the algorithm a realm may name and the
+/// algorithm the product hashes with cannot drift apart.
+pub const ARGON2ID_ALGORITHM: &str = qid_core::config::PASSWORD_HASH_ALGORITHM;
 pub const PBKDF2_SHA256_ALGORITHM: &str = "pbkdf2-sha256";
 pub const BCRYPT_ALGORITHM: &str = "bcrypt";
 pub const SCRYPT_ALGORITHM: &str = "scrypt";
@@ -55,6 +58,12 @@ impl Argon2idParams {
         }
     }
 
+    /// The cost a realm states, so every path that creates a credential
+    /// hashes with the deployment's own calibration.
+    pub fn from_cost(cost: &Argon2idCostConfig) -> Self {
+        Self::new(cost.memory_kib, cost.time_cost, cost.parallelism)
+    }
+
     fn build(&self) -> anyhow::Result<Argon2<'_>> {
         let params = Params::new(
             self.memory_kib,
@@ -64,21 +73,6 @@ impl Argon2idParams {
         )
         .map_err(|e| anyhow::anyhow!("invalid Argon2id parameters: {e}"))?;
         Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
-    }
-}
-
-/// Resolve password peppers stored outside the database.
-pub trait PasswordPepperResolver {
-    fn resolve(&self, pepper_ref: &str) -> anyhow::Result<Vec<u8>>;
-}
-
-/// Fails closed for deployments that have not wired a KMS/HSM pepper resolver.
-#[derive(Debug, Clone, Copy)]
-pub struct DenyPepperResolver;
-
-impl PasswordPepperResolver for DenyPepperResolver {
-    fn resolve(&self, pepper_ref: &str) -> anyhow::Result<Vec<u8>> {
-        anyhow::bail!("password pepper resolver is not configured for {pepper_ref}")
     }
 }
 
@@ -126,8 +120,6 @@ pub struct ImportedPasswordRecord {
     pub user_id: String,
     pub algorithm: String,
     pub hash: String,
-    #[serde(default)]
-    pub pepper_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,15 +135,7 @@ pub struct PasswordImportMigrationPlan {
 /// Hash a plaintext password using Argon2id.
 pub fn hash_password(plaintext: &str) -> anyhow::Result<String> {
     hash_password_material(
-        password_material(plaintext, None).as_slice(),
-        &Argon2idParams::default(),
-    )
-}
-
-/// Hash a plaintext password with an external pepper.
-pub fn hash_password_with_pepper(plaintext: &str, pepper: &[u8]) -> anyhow::Result<String> {
-    hash_password_material(
-        password_material(plaintext, Some(pepper)).as_slice(),
+        password_material(plaintext).as_slice(),
         &Argon2idParams::default(),
     )
 }
@@ -161,19 +145,7 @@ pub fn hash_password_with_params(
     plaintext: &str,
     params: &Argon2idParams,
 ) -> anyhow::Result<String> {
-    hash_password_material(password_material(plaintext, None).as_slice(), params)
-}
-
-/// Hash a plaintext password with both an external pepper and per-realm parameters.
-pub fn hash_password_with_pepper_and_params(
-    plaintext: &str,
-    pepper: &[u8],
-    params: &Argon2idParams,
-) -> anyhow::Result<String> {
-    hash_password_material(
-        password_material(plaintext, Some(pepper)).as_slice(),
-        params,
-    )
+    hash_password_material(password_material(plaintext).as_slice(), params)
 }
 
 fn hash_password_material(material: &[u8], params: &Argon2idParams) -> anyhow::Result<String> {
@@ -187,46 +159,85 @@ fn hash_password_material(material: &[u8], params: &Argon2idParams) -> anyhow::R
 
 /// Verify a plaintext password against an encoded Argon2id hash.
 pub fn verify_password(plaintext: &str, encoded_hash: &str) -> anyhow::Result<bool> {
-    verify_argon2id_material(password_material(plaintext, None).as_slice(), encoded_hash)
+    verify_argon2id_material(password_material(plaintext).as_slice(), encoded_hash)
 }
 
+/// The Argon2id cost an encoded hash carries, when it carries one.
+///
+/// The parameters are read from the hash itself, so a credential that was
+/// hashed at another cost is recognised as such.
+fn stored_argon2id_cost(encoded_hash: &str) -> Option<(u32, u32, u32)> {
+    let parsed = PasswordHash::new(encoded_hash).ok()?;
+    let mut memory_kib = None;
+    let mut time_cost = None;
+    let mut parallelism = None;
+    for parameter in parsed.params.as_str().split(',') {
+        let Some((name, value)) = parameter.split_once('=') else {
+            continue;
+        };
+        let Ok(value) = value.parse::<u32>() else {
+            continue;
+        };
+        match name {
+            "m" => memory_kib = Some(value),
+            "t" => time_cost = Some(value),
+            "p" => parallelism = Some(value),
+            _ => {}
+        }
+    }
+    Some((memory_kib?, time_cost?, parallelism?))
+}
+
+/// Verify a plaintext password against a stored credential.
+///
+/// The product has no external pepper: a credential is the hash alone, so a
+/// stored credential is verified with the parameters the hash carries. A
+/// credential the product cannot verify - an algorithm it does not implement,
+/// or a hash it cannot parse - is not valid. It never authenticates a caller
+/// and never surfaces as a server fault.
+///
+/// `expected_cost` is the cost the realm states. A credential that carries
+/// another cost is reported as needing a rehash, so the realm's cost reaches
+/// the credentials that already exist.
 pub fn verify_password_credential(
     plaintext: &str,
     credential: &PasswordCredential,
-    pepper_resolver: &impl PasswordPepperResolver,
     breached_passwords: Option<&BreachedPasswordSet>,
-) -> anyhow::Result<PasswordVerification> {
+    expected_cost: Option<&Argon2idParams>,
+) -> PasswordVerification {
     if breached_passwords.is_some_and(|breached| breached.contains_password(plaintext)) {
-        return Ok(PasswordVerification {
+        return PasswordVerification {
             valid: false,
             rehash_required: false,
             algorithm: credential.algorithm.clone(),
-        });
+        };
     }
-    let pepper = credential
-        .pepper_ref
-        .as_deref()
-        .map(|pepper_ref| pepper_resolver.resolve(pepper_ref))
-        .transpose()?;
-    let material = password_material(plaintext, pepper.as_deref());
+    let material = password_material(plaintext);
     let algorithm = normalize_algorithm(&credential.algorithm);
     let valid = match algorithm.as_str() {
-        ARGON2ID_ALGORITHM => verify_argon2id_material(&material, &credential.hash)?,
-        PBKDF2_SHA256_ALGORITHM => verify_pbkdf2_sha256_material(&material, &credential.hash)?,
-        LDAP_BIND_ALGORITHM => false,
-        BCRYPT_ALGORITHM | SCRYPT_ALGORITHM => {
-            anyhow::bail!(
-                "password algorithm {} requires a dedicated verifier that is not configured",
-                credential.algorithm
-            );
+        ARGON2ID_ALGORITHM => {
+            verify_argon2id_material(&material, &credential.hash).unwrap_or(false)
         }
-        _ => anyhow::bail!("unsupported password algorithm {}", credential.algorithm),
+        PBKDF2_SHA256_ALGORITHM => {
+            verify_pbkdf2_sha256_material(&material, &credential.hash).unwrap_or(false)
+        }
+        _ => false,
     };
-    Ok(PasswordVerification {
+    let rehash_required = valid
+        && (algorithm != ARGON2ID_ALGORITHM
+            || expected_cost.is_some_and(|expected| {
+                stored_argon2id_cost(&credential.hash)
+                    != Some((
+                        expected.memory_kib,
+                        expected.time_cost,
+                        expected.parallelism,
+                    ))
+            }));
+    PasswordVerification {
         valid,
-        rehash_required: valid && algorithm != ARGON2ID_ALGORITHM,
+        rehash_required,
         algorithm,
-    })
+    }
 }
 
 pub fn plan_password_import_migration(
@@ -307,11 +318,7 @@ pub fn encode_pbkdf2_sha256_hash(
     salt: &[u8],
     iterations: u32,
 ) -> anyhow::Result<String> {
-    encode_pbkdf2_sha256_material(
-        password_material(plaintext, None).as_slice(),
-        salt,
-        iterations,
-    )
+    encode_pbkdf2_sha256_material(password_material(plaintext).as_slice(), salt, iterations)
 }
 
 fn encode_pbkdf2_sha256_material(
@@ -390,13 +397,8 @@ fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
     output
 }
 
-fn password_material(plaintext: &str, pepper: Option<&[u8]>) -> Zeroizing<Vec<u8>> {
-    let mut material = plaintext.as_bytes().to_vec();
-    if let Some(pepper) = pepper {
-        material.push(0);
-        material.extend_from_slice(pepper);
-    }
-    Zeroizing::new(material)
+fn password_material(plaintext: &str) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(plaintext.as_bytes().to_vec())
 }
 
 fn normalize_algorithm(algorithm: &str) -> String {
@@ -448,20 +450,14 @@ mod tests {
             user_id: "user-1".to_string(),
             hash,
             algorithm: PBKDF2_SHA256_ALGORITHM.to_string(),
-            pepper_ref: None,
         };
 
-        let verified =
-            verify_password_credential(password, &credential, &DenyPepperResolver, None).unwrap();
+        let verified = verify_password_credential(password, &credential, None, None);
 
         assert!(verified.valid);
         assert!(verified.rehash_required);
         assert_eq!(verified.algorithm, PBKDF2_SHA256_ALGORITHM);
-        assert!(
-            !verify_password_credential("wrong", &credential, &DenyPepperResolver, None)
-                .unwrap()
-                .valid
-        );
+        assert!(!verify_password_credential("wrong", &credential, None, None).valid);
     }
 
     #[test]
@@ -471,44 +467,63 @@ mod tests {
             user_id: "user-1".to_string(),
             hash: hash_password(password).unwrap(),
             algorithm: ARGON2ID_ALGORITHM.to_string(),
-            pepper_ref: None,
         };
         let breached = BreachedPasswordSet::from_sha256_hex([sha256_hex(password.as_bytes())])
             .expect("breach set");
 
-        let verified =
-            verify_password_credential(password, &credential, &DenyPepperResolver, Some(&breached))
-                .unwrap();
+        let verified = verify_password_credential(password, &credential, Some(&breached), None);
 
         assert!(!verified.valid);
         assert!(!verified.rehash_required);
     }
 
     #[test]
-    fn peppered_password_requires_resolver_and_verifies_with_secret() {
-        struct StaticResolver;
-        impl PasswordPepperResolver for StaticResolver {
-            fn resolve(&self, pepper_ref: &str) -> anyhow::Result<Vec<u8>> {
-                assert_eq!(pepper_ref, "kms://alias/qid-password-pepper");
-                Ok(b"tenant-pepper".to_vec())
-            }
-        }
-        let password = "peppered-password";
+    fn unverifiable_credential_is_invalid_not_an_error() {
         let credential = PasswordCredential {
             user_id: "user-1".to_string(),
-            hash: hash_password_with_pepper(password, b"tenant-pepper").unwrap(),
+            hash: "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            algorithm: BCRYPT_ALGORITHM.to_string(),
+        };
+        let verified = verify_password_credential("password", &credential, None, None);
+        assert!(!verified.valid);
+        assert!(!verified.rehash_required);
+        let unknown = PasswordCredential {
+            user_id: "user-1".to_string(),
+            hash: "not-a-hash".to_string(),
+            algorithm: "unknown-algorithm".to_string(),
+        };
+        assert!(!verify_password_credential("password", &unknown, None, None).valid);
+        assert!(!verify_password_credential("wrong", &unknown, None, None).valid);
+    }
+
+    #[test]
+    fn a_credential_at_another_cost_requires_a_rehash() {
+        let password = "my-secure-password-123!";
+        let cheap = Argon2idParams::new(8, 1, 1);
+        let credential = PasswordCredential {
+            user_id: "user-1".to_string(),
+            hash: hash_password_with_params(password, &cheap).expect("hashing failed"),
             algorithm: ARGON2ID_ALGORITHM.to_string(),
-            pepper_ref: Some("kms://alias/qid-password-pepper".to_string()),
         };
 
-        assert!(
-            verify_password_credential(password, &credential, &DenyPepperResolver, None).is_err()
+        let verified = verify_password_credential(
+            password,
+            &credential,
+            None,
+            Some(&Argon2idParams::new(16, 2, 1)),
         );
-        let verified =
-            verify_password_credential(password, &credential, &StaticResolver, None).unwrap();
-
         assert!(verified.valid);
-        assert!(!verified.rehash_required);
+        assert!(
+            verified.rehash_required,
+            "a credential hashed at another cost is rehashed"
+        );
+
+        let verified = verify_password_credential(password, &credential, None, Some(&cheap));
+        assert!(verified.valid);
+        assert!(
+            !verified.rehash_required,
+            "a credential hashed at the realm's cost is kept"
+        );
     }
 
     #[test]
@@ -520,25 +535,21 @@ mod tests {
                 user_id: "argon".to_string(),
                 algorithm: ARGON2ID_ALGORITHM.to_string(),
                 hash: "$argon2id$present".to_string(),
-                pepper_ref: None,
             },
             ImportedPasswordRecord {
                 user_id: "pbkdf2".to_string(),
                 algorithm: PBKDF2_SHA256_ALGORITHM.to_string(),
                 hash: pbkdf2_hash,
-                pepper_ref: None,
             },
             ImportedPasswordRecord {
                 user_id: "bcrypt".to_string(),
                 algorithm: BCRYPT_ALGORITHM.to_string(),
                 hash: "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                pepper_ref: None,
             },
             ImportedPasswordRecord {
                 user_id: "ldap".to_string(),
                 algorithm: LDAP_BIND_ALGORITHM.to_string(),
                 hash: String::new(),
-                pepper_ref: None,
             },
         ];
 

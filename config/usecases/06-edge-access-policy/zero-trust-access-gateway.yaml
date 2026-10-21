@@ -75,11 +75,8 @@ realms:
             - effect: policy_tags
             - effect: rate_limit_profile
           assertion:
-            header: "x-qid-access-assertion"
             ttl_seconds: 30
-            alg: ES256
           decision:
-            endpoint: "/pep/decision/v1/evaluate"
             fail_policy: deny
             cache:
               positive_ttl_seconds: 10
@@ -93,12 +90,5 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: true
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
-      mfa:
-        allowed:
-          - passkey
-          - client_certificate
-        client_certificate:
-          enabled: true

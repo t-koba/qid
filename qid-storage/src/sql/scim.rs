@@ -428,13 +428,11 @@ impl SqlRepository {
             SqlDatabaseKind::Sqlite => "",
             SqlDatabaseKind::Postgres => " FOR UPDATE",
         };
-        let current = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT * FROM {table} WHERE id = $1{lock}"
-        )))
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage_to_qid_error)?;
+        let current = sqlx::query_as(&format!("SELECT * FROM {table} WHERE id = $1{lock}"))
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
         Ok((tx, current))
     }
 }
@@ -444,14 +442,11 @@ async fn delete_scim_row<'e>(
     table: &str,
     id: &str,
 ) -> QidResult<()> {
-    // Table names are internal constants; the external id stays bound.
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DELETE FROM {table} WHERE id = $1"
-    )))
-    .bind(id)
-    .execute(executor)
-    .await
-    .map_err(storage_to_qid_error)?;
+    sqlx::query(&format!("DELETE FROM {table} WHERE id = $1"))
+        .bind(id)
+        .execute(executor)
+        .await
+        .map_err(storage_to_qid_error)?;
     Ok(())
 }
 

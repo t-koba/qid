@@ -67,11 +67,8 @@ realms:
             active_method: bearer_jwt
             replay_protection: false
           assertion:
-            header: "x-qid-assertion"
             ttl_seconds: 60
-            alg: ES256
           decision:
-            endpoint: "/pep/decision/v1/evaluate"
             fail_policy: deny
     policy:
       default_decision: deny

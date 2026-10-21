@@ -11,15 +11,92 @@ use serde::Deserialize;
 use sha2::Digest;
 use url::Url;
 use webauthn::{
-    AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, COSE_EDDSA, COSE_ES256,
-    COSE_ES384, COSE_RS256, Challenge, Credential, RelyingParty,
+    AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, CHALLENGE_MAX_AGE_SECS,
+    COSE_EDDSA, COSE_ES256, COSE_ES384, COSE_RS256, Challenge, Credential, RelyingParty,
 };
 
+/// Live ceremonies a realm may hold per ceremony kind.
+///
+/// The discoverable start route needs no credential, so the ceremony state
+/// must not grow with the number of requests an unauthenticated caller
+/// makes.
+const MAX_CEREMONY_ENTRIES_PER_REALM: usize = 4096;
+
+/// A live ceremony and the time it was started.
+#[derive(Debug)]
+struct CeremonyEntry {
+    challenge: Challenge,
+    created_at: u64,
+}
+
+/// The live ceremonies of one kind, grouped by realm.
+///
+/// A ceremony lives as long as the challenge it carries: `caden` refuses a
+/// challenge older than [`CHALLENGE_MAX_AGE_SECS`] when it verifies it, so a
+/// ceremony older than that can never complete.
+#[derive(Debug, Default)]
+struct CeremonyMap {
+    realms: HashMap<String, HashMap<String, CeremonyEntry>>,
+}
+
+impl CeremonyMap {
+    fn insert(&mut self, realm: &str, id: &str, challenge: Challenge, now: u64) {
+        let entries = self.realms.entry(realm.to_string()).or_default();
+        entries.retain(|_, entry| !expired(entry, now));
+        while entries.len() >= MAX_CEREMONY_ENTRIES_PER_REALM {
+            let Some(oldest) = oldest_id(entries) else {
+                break;
+            };
+            entries.remove(&oldest);
+        }
+        entries.insert(
+            id.to_string(),
+            CeremonyEntry {
+                challenge,
+                created_at: now,
+            },
+        );
+    }
+
+    fn remove(&mut self, realm: &str, id: &str, now: u64) -> Option<Challenge> {
+        let entry = self.realms.get_mut(realm)?.remove(id)?;
+        if expired(&entry, now) {
+            return None;
+        }
+        let empty = self
+            .realms
+            .get(realm)
+            .map(|e| e.is_empty())
+            .unwrap_or(false);
+        if empty {
+            self.realms.remove(realm);
+        }
+        Some(entry.challenge)
+    }
+
+    #[cfg(test)]
+    fn entries(&self, realm: &str) -> usize {
+        self.realms.get(realm).map(|e| e.len()).unwrap_or(0)
+    }
+}
+
+fn oldest_id(entries: &HashMap<String, CeremonyEntry>) -> Option<String> {
+    entries
+        .iter()
+        .min_by_key(|(_, entry)| entry.created_at)
+        .map(|(id, _)| id.clone())
+}
+
+fn expired(entry: &CeremonyEntry, now: u64) -> bool {
+    now.saturating_sub(entry.created_at) >= CHALLENGE_MAX_AGE_SECS
+}
+
+/// The live WebAuthn ceremonies of the daemon, grouped by realm and kind.
 #[derive(Debug, Default)]
 pub struct WebAuthnState {
-    reg: Mutex<HashMap<String, Challenge>>,
-    auth: Mutex<HashMap<String, Challenge>>,
-    disc_auth: Mutex<HashMap<String, Challenge>>,
+    reg: Mutex<CeremonyMap>,
+    auth: Mutex<CeremonyMap>,
+    disc_auth: Mutex<CeremonyMap>,
 }
 
 impl WebAuthnState {
@@ -27,61 +104,59 @@ impl WebAuthnState {
         Arc::new(Self::default())
     }
 
-    fn insert_reg(&self, state_key: &str, state: Challenge) -> QidResult<()> {
+    fn insert_reg(&self, realm: &str, id: &str, state: Challenge) -> QidResult<()> {
         let mut map = self.reg.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn reg lock poisoned: {e}"),
         })?;
-        map.insert(state_key.to_string(), state);
+        map.insert(realm, id, state, qid_core::util::now_seconds());
         Ok(())
     }
 
-    fn remove_reg(&self, state_key: &str) -> QidResult<Challenge> {
+    fn remove_reg(&self, realm: &str, id: &str) -> QidResult<Challenge> {
         let mut map = self.reg.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn reg lock poisoned: {e}"),
         })?;
-        map.remove(state_key).ok_or_else(|| QidError::BadRequest {
-            message: "no registration in progress".to_string(),
-        })
+        map.remove(realm, id, qid_core::util::now_seconds())
+            .ok_or_else(|| QidError::BadRequest {
+                message: "no registration in progress".to_string(),
+            })
     }
 
-    fn insert_auth(&self, state_key: &str, state: Challenge) -> QidResult<()> {
+    fn insert_auth(&self, realm: &str, id: &str, state: Challenge) -> QidResult<()> {
         let mut map = self.auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn auth lock poisoned: {e}"),
         })?;
-        map.insert(state_key.to_string(), state);
+        map.insert(realm, id, state, qid_core::util::now_seconds());
         Ok(())
     }
 
-    fn remove_auth(&self, state_key: &str) -> QidResult<Challenge> {
+    fn remove_auth(&self, realm: &str, id: &str) -> QidResult<Challenge> {
         let mut map = self.auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn auth lock poisoned: {e}"),
         })?;
-        map.remove(state_key).ok_or_else(|| QidError::BadRequest {
-            message: "no authentication in progress".to_string(),
-        })
+        map.remove(realm, id, qid_core::util::now_seconds())
+            .ok_or_else(|| QidError::BadRequest {
+                message: "no authentication in progress".to_string(),
+            })
     }
 
-    fn insert_disc_auth(&self, ceremony_key: &str, state: Challenge) -> QidResult<()> {
+    fn insert_disc_auth(&self, realm: &str, id: &str, state: Challenge) -> QidResult<()> {
         let mut map = self.disc_auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn disc auth lock poisoned: {e}"),
         })?;
-        map.insert(ceremony_key.to_string(), state);
+        map.insert(realm, id, state, qid_core::util::now_seconds());
         Ok(())
     }
 
-    fn remove_disc_auth(&self, ceremony_key: &str) -> QidResult<Challenge> {
+    fn remove_disc_auth(&self, realm: &str, id: &str) -> QidResult<Challenge> {
         let mut map = self.disc_auth.lock().map_err(|e| QidError::Internal {
             message: format!("webauthn disc auth lock poisoned: {e}"),
         })?;
-        map.remove(ceremony_key)
+        map.remove(realm, id, qid_core::util::now_seconds())
             .ok_or_else(|| QidError::BadRequest {
                 message: "no discoverable authentication in progress".to_string(),
             })
     }
-}
-
-pub(crate) fn webauthn_state_key(realm_id: &str, user_id: &str) -> String {
-    format!("{realm_id}:{user_id}")
 }
 
 pub struct WebAuthnService {
@@ -94,6 +169,9 @@ pub struct WebAuthnAuthOutcome {
     pub credential_id: Vec<u8>,
     pub counter: u64,
 }
+
+/// The challenge of a consumed WebAuthn ceremony.
+pub struct CeremonyChallenge(Challenge);
 
 #[derive(Debug, Deserialize)]
 struct CredentialResponse<T> {
@@ -161,7 +239,7 @@ impl WebAuthnService {
     pub fn start_registration(
         &self,
         webauthn_state: &WebAuthnState,
-        state_key: &str,
+        realm: &str,
         user_unique_id: &str,
         user_name: &str,
         user_display_name: &str,
@@ -169,7 +247,7 @@ impl WebAuthnService {
         let challenge = new_challenge()?;
         let challenge_value = challenge_json(&challenge);
         let user_handle = stable_user_handle(user_unique_id);
-        webauthn_state.insert_reg(state_key, challenge)?;
+        webauthn_state.insert_reg(realm, user_unique_id, challenge)?;
         Ok(serde_json::json!({
             "rp": {
                 "id": self.rp_id,
@@ -200,12 +278,12 @@ impl WebAuthnService {
     pub fn finish_registration(
         &self,
         webauthn_state: &WebAuthnState,
-        state_key: &str,
+        realm: &str,
         user_id: &str,
         response: serde_json::Value,
     ) -> QidResult<WebAuthnCredential> {
         let parsed = parse_registration_response(response)?;
-        let challenge = webauthn_state.remove_reg(state_key)?;
+        let challenge = webauthn_state.remove_reg(realm, user_id)?;
         let aaguid = registration_aaguid(&parsed.response.attestation_object)?;
         let result = self
             .rp
@@ -236,8 +314,8 @@ impl WebAuthnService {
     pub fn start_authentication(
         &self,
         webauthn_state: &WebAuthnState,
-        state_key: &str,
-        _user_unique_id: &str,
+        realm: &str,
+        user_unique_id: &str,
         credentials: &[WebAuthnCredential],
     ) -> QidResult<serde_json::Value> {
         if credentials.is_empty() {
@@ -247,19 +325,20 @@ impl WebAuthnService {
         }
         let challenge = new_challenge()?;
         let options = authentication_options(&self.rp_id, &challenge, credentials);
-        webauthn_state.insert_auth(state_key, challenge)?;
+        webauthn_state.insert_auth(realm, user_unique_id, challenge)?;
         Ok(options)
     }
 
     pub fn finish_authentication(
         &self,
         webauthn_state: &WebAuthnState,
-        state_key: &str,
+        realm: &str,
+        user_id: &str,
         response: serde_json::Value,
         credentials: &[WebAuthnCredential],
     ) -> QidResult<WebAuthnAuthOutcome> {
         let parsed = parse_authentication_response(response)?;
-        let challenge = webauthn_state.remove_auth(state_key)?;
+        let challenge = webauthn_state.remove_auth(realm, user_id)?;
         let stored = matching_credential(credentials, &parsed.credential_id)?;
         let outcome = self
             .rp
@@ -276,11 +355,12 @@ impl WebAuthnService {
     pub fn start_discoverable_authentication(
         &self,
         webauthn_state: &WebAuthnState,
-        ceremony_key: &str,
+        realm: &str,
+        ceremony_id: &str,
     ) -> QidResult<serde_json::Value> {
         let challenge = new_challenge()?;
         let options = discoverable_authentication_options(&self.rp_id, &challenge);
-        webauthn_state.insert_disc_auth(ceremony_key, challenge)?;
+        webauthn_state.insert_disc_auth(realm, ceremony_id, challenge)?;
         Ok(options)
     }
 
@@ -303,19 +383,33 @@ impl WebAuthnService {
         Ok((user_uuid, parsed.credential_id))
     }
 
-    pub fn finish_discoverable_authentication(
+    /// Take the challenge of a live discoverable ceremony.
+    ///
+    /// Taking the challenge consumes the ceremony, so it is single-use and
+    /// the caller that verifies it is the only one that can: a caller
+    /// without a live ceremony never reaches the realm's user table.
+    pub fn take_discoverable_challenge(
         &self,
         webauthn_state: &WebAuthnState,
-        ceremony_key: &str,
+        realm: &str,
+        ceremony_id: &str,
+    ) -> QidResult<CeremonyChallenge> {
+        Ok(CeremonyChallenge(
+            webauthn_state.remove_disc_auth(realm, ceremony_id)?,
+        ))
+    }
+
+    pub fn verify_discoverable_authentication(
+        &self,
+        challenge: &CeremonyChallenge,
         response: serde_json::Value,
         credentials: &[WebAuthnCredential],
     ) -> QidResult<WebAuthnAuthOutcome> {
         let parsed = parse_authentication_response(response)?;
-        let challenge = webauthn_state.remove_disc_auth(ceremony_key)?;
         let stored = matching_credential(credentials, &parsed.credential_id)?;
         let outcome = self
             .rp
-            .verify_authentication(&stored, &challenge, &parsed.response)
+            .verify_authentication(&stored, &challenge.0, &parsed.response)
             .map_err(|e| QidError::Crypto {
                 message: format!("webauthn finish discoverable auth: {e}"),
             })?;
@@ -501,17 +595,18 @@ mod tests {
     #[test]
     fn webauthn_state_discoverable_auth_remove_nonexistent_fails() {
         let state = WebAuthnState::new();
-        let ceremony_key = "realm-1:disc_0000000000000001";
-        assert!(state.remove_disc_auth(ceremony_key).is_err());
+        assert!(
+            state
+                .remove_disc_auth("realm-1", "disc_0000000000000001")
+                .is_err()
+        );
     }
 
     #[test]
     fn webauthn_discoverable_ceremony_id_format() {
-        let realm = "corp";
         let ceremony_id = format!("disc_{:016x}", 42u64);
-        let ceremony_key = format!("{}:{}", realm, ceremony_id);
-        assert!(ceremony_key.starts_with("corp:disc_"));
-        assert!(ceremony_key.len() > 10);
+        assert!(ceremony_id.starts_with("disc_"));
+        assert_eq!(ceremony_id.len(), "disc_".len() + 16);
     }
 
     #[test]
@@ -524,8 +619,70 @@ mod tests {
         drop(auth);
 
         let disc_map = state.disc_auth.lock().unwrap();
-        assert!(disc_map.is_empty());
+        assert_eq!(disc_map.entries("realm-1"), 0);
         drop(disc_map);
+    }
+
+    #[test]
+    fn ceremonies_are_scoped_to_their_realm() {
+        let state = WebAuthnState::new();
+        let service =
+            WebAuthnService::new("example.com", "Example", "https://example.com").unwrap();
+        service
+            .start_discoverable_authentication(&state, "realm-1", "ceremony-1")
+            .unwrap();
+
+        assert!(state.remove_disc_auth("realm-2", "ceremony-1").is_err());
+        assert!(state.remove_disc_auth("realm-1", "ceremony-1").is_ok());
+    }
+
+    #[test]
+    fn abandoned_ceremonies_are_bounded_per_realm() {
+        let state = WebAuthnState::new();
+        let service =
+            WebAuthnService::new("example.com", "Example", "https://example.com").unwrap();
+        for index in 0..(MAX_CEREMONY_ENTRIES_PER_REALM + 10) {
+            service
+                .start_discoverable_authentication(&state, "realm-1", &format!("ceremony-{index}"))
+                .unwrap();
+        }
+
+        assert_eq!(
+            state.disc_auth.lock().unwrap().entries("realm-1"),
+            MAX_CEREMONY_ENTRIES_PER_REALM
+        );
+    }
+
+    #[test]
+    fn a_ceremony_older_than_the_challenge_lifetime_is_refused() {
+        let now = 1_000;
+        let mut map = CeremonyMap::default();
+        map.insert("realm-1", "ceremony-1", Challenge::new().unwrap(), now);
+        assert!(
+            map.remove("realm-1", "ceremony-1", now + CHALLENGE_MAX_AGE_SECS - 1)
+                .is_some()
+        );
+
+        let mut map = CeremonyMap::default();
+        map.insert("realm-1", "ceremony-2", Challenge::new().unwrap(), now);
+        assert!(
+            map.remove("realm-1", "ceremony-2", now + CHALLENGE_MAX_AGE_SECS)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn expired_ceremonies_are_dropped_when_a_new_one_starts() {
+        let mut map = CeremonyMap::default();
+        map.insert("realm-1", "old", Challenge::new().unwrap(), 1_000);
+        map.insert(
+            "realm-1",
+            "new",
+            Challenge::new().unwrap(),
+            1_000 + CHALLENGE_MAX_AGE_SECS,
+        );
+
+        assert_eq!(map.entries("realm-1"), 1);
     }
 
     #[test]
@@ -550,7 +707,7 @@ mod tests {
             WebAuthnService::new("example.com", "Example", "https://example.com").unwrap();
         let state = WebAuthnState::new();
         let options = service
-            .start_registration(&state, "r:u", "user-1", "a@example.com", "Alice")
+            .start_registration(&state, "realm-1", "user-1", "a@example.com", "Alice")
             .unwrap();
         let params = options["pubKeyCredParams"].as_array().unwrap();
         assert!(params.iter().any(|p| p["alg"] == COSE_RS256));

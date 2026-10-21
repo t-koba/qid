@@ -1,6 +1,6 @@
 use crate::config::{
-    BrowserSessionConfig, DeploymentProfile, PasskeyConfig, PepRegistrationsConfig, PolicyConfig,
-    QidConfig, TokenTtlConfig,
+    BrowserSessionConfig, DeploymentProfile, MfaConfig, PasskeyConfig, PasswordConfig,
+    PepRegistrationsConfig, PolicyConfig, QidConfig, TokenTtlConfig,
 };
 use crate::error::{QidError, QidResult};
 
@@ -62,11 +62,30 @@ pub struct RuntimeRealm {
     pub pep_registrations: PepRegistrationsConfig,
     pub policy: PolicyConfig,
     pub passwordless_only: bool,
+    /// The realm's password policy: whether password authentication is on,
+    /// the lockout limits every password login enforces, and the Argon2id
+    /// cost the product creates credentials with.
+    pub password: PasswordConfig,
+    /// The realm's multi-factor settings: the factors the realm offers.
+    pub mfa: MfaConfig,
     pub saml_clock_skew_seconds: u64,
     pub vc_max_credential_lifetime_seconds: u64,
 }
 
 impl RuntimeRealm {
+    /// Whether this realm accepts a password on any login path. A realm
+    /// that disabled password authentication, or that is passwordless,
+    /// refuses every password login.
+    pub fn accepts_password_authentication(&self) -> bool {
+        self.password.enabled && !self.passwordless_only
+    }
+
+    /// Whether this realm offers the TOTP factor. A realm that does not
+    /// enable TOTP refuses TOTP enrolment and challenges.
+    pub fn accepts_totp(&self) -> bool {
+        self.mfa.totp.enabled
+    }
+
     fn from_config(config: &crate::config::RealmConfig) -> QidResult<Self> {
         Ok(Self {
             id: config.id.clone(),
@@ -85,6 +104,8 @@ impl RuntimeRealm {
             pep_registrations: config.pep_registrations.clone(),
             policy: config.policy.clone(),
             passwordless_only: config.authentication.passwordless_only,
+            password: config.authentication.password.clone(),
+            mfa: config.authentication.mfa.clone(),
             saml_clock_skew_seconds: config.protocols.saml.max_clock_skew_seconds,
             vc_max_credential_lifetime_seconds: config.protocols.vc.max_credential_lifetime_seconds,
         })

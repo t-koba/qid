@@ -54,16 +54,8 @@ realms:
       passwordless_only: true
       passkeys:
         enabled: true
-        preferred: true
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
-        attestation: enterprise
-      mfa:
-        allowed:
-          - passkey
-          - client_certificate
-        client_certificate:
-          enabled: true
     policy:
       default_decision: deny
       bundles:

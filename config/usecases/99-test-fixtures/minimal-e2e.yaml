@@ -36,7 +36,6 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: false
         rp_id: "localhost"
         rp_origin: "http://localhost:5173"
       password:

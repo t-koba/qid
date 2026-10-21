@@ -6,7 +6,7 @@ use qid_core::{
     tenant::{RealmId, TenantId},
 };
 use qid_crypto::{
-    KeyProtector, PassphraseProtector,
+    ARGON2ID_ALGORITHM, KeyProtector, PassphraseProtector,
     jwk::{GeneratedKeyPair, generate_eddsa, generate_es256},
     parse_encrypted_key, password, serialize_encrypted_key,
     totp::TotpVerifier,
@@ -638,6 +638,28 @@ async fn main() -> anyhow::Result<()> {
             let repo = open_repo(&config_paths).await?;
             match command {
                 UserCommand::Create(args) => {
+                    // The realm's own Argon2id cost, so a credential the
+                    // product creates carries the deployment's calibration.
+                    // A realm that is not in the configuration has no cost
+                    // the product may apply, so naming it is an error
+                    // rather than a silent fallback to the library
+                    // defaults. The realm is resolved before the user is
+                    // written so a rejected realm leaves no half-created
+                    // account behind.
+                    let config = load_config(&config_paths).context("failed to load config")?;
+                    let realm_config = config
+                        .realms
+                        .iter()
+                        .find(|candidate| candidate.id == args.realm)
+                        .with_context(|| {
+                            format!("realm {} is not present in the configuration", args.realm)
+                        })?;
+                    let hash = password::hash_password_with_params(
+                        &args.password,
+                        &qid_crypto::Argon2idParams::from_cost(
+                            &realm_config.authentication.password.argon2id,
+                        ),
+                    )?;
                     let id = new_id();
                     repo.create_user(&User {
                         id: id.clone(),
@@ -650,12 +672,10 @@ async fn main() -> anyhow::Result<()> {
                         org: None,
                     })
                     .await?;
-                    let hash = password::hash_password(&args.password)?;
                     repo.store_password_credential(&PasswordCredential {
                         user_id: id.clone(),
                         hash,
-                        algorithm: "argon2id".to_string(),
-                        pepper_ref: None,
+                        algorithm: ARGON2ID_ALGORITHM.to_string(),
                     })
                     .await?;
                     println!("user created: {id} ({})", args.email);
@@ -809,6 +829,13 @@ async fn main() -> anyhow::Result<()> {
             let repo = open_repo(&config_paths).await?;
             match command {
                 TotpCommand::Enroll(args) => {
+                    let config = load_config(&config_paths)?;
+                    let plan = qid_core::plan::RuntimePlan::from_config(&config)?;
+                    let user = repo
+                        .get_user_by_id(&args.user_id)
+                        .await?
+                        .context("no such user")?;
+                    ensure_totp_offered(&plan, &user.realm_id)?;
                     let id = new_id();
                     let secret = TotpVerifier::generate_secret();
                     let now = qid_core::util::now_seconds();
@@ -845,6 +872,18 @@ async fn open_repo(config_paths: &[PathBuf]) -> anyhow::Result<AnyRepository> {
         .await
         .context("failed to connect to storage")?;
     Ok(repo)
+}
+
+/// A realm that does not offer the TOTP factor refuses every enrolment,
+/// whatever performs it.
+fn ensure_totp_offered(plan: &qid_core::plan::RuntimePlan, realm_id: &str) -> anyhow::Result<()> {
+    let realm = plan
+        .realm(realm_id)
+        .context("the user's realm is not configured")?;
+    if !realm.accepts_totp() {
+        anyhow::bail!("TOTP is not enabled for realm {}", realm.id);
+    }
+    Ok(())
 }
 
 fn new_id() -> String {

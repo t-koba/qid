@@ -1,11 +1,12 @@
 //! Authentication service.
 
 use async_trait::async_trait;
+use qid_core::config::PasswordConfig;
 use qid_core::error::{QidError, QidResult};
 use qid_core::models::{PasswordCredential, User};
 use qid_core::tenant::RealmId;
 use qid_crypto::{
-    ARGON2ID_ALGORITHM, BreachedPasswordSet, DenyPepperResolver, hash_password,
+    ARGON2ID_ALGORITHM, Argon2idParams, BreachedPasswordSet, hash_password_with_params,
     verify_password_credential,
 };
 use qid_storage::prelude::*;
@@ -24,48 +25,58 @@ pub struct AuthResult {
     pub session_id: Option<String>,
 }
 
+/// The password policy a realm enforces.
+#[derive(Debug, Clone, Copy)]
+pub struct PasswordPolicy {
+    pub max_failed_attempts: u32,
+    pub lockout_duration_seconds: u64,
+    pub argon2id: Argon2idParams,
+}
+
+impl PasswordPolicy {
+    /// The policy the realm's password configuration states.
+    pub fn from_config(config: &PasswordConfig) -> Self {
+        Self {
+            max_failed_attempts: config.max_failed_attempts,
+            lockout_duration_seconds: config.lockout_duration_seconds,
+            argon2id: Argon2idParams::from_cost(&config.argon2id),
+        }
+    }
+}
+
 /// Authenticator performs credential verification.
 pub struct Authenticator<R: Repository> {
     repo: Arc<R>,
     breached_passwords: BreachedPasswordSet,
     hibp_client: Option<HibpClient>,
-    max_failed_attempts: u32,
-    lockout_duration_seconds: u64,
+    policy: PasswordPolicy,
 }
 
 impl<R: Repository> Authenticator<R> {
-    pub fn new(repo: Arc<R>) -> Self {
+    pub fn new(repo: Arc<R>, policy: PasswordPolicy) -> Self {
         Self {
             repo,
             breached_passwords: BreachedPasswordSet::default(),
             hibp_client: None,
-            max_failed_attempts: 5,
-            lockout_duration_seconds: 300,
+            policy,
         }
     }
 
-    pub fn with_breached_passwords(repo: Arc<R>, breached_passwords: BreachedPasswordSet) -> Self {
+    pub fn with_breached_passwords(
+        repo: Arc<R>,
+        breached_passwords: BreachedPasswordSet,
+        policy: PasswordPolicy,
+    ) -> Self {
         Self {
             repo,
             breached_passwords,
             hibp_client: None,
-            max_failed_attempts: 5,
-            lockout_duration_seconds: 300,
+            policy,
         }
     }
 
     pub fn with_hibp_client(mut self, client: HibpClient) -> Self {
         self.hibp_client = Some(client);
-        self
-    }
-
-    pub fn with_lockout_config(
-        mut self,
-        max_failed_attempts: u32,
-        lockout_duration_seconds: u64,
-    ) -> Self {
-        self.max_failed_attempts = max_failed_attempts;
-        self.lockout_duration_seconds = lockout_duration_seconds;
         self
     }
 
@@ -128,16 +139,16 @@ impl<R: Repository> Authenticator<R> {
         let verification = verify_password_credential(
             password,
             &cred,
-            &DenyPepperResolver,
             if self.breached_passwords.is_empty() {
                 None
             } else {
                 Some(&self.breached_passwords)
             },
-        )
-        .map_err(|e| QidError::Internal {
-            message: format!("password verification error: {e}"),
-        })?;
+            // The realm's cost is the cost every credential of the realm
+            // carries, so a credential hashed at another one is rehashed
+            // with the realm's cost here.
+            Some(&self.policy.argon2id),
+        );
 
         if !verification.valid {
             self.record_failed_attempt(&mut user, now).await?;
@@ -147,15 +158,16 @@ impl<R: Repository> Authenticator<R> {
         }
 
         if verification.rehash_required {
-            let hash = hash_password(password).map_err(|e| QidError::Internal {
-                message: format!("password rehash error: {e}"),
+            let hash = hash_password_with_params(password, &self.policy.argon2id).map_err(|e| {
+                QidError::Internal {
+                    message: format!("password rehash error: {e}"),
+                }
             })?;
             self.repo
                 .store_password_credential(&PasswordCredential {
                     user_id: user.id.clone(),
                     hash,
                     algorithm: ARGON2ID_ALGORITHM.to_string(),
-                    pepper_ref: None,
                 })
                 .await?;
         }
@@ -172,16 +184,6 @@ impl<R: Repository> Authenticator<R> {
             user,
             acr: "urn:qid:acr:password".to_string(),
             amr: vec!["pwd".to_string()],
-            session_id: None,
-        })
-    }
-
-    /// Authenticate a user via email magic link (after token verification).
-    pub async fn authenticate_email_magic_link(&self, user: &User) -> QidResult<AuthResult> {
-        Ok(AuthResult {
-            user: user.clone(),
-            acr: "urn:qid:acr:email_magic_link".to_string(),
-            amr: vec!["email_magic_link".to_string()],
             session_id: None,
         })
     }
@@ -211,8 +213,8 @@ impl<R: Repository> Authenticator<R> {
 
     async fn record_failed_attempt(&self, user: &mut User, now: u64) -> QidResult<()> {
         user.failed_login_attempts += 1;
-        if user.failed_login_attempts >= self.max_failed_attempts {
-            user.locked_until = Some(now + self.lockout_duration_seconds);
+        if user.failed_login_attempts >= self.policy.max_failed_attempts {
+            user.locked_until = Some(now + self.policy.lockout_duration_seconds);
         }
         self.repo.update_user(user).await
     }
@@ -226,8 +228,6 @@ pub trait AuthenticatorExt: Send + Sync {
         email: &str,
         password: &str,
     ) -> QidResult<AuthResult>;
-
-    async fn authenticate_email_magic_link(&self, user: &User) -> QidResult<AuthResult>;
 
     async fn authenticate_client_certificate_mfa(
         &self,
@@ -248,10 +248,6 @@ impl<R: Repository> AuthenticatorExt for Authenticator<R> {
         self.authenticate_password(realm_id, email, password).await
     }
 
-    async fn authenticate_email_magic_link(&self, user: &User) -> QidResult<AuthResult> {
-        self.authenticate_email_magic_link(user).await
-    }
-
     async fn authenticate_client_certificate_mfa(
         &self,
         user: &User,
@@ -266,6 +262,7 @@ impl<R: Repository> AuthenticatorExt for Authenticator<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qid_core::config::PasswordConfig;
     use qid_core::models::{PasswordCredential, User};
     use qid_core::util;
     use qid_crypto::{PBKDF2_SHA256_ALGORITHM, encode_pbkdf2_sha256_hash, hash_password};
@@ -310,7 +307,6 @@ mod tests {
             user_id: "user-1".to_string(),
             hash: password_hash,
             algorithm: algorithm.to_string(),
-            pepper_ref: None,
         })
         .await
         .expect("password credential creation failed");
@@ -323,7 +319,10 @@ mod tests {
         let legacy_hash =
             encode_pbkdf2_sha256_hash(password, b"0123456789abcdef", 100_000).unwrap();
         let repo = repository_with_user(legacy_hash, PBKDF2_SHA256_ALGORITHM).await;
-        let authenticator = Authenticator::new(repo.clone());
+        let authenticator = Authenticator::new(
+            repo.clone(),
+            PasswordPolicy::from_config(&PasswordConfig::default()),
+        );
 
         let result = authenticator
             .authenticate_password(&RealmId::from("corp"), "alice@example.com", password)
@@ -349,7 +348,11 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let breached = BreachedPasswordSet::from_sha256_hex([digest]).unwrap();
-        let authenticator = Authenticator::with_breached_passwords(repo, breached);
+        let authenticator = Authenticator::with_breached_passwords(
+            repo,
+            breached,
+            PasswordPolicy::from_config(&PasswordConfig::default()),
+        );
 
         let err = authenticator
             .authenticate_password(&RealmId::from("corp"), "alice@example.com", password)

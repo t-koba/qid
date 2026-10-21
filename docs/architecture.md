@@ -66,13 +66,12 @@ flowchart LR
 | `qid-storage` | Repository traits, file-backed JSON store, SQL store, migrations. |
 | `qid-crypto` | JWK/JWT, password hashing, TOTP/HOTP, AEAD, COSE/JWE/HPKE, PKI, keyrings, signer readiness. |
 | `qid-http` | Security headers, CORS, CSRF, HTTP Message Signatures, rate limiting. |
-| `qid-observability` | Logging, metrics, OTLP, audit helpers, OpenMetrics/syslog helpers. |
+| `qid-observability` | Logging, metrics, audit helpers, OpenMetrics/syslog helpers. |
 | `qid-diagnostics` | Config, profile, storage, ops, and network readiness checks. |
 | `qid-oidc` | OIDC discovery, authorization, userinfo, logout, WebFinger, Shared Signals Framework. |
 | `qid-oauth` | Token, introspection, revocation, device flow, CIBA, DCR, DPoP, mTLS, private_key_jwt, token-exchange helpers (GNAP parse/serialize helpers only, not wired). |
-| `qid-session` | Password auth, browser sessions, refresh, WebAuthn/passkeys, TOTP API, email magic link, push MFA. |
+| `qid-session` | Password auth, browser sessions, refresh, WebAuthn/passkeys, TOTP API. |
 | `qid-mfa` | MFA factor primitives. |
-| `qid-webauthn` | WebAuthn ceremony helpers and tests. |
 | `qid-saml` | SAML metadata, SSO/SLO, artifact, XMLDSig, encryption, and strict signed SOAP AttributeQuery with realm-local SP trust and subject lookup. |
 | `qid-scim` | SCIM 2.0 server surface and outbound reconcile helpers. |
 | `qid-directory` | LDAP/AD connectors, directory routes, sync logic, filter handling. |

@@ -12,7 +12,7 @@ use qid_core::{
 };
 use qid_crypto::{ARGON2ID_ALGORITHM, hash_password};
 use qid_session::{
-    auth::Authenticator,
+    auth::{Authenticator, PasswordPolicy},
     browser::{SessionManager, session_cache_put},
 };
 use qid_storage::{FileRepository, prelude::*};
@@ -111,12 +111,14 @@ async fn password_login_session_and_revoke_propagate_through_shared_cache() -> a
         user_id: user.id.clone(),
         hash: hash_password("correct horse battery staple").context("failed to hash password")?,
         algorithm: ARGON2ID_ALGORITHM.to_string(),
-        pepper_ref: None,
     })
     .await
     .context("failed to store password credential")?;
 
-    let auth = Authenticator::new(Arc::clone(&repo));
+    let auth = Authenticator::new(
+        Arc::clone(&repo),
+        PasswordPolicy::from_config(&AuthenticationConfig::default().password),
+    );
     let authn = auth
         .authenticate_password(
             &RealmId::from("corp"),

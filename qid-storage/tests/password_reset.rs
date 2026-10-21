@@ -7,7 +7,6 @@ fn credential(user: &str, hash: &str) -> PasswordCredential {
         user_id: user.into(),
         hash: hash.into(),
         algorithm: "argon2id".into(),
-        pepper_ref: Some("test-pepper".into()),
     }
 }
 
@@ -61,7 +60,6 @@ async fn assert_state(repo: &impl Repository, hash: &str, consumed_at: Option<u6
     let expected = credential("owner", hash);
     assert_eq!(actual.hash, expected.hash);
     assert_eq!(actual.algorithm, expected.algorithm);
-    assert_eq!(actual.pepper_ref, expected.pepper_ref);
     let token = repo
         .get_password_reset_token("reset")
         .await

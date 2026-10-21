@@ -50,19 +50,13 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: false
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
       password:
         enabled: true
       mfa:
-        allowed:
-          - totp
-          - webauthn
         totp:
           enabled: true
-          digits: 6
-          period: 30
     policy:
       default_decision: deny
       bundles:

@@ -60,13 +60,12 @@ impl UserRepository for SqlRepository {
 
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO credentials_password (user_id, hash, algorithm, pepper_ref) VALUES (?, ?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET hash = excluded.hash, algorithm = excluded.algorithm, pepper_ref = excluded.pepper_ref",
+            "INSERT INTO credentials_password (user_id, hash, algorithm) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET hash = excluded.hash, algorithm = excluded.algorithm",
         )
             .bind(&cred.user_id)
             .bind(&cred.hash)
             .bind(&cred.algorithm)
-            .bind(&cred.pepper_ref)
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
@@ -77,21 +76,18 @@ impl UserRepository for SqlRepository {
         &self,
         user_id: &str,
     ) -> QidResult<Option<PasswordCredential>> {
-        let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT user_id, hash, algorithm, pepper_ref FROM credentials_password WHERE user_id = ?",
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT user_id, hash, algorithm FROM credentials_password WHERE user_id = ?",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(row.map(
-            |(user_id, hash, algorithm, pepper_ref)| PasswordCredential {
-                user_id,
-                hash,
-                algorithm,
-                pepper_ref,
-            },
-        ))
+        Ok(row.map(|(user_id, hash, algorithm)| PasswordCredential {
+            user_id,
+            hash,
+            algorithm,
+        }))
     }
 
     async fn list_users(&self, realm_id: &RealmId) -> QidResult<Vec<User>> {

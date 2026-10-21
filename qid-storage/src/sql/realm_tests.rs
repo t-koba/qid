@@ -47,10 +47,7 @@ impl SqlRealmTestDb {
             seed.replace("'realm", "'realm-peer")
                 .replace("https://realm.", "https://realm-peer."),
         ] {
-            sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
-                .execute(&repo.pool)
-                .await
-                .unwrap();
+            sqlx::raw_sql(&sql).execute(&repo.pool).await.unwrap();
         }
         Self { temp_dir, repo }
     }

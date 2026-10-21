@@ -6,7 +6,10 @@ use axum::{
     routing::post,
 };
 use qid_core::web::JsonObject;
-use qid_core::{config::ServerPaths, error::QidError, models::TotpCredential, state::SharedState};
+use qid_core::{
+    config::ServerPaths, error::QidError, models::TotpCredential, plan::RuntimeRealm,
+    state::SharedState,
+};
 use qid_crypto::totp::TotpVerifier;
 use qid_mfa::verify_totp_at_with_step;
 use qid_storage::prelude::*;
@@ -60,6 +63,17 @@ struct TotpUserResponse {
     email: Option<String>,
 }
 
+/// A realm that does not offer the TOTP factor refuses every TOTP route:
+/// it performs no enrolment, confirmation or challenge.
+fn totp_unavailable(realm_config: &RuntimeRealm) -> Option<Response> {
+    if realm_config.accepts_totp() {
+        return None;
+    }
+    Some(qid_http::error_response(QidError::Unauthorized {
+        message: "TOTP is not enabled for this realm".to_string(),
+    }))
+}
+
 async fn totp_enroll<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
@@ -73,6 +87,9 @@ async fn totp_enroll<R: Repository>(
         Ok(context) => context,
         Err(response) => return response,
     };
+    if let Some(response) = totp_unavailable(realm_config) {
+        return response;
+    }
 
     let user = match state.repo.get_user_by_id(&session.user_id).await {
         Ok(Some(u)) => u,
@@ -121,11 +138,17 @@ async fn totp_verify<R: Repository>(
     headers: HeaderMap,
     JsonObject(req): JsonObject<TotpVerifyRequest>,
 ) -> Response {
-    let BrowserSessionContext { session, .. } =
-        match load_browser_session(&state, &realm, &headers).await {
-            Ok(context) => context,
-            Err(response) => return response,
-        };
+    let BrowserSessionContext {
+        realm_config,
+        session,
+        ..
+    } = match load_browser_session(&state, &realm, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if let Some(response) = totp_unavailable(realm_config) {
+        return response;
+    }
 
     let mut cred = match state.repo.get_totp_credential(&session.user_id).await {
         Ok(Some(c)) => c,
@@ -187,6 +210,9 @@ async fn totp_authenticate<R: Repository>(
         Ok(config) => config,
         Err(error) => return qid_http::error_response(error),
     };
+    if let Some(response) = totp_unavailable(realm_config) {
+        return response;
+    }
 
     let user = match state.repo.get_user_by_id(&req.user_id).await {
         Ok(Some(u)) => u,

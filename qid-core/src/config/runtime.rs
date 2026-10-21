@@ -680,10 +680,6 @@ pub struct ServerPaths {
     pub auth_webauthn_discoverable_start: String,
     #[serde(default = "default_auth_webauthn_discoverable_finish_path")]
     pub auth_webauthn_discoverable_finish: String,
-    #[serde(default = "default_auth_email_magic_link_send_path")]
-    pub auth_email_magic_link_send: String,
-    #[serde(default = "default_auth_email_magic_link_verify_path")]
-    pub auth_email_magic_link_verify: String,
     #[serde(default = "default_capport_details_path")]
     pub capport_details: String,
 }
@@ -724,8 +720,6 @@ impl Default for ServerPaths {
             auth_webauthn_auth_finish: default_auth_webauthn_auth_finish_path(),
             auth_webauthn_discoverable_start: default_auth_webauthn_discoverable_start_path(),
             auth_webauthn_discoverable_finish: default_auth_webauthn_discoverable_finish_path(),
-            auth_email_magic_link_send: default_auth_email_magic_link_send_path(),
-            auth_email_magic_link_verify: default_auth_email_magic_link_verify_path(),
             capport_details: default_capport_details_path(),
         }
     }
@@ -767,8 +761,6 @@ impl ServerPaths {
             &self.auth_webauthn_auth_finish,
             &self.auth_webauthn_discoverable_start,
             &self.auth_webauthn_discoverable_finish,
-            &self.auth_email_magic_link_send,
-            &self.auth_email_magic_link_verify,
             &self.capport_details,
         ];
         for p in &paths {
@@ -906,12 +898,6 @@ fn default_auth_webauthn_discoverable_start_path() -> String {
 }
 fn default_auth_webauthn_discoverable_finish_path() -> String {
     "/api/v1/:realm/auth/webauthn/discoverable/finish".to_string()
-}
-fn default_auth_email_magic_link_send_path() -> String {
-    "/api/v1/:realm/auth/email-magic-link/send".to_string()
-}
-fn default_auth_email_magic_link_verify_path() -> String {
-    "/api/v1/:realm/auth/email-magic-link/verify".to_string()
 }
 fn default_capport_details_path() -> String {
     "/api/v1/:realm/captive-portal/api/v1/details".to_string()

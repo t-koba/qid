@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use super::{build_webauthn_service, extract_cookie};
 use crate::browser::SessionManager;
-use crate::webauthn::{WebAuthnState, webauthn_state_key};
+use crate::webauthn::WebAuthnState;
 
 use axum::Extension;
 use rand::RngCore;
@@ -109,14 +109,7 @@ pub async fn webauthn_register_start<R: Repository>(
     }
 
     let display_name = req.display_name.as_deref().unwrap_or(&req.email);
-    let state_key = webauthn_state_key(&realm, &user.id);
-    match webauthn.start_registration(
-        &webauthn_state,
-        &state_key,
-        &user.id,
-        &req.email,
-        display_name,
-    ) {
+    match webauthn.start_registration(&webauthn_state, &realm, &user.id, &req.email, display_name) {
         Ok(challenge) => {
             let body = Json(WebAuthnStartResponse { challenge });
             (StatusCode::OK, body).into_response()
@@ -157,13 +150,12 @@ pub async fn webauthn_register_finish<R: Repository>(
         });
     }
 
-    let state_key = webauthn_state_key(&realm, &user.id);
     let webauthn = match build_webauthn_service(&state, &realm) {
         Ok(w) => w,
         Err(e) => return qid_http::error_response(e),
     };
 
-    match webauthn.finish_registration(&webauthn_state, &state_key, &user.id, req.response) {
+    match webauthn.finish_registration(&webauthn_state, &realm, &user.id, req.response) {
         Ok(cred) => {
             metrics::counter!("qid_webauthn_ceremonies_total", "ceremony" => "register")
                 .increment(1);
@@ -252,8 +244,7 @@ pub async fn webauthn_auth_start<R: Repository>(
         ),
     };
 
-    let state_key = webauthn_state_key(&realm, &user_id);
-    match webauthn.start_authentication(&webauthn_state, &state_key, &user_id, &creds) {
+    match webauthn.start_authentication(&webauthn_state, &realm, &user_id, &creds) {
         Ok(challenge) => {
             let body = Json(WebAuthnStartResponse { challenge });
             (StatusCode::OK, body).into_response()
@@ -306,16 +297,20 @@ pub async fn webauthn_auth_finish<R: Repository>(
         Ok(c) => c,
         Err(e) => return qid_http::error_response(e),
     };
-    let state_key = webauthn_state_key(&realm, &user.id);
-    let auth_result =
-        match webauthn.finish_authentication(&webauthn_state, &state_key, req.response, &creds) {
-            Ok(r) => {
-                metrics::counter!("qid_webauthn_ceremonies_total", "ceremony" => "authenticate")
-                    .increment(1);
-                r
-            }
-            Err(e) => return qid_http::error_response(e),
-        };
+    let auth_result = match webauthn.finish_authentication(
+        &webauthn_state,
+        &realm,
+        &user.id,
+        req.response,
+        &creds,
+    ) {
+        Ok(r) => {
+            metrics::counter!("qid_webauthn_ceremonies_total", "ceremony" => "authenticate")
+                .increment(1);
+            r
+        }
+        Err(e) => return qid_http::error_response(e),
+    };
 
     // Verify signCount monotonicity (credential cloning detection)
     let used_cred_id = auth_result.credential_id.as_slice();
@@ -395,9 +390,8 @@ pub async fn webauthn_discoverable_auth_start<R: Repository>(
     };
 
     let ceremony_id = format!("disc_{:016x}", rand::thread_rng().next_u64());
-    let ceremony_key = format!("{}:{}", realm, ceremony_id);
 
-    match webauthn.start_discoverable_authentication(&webauthn_state, &ceremony_key) {
+    match webauthn.start_discoverable_authentication(&webauthn_state, &realm, &ceremony_id) {
         Ok(challenge) => {
             let body = Json(WebAuthnDiscoverableStartResponse {
                 ceremony_id,
@@ -426,7 +420,14 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    let ceremony_key = format!("{}:{}", realm, req.ceremony_id);
+    // Consume the ceremony before the realm's user table is read: the
+    // ceremony is single-use, and a caller without a live ceremony must not
+    // reach the user table at all.
+    let challenge =
+        match webauthn.take_discoverable_challenge(&webauthn_state, &realm, &req.ceremony_id) {
+            Ok(challenge) => challenge,
+            Err(e) => return qid_http::error_response(e),
+        };
 
     let (user_uuid, _cred_id) = match webauthn.identify_discoverable_authentication(&req.response) {
         Ok(r) => r,
@@ -458,19 +459,15 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    let auth_result = match webauthn.finish_discoverable_authentication(
-        &webauthn_state,
-        &ceremony_key,
-        req.response,
-        &creds,
-    ) {
-        Ok(r) => {
-            metrics::counter!("qid_webauthn_ceremonies_total", "ceremony" => "authenticate")
-                .increment(1);
-            r
-        }
-        Err(e) => return qid_http::error_response(e),
-    };
+    let auth_result =
+        match webauthn.verify_discoverable_authentication(&challenge, req.response, &creds) {
+            Ok(r) => {
+                metrics::counter!("qid_webauthn_ceremonies_total", "ceremony" => "authenticate")
+                    .increment(1);
+                r
+            }
+            Err(e) => return qid_http::error_response(e),
+        };
 
     // Verify signCount monotonicity (credential cloning detection)
     let used_cred_id = auth_result.credential_id.as_slice();

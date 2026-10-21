@@ -242,7 +242,6 @@ async fn setup_with_config(config: QidConfig) -> (Router, Arc<SharedState<SqlRep
         user_id: "par-user".to_string(),
         hash: correct_password_hash(),
         algorithm: "argon2id".to_string(),
-        pepper_ref: None,
     })
     .await
     .unwrap();
@@ -1921,6 +1920,50 @@ async fn authorize_post_enforces_essential_acr_value() {
     let matched = essential_acr_query(&state, "\"value\":\"urn:qid:acr:password\"");
     let issued = post_form(app, matched, LOGIN_FORM).await;
     assert_code_issued(&issued);
+}
+
+#[tokio::test]
+async fn authorize_post_refuses_password_login_for_passwordless_realm() {
+    let mut config = test_helpers::test_config();
+    // A passwordless realm must have passkeys enabled.
+    config.realms[0].authentication.passkeys.enabled = true;
+    config.realms[0].authentication.passwordless_only = true;
+    let (app, state) = setup_with_config(config).await;
+
+    // The password is correct, but the realm refuses password logins.
+    let denied = post_form(app, authorize_query(&state, ""), LOGIN_FORM).await;
+    assert_eq!(denied.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = redirect_location(&denied);
+    assert!(location.contains("error=access_denied"), "{location}");
+    assert!(!location.contains("code=ac_"), "{location}");
+}
+
+#[tokio::test]
+async fn authorize_post_locks_the_account_after_the_realm_attempt_limit() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.password.max_failed_attempts = 2;
+    let (app, state) = setup_with_config(config).await;
+
+    // Two failures are below the realm's limit, so each is a refusal of
+    // the password.
+    for _ in 0..2 {
+        let refused = post_form(
+            app.clone(),
+            authorize_query(&state, ""),
+            "email=par%40example.com&password=wrong-password",
+        )
+        .await;
+        let location = redirect_location(&refused);
+        assert!(location.contains("error=access_denied"), "{location}");
+        assert!(!location.contains("code=ac_"), "{location}");
+    }
+
+    // The second failure locked the account, so the correct password is
+    // refused as well.
+    let refused = post_form(app, authorize_query(&state, ""), LOGIN_FORM).await;
+    let location = redirect_location(&refused);
+    assert!(location.contains("error=access_denied"), "{location}");
+    assert!(!location.contains("code=ac_"), "{location}");
 }
 
 #[tokio::test]

@@ -1,8 +1,4 @@
 use qid_crypto::totp::TotpVerifier;
-use qid_mfa::push::{
-    PushChallengeStatus, PushDevice, PushFatigueState, PushMfaConfig, create_push_challenge,
-    verify_push_response,
-};
 use qid_mfa::{
     MfaFactorKind, MfaPolicy, RecoveryCodeBatch, create_totp_enrollment, verify_totp_at,
 };
@@ -47,80 +43,11 @@ fn totp_verification_requires_enabled_credential_and_time_window() {
 }
 
 #[test]
-fn push_fatigue_is_user_scoped_and_clearable() {
-    let state = PushFatigueState::new();
-    let config = PushMfaConfig {
-        fatigue_max_pending: 2,
-        fatigue_window_seconds: 300,
-        ..PushMfaConfig::default()
-    };
-
-    assert!(
-        !state
-            .check_and_record("user-1", &config)
-            .expect("record push")
-    );
-    assert!(
-        !state
-            .check_and_record("user-1", &config)
-            .expect("record push")
-    );
-    assert!(
-        state
-            .check_and_record("user-1", &config)
-            .expect("record push")
-    );
-    assert!(
-        !state
-            .check_and_record("user-2", &config)
-            .expect("record push")
-    );
-    state.clear("user-1").expect("clear push state");
-    assert!(
-        !state
-            .check_and_record("user-1", &config)
-            .expect("record push")
-    );
-}
-
-#[test]
-fn push_challenge_rejects_wrong_code_and_non_pending_status() {
-    let device = PushDevice {
-        id: "device-1".to_string(),
-        user_id: "user-1".to_string(),
-        device_name: "Alice phone".to_string(),
-        platform: "ios".to_string(),
-        push_token: "token".to_string(),
-        created_at: 100,
-        enabled: true,
-    };
-    let config = PushMfaConfig::default();
-    let mut challenge = create_push_challenge(
-        "challenge-1".to_string(),
-        "user-1".to_string(),
-        &device,
-        "123456".to_string(),
-        Some("Tokyo, Japan".to_string()),
-        Some("Chrome on macOS".to_string()),
-        Some("203.0.113.10".to_string()),
-        &config,
-    );
-
-    assert!(verify_push_response(&challenge, "123456"));
-    assert!(!verify_push_response(&challenge, "000000"));
-    challenge.status = PushChallengeStatus::Denied;
-    assert!(!verify_push_response(&challenge, "123456"));
-}
-
-#[test]
 fn policy_validation_rejects_admin_policy_without_allowed_webauthn() {
     let policy = MfaPolicy {
         allowed: BTreeSet::from([MfaFactorKind::Totp, MfaFactorKind::RecoveryCode]),
         require_phishing_resistant_for_admin: true,
         allow_recovery_code_for_step_up: true,
-        push_resend_cooldown_seconds: 30,
-        push_fatigue_max_pending: 5,
-        push_fatigue_window_seconds: 300,
     };
 
     assert!(policy.validate().is_err());

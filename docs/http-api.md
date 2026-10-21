@@ -63,11 +63,11 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | `/oauth2/challenge` | OAuth challenge helper. |
 | `POST` | configurable `par`, default `/oauth2/par` | Pushed Authorization Request, installed when PAR is enabled. |
 
-## Session, WebAuthn, TOTP, push, email magic link
+## Session, WebAuthn, TOTP
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. |
+| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. The realm's password policy is the attempt limit; a locked account answers `429 Too Many Requests`. |
 | `POST` | configurable `auth_session_refresh`, default `/api/v1/:realm/auth/session/refresh` | Refresh browser session. |
 | `POST` | configurable `auth_session_revoke`, default `/api/v1/:realm/auth/session/revoke` | Revoke browser session. |
 | `POST` | configurable `auth_webauthn_start`, default `/api/v1/:realm/auth/webauthn/start` | WebAuthn registration start. |
@@ -76,16 +76,16 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | configurable `auth_webauthn_auth_finish`, default `/api/v1/:realm/auth/webauthn/auth/finish` | WebAuthn auth finish. |
 | `POST` | configurable `auth_webauthn_discoverable_start`, default `/api/v1/:realm/auth/webauthn/discoverable/start` | Discoverable credential auth start. |
 | `POST` | configurable `auth_webauthn_discoverable_finish`, default `/api/v1/:realm/auth/webauthn/discoverable/finish` | Discoverable credential auth finish. |
-| `POST` | configurable `auth_email_magic_link_send`, default `/api/v1/:realm/auth/email-magic-link/send` | Send magic link. |
-| `POST` | configurable `auth_email_magic_link_verify`, default `/api/v1/:realm/auth/email-magic-link/verify` | Verify magic link. |
 | `POST` | `/api/v1/:realm/auth/totp/enroll` | Enroll TOTP. |
 | `POST` | `/api/v1/:realm/auth/totp/verify` | Verify enrolled TOTP. |
 | `POST` | `/api/v1/:realm/auth/totp/authenticate` | TOTP authentication. |
-| `POST` | `/api/v1/:realm/auth/push/register` | Register push MFA device. |
-| `POST` | `/api/v1/:realm/auth/push/challenge` | Create push MFA challenge. |
-| `POST` | `/api/v1/:realm/auth/push/verify` | Verify push MFA challenge. |
-| `GET` | `/api/v1/:realm/auth/push/devices` | List push devices. |
-| `DELETE` | `/api/v1/:realm/auth/push/devices/:device_id` | Remove push device. |
+
+WebAuthn ceremonies are single-use and live for five minutes, the timeout the
+ceremony options advertise. A realm holds at most 4096 live ceremonies per
+ceremony kind, so an unauthenticated caller of the discoverable start route
+cannot grow the ceremony state without limit. The discoverable finish route
+consumes the ceremony before it reads the realm's user table, so a finish
+without a live ceremony is refused without reading the realm.
 
 ## Admin API
 

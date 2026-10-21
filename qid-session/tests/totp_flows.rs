@@ -49,7 +49,7 @@ impl qid_core::jwt::Signer for TestSigner {
     }
 }
 
-async fn setup() -> anyhow::Result<(Router, String, Arc<FileRepository>)> {
+async fn setup(totp_enabled: bool) -> anyhow::Result<(Router, String, Arc<FileRepository>)> {
     let path = std::env::temp_dir().join(format!("totp-flows-{}.json", ulid::Ulid::new()));
     let repo =
         Arc::new(FileRepository::new(path.to_str().context("store path must be UTF-8")?).await?);
@@ -67,8 +67,10 @@ async fn setup() -> anyhow::Result<(Router, String, Arc<FileRepository>)> {
     .await?;
     let sessions = SessionManager::new(Arc::clone(&repo), 30, 8);
     let session = sessions.create("test", "totp-user", "phr", &[]).await?;
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.mfa.totp.enabled = totp_enabled;
     let state = Arc::new(SharedState::new(
-        test_helpers::test_config(),
+        config,
         Arc::clone(&repo),
         Arc::new(TestSigner),
         json!({"keys": []}),
@@ -109,7 +111,7 @@ async fn post(
 
 #[tokio::test]
 async fn totp_enroll_rejects_a_session_from_another_realm() -> anyhow::Result<()> {
-    let (app, cookie, repo) = setup().await?;
+    let (app, cookie, repo) = setup(true).await?;
     let cookie_name = cookie
         .split_once('=')
         .context("session cookie must contain a name and value")?
@@ -133,7 +135,7 @@ async fn totp_enroll_rejects_a_session_from_another_realm() -> anyhow::Result<()
 
 #[tokio::test]
 async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyhow::Result<()> {
-    let (app, cookie, repo) = setup().await?;
+    let (app, cookie, repo) = setup(true).await?;
     let (status, body, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/enroll",
@@ -216,7 +218,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
 #[tokio::test]
 async fn totp_pending_credential_rejects_authentication_and_bad_confirmation() -> anyhow::Result<()>
 {
-    let (app, cookie, _repo) = setup().await?;
+    let (app, cookie, _repo) = setup(true).await?;
     let (status, body, _) = post(
         app.clone(),
         "/api/v1/test/auth/totp/enroll",
@@ -260,6 +262,23 @@ async fn totp_pending_credential_rejects_authentication_and_bad_confirmation() -
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_realm_without_totp_refuses_every_totp_route() -> anyhow::Result<()> {
+    let (app, cookie, _repo) = setup(false).await?;
+    for (uri, body) in [
+        ("/api/v1/test/auth/totp/enroll", json!({})),
+        ("/api/v1/test/auth/totp/verify", json!({"code": "123456"})),
+        (
+            "/api/v1/test/auth/totp/authenticate",
+            json!({"user_id": "totp-user", "code": "123456"}),
+        ),
+    ] {
+        let (status, _, _) = post(app.clone(), uri, &cookie, body).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "route {uri} must refuse");
+    }
     Ok(())
 }
 

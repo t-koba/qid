@@ -67,8 +67,6 @@ fn temp_config_dir(name: &str) -> std::path::PathBuf {
 
 fn pep_capability(effect: &str) -> PepCapabilityConfig {
     PepCapabilityConfig {
-        mode: Some("forward_http".to_string()),
-        phase: Some("pre_upstream".to_string()),
         effect: effect.to_string(),
     }
 }
@@ -545,7 +543,7 @@ fn check_report_warns_for_misaligned_issuer_and_missing_policy_source() {
 }
 
 #[test]
-fn high_risk_mfa_requires_enabled_factor_not_allowed_label() {
+fn high_risk_mfa_requires_an_enabled_factor() {
     fn high_risk_config() -> QidConfig {
         let mut config = minimal_config();
         config.realms[0].protocols.oauth.resource_servers = vec![OAuthResourceServerConfig {
@@ -566,57 +564,33 @@ fn high_risk_mfa_requires_enabled_factor_not_allowed_label() {
         (check.status, check.message)
     }
 
-    // Allowed label alone with every mechanism disabled is not strong MFA.
-    let mut config = high_risk_config();
-    config.realms[0].authentication.mfa.allowed = vec!["totp".to_string()];
+    // With every factor disabled the realm has no strong MFA.
+    let config = high_risk_config();
     assert!(!config.realms[0].authentication.mfa.totp.enabled);
     assert!(!config.realms[0].authentication.passkeys.enabled);
-    assert!(
-        !config.realms[0]
-            .authentication
-            .mfa
-            .client_certificate
-            .enabled
-    );
-    assert!(!config.realms[0].authentication.mfa.sms.enabled);
     let (status, message) = weak_mfa_status(&config);
     assert_eq!(status, CheckStatus::Error);
     assert!(message.contains("no MFA"), "unexpected message: {message}");
-
-    // Each supported enabled factor satisfies the diagnostic.
-    let mut config = high_risk_config();
-    config.realms[0].authentication.mfa.allowed = vec!["totp".to_string()];
-    config.realms[0].authentication.mfa.totp.enabled = true;
-    assert_eq!(weak_mfa_status(&config).0, CheckStatus::Ok);
-
-    let mut config = high_risk_config();
-    config.realms[0].authentication.passkeys.enabled = true;
-    assert_eq!(weak_mfa_status(&config).0, CheckStatus::Ok);
-
-    let mut config = high_risk_config();
-    config.realms[0]
-        .authentication
-        .mfa
-        .client_certificate
-        .enabled = true;
-    assert_eq!(weak_mfa_status(&config).0, CheckStatus::Ok);
-
-    // SMS alone stays weak with the accurate strong-factor recommendation.
-    let mut config = high_risk_config();
-    config.realms[0].authentication.mfa.sms.enabled = true;
-    let (status, message) = weak_mfa_status(&config);
-    assert_eq!(status, CheckStatus::Error);
-    assert!(
-        message.contains("SMS-only"),
-        "unexpected message: {message}"
-    );
     assert!(message.contains("TOTP"), "unexpected message: {message}");
     assert!(
         message.contains("passkeys"),
         "unexpected message: {message}"
     );
+
+    // Each factor the product can perform satisfies the diagnostic, and the
+    // check names the factors the realm can actually use.
+    let mut config = high_risk_config();
+    config.realms[0].authentication.mfa.totp.enabled = true;
+    let (status, message) = weak_mfa_status(&config);
+    assert_eq!(status, CheckStatus::Ok);
+    assert!(message.contains("TOTP"), "unexpected message: {message}");
+
+    let mut config = high_risk_config();
+    config.realms[0].authentication.passkeys.enabled = true;
+    let (status, message) = weak_mfa_status(&config);
+    assert_eq!(status, CheckStatus::Ok);
     assert!(
-        message.contains("client-certificate"),
+        message.contains("passkeys"),
         "unexpected message: {message}"
     );
 }

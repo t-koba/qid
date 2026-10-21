@@ -47,13 +47,12 @@ smallest interoperable OIDC authorization-code deployment, then move to
 - `device-flow-tv.yaml`: TV / CLI device authorization flow.
 - `ciba-poll-client.yaml`: CIBA poll-mode client.
 - `ciam-customer-identity.yaml`: CIAM sign-in with FedCM, consent, identity proofing, and social login.
-- `passkeys-preferred.yaml`: passkeys preferred with password fallback.
+- `passkeys-with-password-fallback.yaml`: passkeys with password fallback.
 - `passwordless-passkeys-only.yaml`: passkey-only realm.
 - `totp-admin-step-up.yaml`: TOTP and admin step-up.
-- `client-certificate-mfa.yaml`: certificate-backed MFA signals.
-- `enterprise-webauthn-attestation.yaml`: managed passkey attestation and certificate-backed admin MFA.
-- `sms-recovery-step-up.yaml`: SMS-assisted recovery with safer passkey/TOTP primary MFA.
-- `password-policy-lockout.yaml`: Argon2id and lockout tuning.
+- `client-certificate-authentication.yaml`: client certificate authentication for a privileged realm.
+- `enterprise-webauthn-passkeys.yaml`: managed workforce passkeys.
+- `password-policy-lockout.yaml`: the realm's Argon2id cost and lockout limits.
 - `browser-session-and-refresh-rotation.yaml`: browser and refresh token lifetimes.
 
 ### 03-api-and-service-access

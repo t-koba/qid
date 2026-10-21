@@ -3,7 +3,7 @@ profile: oidc
 storage:
   primary:
     type: file
-    url: "config/usecases/data/runtime/02-application-sign-in/client-certificate-mfa.json"
+    url: "config/usecases/data/runtime/02-application-sign-in/client-certificate-authentication.json"
 
 crypto:
   default_alg: ES256
@@ -54,15 +54,8 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: true
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
-      mfa:
-        allowed:
-          - webauthn
-          - client_certificate
-        client_certificate:
-          enabled: true
     policy:
       default_decision: deny
       bundles:

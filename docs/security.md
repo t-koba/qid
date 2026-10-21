@@ -33,7 +33,7 @@ Important validation rules:
 
 ## Authentication
 
-Supported authentication surfaces include password, passkeys/WebAuthn, TOTP, push MFA, email magic link, browser sessions, and refresh token rotation.
+Supported authentication surfaces include password, passkeys/WebAuthn, TOTP, browser sessions, and refresh token rotation.
 
 Operational guidance:
 
@@ -41,7 +41,6 @@ Operational guidance:
 - Use `passwordless_only` only with passkeys enabled.
 - Tune Argon2id cost per deployment CPU/memory budget.
 - Keep lockout enabled for password-backed realms.
-- Treat email magic link and push channels as recovery or step-up surfaces unless your threat model accepts them as primary.
 
 ## Admin Operations
 
@@ -58,7 +57,7 @@ Operational guidance:
 
 For sensitive deployments, enable approval and keep elevation TTL short.
 
-`admin.security` is the single owner of the administrator authentication requirement: an administrator elevation must carry the required ACR and one of the required AMR methods, and `require_step_up` is on by default. A realm's `authentication.mfa` block configures the authentication methods a realm offers and does not restate that requirement.
+`admin.security` is the single owner of the administrator authentication requirement: an administrator elevation must carry the required ACR and one of the required AMR methods, and `require_step_up` is on by default. A realm's `authentication.mfa.totp.enabled` states whether the realm offers the TOTP factor and does not restate that requirement.
 
 ## Tokens and Clients
 

@@ -5,7 +5,7 @@ use qid_core::{
     models::{PasswordCredential, User},
     tenant::{RealmId, TenantId},
 };
-use qid_crypto::password;
+use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, password};
 use qid_storage::{AnyRepository, prelude::*};
 use serde::Deserialize;
 use std::{
@@ -288,11 +288,8 @@ realms:
         - name: dev-egress
           audience: "qpx"
           assertion:
-            header: "x-qid-assertion"
             ttl_seconds: 60
-            alg: ES256
           decision:
-            endpoint: "/pep/decision/v1/evaluate"
             fail_policy: deny
     policy:
       bundles:
@@ -460,6 +457,7 @@ async fn seed_users(
             .first()
             .context("config must contain at least one realm")?,
     };
+    let argon2id = Argon2idParams::from_cost(&realm_config.authentication.password.argon2id);
     let users: Vec<SeedUser> = read_json(input)?;
     ensure!(
         !users.is_empty(),
@@ -484,7 +482,7 @@ async fn seed_users(
         if let Some(user) = repo.get_user_by_email(&realm_id, &seed.email).await? {
             existing.push(seed.email.clone());
             if replace_password {
-                store_password(&repo, &user.id, &seed.password).await?;
+                store_password(&repo, &user.id, &seed.password, &argon2id).await?;
                 updated_password.push(seed.email);
             }
             continue;
@@ -502,7 +500,7 @@ async fn seed_users(
             org: None,
         })
         .await?;
-        store_password(&repo, &id, &seed.password).await?;
+        store_password(&repo, &id, &seed.password, &argon2id).await?;
         created.push(seed.email);
     }
 
@@ -537,13 +535,15 @@ async fn store_password(
     repo: &Arc<AnyRepository>,
     user_id: &str,
     plaintext: &str,
+    argon2id: &Argon2idParams,
 ) -> anyhow::Result<()> {
-    let hash = password::hash_password(plaintext)?;
+    // The realm's own Argon2id cost, so a seeded credential carries the
+    // deployment's calibration rather than the library defaults.
+    let hash = password::hash_password_with_params(plaintext, argon2id)?;
     repo.store_password_credential(&PasswordCredential {
         user_id: user_id.to_string(),
         hash,
-        algorithm: "argon2id".to_string(),
-        pepper_ref: None,
+        algorithm: ARGON2ID_ALGORITHM.to_string(),
     })
     .await?;
     Ok(())

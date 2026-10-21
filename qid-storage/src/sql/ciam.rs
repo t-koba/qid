@@ -351,12 +351,11 @@ impl CiamRepository for SqlRepository {
             });
         }
         sqlx::query(
-            "INSERT INTO credentials_password (user_id, hash, algorithm, pepper_ref) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET hash = excluded.hash, algorithm = excluded.algorithm, pepper_ref = excluded.pepper_ref",
+            "INSERT INTO credentials_password (user_id, hash, algorithm) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET hash = excluded.hash, algorithm = excluded.algorithm",
         )
         .bind(&credential.user_id)
         .bind(&credential.hash)
         .bind(&credential.algorithm)
-        .bind(&credential.pepper_ref)
         .execute(&mut *tx)
         .await
         .map_err(storage_to_qid_error)?;

@@ -16,10 +16,6 @@ base64 = { workspace = true }
 hex = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
-opentelemetry = { version = "0.27", optional = true, default-features = false, features = ["trace"] }
-opentelemetry-otlp = { version = "0.27", optional = true, default-features = false, features = ["trace", "grpc-tonic"] }
-opentelemetry_sdk = { version = "0.27", optional = true, default-features = false, features = ["trace", "rt-tokio"] }
-tracing-opentelemetry = { version = "0.29", optional = true }
 qid-core = { workspace = true }
 rand = { workspace = true }
 rsa = { workspace = true, features = ["sha2"] }
@@ -30,12 +26,5 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-[features]
-otel-otlp = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracing-opentelemetry"]
-
 [dev-dependencies]
 tokio = { workspace = true }
-
-[[test]]
-name = "otel_integration"
-required-features = ["otel-otlp"]

@@ -77,7 +77,6 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: false
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
     policy:

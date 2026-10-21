@@ -424,7 +424,6 @@ fn reset_credential(hash: &str) -> PasswordCredential {
         user_id: "user".into(),
         hash: hash.into(),
         algorithm: "argon2id".into(),
-        pepper_ref: None,
     }
 }
 

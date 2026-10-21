@@ -4,6 +4,11 @@ use super::*;
 /// superseded token revokes the whole token family.
 pub const REFRESH_REUSE_DETECTION_REVOKE_FAMILY: &str = "revoke_family";
 
+/// The only password hash algorithm the product creates. Verification
+/// accepts the algorithms an imported credential may carry, but a
+/// credential the product creates is always Argon2id.
+pub const PASSWORD_HASH_ALGORITHM: &str = "argon2id";
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AuthenticationConfig {
@@ -24,27 +29,21 @@ pub struct AuthenticationConfig {
 pub struct PasskeyConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
-    #[serde(default = "default_false")]
-    pub preferred: bool,
     #[serde(default)]
     pub rp_id: Option<String>,
     #[serde(default)]
     pub rp_origin: Option<String>,
     #[serde(default = "default_passkey_rp_name")]
     pub rp_name: String,
-    #[serde(default)]
-    pub attestation: Option<String>,
 }
 
 impl Default for PasskeyConfig {
     fn default() -> Self {
         Self {
             enabled: default_false(),
-            preferred: default_false(),
             rp_id: None,
             rp_origin: None,
             rp_name: default_passkey_rp_name(),
-            attestation: None,
         }
     }
 }
@@ -58,18 +57,23 @@ fn default_passkey_rp_name() -> String {
 pub struct PasswordConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// The algorithm the product creates credentials with. The product
+    /// creates Argon2id hashes only, so any other value names a capability
+    /// the product does not have and is a configuration error.
     #[serde(default = "default_password_hash")]
     pub hash: String,
-    #[serde(default)]
-    pub pepper_ref: Option<String>,
+    /// How many failed password logins lock the account.
     #[serde(default = "default_max_failed_attempts")]
     pub max_failed_attempts: u32,
+    /// How long the account stays locked.
     #[serde(default = "default_lockout_duration_seconds")]
     pub lockout_duration_seconds: u64,
     /// Per-realm Argon2id cost calibration. INTEROP §3 requires that these
     /// factors be tuned to the deployment's CPU/memory budget rather than
     /// hard-coded to the upstream library defaults. Verification always
-    /// honours the parameters embedded in the stored hash.
+    /// honours the parameters embedded in the stored hash, and a credential
+    /// whose parameters differ from this cost is rehashed with it at the
+    /// next successful login.
     #[serde(default)]
     pub argon2id: Argon2idCostConfig,
 }
@@ -79,11 +83,68 @@ impl Default for PasswordConfig {
         Self {
             enabled: default_true(),
             hash: default_password_hash(),
-            pepper_ref: None,
             max_failed_attempts: default_max_failed_attempts(),
             lockout_duration_seconds: default_lockout_duration_seconds(),
             argon2id: Argon2idCostConfig::default(),
         }
+    }
+}
+
+impl PasswordConfig {
+    /// The password policy a realm states. Every setting here has an
+    /// effect: the hash algorithm names the one the product creates, and
+    /// the lockout limits are the ones the realm's password logins
+    /// enforce.
+    pub fn validate(&self, realm_id: &str) -> QidResult<()> {
+        if self.hash != PASSWORD_HASH_ALGORITHM {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.password.hash must be \
+                     {PASSWORD_HASH_ALGORITHM} (got {})",
+                    self.hash
+                ),
+            });
+        }
+        if self.max_failed_attempts == 0 {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.password.max_failed_attempts must be at least 1"
+                ),
+            });
+        }
+        if self.lockout_duration_seconds == 0 {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.password.lockout_duration_seconds must be \
+                     at least 1"
+                ),
+            });
+        }
+        if self.argon2id.time_cost == 0 {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.password.argon2id.time_cost must be at \
+                     least 1"
+                ),
+            });
+        }
+        if self.argon2id.parallelism == 0 {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.password.argon2id.parallelism must be at \
+                     least 1"
+                ),
+            });
+        }
+        if u64::from(self.argon2id.memory_kib) < 8 * u64::from(self.argon2id.parallelism) {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.password.argon2id.memory_kib must be at \
+                     least 8 KiB per lane"
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -121,7 +182,7 @@ fn default_argon2id_parallelism() -> u32 {
 }
 
 fn default_password_hash() -> String {
-    "argon2id".to_string()
+    PASSWORD_HASH_ALGORITHM.to_string()
 }
 
 fn default_max_failed_attempts() -> u32 {
@@ -132,67 +193,23 @@ fn default_lockout_duration_seconds() -> u64 {
     300
 }
 
+/// The realm's multi-factor settings. The only factor the realm
+/// configuration names is TOTP, and a realm that does not enable it
+/// refuses TOTP enrolment and challenges.
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct MfaConfig {
     #[serde(default)]
-    pub allowed: Vec<String>,
-    #[serde(default)]
     pub totp: TotpConfig,
-    #[serde(default)]
-    pub sms: MfaSmsConfig,
-    #[serde(default)]
-    pub client_certificate: ClientCertificateMfaConfig,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ClientCertificateMfaConfig {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-}
-
-impl Default for ClientCertificateMfaConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_false(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct MfaSmsConfig {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct TotpConfig {
+    /// Whether the realm offers the TOTP factor. A realm that leaves it
+    /// disabled refuses TOTP enrolment and challenges.
     #[serde(default = "default_false")]
     pub enabled: bool,
-    #[serde(default = "default_totp_digits")]
-    pub digits: u32,
-    #[serde(default = "default_totp_period")]
-    pub period: u64,
-}
-
-impl Default for TotpConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_false(),
-            digits: default_totp_digits(),
-            period: default_totp_period(),
-        }
-    }
-}
-
-fn default_totp_digits() -> u32 {
-    6
-}
-fn default_totp_period() -> u64 {
-    30
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
@@ -320,10 +337,6 @@ pub struct PepRegistrationConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PepCapabilityConfig {
-    #[serde(default)]
-    pub mode: Option<String>,
-    #[serde(default)]
-    pub phase: Option<String>,
     pub effect: String,
 }
 
@@ -338,10 +351,6 @@ pub struct PepRegistrationAuthConfig {
     pub token_max_age_seconds: u64,
     #[serde(default = "default_pep_auth_clock_skew_seconds")]
     pub clock_skew_seconds: u64,
-    #[serde(default = "default_pep_auth_key_rotation")]
-    pub key_rotation: String,
-    #[serde(default)]
-    pub http_message_signatures: PepHttpMessageSignaturesConfig,
 }
 
 impl Default for PepRegistrationAuthConfig {
@@ -351,8 +360,6 @@ impl Default for PepRegistrationAuthConfig {
             replay_protection: default_true(),
             token_max_age_seconds: default_pep_auth_token_max_age_seconds(),
             clock_skew_seconds: default_pep_auth_clock_skew_seconds(),
-            key_rotation: default_pep_auth_key_rotation(),
-            http_message_signatures: PepHttpMessageSignaturesConfig::default(),
         }
     }
 }
@@ -366,21 +373,6 @@ pub enum PepAuthMethod {
     HttpMessageSignatures,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PepHttpMessageSignaturesConfig {
-    #[serde(default = "default_true")]
-    pub content_digest_required: bool,
-}
-
-impl Default for PepHttpMessageSignaturesConfig {
-    fn default() -> Self {
-        Self {
-            content_digest_required: default_true(),
-        }
-    }
-}
-
 fn default_pep_auth_token_max_age_seconds() -> u64 {
     300
 }
@@ -389,48 +381,28 @@ fn default_pep_auth_clock_skew_seconds() -> u64 {
     30
 }
 
-fn default_pep_auth_key_rotation() -> String {
-    "required".to_string()
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyAssertionConfig {
-    #[serde(default = "default_assertion_header")]
-    pub header: String,
     #[serde(default = "default_assertion_ttl_seconds")]
     pub ttl_seconds: u64,
-    #[serde(default = "default_assertion_alg")]
-    pub alg: String,
 }
 
 impl Default for ProxyAssertionConfig {
     fn default() -> Self {
         Self {
-            header: default_assertion_header(),
             ttl_seconds: default_assertion_ttl_seconds(),
-            alg: default_assertion_alg(),
         }
     }
-}
-
-fn default_assertion_header() -> String {
-    "x-qid-assertion".to_string()
 }
 
 fn default_assertion_ttl_seconds() -> u64 {
     60
 }
 
-fn default_assertion_alg() -> String {
-    "ES256".to_string()
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PepDecisionConfig {
-    #[serde(default = "default_pep_decision_endpoint")]
-    pub endpoint: String,
     #[serde(default = "default_pep_decision_fail_policy")]
     pub fail_policy: String,
     #[serde(default)]
@@ -440,15 +412,10 @@ pub struct PepDecisionConfig {
 impl Default for PepDecisionConfig {
     fn default() -> Self {
         Self {
-            endpoint: default_pep_decision_endpoint(),
             fail_policy: default_pep_decision_fail_policy(),
             cache: PepDecisionCacheConfig::default(),
         }
     }
-}
-
-fn default_pep_decision_endpoint() -> String {
-    "/pep/decision/v1/evaluate".to_string()
 }
 
 fn default_pep_decision_fail_policy() -> String {

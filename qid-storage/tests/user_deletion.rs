@@ -28,7 +28,6 @@ async fn seed(repo: &impl Repository) {
             user_id: id.into(),
             hash: "test-hash".into(),
             algorithm: "argon2id".into(),
-            pepper_ref: None,
         })
         .await
         .unwrap();

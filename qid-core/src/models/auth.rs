@@ -6,7 +6,6 @@ pub struct PasswordCredential {
     pub user_id: String,
     pub hash: String,
     pub algorithm: String,
-    pub pepper_ref: Option<String>,
 }
 
 /// An OAuth/OIDC client.

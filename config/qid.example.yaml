@@ -115,7 +115,6 @@ realms:
     authentication:
       passkeys:
         enabled: true
-        preferred: true
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
         rp_name: "qid"
@@ -123,11 +122,8 @@ realms:
         enabled: true
         hash: argon2id
       mfa:
-        allowed: ["webauthn", "totp", "recovery_code"]
         totp:
           enabled: true
-          digits: 6
-          period: 30
     sessions:
       browser:
         cookie_name: "__Host-qid"
@@ -142,11 +138,8 @@ realms:
         - name: egress-main
           audience: "urn:qid:pep:corp/egress-main"
           assertion:
-            header: "x-qid-assertion"
             ttl_seconds: 60
-            alg: ES256
           decision:
-            endpoint: "/pep/decision/v1/evaluate"
             fail_policy: deny
     policy:
       default_decision: deny

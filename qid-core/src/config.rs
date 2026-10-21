@@ -1224,12 +1224,7 @@ impl RealmConfig {
                         ),
                     });
                 }
-                let key = (
-                    capability.mode.as_deref().unwrap_or_default(),
-                    capability.phase.as_deref().unwrap_or_default(),
-                    capability.effect.as_str(),
-                );
-                if !seen_capabilities.insert(key) {
+                if !seen_capabilities.insert(capability.effect.as_str()) {
                     return Err(QidError::Config {
                         message: format!(
                             "realm {} PEP registration {} has duplicate capability effect {}",
@@ -1240,6 +1235,7 @@ impl RealmConfig {
             }
         }
         self.sessions.refresh_tokens.validate(&self.id)?;
+        self.authentication.password.validate(&self.id)?;
         if self.authentication.passwordless_only {
             if !self.authentication.passkeys.enabled {
                 return Err(QidError::Config {

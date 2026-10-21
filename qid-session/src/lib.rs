@@ -11,7 +11,7 @@ pub mod refresh;
 pub mod totp_api;
 pub mod webauthn;
 
-pub use api::{auth_routes, auth_routes_with_push};
+pub use api::auth_routes;
 pub use auth::Authenticator;
 pub use browser::{
     BrowserSession, decode_cached_session, session_cache_key, session_cache_put, session_is_active,
@@ -51,19 +51,5 @@ mod tests {
         let uid2 = uuid::Uuid::from_slice(&sha2::Sha256::digest(user_id.as_bytes())[..16]).unwrap();
         assert_eq!(uid, uid2);
         assert_eq!(uid_str.len(), 36);
-    }
-
-    #[test]
-    fn webauthn_state_key_is_realm_scoped_and_uses_stable_user_id() {
-        let user_id = "user_01HZ";
-
-        assert_eq!(
-            webauthn::webauthn_state_key("corp", user_id),
-            webauthn::webauthn_state_key("corp", user_id)
-        );
-        assert_ne!(
-            webauthn::webauthn_state_key("corp", user_id),
-            webauthn::webauthn_state_key("partner", user_id)
-        );
     }
 }

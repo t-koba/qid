@@ -16,8 +16,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use url::Url;
 
-use self::email_magic_api::email_magic_routes;
-use self::push_api::push_routes;
 use crate::auth::Authenticator;
 use crate::browser::SessionManager;
 use crate::webauthn::{WebAuthnService, WebAuthnState};
@@ -71,12 +69,6 @@ pub fn auth_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState
         .layer(Extension(WebAuthnState::new()))
 }
 
-pub fn auth_routes_with_push<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
-    auth_routes::<R>(paths)
-        .merge(push_routes::<R>())
-        .merge(email_magic_routes::<R>(paths))
-}
-
 pub(crate) fn build_webauthn_service<R: Repository>(
     state: &Arc<SharedState<R>>,
     realm: &str,
@@ -86,13 +78,6 @@ pub(crate) fn build_webauthn_service<R: Repository>(
     if !passkey_config.enabled {
         return Err(QidError::BadRequest {
             message: "WebAuthn is not enabled for this realm".to_string(),
-        });
-    }
-    if let Some(attestation) = passkey_config.attestation.as_deref()
-        && !matches!(attestation, "none")
-    {
-        return Err(QidError::Config {
-            message: "WebAuthn attestation and FIDO Metadata policy are not connected to the registration ceremony".to_string(),
         });
     }
     let rp_id = passkey_config.rp_id.clone().unwrap_or_else(|| {
@@ -136,9 +121,7 @@ pub struct UserResponse {
     email: String,
 }
 
-mod email_magic_api;
 mod password;
-mod push_api;
 mod session;
 mod webauthn;
 

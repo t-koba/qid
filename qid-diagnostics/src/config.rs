@@ -65,24 +65,21 @@ pub(crate) fn check_weak_flows(config: &QidConfig) -> Vec<CheckItem> {
             .collect();
 
             if has_high_risk {
-                let mfa = &realm.authentication.mfa;
-                let strong_mfa = mfa.totp.enabled
-                    || realm.authentication.passkeys.enabled
-                    || mfa.client_certificate.enabled;
+                // The product performs TOTP and passkeys, so the check
+                // reports the factors this realm can actually use.
+                let mut factors: Vec<&str> = Vec::new();
+                if realm.authentication.mfa.totp.enabled {
+                    factors.push("TOTP");
+                }
+                if realm.authentication.passkeys.enabled {
+                    factors.push("passkeys");
+                }
                 let weak_mfa_name = format!("weak_mfa.{}", realm.id);
-                if mfa.sms.enabled && !strong_mfa {
+                if factors.is_empty() {
                     items.push(check_error(
                         weak_mfa_name,
                         format!(
-                            "high-risk audiences {:?} enabled but MFA is SMS-only; require TOTP, passkeys, or client-certificate MFA",
-                            high_risk_audiences
-                        ),
-                    ));
-                } else if !mfa.sms.enabled && !strong_mfa {
-                    items.push(check_error(
-                        weak_mfa_name,
-                        format!(
-                            "high-risk audiences {:?} enabled but no MFA configured",
+                            "high-risk audiences {:?} enabled but no MFA factor is enabled; require TOTP or passkeys",
                             high_risk_audiences
                         ),
                     ));
@@ -90,8 +87,9 @@ pub(crate) fn check_weak_flows(config: &QidConfig) -> Vec<CheckItem> {
                     items.push(check_ok(
                         weak_mfa_name,
                         format!(
-                            "high-risk audiences {:?} have strong MFA configured",
-                            high_risk_audiences
+                            "high-risk audiences {:?} have strong MFA enabled: {}",
+                            high_risk_audiences,
+                            factors.join(", ")
                         ),
                     ));
                 }

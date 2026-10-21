@@ -17,7 +17,10 @@ use qid_core::{
 };
 use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
 
-use qid_session::{auth::Authenticator, session_is_active};
+use qid_session::{
+    auth::{Authenticator, PasswordPolicy},
+    session_is_active,
+};
 use qid_storage::prelude::*;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
@@ -237,7 +240,24 @@ pub async fn authorize_post<R: Repository>(
         };
     resolved.dpop_proof = dpop_proof;
 
-    let authenticator = Authenticator::new(state.repo.clone());
+    let realm_config = match state.require_realm(&client.realm_id) {
+        Ok(config) => config,
+        Err(e) => return qid_http::error_response(e),
+    };
+    if !realm_config.accepts_password_authentication() {
+        return authorization_error_response(
+            &state,
+            &resolved,
+            &client,
+            "access_denied",
+            "password authentication is disabled for this realm",
+        );
+    }
+
+    let authenticator = Authenticator::new(
+        state.repo.clone(),
+        PasswordPolicy::from_config(&realm_config.password),
+    );
     let auth_result = match authenticator
         .authenticate_password(
             &RealmId::from(client.realm_id.clone()),

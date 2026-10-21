@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS credentials_password (
     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     hash TEXT NOT NULL,
     algorithm TEXT NOT NULL,
-    pepper_ref TEXT,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );

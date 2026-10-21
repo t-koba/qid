@@ -659,3 +659,16 @@ fn explain_json_merges_risk_evaluation_into_required_auth_pep_and_audit() {
     );
     assert_eq!(explanation["required_auth"]["amr"][0], "webauthn");
 }
+
+#[test]
+fn totp_enrolment_refuses_a_realm_that_does_not_offer_the_factor() {
+    let disabled =
+        qid_core::plan::RuntimePlan::from_config(&minimal_config()).expect("runtime plan");
+    assert!(ensure_totp_offered(&disabled, "corp").is_err());
+    assert!(ensure_totp_offered(&disabled, "unknown-realm").is_err());
+
+    let mut config = minimal_config();
+    config.realms[0].authentication.mfa.totp.enabled = true;
+    let enabled = qid_core::plan::RuntimePlan::from_config(&config).expect("runtime plan");
+    assert!(ensure_totp_offered(&enabled, "corp").is_ok());
+}

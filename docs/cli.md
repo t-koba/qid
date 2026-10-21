@@ -99,6 +99,8 @@ cargo run --bin qidc -- --config target/qid-dev/qid.yaml session create \
 | --- | --- |
 | `enroll` | `--user-id` |
 
+`enroll` writes a TOTP credential for an existing user of a realm that offers the TOTP factor (`authentication.mfa.totp.enabled`). A realm that does not enable TOTP refuses the enrolment, and so does an unknown user.
+
 ### qidc explain
 
 `explain` builds a policy/risk input from flags. For PEP scenarios, it explains the qid-owned decision context and PEP registration.

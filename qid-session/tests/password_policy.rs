@@ -8,6 +8,7 @@ use qid_core::{
     error::QidError,
     models::{PasswordCredential, User},
     tenant::RealmId,
+    throttle::FailureBudget,
 };
 use qid_crypto::{
     ARGON2ID_ALGORITHM, Argon2idParams, PBKDF2_SHA256_ALGORITHM, encode_pbkdf2_sha256_hash,
@@ -18,8 +19,17 @@ use qid_storage::{FileRepository, prelude::*};
 use std::sync::Arc;
 
 fn policy(max_failed_attempts: u32, argon2id: Argon2idCostConfig) -> PasswordPolicy {
+    policy_with_realm_budget(max_failed_attempts, 100, argon2id)
+}
+
+fn policy_with_realm_budget(
+    max_failed_attempts: u32,
+    max_failed_attempts_per_realm: u32,
+    argon2id: Argon2idCostConfig,
+) -> PasswordPolicy {
     let config = PasswordConfig {
         max_failed_attempts,
+        max_failed_attempts_per_realm,
         argon2id,
         ..PasswordConfig::default()
     };
@@ -85,7 +95,11 @@ async fn the_realm_lockout_limit_locks_the_account() -> anyhow::Result<()> {
         PBKDF2_SHA256_ALGORITHM,
     )
     .await?;
-    let authenticator = Authenticator::new(repo.clone(), policy(2, Argon2idCostConfig::default()));
+    let authenticator = Authenticator::new(
+        repo.clone(),
+        policy(2, Argon2idCostConfig::default()),
+        Arc::new(FailureBudget::new()),
+    );
 
     for _ in 0..2 {
         let err = authenticator
@@ -149,6 +163,7 @@ async fn the_realm_argon2id_cost_reaches_a_credential_that_already_exists() -> a
                 parallelism: 1,
             },
         ),
+        Arc::new(FailureBudget::new()),
     );
 
     authenticator
@@ -199,6 +214,7 @@ async fn the_realm_argon2id_cost_applies_when_the_product_creates_a_credential()
                 parallelism: 1,
             },
         ),
+        Arc::new(FailureBudget::new()),
     );
 
     authenticator
@@ -226,5 +242,48 @@ async fn the_realm_argon2id_cost_applies_when_the_product_creates_a_credential()
         "the realm's time cost applies: {}",
         stored.hash
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_spent_realm_budget_refuses_the_password_paths() -> anyhow::Result<()> {
+    // The realm accepts one failed login per window. The account lockout
+    // stays at five, so what refuses the second login is the budget of
+    // the realm and not the lockout of the account.
+    let repo = repository_with_user(
+        hash_password_with_params("correct-password-123!", &Argon2idParams::new(8, 1, 1))
+            .context("password hashing failed")?,
+        ARGON2ID_ALGORITHM,
+    )
+    .await?;
+    let budget = Arc::new(FailureBudget::new());
+    let policy = policy_with_realm_budget(5, 1, Argon2idCostConfig::default());
+    // Both password login paths share the budget of the realm.
+    let session_path = Authenticator::new(repo.clone(), policy, budget.clone());
+    let oidc_path = Authenticator::new(repo.clone(), policy, budget.clone());
+
+    let err = session_path
+        .authenticate_password(
+            &RealmId::from("corp"),
+            "alice@example.com",
+            "wrong-password",
+        )
+        .await
+        .err()
+        .context("a wrong password is refused")?;
+    assert!(matches!(err, QidError::Unauthorized { .. }));
+
+    // The other path spends the same budget, so it refuses the correct
+    // password before it verifies a credential.
+    let err = oidc_path
+        .authenticate_password(
+            &RealmId::from("corp"),
+            "alice@example.com",
+            "correct-password-123!",
+        )
+        .await
+        .err()
+        .context("a spent realm budget refuses the login")?;
+    assert!(matches!(err, QidError::AttemptBudgetSpent { .. }));
     Ok(())
 }

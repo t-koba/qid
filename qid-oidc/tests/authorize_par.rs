@@ -1967,6 +1967,41 @@ async fn authorize_post_locks_the_account_after_the_realm_attempt_limit() {
 }
 
 #[tokio::test]
+async fn authorize_post_refuses_password_logins_once_the_realm_budget_is_spent() {
+    let mut config = test_helpers::test_config();
+    // The realm accepts two failed logins per window. The account lockout
+    // stays at five, so what refuses the third attempt is the budget of
+    // the realm rather than the lockout of the account.
+    config.realms[0].authentication.password.max_failed_attempts = 5;
+    config.realms[0]
+        .authentication
+        .password
+        .max_failed_attempts_per_realm = 2;
+    let (app, state) = setup_with_config(config).await;
+
+    for _ in 0..2 {
+        let refused = post_form(
+            app.clone(),
+            authorize_query(&state, ""),
+            "email=par%40example.com&password=wrong-password",
+        )
+        .await;
+        let location = redirect_location(&refused);
+        assert!(location.contains("error=access_denied"), "{location}");
+    }
+
+    // The realm's budget is spent, so the correct password is refused as
+    // a temporary condition rather than as a wrong password.
+    let refused = post_form(app, authorize_query(&state, ""), LOGIN_FORM).await;
+    let location = redirect_location(&refused);
+    assert!(
+        location.contains("error=temporarily_unavailable"),
+        "{location}"
+    );
+    assert!(!location.contains("code=ac_"), "{location}");
+}
+
+#[tokio::test]
 async fn authorize_par_preserves_assurance_requirements() {
     let (app, state) = setup().await;
     create_browser_session(&state, "sid-par-acr").await;

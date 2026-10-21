@@ -9,6 +9,7 @@ use qid_core::{
     jwt::{JwtClaims, Signer, TokenData},
     models::{PasswordCredential, User},
     tenant::RealmId,
+    throttle::FailureBudget,
 };
 use qid_crypto::{ARGON2ID_ALGORITHM, hash_password};
 use qid_session::{
@@ -118,6 +119,7 @@ async fn password_login_session_and_revoke_propagate_through_shared_cache() -> a
     let auth = Authenticator::new(
         Arc::clone(&repo),
         PasswordPolicy::from_config(&AuthenticationConfig::default().password),
+        Arc::new(FailureBudget::new()),
     );
     let authn = auth
         .authenticate_password(

@@ -5,6 +5,7 @@ use qid_core::config::PasswordConfig;
 use qid_core::error::{QidError, QidResult};
 use qid_core::models::{PasswordCredential, User};
 use qid_core::tenant::RealmId;
+use qid_core::throttle::FailureBudget;
 use qid_crypto::{
     ARGON2ID_ALGORITHM, Argon2idParams, BreachedPasswordSet, hash_password_with_params,
     verify_password_credential,
@@ -29,6 +30,7 @@ pub struct AuthResult {
 #[derive(Debug, Clone, Copy)]
 pub struct PasswordPolicy {
     pub max_failed_attempts: u32,
+    pub max_failed_attempts_per_realm: u32,
     pub lockout_duration_seconds: u64,
     pub argon2id: Argon2idParams,
 }
@@ -38,6 +40,7 @@ impl PasswordPolicy {
     pub fn from_config(config: &PasswordConfig) -> Self {
         Self {
             max_failed_attempts: config.max_failed_attempts,
+            max_failed_attempts_per_realm: config.max_failed_attempts_per_realm,
             lockout_duration_seconds: config.lockout_duration_seconds,
             argon2id: Argon2idParams::from_cost(&config.argon2id),
         }
@@ -50,15 +53,17 @@ pub struct Authenticator<R: Repository> {
     breached_passwords: BreachedPasswordSet,
     hibp_client: Option<HibpClient>,
     policy: PasswordPolicy,
+    failure_budget: Arc<FailureBudget>,
 }
 
 impl<R: Repository> Authenticator<R> {
-    pub fn new(repo: Arc<R>, policy: PasswordPolicy) -> Self {
+    pub fn new(repo: Arc<R>, policy: PasswordPolicy, failure_budget: Arc<FailureBudget>) -> Self {
         Self {
             repo,
             breached_passwords: BreachedPasswordSet::default(),
             hibp_client: None,
             policy,
+            failure_budget,
         }
     }
 
@@ -66,12 +71,14 @@ impl<R: Repository> Authenticator<R> {
         repo: Arc<R>,
         breached_passwords: BreachedPasswordSet,
         policy: PasswordPolicy,
+        failure_budget: Arc<FailureBudget>,
     ) -> Self {
         Self {
             repo,
             breached_passwords,
             hibp_client: None,
             policy,
+            failure_budget,
         }
     }
 
@@ -87,6 +94,20 @@ impl<R: Repository> Authenticator<R> {
         email: &str,
         password: &str,
     ) -> QidResult<AuthResult> {
+        // The realm spends a bounded number of failed password logins per
+        // window. A realm that has spent its budget refuses password
+        // logins before any credential is verified, so neither a password
+        // spray nor a mass lockout makes the daemon verify credentials or
+        // lock accounts without bound.
+        if self.failure_budget.exhausted(
+            realm_id.as_str(),
+            self.policy.max_failed_attempts_per_realm,
+            self.policy.lockout_duration_seconds,
+        ) {
+            return Err(QidError::AttemptBudgetSpent {
+                message: "too many failed password attempts for this realm".to_string(),
+            });
+        }
         let user = self
             .repo
             .get_user_by_email(realm_id, email)
@@ -120,7 +141,7 @@ impl<R: Repository> Authenticator<R> {
                     message: format!("breach check error: {e}"),
                 })?
         {
-            self.record_failed_attempt(&mut user, now).await?;
+            self.record_failed_attempt(realm_id, &mut user, now).await?;
             return Err(QidError::Unauthorized {
                 message: "password is compromised".to_string(),
             });
@@ -129,7 +150,7 @@ impl<R: Repository> Authenticator<R> {
         let cred = match self.repo.get_password_credential(&user.id).await? {
             Some(c) => c,
             None => {
-                self.record_failed_attempt(&mut user, now).await?;
+                self.record_failed_attempt(realm_id, &mut user, now).await?;
                 return Err(QidError::Unauthorized {
                     message: "invalid credentials".to_string(),
                 });
@@ -151,7 +172,7 @@ impl<R: Repository> Authenticator<R> {
         );
 
         if !verification.valid {
-            self.record_failed_attempt(&mut user, now).await?;
+            self.record_failed_attempt(realm_id, &mut user, now).await?;
             return Err(QidError::Unauthorized {
                 message: "invalid credentials".to_string(),
             });
@@ -211,11 +232,21 @@ impl<R: Repository> Authenticator<R> {
         })
     }
 
-    async fn record_failed_attempt(&self, user: &mut User, now: u64) -> QidResult<()> {
+    async fn record_failed_attempt(
+        &self,
+        realm_id: &RealmId,
+        user: &mut User,
+        now: u64,
+    ) -> QidResult<()> {
         user.failed_login_attempts += 1;
         if user.failed_login_attempts >= self.policy.max_failed_attempts {
             user.locked_until = Some(now + self.policy.lockout_duration_seconds);
         }
+        self.failure_budget.record_failure(
+            realm_id.as_str(),
+            self.policy.max_failed_attempts_per_realm,
+            self.policy.lockout_duration_seconds,
+        );
         self.repo.update_user(user).await
     }
 }
@@ -322,6 +353,7 @@ mod tests {
         let authenticator = Authenticator::new(
             repo.clone(),
             PasswordPolicy::from_config(&PasswordConfig::default()),
+            Arc::new(FailureBudget::new()),
         );
 
         let result = authenticator
@@ -352,6 +384,7 @@ mod tests {
             repo,
             breached,
             PasswordPolicy::from_config(&PasswordConfig::default()),
+            Arc::new(FailureBudget::new()),
         );
 
         let err = authenticator

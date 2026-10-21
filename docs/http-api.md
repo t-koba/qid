@@ -67,7 +67,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. The realm's password policy is the attempt limit; a locked account answers `429 Too Many Requests`. |
+| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. The realm's password policy is the attempt limit: a locked account, and a realm that has spent its budget of failed password logins, answer `429 Too Many Requests`. |
 | `POST` | configurable `auth_session_refresh`, default `/api/v1/:realm/auth/session/refresh` | Refresh browser session. |
 | `POST` | configurable `auth_session_revoke`, default `/api/v1/:realm/auth/session/revoke` | Revoke browser session. |
 | `POST` | configurable `auth_webauthn_start`, default `/api/v1/:realm/auth/webauthn/start` | WebAuthn registration start. |

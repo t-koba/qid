@@ -4,6 +4,7 @@ use crate::cache::{DecisionCacheEntry, DpopState, MemoryCache, SessionCache, Sha
 use crate::config::{QidConfig, ServerPaths};
 use crate::error::{QidError, QidResult};
 use crate::plan::RuntimePlan;
+use crate::throttle::FailureBudget;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
@@ -36,6 +37,10 @@ pub struct SharedState<Repository> {
     pub session_cache: RwLock<SessionCache>,
     /// Shared L2 cache for replay guards and cross-instance coordination.
     pub shared_cache: Arc<dyn SharedCache>,
+    /// The budget of failures a key may spend within a window. The
+    /// password login paths of this process enforce the realm's budget
+    /// of failed password logins here.
+    pub failure_budget: Arc<FailureBudget>,
     native_mtls_metadata_key: Vec<u8>,
     /// Process-local pepper for short-lived CIAM verification challenges.
     pub ciam_verification_pepper: Vec<u8>,
@@ -77,6 +82,7 @@ impl<Repository> SharedState<Repository> {
             decision_cache: RwLock::new(HashMap::new()),
             session_cache: RwLock::new(SessionCache::new(10_000)),
             shared_cache,
+            failure_budget: Arc::new(FailureBudget::new()),
             native_mtls_metadata_key: random_pepper(),
             ciam_verification_pepper: random_pepper(),
             workload_ca_certificate_pem: None,

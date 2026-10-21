@@ -257,6 +257,7 @@ pub async fn authorize_post<R: Repository>(
     let authenticator = Authenticator::new(
         state.repo.clone(),
         PasswordPolicy::from_config(&realm_config.password),
+        state.failure_budget.clone(),
     );
     let auth_result = match authenticator
         .authenticate_password(
@@ -267,7 +268,21 @@ pub async fn authorize_post<R: Repository>(
         .await
     {
         Ok(a) => a,
-        Err(_) => {
+        Err(e) => {
+            // A realm that has spent its budget of failed password logins
+            // is a temporary condition of the realm, not of the account
+            // the caller named: the authorization server cannot handle
+            // the request now. A locked account stays a refusal of the
+            // password, so the answer says nothing about the account.
+            if matches!(e, QidError::AttemptBudgetSpent { .. }) {
+                return authorization_error_response(
+                    &state,
+                    &resolved,
+                    &client,
+                    "temporarily_unavailable",
+                    "too many password attempts, try again later",
+                );
+            }
             return authorization_error_response(
                 &state,
                 &resolved,

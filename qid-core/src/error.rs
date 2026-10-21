@@ -88,6 +88,11 @@ pub enum QidError {
     Internal { message: String },
     #[error("too many requests: {message}")]
     TooManyRequests { message: String },
+    /// The budget of failures a realm accepts within its window is spent.
+    /// The condition belongs to the realm rather than to an account, so it
+    /// says nothing about the account a caller named.
+    #[error("attempt budget spent: {message}")]
+    AttemptBudgetSpent { message: String },
     #[error("conflict: {message}")]
     Conflict { message: String },
     #[error("bad request: {message}")]
@@ -113,6 +118,7 @@ impl QidError {
             QidError::BadRequest { .. } => ErrorCode::InvalidRequest,
             QidError::Internal { .. } => ErrorCode::ServerError,
             QidError::TooManyRequests { .. } => ErrorCode::TooManyRequests,
+            QidError::AttemptBudgetSpent { .. } => ErrorCode::TooManyRequests,
             QidError::Conflict { .. } => ErrorCode::Conflict,
             QidError::DpopNonce { .. } => ErrorCode::UseDpopNonce,
         }
@@ -132,6 +138,7 @@ impl QidError {
             QidError::BadRequest { .. } => 400,
             QidError::Internal { .. } => 500,
             QidError::TooManyRequests { .. } => 429,
+            QidError::AttemptBudgetSpent { .. } => 429,
             QidError::Conflict { .. } => 409,
             QidError::DpopNonce { .. } => 400,
         }

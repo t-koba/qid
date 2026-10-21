@@ -161,6 +161,42 @@ async fn the_password_route_locks_after_the_number_the_realm_states() -> anyhow:
 }
 
 #[tokio::test]
+async fn the_password_route_refuses_logins_once_the_realm_budget_is_spent() -> anyhow::Result<()> {
+    // The realm accepts two failed logins per window. The account lockout
+    // stays at five, so what refuses the third attempt is the budget of
+    // the realm rather than the lockout of the account.
+    let app = app_with_realm(|realm| {
+        realm.authentication.password.max_failed_attempts_per_realm = 2;
+    })
+    .await?;
+    for _ in 0..2 {
+        let status = post_password(app.clone(), "wrong-password").await?;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "a failure below the realm's budget is a refusal of the password"
+        );
+    }
+
+    let status = post_password(app.clone(), "wrong-password").await?;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the realm's budget is spent"
+    );
+
+    // The budget refuses even the correct password: the realm stops
+    // verifying credentials once the budget is spent.
+    let status = post_password(app, PASSWORD).await?;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the spent budget refuses the correct password"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_password_route_refuses_a_realm_that_does_not_accept_passwords() -> anyhow::Result<()> {
     // The realm refuses password logins, so the route answers the
     // correct password with the same refusal as a wrong one.

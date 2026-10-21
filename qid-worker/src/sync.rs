@@ -203,6 +203,7 @@ pub(crate) fn directory_fetch_error(err: QidError) -> QidError {
         QidError::BadRequest { .. } => QidError::BadRequest { message },
         QidError::Internal { .. } => QidError::Internal { message },
         QidError::TooManyRequests { .. } => QidError::TooManyRequests { message },
+        QidError::AttemptBudgetSpent { .. } => QidError::AttemptBudgetSpent { message },
         QidError::Conflict { .. } => QidError::Conflict { message },
         QidError::DpopNonce { .. } => QidError::DpopNonce { message },
     }

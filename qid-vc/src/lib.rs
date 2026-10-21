@@ -199,6 +199,7 @@ pub(crate) fn oauth_error_code(error: &QidError) -> &'static str {
         | QidError::Storage { .. }
         | QidError::Internal { .. }
         | QidError::TooManyRequests { .. }
+        | QidError::AttemptBudgetSpent { .. }
         | QidError::Conflict { .. } => "server_error",
     }
 }

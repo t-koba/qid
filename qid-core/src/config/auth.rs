@@ -68,6 +68,12 @@ pub struct PasswordConfig {
     /// How long the account stays locked.
     #[serde(default = "default_lockout_duration_seconds")]
     pub lockout_duration_seconds: u64,
+    /// How many failed password logins the realm accepts within the
+    /// lockout window. A realm that has spent this budget refuses further
+    /// password logins until the window passes, so neither a password
+    /// spray nor a mass lockout runs without bound.
+    #[serde(default = "default_max_failed_attempts_per_realm")]
+    pub max_failed_attempts_per_realm: u32,
     /// Per-realm Argon2id cost calibration. INTEROP §3 requires that these
     /// factors be tuned to the deployment's CPU/memory budget rather than
     /// hard-coded to the upstream library defaults. Verification always
@@ -85,6 +91,7 @@ impl Default for PasswordConfig {
             hash: default_password_hash(),
             max_failed_attempts: default_max_failed_attempts(),
             lockout_duration_seconds: default_lockout_duration_seconds(),
+            max_failed_attempts_per_realm: default_max_failed_attempts_per_realm(),
             argon2id: Argon2idCostConfig::default(),
         }
     }
@@ -117,6 +124,14 @@ impl PasswordConfig {
                 message: format!(
                     "realm {realm_id} authentication.password.lockout_duration_seconds must be \
                      at least 1"
+                ),
+            });
+        }
+        if self.max_failed_attempts_per_realm == 0 {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.password.max_failed_attempts_per_realm \
+                     must be at least 1"
                 ),
             });
         }
@@ -191,6 +206,10 @@ fn default_max_failed_attempts() -> u32 {
 
 fn default_lockout_duration_seconds() -> u64 {
     300
+}
+
+fn default_max_failed_attempts_per_realm() -> u32 {
+    100
 }
 
 /// The realm's multi-factor settings. The only factor the realm

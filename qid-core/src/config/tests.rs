@@ -1869,6 +1869,25 @@ fn a_realm_password_lockout_limit_of_zero_is_rejected() {
 }
 
 #[test]
+fn a_realm_password_budget_of_zero_is_rejected() {
+    // A realm that accepts no failed login at all would refuse every
+    // password login, so the budget must be a usable number.
+    let mut config = minimal_config();
+    config.realms[0]
+        .authentication
+        .password
+        .max_failed_attempts_per_realm = 0;
+    let err = config
+        .validate()
+        .expect_err("a zero realm failure budget is rejected");
+    assert!(
+        err.message().contains("max_failed_attempts_per_realm"),
+        "the error names the key: {}",
+        err.message()
+    );
+}
+
+#[test]
 fn a_realm_password_argon2id_cost_the_product_cannot_use_is_rejected() {
     // The cost is the calibration the product hashes with, so a cost the
     // Argon2id parameters cannot express must fail at load time rather

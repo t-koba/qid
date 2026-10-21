@@ -41,6 +41,7 @@ pub async fn password_auth<R: Repository>(
     let authenticator = Authenticator::new(
         state.repo.clone(),
         PasswordPolicy::from_config(&realm_config.password),
+        state.failure_budget.clone(),
     );
     metrics::counter!("qid_authn_attempts_total", "method" => "password").increment(1);
     let auth_result = match authenticator

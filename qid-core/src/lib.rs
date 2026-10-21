@@ -12,6 +12,7 @@ pub mod pkce;
 pub mod plan;
 pub mod state;
 pub mod tenant;
+pub mod throttle;
 pub mod util;
 pub mod web;
 
@@ -28,3 +29,4 @@ pub use error::{QidError, QidResult};
 pub use models::*;
 pub use plan::RuntimePlan;
 pub use tenant::{RealmId, TenantId};
+pub use throttle::FailureBudget;

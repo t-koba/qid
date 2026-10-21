@@ -773,8 +773,6 @@ pub struct DirectoryConfig {
     pub default_provider_id: Option<String>,
     #[serde(default)]
     pub providers: Vec<DirectoryProviderConfig>,
-    #[serde(default)]
-    pub hr_connectors: Vec<HrConnectorConfig>,
 }
 
 fn default_directory_enabled() -> bool {
@@ -787,16 +785,8 @@ impl Default for DirectoryConfig {
             enabled: true,
             default_provider_id: None,
             providers: Vec::new(),
-            hr_connectors: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum HrConnectorConfig {
-    Csv { file_path: String },
-    Webhook { url: String, secret: String },
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

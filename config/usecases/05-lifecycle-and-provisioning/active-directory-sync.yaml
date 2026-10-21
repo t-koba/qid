@@ -62,9 +62,6 @@ realms:
               department: department
               manager_dn: manager
               enabled: "!(userAccountControl:1.2.840.113556.1.4.803:=2)"
-        hr_connectors:
-          - csv:
-              file_path: "/var/lib/qid/hr/workforce.csv"
     authentication:
       passkeys:
         enabled: true

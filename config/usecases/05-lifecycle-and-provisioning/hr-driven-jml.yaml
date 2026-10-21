@@ -43,12 +43,6 @@ realms:
     protocols:
       directory:
         enabled: true
-        hr_connectors:
-          - webhook:
-              url: "https://hr.example.com/qid/events"
-              secret: "secret://qid/hr/webhook-secret"
-          - csv:
-              file_path: "/var/lib/qid/imports/workforce.csv"
         providers:
           - id: workforce-directory
             type: ldap

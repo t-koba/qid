@@ -166,6 +166,11 @@ fn search_options(config: &DirectoryConnectionConfig) -> LdapSearchOptions {
     }
 }
 
+/// The most pages one paged search may fetch and the most entries it may
+/// collect, so a directory that repeats a paging cookie cannot loop forever.
+const MAX_PAGED_SEARCH_PAGES: usize = 1_000;
+const MAX_PAGED_SEARCH_ENTRIES: usize = 100_000;
+
 /// Parse and re-serialize an LDAP filter with proper value escaping.
 /// Delegates to the RFC 4515 parser in `ldap_filter`.
 fn sanitize_admin_search_filter(filter: &str) -> QidResult<String> {
@@ -514,6 +519,7 @@ pub fn run_ldap_search_with_options(
             let page_size = options.page_size.unwrap_or(0);
             let mut all_entries = Vec::new();
             let mut cookie = Vec::new();
+            let mut pages = 0usize;
 
             loop {
                 if page_size > 0 {
@@ -536,6 +542,21 @@ pub fn run_ldap_search_with_options(
                 }
                 for entry in entries {
                     all_entries.push(map_ldap_search_entry(entry, mapping)?);
+                }
+                pages += 1;
+                if pages > MAX_PAGED_SEARCH_PAGES {
+                    return Err(QidError::Internal {
+                        message: format!(
+                            "LDAP paged search fetched more than {MAX_PAGED_SEARCH_PAGES} pages"
+                        ),
+                    });
+                }
+                if all_entries.len() > MAX_PAGED_SEARCH_ENTRIES {
+                    return Err(QidError::Internal {
+                        message: format!(
+                            "LDAP paged search returned more than {MAX_PAGED_SEARCH_ENTRIES} entries"
+                        ),
+                    });
                 }
                 if page_size == 0 || cookie.is_empty() {
                     break;

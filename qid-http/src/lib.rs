@@ -95,12 +95,10 @@ macro_rules! list_handler {
 
 /// Convert a `QidError` into an HTTP response.
 pub fn error_response(err: qid_core::QidError) -> axum::response::Response {
-    let status =
-        StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let body = Json(json!({ "error": err.message() }));
-    let mut response = (status, body).into_response();
+    let message = err.message();
+    let mut response = err.into_response();
     if response.status() == StatusCode::UNAUTHORIZED {
-        response = with_bearer_challenge(response, "invalid_token", &err.message(), None);
+        response = with_bearer_challenge(response, "invalid_token", &message, None);
     }
     response
 }

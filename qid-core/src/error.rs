@@ -145,3 +145,15 @@ impl From<anyhow::Error> for QidError {
         }
     }
 }
+
+impl axum::response::IntoResponse for QidError {
+    fn into_response(self) -> axum::response::Response {
+        let status = axum::http::StatusCode::from_u16(self.status_code())
+            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        (
+            status,
+            axum::Json(serde_json::json!({ "error": self.message() })),
+        )
+            .into_response()
+    }
+}

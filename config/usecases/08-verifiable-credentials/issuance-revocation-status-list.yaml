@@ -64,8 +64,6 @@ realms:
           jwt_response: true
         par:
           enabled: true
-          required_for:
-            - credential-admin
         rar:
           enabled: true
         dpop:

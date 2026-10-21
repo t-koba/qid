@@ -52,8 +52,6 @@ realms:
       oauth:
         par:
           enabled: true
-          required_for:
-            - expense-app
         rar:
           enabled: true
         private_key_jwt:

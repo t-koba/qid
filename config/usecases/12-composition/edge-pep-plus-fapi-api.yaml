@@ -63,8 +63,6 @@ realms:
           jwt_response: true
         par:
           enabled: true
-          required_for:
-            - finance-web
         rar:
           enabled: true
         dpop:

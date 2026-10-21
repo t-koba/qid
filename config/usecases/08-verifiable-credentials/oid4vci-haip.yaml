@@ -66,8 +66,6 @@ realms:
           jwt_response: true
         par:
           enabled: true
-          required_for:
-            - wallet-app
         rar:
           enabled: true
         dpop:

@@ -1266,9 +1266,8 @@ fn protocol_features_accept_a_bare_boolean_or_an_object() {
     let ciba: OAuthProtocolConfig = serde_json::from_str(r#"{"ciba":true}"#).unwrap();
     assert!(ciba.ciba.enabled);
     assert_eq!(ciba.ciba.mode, CibaMode::Poll);
-    let par: OAuthProtocolConfig =
-        serde_json::from_str(r#"{"par":{"required_for":["openid"]}}"#).unwrap();
-    assert_eq!(par.par.required_for, vec!["openid".to_string()]);
+    let par: OAuthProtocolConfig = serde_json::from_str(r#"{"par":{"enabled":true}}"#).unwrap();
+    assert!(par.par.enabled);
     let introspection: OAuthProtocolConfig =
         serde_json::from_str(r#"{"introspection":{"jwt_response":true}}"#).unwrap();
     assert!(introspection.introspection.jwt_response);
@@ -1472,6 +1471,21 @@ fn the_removed_sms_mfa_switch_is_rejected() {
         .expect_err("the removed switch is rejected");
     assert!(
         err.to_string().contains("sms"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_par_required_for_setting_is_rejected() {
+    // The requirement to push an authorization request is the realm's own
+    // setting, so a list of clients beside it named a per-client rule the
+    // product never applied: the realm either requires a pushed request
+    // or it does not. A configuration that still sets the list is a
+    // configuration error naming the key.
+    let err = serde_json::from_str::<OAuthProtocolConfig>(r#"{"par":{"required_for":["openid"]}}"#)
+        .expect_err("the removed setting is rejected");
+    assert!(
+        err.to_string().contains("required_for"),
         "the error names the removed key: {err}"
     );
 }

@@ -374,14 +374,20 @@ impl<'de> Deserialize<'de> for CibaConfig {
     enabled_or_object!(enabled = "bool::default"; mode: CibaMode = "CibaMode::default");
 }
 
+/// The realm's pushed authorization request setting.
+///
+/// The requirement to push a request is the realm's own setting,
+/// `require_pushed_authorization_requests`. A per-client list beside it
+/// named clients the product never read, so it was removed: a
+/// configuration that still sets `required_for` is a configuration error
+/// naming the key.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParConfig {
     pub enabled: bool,
-    pub required_for: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for ParConfig {
-    enabled_or_object!(enabled = "bool::default"; required_for: Vec<String> = "Vec::default");
+    enabled_or_object!(enabled = "bool::default";);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

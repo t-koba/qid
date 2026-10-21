@@ -275,6 +275,13 @@ oauth:
     nonce: false
 ```
 
+`oauth.require_pushed_authorization_requests` is a realm's own requirement: a realm
+that sets it refuses an authorization request that carries no pushed request. The
+requirement is read from the realm of the client that made the request, so it
+reaches the clients of that realm and no other. The per-client list
+`oauth.par.required_for` was removed: the product never read it, so a
+configuration that still sets it is a configuration error naming the key.
+
 ## Authentication and Sessions
 
 `authentication` includes:

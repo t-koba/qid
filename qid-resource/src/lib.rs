@@ -2,12 +2,16 @@
 mod session_auth;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
-use qid_core::{config::ServerPaths, state::SharedState};
+use qid_core::{
+    config::{RealmConfig, ServerPaths},
+    error::QidError,
+    state::SharedState,
+};
 
 use qid_storage::prelude::*;
 use std::sync::Arc;
@@ -72,6 +76,11 @@ where
             "/.well-known/web-identity",
             get(fedcm_web_identity_manifest::<R>),
         )
+        .route("/.well-known/fedcm.json", get(fedcm_well_known_config::<R>))
+        .route(
+            "/realms/:realm/.well-known/fedcm.json",
+            get(fedcm_well_known_config_for_realm::<R>),
+        )
         .route(
             "/api/v1/:realm/fedcm/accounts",
             get(list_fedcm_accounts::<R>),
@@ -84,30 +93,64 @@ where
             "/api/v1/:realm/fedcm/token",
             post(generate_fedcm_token::<R>),
         )
-        .route("/.well-known/fedcm.json", get(fedcm_well_known_config::<R>))
+}
+
+/// The realms of the deployment that enable the FedCM protocol.
+///
+/// The FedCM discovery documents describe these realms and nothing
+/// else, so a document never names a realm the deployment does not
+/// have or a realm that does not offer FedCM.
+fn fedcm_realms<R: Repository>(state: &SharedState<R>) -> Vec<&RealmConfig> {
+    state
+        .config
+        .realms
+        .iter()
+        .filter(|realm| realm.protocols.fedcm.enabled)
+        .collect()
+}
+
+/// The FedCM configuration document of one realm: the endpoints a
+/// FedCM client uses for that realm.
+fn fedcm_config_document<R: Repository>(
+    state: &SharedState<R>,
+    realm: &RealmConfig,
+) -> serde_json::Value {
+    let base = state.plan.public_base_url.trim_end_matches('/');
+    serde_json::json!({
+        "supported_api_versions": ["1.0"],
+        "id": realm.id,
+        "name": realm.display_name.clone().unwrap_or_else(|| realm.id.clone()),
+        "default_login_url": format!("{}{}", base, state.paths.authorize),
+        "accounts_endpoint": format!("{base}/api/v1/{}/fedcm/accounts", realm.id),
+        "id_assertion_endpoint": format!("{base}/api/v1/{}/fedcm/token", realm.id),
+    })
 }
 
 /// FedCM browser-side API: `/.well-known/web-identity` (W3C FedID
 /// Identity Provider Discovery draft). The manifest publishes the
 /// IdP endpoints (`accounts_endpoint`, `id_assertion_endpoint`,
 /// `login_url`, `branding`) so the FedCM browser API can discover
-/// the IdP. Each realm is listed as a separate identity provider.
+/// the IdP. Each realm that enables the FedCM protocol is listed as
+/// a separate identity provider, and the provider `url` is that
+/// realm's own FedCM configuration document, which the server serves.
 async fn fedcm_web_identity_manifest<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
 ) -> Response {
+    let realms = fedcm_realms(&state);
+    if realms.is_empty() {
+        return not_found_response("no realm enables the FedCM protocol");
+    }
+    let base = state.plan.public_base_url.trim_end_matches('/');
+    let login_url = format!("{}{}", base, state.paths.authorize);
     let mut providers: Vec<serde_json::Value> = Vec::new();
-    for realm in &state.config.realms {
-        if !realm.protocols.fedcm.enabled {
-            continue;
-        }
-        let base = state.plan.public_base_url.trim_end_matches('/');
+    for realm in realms {
         providers.push(serde_json::json!({
             "id": realm.id,
-            "name": realm.id,
-            "url": format!("{base}/api/v1/{}/fedcm/manifest", realm.id),
+            "name": realm.display_name.clone().unwrap_or_else(|| realm.id.clone()),
+            "url": format!("{base}/realms/{}/.well-known/fedcm.json", realm.id),
             "accounts_endpoint": format!("{base}/api/v1/{}/fedcm/accounts", realm.id),
             "id_assertion_endpoint": format!("{base}/api/v1/{}/fedcm/token", realm.id),
-            "login_url": format!("{base}/oauth2/authorize"),
+            "login_url": login_url.clone(),
             "branding": {
                 "background_color": "#1f2937",
                 "color": "#ffffff",
@@ -123,20 +166,39 @@ async fn fedcm_web_identity_manifest<R: Repository>(
     .into_response()
 }
 
-/// FedCM `/.well-known/fedcm/config` endpoint (W3C FedCM
-/// configuration). Lists the supported API versions, accounts endpoint,
-/// and token endpoint per realm.
+/// FedCM `/.well-known/fedcm.json` endpoint (W3C FedCM
+/// configuration). The document describes the realm that enables the
+/// FedCM protocol. A deployment that enables it in several realms has
+/// no single realm to describe, and says so instead of naming one.
 async fn fedcm_well_known_config<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
 ) -> Response {
-    let base = state.plan.public_base_url.trim_end_matches('/');
-    Json(serde_json::json!({
-        "supported_api_versions": ["1.0"],
-        "default_login_url": format!("{base}/oauth2/authorize"),
-        "accounts_endpoint": format!("{base}/api/v1/realm-default/fedcm/accounts"),
-        "id_assertion_endpoint": format!("{base}/api/v1/realm-default/fedcm/token"),
-    }))
-    .into_response()
+    let realms = fedcm_realms(&state);
+    match realms.as_slice() {
+        [] => not_found_response("no realm enables the FedCM protocol"),
+        [realm] => Json(fedcm_config_document(&state, realm)).into_response(),
+        _ => qid_http::error_response(QidError::BadRequest {
+            message: "the FedCM configuration is ambiguous for multiple realms; use the realm-scoped configuration".to_string(),
+        }),
+    }
+}
+
+/// The FedCM configuration document of one realm, at the path the
+/// provider manifest publishes. The realm must be a configured realm
+/// that enables the FedCM protocol.
+async fn fedcm_well_known_config_for_realm<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    Path(realm_id): Path<String>,
+) -> Response {
+    let Some(config) = state
+        .config
+        .realms
+        .iter()
+        .find(|realm| realm.id == realm_id && realm.protocols.fedcm.enabled)
+    else {
+        return not_found_response(&format!("no FedCM configuration for realm {realm_id}"));
+    };
+    Json(fedcm_config_document(&state, config)).into_response()
 }
 
 pub fn workload_routes<R>() -> Router<Arc<SharedState<R>>>

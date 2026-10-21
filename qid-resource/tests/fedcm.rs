@@ -3,7 +3,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use qid_core::{state::SharedState, test_helpers};
+use qid_core::{config::QidConfig, state::SharedState, test_helpers};
 use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
 use std::sync::Arc;
@@ -32,7 +32,39 @@ fn db_url() -> String {
 }
 
 async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
-    let config = test_helpers::test_config();
+    setup_with_config(test_helpers::test_config()).await
+}
+
+/// A configuration whose realms are named, and which enable or disable
+/// the FedCM protocol in each of them.
+fn config_with_realms(realms: &[(&str, bool)]) -> QidConfig {
+    let mut config = test_helpers::test_config();
+    let template = config.realms[0].clone();
+    config.realms.clear();
+    for (id, fedcm_enabled) in realms {
+        let mut realm = template.clone();
+        realm.id = id.to_string();
+        realm.issuer = format!("https://{id}.example.com");
+        realm.display_name = Some(format!("Realm {id}"));
+        realm.protocols.fedcm.enabled = *fedcm_enabled;
+        config.realms.push(realm);
+    }
+    config
+}
+
+/// Read a discovery document and its status.
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+async fn setup_with_config(config: QidConfig) -> (axum::Router, Arc<SharedState<SqlRepository>>) {
     let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
     repo.migrate().await.unwrap();
     repo.create_realm(
@@ -183,4 +215,86 @@ async fn fedcm_token_rejects_unapproved_client() {
     );
     let token_response = app.oneshot(token_request).await.unwrap();
     assert_eq!(token_response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn fedcm_config_describes_the_realm_that_enables_the_protocol() {
+    let (app, _state) =
+        setup_with_config(config_with_realms(&[("realm-a", true), ("realm-b", false)])).await;
+    let (status, json) = get_json(app, "/.well-known/fedcm.json").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["id"], "realm-a");
+    assert_eq!(
+        json["accounts_endpoint"],
+        "https://id.example.com/api/v1/realm-a/fedcm/accounts"
+    );
+    assert_eq!(
+        json["id_assertion_endpoint"],
+        "https://id.example.com/api/v1/realm-a/fedcm/token"
+    );
+    assert!(!json.to_string().contains("realm-default"));
+}
+
+#[tokio::test]
+async fn fedcm_config_is_absent_when_no_realm_enables_the_protocol() {
+    let (app, _state) = setup_with_config(config_with_realms(&[("realm-a", false)])).await;
+    let (status, _json) = get_json(app, "/.well-known/fedcm.json").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn fedcm_config_is_ambiguous_when_several_realms_enable_the_protocol() {
+    let (app, _state) =
+        setup_with_config(config_with_realms(&[("realm-a", true), ("realm-b", true)])).await;
+    let (status, _json) = get_json(app, "/.well-known/fedcm.json").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn fedcm_provider_manifest_lists_the_fedcm_realms_only() {
+    let (app, _state) =
+        setup_with_config(config_with_realms(&[("realm-a", true), ("realm-b", false)])).await;
+    let (status, json) = get_json(app, "/.well-known/web-identity").await;
+    assert_eq!(status, StatusCode::OK);
+    let providers = json["provider_lists"][0]["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0]["id"], "realm-a");
+    assert_eq!(
+        providers[0]["accounts_endpoint"],
+        "https://id.example.com/api/v1/realm-a/fedcm/accounts"
+    );
+}
+
+#[tokio::test]
+async fn fedcm_provider_manifest_is_absent_when_no_realm_enables_the_protocol() {
+    let (app, _state) = setup_with_config(config_with_realms(&[("realm-a", false)])).await;
+    let (status, _json) = get_json(app, "/.well-known/web-identity").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn fedcm_provider_url_is_a_served_realm_configuration() {
+    let (app, _state) = setup_with_config(config_with_realms(&[("realm-a", true)])).await;
+    let (_status, json) = get_json(app.clone(), "/.well-known/web-identity").await;
+    let url = json["provider_lists"][0]["providers"][0]["url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        url,
+        "https://id.example.com/realms/realm-a/.well-known/fedcm.json"
+    );
+    let (status, document) = get_json(app, "/realms/realm-a/.well-known/fedcm.json").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(document["id"], "realm-a");
+}
+
+#[tokio::test]
+async fn fedcm_realm_configuration_is_absent_without_the_protocol() {
+    let (app, _state) =
+        setup_with_config(config_with_realms(&[("realm-a", true), ("realm-b", false)])).await;
+    let (status, _json) = get_json(app.clone(), "/realms/realm-b/.well-known/fedcm.json").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _json) = get_json(app, "/realms/unknown/.well-known/fedcm.json").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

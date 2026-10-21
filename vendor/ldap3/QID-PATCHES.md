@@ -68,5 +68,12 @@ do more with a malformed control than it can by closing the connection.
 6. Run `cargo deny check` and `cargo audit`; review every new transitive
    dependency and license.
 
+The workspace's `vendor-sync` command covers the rustls fork, which is
+security-critical and tracks upstream releases closely. This fork is updated
+with the same three-way merge by hand - the published crate of the current
+version as the base, this tree as the local side, the published crate of the
+target version as the new side - and generalizing the command to cover it is
+tracked as follow-up work.
+
 Do not silently drop the patch, replace the client with another implementation,
 or add a compatibility fallback during an update.

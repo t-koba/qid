@@ -1,9 +1,10 @@
 //! A tiny loopback LDAP peer, not a connector mock. Only tests may supply
 //! non-TLS settings to the private session helper; production enforces TLS.
 use super::{
-    ensure_ldap_bind_success, ensure_ldap_search_success, ldap_search_with_timeout,
-    ldap_simple_bind_with_timeout, with_ldap_session,
+    LdapSearchOptions, ensure_ldap_bind_success, ensure_ldap_search_success, fetch_search_entries,
+    ldap_search_with_timeout, ldap_simple_bind_with_timeout, with_ldap_session,
 };
+use qid_core::config::DirectoryAttributeMapping;
 use qid_core::error::QidError;
 use std::time::Duration;
 use tokio::{
@@ -23,16 +24,57 @@ fn message(id: u8, op: Vec<u8>) -> Vec<u8> {
     ber(0x30, &[vec![0x02, 0x01, id], op].concat())
 }
 
-async fn request(socket: &mut TcpStream, expected_op: u8) -> (u8, Vec<u8>) {
+/// Read one LDAP message and return its id, operation tag and operation.
+async fn read_message(socket: &mut TcpStream) -> (u8, u8, Vec<u8>) {
     assert_eq!(socket.read_u8().await.unwrap(), 0x30);
-    let len = socket.read_u8().await.unwrap();
-    assert!(len < 128);
-    let mut body = vec![0; len as usize];
+    let first = socket.read_u8().await.unwrap();
+    let len = if first & 0x80 == 0 {
+        first as usize
+    } else {
+        // A request that carries a control can need the long length form.
+        let count = (first & 0x7f) as usize;
+        let mut bytes = vec![0; count];
+        socket.read_exact(&mut bytes).await.unwrap();
+        bytes
+            .iter()
+            .fold(0usize, |length, byte| (length << 8) | *byte as usize)
+    };
+    let mut body = vec![0; len];
     socket.read_exact(&mut body).await.unwrap();
     assert_eq!(&body[..2], &[0x02, 0x01]);
-    assert_eq!(body[3], expected_op);
-    assert_eq!(body[4] as usize, body.len() - 5);
-    (body[2], body[5..].to_vec())
+    // The operation's own length may use the long form, which a request
+    // that carries a control needs.
+    let first = body[4];
+    let (header, op_len) = if first & 0x80 == 0 {
+        (1usize, first as usize)
+    } else {
+        let count = (first & 0x7f) as usize;
+        let mut bytes = vec![0; count];
+        bytes.copy_from_slice(&body[5..5 + count]);
+        (
+            count + 1,
+            bytes
+                .iter()
+                .fold(0usize, |length, byte| (length << 8) | *byte as usize),
+        )
+    };
+    // A request that carries controls puts them after the operation, so
+    // the operation need not fill the message.
+    assert!(
+        4 + header + op_len <= body.len(),
+        "the operation fits in the message"
+    );
+    (
+        body[2],
+        body[3],
+        body[4 + header..4 + header + op_len].to_vec(),
+    )
+}
+
+async fn request(socket: &mut TcpStream, expected_op: u8) -> (u8, Vec<u8>) {
+    let (id, op, body) = read_message(socket).await;
+    assert_eq!(op, expected_op);
+    (id, body)
 }
 
 async fn bind(socket: &mut TcpStream) {
@@ -59,6 +101,116 @@ async fn bind_with_code(socket: &mut TcpStream, result_code: u8) {
 
 async fn assert_closed(socket: &mut TcpStream) {
     assert_eq!(socket.read(&mut [0]).await.unwrap(), 0);
+}
+
+/// A search result entry with the attributes the default mapping reads.
+fn search_entry(dn: &str, uid: &str) -> Vec<u8> {
+    let attrs = ber(
+        0x30,
+        &[
+            ber(
+                0x30,
+                &[
+                    ber(0x04, b"sAMAccountName"),
+                    ber(0x31, &ber(0x04, uid.as_bytes())),
+                ]
+                .concat(),
+            ),
+            ber(
+                0x30,
+                &[
+                    ber(0x04, b"userAccountControl"),
+                    ber(0x31, &ber(0x04, b"512")),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    ber(0x64, &[ber(0x04, dn.as_bytes()), attrs].concat())
+}
+
+/// A search result done message, with the paging cookie the server sends.
+///
+/// The cookie travels in the PagedResults response control, and RFC 4511
+/// puts the response controls inside the LDAPResult.
+fn search_done(cookie: &[u8]) -> Vec<u8> {
+    let mut body = vec![0x0a, 1, 0, 4, 0, 4, 0];
+    {
+        let value = ber(0x30, &[ber(0x02, &[0x00]), ber(0x04, cookie)].concat());
+        let control = ber(
+            0x30,
+            &[ber(0x04, b"1.2.840.113556.1.4.319"), ber(0x04, &value)].concat(),
+        );
+        body.extend(ber(0xa0, &control));
+    }
+    ber(0x65, &body)
+}
+
+#[tokio::test]
+async fn a_paged_search_follows_the_cookie_the_server_sent() {
+    // The peer answers the first search with a paging cookie and the second
+    // with none. The search must follow the cookie and collect both pages,
+    // so a directory that holds more objects than one page returns syncs.
+    tokio::time::timeout(DEADLINE, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ldap://{}", listener.local_addr().unwrap());
+        let server = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (id, op, _) = read_message(&mut socket).await;
+            assert_eq!(op, 0x63, "the first request is a search");
+            socket
+                .write_all(&message(id, search_entry("uid=alice,dc=test", "alice")))
+                .await
+                .unwrap();
+            socket
+                .write_all(&message(id, search_done(&[7])))
+                .await
+                .unwrap();
+            let (id, op, _) = read_message(&mut socket).await;
+            if op == 0x42 {
+                // The client gave up and unbound.
+                return;
+            }
+            assert_eq!(op, 0x63, "the second request is a search");
+            socket
+                .write_all(&message(id, search_entry("uid=bob,dc=test", "bob")))
+                .await
+                .unwrap();
+            socket
+                .write_all(&message(id, search_done(&[])))
+                .await
+                .unwrap();
+            // The client unbinds and closes the connection.
+            let _ = read_message(&mut socket).await;
+            assert_closed(&mut socket).await;
+        };
+        let client = with_ldap_session(ldap3::LdapConnSettings::new(), &url, 5, async |ldap| {
+            let options = LdapSearchOptions {
+                page_size: Some(1),
+                max_entries: None,
+                tls_insecure: false,
+                timeout_secs: 5,
+            };
+            let entries = fetch_search_entries(
+                ldap,
+                "dc=test",
+                "(uid=alice)",
+                &DirectoryAttributeMapping::default(),
+                &options,
+                Duration::from_secs(5),
+            )
+            .await?;
+            assert_eq!(entries.len(), 2, "both pages are collected");
+            assert_eq!(entries[0].uid, "alice");
+            assert_eq!(entries[1].uid, "bob");
+            Ok(())
+        });
+        let ((), result) = tokio::join!(server, client);
+        result.unwrap();
+    })
+    .await
+    .expect("the paged search stalled (peer not running or not closed)");
 }
 
 #[tokio::test]

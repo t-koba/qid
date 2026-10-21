@@ -489,46 +489,69 @@ pub fn run_ldap_search_with_options(
             if let Some((dn, pw)) = bind_credentials(bind_dn.as_deref(), bind_pw.as_deref())? {
                 ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
             }
-
-            let page_size = options.page_size.unwrap_or(0);
-            let mut all_entries = Vec::new();
-            let mut cookie = Vec::new();
-            let mut progress = PagedSearch::new(page_size as usize, options.max_entries);
-
-            loop {
-                if page_size > 0 {
-                    ldap.with_controls(ldap3::controls::PagedResults {
-                        size: page_size as i32,
-                        cookie: cookie.clone(),
-                    });
-                }
-                let ldap3::SearchResult(entries, res) = ldap_search_with_timeout(
-                    ldap,
-                    search_base,
-                    ldap3::Scope::Subtree,
-                    search_filter,
-                    vec!["*", "userAccountControl"],
-                    operation_timeout,
-                )
-                .await?;
-                if page_size > 0 {
-                    cookie = paged_results_cookie(&res.ctrls)?;
-                }
-                // The bound is checked before the entries are mapped, so a
-                // search that outgrows it fails without doing the work.
-                progress.record_page(entries.len())?;
-                for entry in entries {
-                    all_entries.push(map_ldap_search_entry(entry, mapping)?);
-                }
-                if page_size == 0 || cookie.is_empty() {
-                    break;
-                }
-            }
-
-            Ok(all_entries)
+            fetch_search_entries(
+                ldap,
+                search_base,
+                search_filter,
+                mapping,
+                &options,
+                operation_timeout,
+            )
+            .await
         })
         .await
     })
+}
+
+/// Fetch every page of a search and return the entries.
+///
+/// The paging cookie comes from the response control the server sends, so
+/// the loop is separate from the session handling: a loopback peer can
+/// drive it, and the bounds it keeps are the ones the product promises.
+async fn fetch_search_entries(
+    ldap: &mut ldap3::Ldap,
+    search_base: &str,
+    search_filter: &str,
+    mapping: &DirectoryAttributeMapping,
+    options: &LdapSearchOptions,
+    operation_timeout: std::time::Duration,
+) -> QidResult<Vec<LdapDirectoryEntry>> {
+    let page_size = options.page_size.unwrap_or(0);
+    let mut all_entries = Vec::new();
+    let mut cookie = Vec::new();
+    let mut progress = PagedSearch::new(page_size as usize, options.max_entries);
+
+    loop {
+        if page_size > 0 {
+            ldap.with_controls(ldap3::controls::PagedResults {
+                size: page_size as i32,
+                cookie: cookie.clone(),
+            });
+        }
+        let ldap3::SearchResult(entries, res) = ldap_search_with_timeout(
+            ldap,
+            search_base,
+            ldap3::Scope::Subtree,
+            search_filter,
+            vec!["*", "userAccountControl"],
+            operation_timeout,
+        )
+        .await?;
+        if page_size > 0 {
+            cookie = paged_results_cookie(&res.ctrls)?;
+        }
+        // The bound is checked before the entries are mapped, so a
+        // search that outgrows it fails without doing the work.
+        progress.record_page(entries.len())?;
+        for entry in entries {
+            all_entries.push(map_ldap_search_entry(entry, mapping)?);
+        }
+        if page_size == 0 || cookie.is_empty() {
+            break;
+        }
+    }
+
+    Ok(all_entries)
 }
 
 /// The progress of one directory search, against the bounds it must

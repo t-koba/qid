@@ -12,6 +12,10 @@ The route model follows the qid product boundary:
 
 Many paths are configurable through `server.paths`. The table marks those as `configurable`.
 
+Every request body is a JSON object. A body that is a JSON array, or any other
+shape, is rejected with HTTP 400 instead of being mapped positionally onto the
+request fields.
+
 ## Health, readiness, keys
 
 | Method | Path | Notes |

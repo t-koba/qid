@@ -12,9 +12,11 @@ The route model follows the qid product boundary:
 
 Many paths are configurable through `server.paths`. The table marks those as `configurable`.
 
-Every request body is a JSON object. A body that is a JSON array, or any other
-shape, is rejected with HTTP 400 instead of being mapped positionally onto the
-request fields.
+Every JSON request body is a JSON object. A JSON body that is an array, or any
+other shape, is rejected with HTTP 400 instead of being mapped positionally onto
+the request fields. The form-encoded endpoints - the token, revocation,
+introspection, CIBA, device authorization, SAML and OIDC logout endpoints - take
+form bodies.
 
 ## Health, readiness, keys
 

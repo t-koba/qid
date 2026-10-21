@@ -30,7 +30,7 @@ fn message_with_controls(id: u8, op: Vec<u8>, controls: Vec<u8>) -> Vec<u8> {
 }
 
 /// Read one LDAP message and return its id, operation tag and operation.
-async fn read_message(socket: &mut TcpStream) -> (u8, u8, Vec<u8>) {
+async fn read_message(socket: &mut TcpStream) -> (u8, u8, Vec<u8>, Vec<u8>) {
     assert_eq!(socket.read_u8().await.unwrap(), 0x30);
     let first = socket.read_u8().await.unwrap();
     let len = if first & 0x80 == 0 {
@@ -73,11 +73,13 @@ async fn read_message(socket: &mut TcpStream) -> (u8, u8, Vec<u8>) {
         body[2],
         body[3],
         body[4 + header..4 + header + op_len].to_vec(),
+        // The controls of the message follow the operation.
+        body[4 + header + op_len..].to_vec(),
     )
 }
 
 async fn request(socket: &mut TcpStream, expected_op: u8) -> (u8, Vec<u8>) {
-    let (id, op, body) = read_message(socket).await;
+    let (id, op, body, _) = read_message(socket).await;
     assert_eq!(op, expected_op);
     (id, body)
 }
@@ -135,6 +137,17 @@ fn search_entry(dn: &str, uid: &str) -> Vec<u8> {
     ber(0x64, &[ber(0x04, dn.as_bytes()), attrs].concat())
 }
 
+/// The PagedResults request control the client sends, with the cookie it
+/// was given.
+fn paged_results_request_control(cookie: &[u8]) -> Vec<u8> {
+    let value = ber(0x30, &[ber(0x02, &[0x01]), ber(0x04, cookie)].concat());
+    let control = ber(
+        0x30,
+        &[ber(0x04, b"1.2.840.113556.1.4.319"), ber(0x04, &value)].concat(),
+    );
+    ber(0xa0, &control)
+}
+
 /// A search result done message.
 fn search_done() -> Vec<u8> {
     ber(0x65, &[0x0a, 1, 0, 4, 0, 4, 0])
@@ -164,8 +177,13 @@ async fn a_paged_search_follows_the_cookie_the_server_sent() {
         let url = format!("ldap://{}", listener.local_addr().unwrap());
         let server = async {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let (id, op, _) = read_message(&mut socket).await;
+            let (id, op, _, controls) = read_message(&mut socket).await;
             assert_eq!(op, 0x63, "the first request is a search");
+            assert_eq!(
+                controls,
+                paged_results_request_control(&[]),
+                "the first request asks for a page with no cookie"
+            );
             socket
                 .write_all(&message(id, search_entry("uid=alice,dc=test", "alice")))
                 .await
@@ -178,12 +196,17 @@ async fn a_paged_search_follows_the_cookie_the_server_sent() {
                 ))
                 .await
                 .unwrap();
-            let (id, op, _) = read_message(&mut socket).await;
+            let (id, op, _, controls) = read_message(&mut socket).await;
             if op == 0x42 {
                 // The client gave up and unbound.
                 return;
             }
             assert_eq!(op, 0x63, "the second request is a search");
+            assert_eq!(
+                controls,
+                paged_results_request_control(&[7]),
+                "the second request carries the cookie the server sent"
+            );
             socket
                 .write_all(&message(id, search_entry("uid=bob,dc=test", "bob")))
                 .await

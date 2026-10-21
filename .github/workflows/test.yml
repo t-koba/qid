@@ -117,6 +117,11 @@ jobs:
           toolchain: nightly
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
+      - name: Check the fuzz lock matches the manifest
+        # cargo-fuzz has no lock-enforcing flag, so a stale lock would be
+        # rewritten silently instead of failing.
+        working-directory: fuzz
+        run: cargo fetch --locked
       - name: Run JWT fuzz smoke
         working-directory: fuzz
         run: cargo fuzz run jwt -- -max_total_time=30
@@ -125,7 +130,9 @@ jobs:
         run: cargo fuzz run saml_xml -- -max_total_time=30
       - name: Run SCIM filter fuzz smoke
         working-directory: fuzz
-        run: cargo fuzz run scim_filter -- -max_total_time=30
+        # The value profile gives libFuzzer feedback on the equality checks
+        # the filter parser makes.
+        run: cargo fuzz run scim_filter -- -max_total_time=30 -use_value_profile=1
 
   coverage:
     name: Coverage

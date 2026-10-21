@@ -1,5 +1,9 @@
 use super::*;
 
+/// The only refresh-token reuse mode the product implements: presenting a
+/// superseded token revokes the whole token family.
+pub const REFRESH_REUSE_DETECTION_REVOKE_FAMILY: &str = "revoke_family";
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AuthenticationConfig {
@@ -260,6 +264,35 @@ impl Default for RefreshTokenConfig {
             rotation: default_true(),
             reuse_detection: None,
         }
+    }
+}
+
+impl RefreshTokenConfig {
+    /// The refresh path always detects a superseded token and revokes the
+    /// family, so a configured mode must name that behaviour and rotation
+    /// must be on, because detection compares the presented token with the
+    /// family's current one.
+    pub(crate) fn validate(&self, realm_id: &str) -> QidResult<()> {
+        let Some(mode) = self.reuse_detection.as_deref() else {
+            return Ok(());
+        };
+        if mode != REFRESH_REUSE_DETECTION_REVOKE_FAMILY {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} sessions.refresh_tokens.reuse_detection must be \
+                     {REFRESH_REUSE_DETECTION_REVOKE_FAMILY} (got {mode})"
+                ),
+            });
+        }
+        if !self.rotation {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} sessions.refresh_tokens.reuse_detection requires \
+                     sessions.refresh_tokens.rotation"
+                ),
+            });
+        }
+        Ok(())
     }
 }
 

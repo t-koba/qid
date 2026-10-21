@@ -1238,6 +1238,7 @@ impl RealmConfig {
                 }
             }
         }
+        self.sessions.refresh_tokens.validate(&self.id)?;
         if self.authentication.passwordless_only {
             if !self.authentication.passkeys.enabled {
                 return Err(QidError::Config {

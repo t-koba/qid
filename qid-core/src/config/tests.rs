@@ -1367,6 +1367,39 @@ fn the_removed_directory_sync_keys_are_rejected() {
 }
 
 #[test]
+fn the_refresh_token_reuse_detection_mode_must_name_the_enforced_behaviour() {
+    // The refresh path always revokes the family of a superseded token, so a
+    // configured mode has to name that behaviour, and detection needs
+    // rotation to have a superseded token to compare against.
+    let mut config = minimal_config();
+    config.realms[0].sessions.refresh_tokens.reuse_detection =
+        Some(REFRESH_REUSE_DETECTION_REVOKE_FAMILY.to_string());
+    config.validate().expect("the enforced mode is accepted");
+
+    let mut config = minimal_config();
+    config.realms[0].sessions.refresh_tokens.reuse_detection = Some("none".to_string());
+    let err = config
+        .validate()
+        .expect_err("an unsupported mode is rejected");
+    assert!(
+        err.message().contains("reuse_detection"),
+        "the error names the key: {err}"
+    );
+
+    let mut config = minimal_config();
+    config.realms[0].sessions.refresh_tokens.reuse_detection =
+        Some(REFRESH_REUSE_DETECTION_REVOKE_FAMILY.to_string());
+    config.realms[0].sessions.refresh_tokens.rotation = false;
+    let err = config
+        .validate()
+        .expect_err("reuse detection without rotation is rejected");
+    assert!(
+        err.message().contains("reuse_detection"),
+        "the error names the key: {err}"
+    );
+}
+
+#[test]
 fn a_directory_provider_needs_usable_bind_credentials() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {

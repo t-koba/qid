@@ -157,6 +157,9 @@ For policy bundles:
 - Use local files at daemon startup.
 - Keep bundle paths relative to the config file where possible.
 - Do not rely on remote policy bundle sources at startup; `qidd` rejects them.
+- Write only the documented keys. A bundle with an unknown key is rejected
+  by name, so a misspelled `conditions` key cannot leave an allow rule with
+  no conditions and therefore matching every request.
 
 ## SCIM and Provisioning
 

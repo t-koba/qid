@@ -316,6 +316,12 @@ without a configured bundle falls back to the realm `policy.default_decision`
 and absent risk or authentication-age evidence never satisfies a rule — not
 even under negation.
 
+A bundle is read strictly: an unknown key in the bundle, in a rule, in a
+condition, or in an expression is an error naming that key, and a malformed
+expression is an error naming the key and its expected shape. A typo cannot
+silently drop a rule's conditions and leave an allow rule matching every
+request.
+
 ## Observability
 
 `observability.logs.format` defaults to `json`; `redact_pii` can be enabled.

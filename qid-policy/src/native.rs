@@ -881,11 +881,11 @@ mod tests {
                 action: "*".to_string(),
                 resource_host: None,
                 conditions: vec![],
-                expression: Some(Expression::FieldCondition {
+                expression: Some(Expression::Condition(Condition {
                     field: "resource.host".to_string(),
                     op: "like".to_string(),
                     value: Value::String("*.finance.example.com".to_string()),
-                }),
+                })),
                 rate_limit_profile: None,
                 inject_headers: None,
                 pep: PepPolicyActions::default(),
@@ -1282,11 +1282,11 @@ mod tests {
         let mut engine = NativePolicyEngine::new();
         let mut rule = allow_rule("not-high-risk", vec![]);
         rule.expression = Some(Expression::Not {
-            not: Box::new(Expression::FieldCondition {
+            not: Box::new(Expression::Condition(Condition {
                 field: "risk.score".to_string(),
                 op: ">".to_string(),
                 value: Value::Number(100.into()),
-            }),
+            })),
         });
         engine.load(
             PolicyBundle {
@@ -1423,19 +1423,19 @@ mod tests {
     }
 
     fn risk_above(value: u64) -> Expression {
-        Expression::FieldCondition {
+        Expression::Condition(Condition {
             field: "risk.score".to_string(),
             op: ">".to_string(),
             value: Value::Number(value.into()),
-        }
+        })
     }
 
     fn group_is(name: &str) -> Expression {
-        Expression::FieldCondition {
+        Expression::Condition(Condition {
             field: "group".to_string(),
             op: "equals".to_string(),
             value: Value::String(name.to_string()),
-        }
+        })
     }
 
     #[tokio::test]

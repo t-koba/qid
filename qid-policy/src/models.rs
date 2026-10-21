@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::future::Future;
@@ -119,6 +119,7 @@ pub struct DecisionDetails {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PepPolicyActions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub override_upstream: Option<String>,
@@ -259,6 +260,7 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyBundle {
     pub version: String,
     pub rules: Vec<Rule>,
@@ -266,6 +268,7 @@ pub struct PolicyBundle {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     pub name: String,
     #[serde(rename = "type")]
@@ -294,14 +297,20 @@ pub enum RuleType {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Condition {
     pub field: String,
     pub op: String,
     pub value: Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+/// A policy expression.
+///
+/// The JSON shape is strict: the keys an object carries select exactly one
+/// variant, and an unknown key, a missing key, or a wrong value type is
+/// rejected with the offending key named. A mistyped bundle therefore
+/// fails to load instead of silently widening the rule that carries it.
+#[derive(Debug, Clone)]
 pub enum Expression {
     Condition(Condition),
     And {
@@ -319,11 +328,6 @@ pub enum Expression {
     MatchAction {
         action: String,
     },
-    FieldCondition {
-        field: String,
-        op: String,
-        value: Value,
-    },
     /// Evaluate a ReBAC relationship check.
     ///
     /// The subject_id is taken from `PolicyContext.subject_id`.
@@ -335,10 +339,142 @@ pub enum Expression {
     },
 }
 
+/// The key set of every expression variant. The sets are disjoint, so the
+/// keys an object carries select at most one variant.
+const EXPRESSION_SHAPES: &[(&str, &[&str])] = &[
+    ("and", &["and"]),
+    ("or", &["or"]),
+    ("not", &["not"]),
+    ("in_group", &["in_group"]),
+    ("action", &["action"]),
+    ("condition", &["field", "op", "value"]),
+    (
+        "rebac",
+        &["namespace", "object_id", "relation", "subject_namespace"],
+    ),
+];
+
+impl<'de> Deserialize<'de> for Expression {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        parse_expression(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Expression {
     pub fn from_value(v: &Value) -> Option<Self> {
         serde_json::from_value(v.clone()).ok()
     }
+}
+
+/// Parse one expression from its JSON form.
+///
+/// The object must carry exactly the keys of one variant: `and`, `or`,
+/// `not`, `in_group`, `action`, the condition keys `field`/`op`/`value`,
+/// or the ReBAC keys. Every rejection names the key at fault.
+fn parse_expression(value: &Value) -> Result<Expression, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "policy expression must be a JSON object".to_string())?;
+
+    let known: Vec<&str> = EXPRESSION_SHAPES
+        .iter()
+        .flat_map(|(_, keys)| keys.iter().copied())
+        .collect();
+    if let Some(unknown) = object
+        .keys()
+        .map(String::as_str)
+        .find(|key| !known.contains(key))
+    {
+        return Err(format!("policy expression has unknown key `{unknown}`"));
+    }
+
+    let selected: Vec<(&str, &[&str])> = EXPRESSION_SHAPES
+        .iter()
+        .copied()
+        .filter(|(_, keys)| keys.iter().any(|key| object.contains_key(*key)))
+        .collect();
+    let (name, _) = match selected.as_slice() {
+        [selected] => *selected,
+        [] => {
+            return Err(
+                "policy expression must carry `and`, `or`, `not`, `in_group`, `action`, `field`, or `namespace`"
+                    .to_string(),
+            )
+        }
+        _ => {
+            let mut names = selected.iter().map(|(name, _)| *name);
+            return Err(format!(
+                "policy expression mixes `{}` with `{}`",
+                names.next().unwrap_or_default(),
+                names.next().unwrap_or_default()
+            ));
+        }
+    };
+
+    match name {
+        "and" => Ok(Expression::And {
+            and: expression_list(object, "and")?,
+        }),
+        "or" => Ok(Expression::Or {
+            or: expression_list(object, "or")?,
+        }),
+        "not" => Ok(Expression::Not {
+            not: Box::new(parse_expression(expression_value(object, "not")?)?),
+        }),
+        "in_group" => Ok(Expression::InGroup {
+            in_group: expression_string(object, "in_group")?,
+        }),
+        "action" => Ok(Expression::MatchAction {
+            action: expression_string(object, "action")?,
+        }),
+        "condition" => Ok(Expression::Condition(Condition {
+            field: expression_string(object, "field")?,
+            op: expression_string(object, "op")?,
+            value: expression_value(object, "value")?.clone(),
+        })),
+        "rebac" => Ok(Expression::RebacCheck {
+            namespace: expression_string(object, "namespace")?,
+            object_id: expression_string(object, "object_id")?,
+            relation: expression_string(object, "relation")?,
+            subject_namespace: expression_string(object, "subject_namespace")?,
+        }),
+        _ => unreachable!("the expression shape table and the parser disagree"),
+    }
+}
+
+/// Read one required key of an expression object.
+fn expression_value<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Value, String> {
+    object
+        .get(key)
+        .ok_or_else(|| format!("policy expression is missing key `{key}`"))
+}
+
+/// Read one required string key of an expression object.
+fn expression_string(object: &Map<String, Value>, key: &str) -> Result<String, String> {
+    match expression_value(object, key)? {
+        Value::String(value) => Ok(value.clone()),
+        _ => Err(format!("policy expression key `{key}` must be a string")),
+    }
+}
+
+/// Read one required list key of an expression object.
+fn expression_list(object: &Map<String, Value>, key: &str) -> Result<Vec<Expression>, String> {
+    let items = match expression_value(object, key)? {
+        Value::Array(items) => items,
+        _ => return Err(format!("policy expression key `{key}` must be a list")),
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            parse_expression(item)
+                .map_err(|error| format!("policy expression key `{key}` entry {index}: {error}"))
+        })
+        .collect()
 }
 
 /// Order two JSON numbers without lossy coercion: exact unsigned
@@ -447,9 +583,6 @@ pub(crate) fn evaluate_expression<'a>(
             Expression::Not { not } => evaluate_expression(not, ctx, rebac).await.map(|v| !v),
             Expression::InGroup { in_group } => Some(ctx.in_group(in_group)),
             Expression::MatchAction { action } => Some(ctx.action_matches(action)),
-            Expression::FieldCondition { field, op, value } => {
-                field_condition_matches(field, op, value, ctx)
-            }
             Expression::RebacCheck {
                 namespace,
                 object_id,
@@ -474,20 +607,6 @@ pub(crate) fn evaluate_expression<'a>(
             }
         }
     })
-}
-
-fn field_condition_matches(
-    field: &str,
-    op: &str,
-    value: &Value,
-    ctx: &PolicyContext,
-) -> Option<bool> {
-    let cond = Condition {
-        field: field.to_string(),
-        op: op.to_string(),
-        value: value.clone(),
-    };
-    condition_matches(&cond, ctx)
 }
 
 #[async_trait::async_trait]

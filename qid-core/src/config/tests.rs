@@ -39,9 +39,6 @@ fn pep_capability(effect: &str) -> PepCapabilityConfig {
         mode: None,
         phase: None,
         effect: effect.to_string(),
-        constraints: PepCapabilityConstraintsConfig::default(),
-        authority: PepAuthorityConfig::default(),
-        build_features: Vec::new(),
     }
 }
 
@@ -1396,6 +1393,33 @@ fn the_refresh_token_reuse_detection_mode_must_name_the_enforced_behaviour() {
     assert!(
         err.message().contains("reuse_detection"),
         "the error names the key: {err}"
+    );
+}
+
+#[test]
+fn the_removed_mfa_keys_are_rejected() {
+    // `required_for_admins` named a realm policy the product never applied:
+    // administrators are tenant records whose elevation carries the
+    // authentication methods, and `admin.security` owns that requirement.
+    // `allowed_certificate_attributes` named an allowlist nothing consulted:
+    // the client-certificate path matches registered fingerprints. A
+    // configuration that still sets them is a configuration error, not a
+    // silently ignored key.
+    let err =
+        serde_json::from_str::<AuthenticationConfig>(r#"{"mfa":{"required_for_admins":true}}"#)
+            .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("required_for_admins"),
+        "the error names the removed key: {err}"
+    );
+
+    let err = serde_json::from_str::<AuthenticationConfig>(
+        r#"{"mfa":{"client_certificate":{"allowed_certificate_attributes":["san_uri"]}}}"#,
+    )
+    .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("allowed_certificate_attributes"),
+        "the error names the removed key: {err}"
     );
 }
 

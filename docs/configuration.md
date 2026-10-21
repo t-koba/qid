@@ -281,7 +281,7 @@ oauth:
 
 - `passkeys.enabled`, `preferred`, `rp_id`, `rp_origin`, `rp_name`, `attestation`
 - `password.enabled`, `hash`, `pepper_ref`, lockout settings, Argon2id cost
-- `mfa.required_for_admins`, `allowed`, `totp`, `sms`, `client_certificate`
+- `mfa.allowed`, `totp`, `sms`, `client_certificate`
 - `passwordless_only`
 
 Validation rules:

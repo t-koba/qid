@@ -2,10 +2,10 @@ use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use qid_core::config::{
     AdminConfig, AuthenticationConfig, CryptoConfig, DeploymentProfile, InboundProviderConfig,
-    KeyringConfig, OAuthResourceServerConfig, ObservabilityConfig, OpsConfig, PepAuthorityConfig,
-    PepCapabilityConfig, PepCapabilityConstraintsConfig, PepRegistrationConfig,
-    PepRegistrationsConfig, PolicyBundleConfig, PolicyConfig, ProtocolConfig, RealmConfig,
-    RotationConfig, ServerConfig, ServerPaths, SignerConfig, StaticClientConfig, StorageConfig,
+    KeyringConfig, OAuthResourceServerConfig, ObservabilityConfig, OpsConfig, PepCapabilityConfig,
+    PepRegistrationConfig, PepRegistrationsConfig, PolicyBundleConfig, PolicyConfig,
+    ProtocolConfig, RealmConfig, RotationConfig, ServerConfig, ServerPaths, SignerConfig,
+    StaticClientConfig, StorageConfig,
 };
 use qid_core::models::ClientType;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -70,9 +70,6 @@ fn pep_capability(effect: &str) -> PepCapabilityConfig {
         mode: Some("forward_http".to_string()),
         phase: Some("pre_upstream".to_string()),
         effect: effect.to_string(),
-        constraints: PepCapabilityConstraintsConfig::default(),
-        authority: PepAuthorityConfig::default(),
-        build_features: Vec::new(),
     }
 }
 

@@ -58,15 +58,11 @@ realms:
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
       mfa:
-        required_for_admins: true
         allowed:
           - webauthn
           - client_certificate
         client_certificate:
           enabled: true
-          allowed_certificate_attributes:
-            - "subject:OU=Privileged"
-            - "san:URI:spiffe://corp.example/privileged/"
     policy:
       default_decision: deny
       bundles:

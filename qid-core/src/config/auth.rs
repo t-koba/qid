@@ -135,8 +135,6 @@ fn default_lockout_duration_seconds() -> u64 {
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct MfaConfig {
-    #[serde(default = "default_false")]
-    pub required_for_admins: bool,
     #[serde(default)]
     pub allowed: Vec<String>,
     #[serde(default)]
@@ -152,15 +150,12 @@ pub struct MfaConfig {
 pub struct ClientCertificateMfaConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
-    #[serde(default)]
-    pub allowed_certificate_attributes: Vec<String>,
 }
 
 impl Default for ClientCertificateMfaConfig {
     fn default() -> Self {
         Self {
             enabled: default_false(),
-            allowed_certificate_attributes: Vec::new(),
         }
     }
 }
@@ -329,38 +324,6 @@ pub struct PepCapabilityConfig {
     #[serde(default)]
     pub phase: Option<String>,
     pub effect: String,
-    #[serde(default)]
-    pub constraints: PepCapabilityConstraintsConfig,
-    #[serde(default)]
-    pub authority: PepAuthorityConfig,
-    #[serde(default)]
-    pub build_features: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PepCapabilityConstraintsConfig {
-    #[serde(default)]
-    pub max_items: Option<u64>,
-    #[serde(default)]
-    pub allowed_schemes: Vec<String>,
-    #[serde(default)]
-    pub header_policy: Option<String>,
-    #[serde(default)]
-    pub local_response_supported: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PepAuthorityConfig {
-    #[serde(default)]
-    pub can_allow: bool,
-    #[serde(default)]
-    pub can_deny: bool,
-    #[serde(default)]
-    pub can_override_route: bool,
-    #[serde(default)]
-    pub can_weaken_local_policy: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

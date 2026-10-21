@@ -44,15 +44,11 @@ realms:
         rp_name: "Managed Workforce"
         attestation: enterprise
       mfa:
-        required_for_admins: true
         allowed:
           - passkey
           - client_certificate
         client_certificate:
           enabled: true
-          allowed_certificate_attributes:
-            - subject_cn
-            - san_uri
       password:
         enabled: true
     policy:

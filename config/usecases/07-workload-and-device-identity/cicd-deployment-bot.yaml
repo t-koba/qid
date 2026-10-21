@@ -80,5 +80,3 @@ realms:
           - client_certificate
         client_certificate:
           enabled: true
-          allowed_certificate_attributes:
-            - san_uri

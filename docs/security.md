@@ -58,6 +58,8 @@ Operational guidance:
 
 For sensitive deployments, enable approval and keep elevation TTL short.
 
+`admin.security` is the single owner of the administrator authentication requirement: an administrator elevation must carry the required ACR and one of the required AMR methods, and `require_step_up` is on by default. A realm's `authentication.mfa` block configures the authentication methods a realm offers and does not restate that requirement.
+
 ## Tokens and Clients
 
 Static client validation enforces:

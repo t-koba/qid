@@ -56,7 +56,6 @@ realms:
       password:
         enabled: true
       mfa:
-        required_for_admins: true
         allowed:
           - totp
           - webauthn

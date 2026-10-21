@@ -51,7 +51,6 @@ realms:
     protocols:
       directory:
         enabled: true
-        default_provider_id: corp-ldap
         providers:
           - id: corp-ldap
             type: ldap

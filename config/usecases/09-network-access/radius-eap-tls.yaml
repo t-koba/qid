@@ -78,7 +78,6 @@ realms:
             require_sender_constraint: true
       directory:
         enabled: true
-        default_provider_id: network-ad
         providers:
           - id: network-ad
             type: active-directory

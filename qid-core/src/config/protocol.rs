@@ -758,19 +758,12 @@ pub struct ClaimMappingConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryConfig {
-    /// When true, the directory provider list below is treated as the
-    /// default AD/LDAP source. Without setting this and providing at
-    /// least one `providers` entry, the worker falls back to the
-    /// in-memory `TestDirectoryConnector` which is only useful in
-    /// tests. INTEROP §3 requires that directory sync be on by default
-    /// for enterprise deployments.
+    /// Whether directory sync runs in this realm. A disabled realm
+    /// reports every sync as skipped before any provider connection.
+    /// INTEROP §3 requires that directory sync be on by default for
+    /// enterprise deployments.
     #[serde(default = "default_directory_enabled")]
     pub enabled: bool,
-    /// Identifier of the provider to use when `default_provider_id`
-    /// is not set explicitly. This makes directory sync "just work"
-    /// for the common case of a single AD/LDAP provider per realm.
-    #[serde(default)]
-    pub default_provider_id: Option<String>,
     #[serde(default)]
     pub providers: Vec<DirectoryProviderConfig>,
 }
@@ -783,7 +776,6 @@ impl Default for DirectoryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            default_provider_id: None,
             providers: Vec::new(),
         }
     }

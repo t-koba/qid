@@ -1,5 +1,94 @@
+use qid_core::config::{DirectoryAttributeMapping, DirectoryConnectionConfig, DirectorySyncConfig};
+use qid_core::error::{QidError, QidResult};
+use qid_directory::LdapDirectoryEntry;
+use qid_directory::connector::DirectoryConnector;
 use qid_storage::{AnyRepository, AuditRepository, RealmRepository, ScimRepository, SqlRepository};
 use std::sync::Arc;
+
+/// A directory connector for the sync regressions: it returns fixed entries,
+/// or fails with a fixed fault.
+struct StubDirectoryConnector {
+    entries: Vec<LdapDirectoryEntry>,
+    fault: Option<QidError>,
+}
+
+impl StubDirectoryConnector {
+    fn returning(entries: Vec<LdapDirectoryEntry>) -> Self {
+        Self {
+            entries,
+            fault: None,
+        }
+    }
+
+    fn failing(fault: QidError) -> Self {
+        Self {
+            entries: Vec::new(),
+            fault: Some(fault),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DirectoryConnector for StubDirectoryConnector {
+    async fn connect(&mut self, _config: &DirectoryConnectionConfig) -> QidResult<()> {
+        Ok(())
+    }
+
+    async fn fetch_users(
+        &self,
+        _sync: &DirectorySyncConfig,
+        _mapping: &DirectoryAttributeMapping,
+    ) -> QidResult<Vec<LdapDirectoryEntry>> {
+        match &self.fault {
+            Some(fault) => Err(fault.clone()),
+            None => Ok(self.entries.clone()),
+        }
+    }
+
+    async fn disconnect(&mut self) -> QidResult<()> {
+        Ok(())
+    }
+}
+
+/// A repository and configuration with one enabled directory provider, so
+/// a sync job reaches its fetch.
+async fn sync_fixture() -> (
+    Arc<AnyRepository>,
+    qid_core::config::QidConfig,
+    std::path::PathBuf,
+) {
+    let dir = std::env::temp_dir().join(format!("qid-sync-fixture-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let db_path = dir.join("sync.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+    let repo = SqlRepository::connect(&db_url).await.expect("connect");
+    repo.migrate().await.expect("migrate");
+    repo.create_realm(
+        &"default".into(),
+        &"corp".into(),
+        "https://id.example.com/realms/corp",
+        None,
+    )
+    .await
+    .expect("create realm");
+    let cfg_path = dir.join("qid.yaml");
+    std::fs::write(&cfg_path, format!("server:\n  listen: \"127.0.0.1:0\"\n  public_base_url: \"https://id.example.com\"\nstorage:\n  primary:\n    url: {}\nrealms:\n  - id: corp\n    issuer: \"https://id.example.com/realms/corp\"\n    protocols:\n      directory:\n        enabled: true\n        providers:\n          - id: corp-ldap\n            type: ldap\n            enabled: true\n            connection:\n              url: \"ldap://dir.invalid\"\n            sync:\n              deactivate_missing: true\n", serde_json::to_string(&db_path.to_string_lossy()).expect("store url"))).expect("write config");
+    let config = qid_core::config::QidConfig::from_file(cfg_path.to_str().expect("cfg path"))
+        .expect("config");
+    (Arc::new(AnyRepository::Sql(repo)), config, dir)
+}
+
+fn sync_job_config() -> crate::DirectorySyncJobConfig {
+    crate::DirectorySyncJobConfig {
+        realm_id: "corp".to_string(),
+        provider_id: "corp-ldap".to_string(),
+        actor: "qid-worker".to_string(),
+        reason: "connector injection regression".to_string(),
+        now_epoch: 100,
+        record_audit_event: false,
+        dry_run: false,
+    }
+}
 #[tokio::test]
 async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
     let dir = std::env::temp_dir().join(format!("qid-sync-audit-{}", ulid::Ulid::new()));
@@ -41,7 +130,7 @@ async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
     let config = qid_core::config::QidConfig::from_file(cfg_path.to_str().expect("cfg path"))
         .expect("config");
     let any = Arc::new(AnyRepository::Sql(repo));
-    let report = crate::run_directory_sync_job(
+    let report = crate::sync::run_directory_sync_job_with_connector(
         any.clone(),
         &config,
         crate::DirectorySyncJobConfig {
@@ -53,6 +142,7 @@ async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
             record_audit_event: true,
             dry_run: false,
         },
+        Box::new(|| Box::new(StubDirectoryConnector::returning(Vec::new()))),
     )
     .await
     .expect("sync job");
@@ -94,6 +184,74 @@ async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
         _ => panic!("expected sql repository"),
     }
     std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+}
+
+#[tokio::test]
+async fn a_directory_fetch_fault_is_reported_instead_of_swallowed() {
+    // A test build used to fall back to an empty test connector, so a fetch
+    // fault completed the sync and deactivated every user instead of
+    // reporting the fault.
+    let (any, config, dir) = sync_fixture().await;
+    let error = crate::sync::run_directory_sync_job_with_connector(
+        any.clone(),
+        &config,
+        sync_job_config(),
+        Box::new(|| {
+            Box::new(StubDirectoryConnector::failing(QidError::Config {
+                message: "bind DN and bind password must both be set".to_string(),
+            }))
+        }),
+    )
+    .await
+    .expect_err("the fetch fault is reported");
+
+    assert!(
+        matches!(error, QidError::Config { .. }),
+        "a configuration fault stays a configuration fault: {error:?}"
+    );
+    assert!(
+        error.message().contains("directory fetch failed"),
+        "the fault carries the fetch context: {error:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_directory_sync_applies_the_entries_the_connector_returns() {
+    let (any, config, dir) = sync_fixture().await;
+    let report = crate::sync::run_directory_sync_job_with_connector(
+        any.clone(),
+        &config,
+        sync_job_config(),
+        Box::new(|| {
+            Box::new(StubDirectoryConnector::returning(vec![
+                LdapDirectoryEntry {
+                    dn: "uid=alice,ou=people,dc=example,dc=com".to_string(),
+                    uid: "alice".to_string(),
+                    mail: Some("alice@example.com".to_string()),
+                    display_name: Some("Alice Example".to_string()),
+                    department: Some("Engineering".to_string()),
+                    manager_dn: None,
+                    enabled: true,
+                },
+            ]))
+        }),
+    )
+    .await
+    .expect("sync job");
+
+    assert_eq!(report.status, crate::DirectorySyncJobStatus::Completed);
+    assert_eq!(report.created, 1);
+    let users = any
+        .list_scim_users(&qid_core::tenant::RealmId::from("corp".to_string()))
+        .await
+        .expect("list users");
+    let user = users
+        .iter()
+        .find(|user| user.user_name == "alice")
+        .expect("the directory entry became a user");
+    assert_eq!(user.directory_provider_id.as_deref(), Some("corp-ldap"));
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

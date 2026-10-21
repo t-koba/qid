@@ -86,7 +86,6 @@ realms:
             require_sender_constraint: true
       directory:
         enabled: true
-        default_provider_id: access-directory
         providers:
           - id: access-directory
             type: active-directory

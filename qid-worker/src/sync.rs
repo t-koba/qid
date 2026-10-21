@@ -5,9 +5,7 @@ use qid_core::{
     tenant::RealmId,
 };
 use qid_crypto::LocalSigner;
-use qid_directory::connector::{
-    DirectoryConnector, LdapDirectoryConnector, TestDirectoryConnector,
-};
+use qid_directory::connector::{DirectoryConnector, LdapDirectoryConnector};
 use qid_scim::{
     OutboundScimClientConfig, ReqwestOutboundScimTransport, execute_outbound_user_provisioning,
     plan_outbound_user_execution,
@@ -216,11 +214,38 @@ pub fn sync_failed(result: &serde_json::Value) -> bool {
     result["report"]["status"] == "failed"
 }
 
+/// The connector a directory sync job fetches through.
+///
+/// Production uses the LDAP connector. A caller injects its own so the
+/// fetch and its fault classification are the same code in every build.
+pub(crate) type DirectoryConnectorFactory =
+    Box<dyn Fn() -> Box<dyn DirectoryConnector> + Send + Sync>;
+
 /// Run a directory sync job against a configured directory provider.
 pub async fn run_directory_sync_job(
     repo: Arc<AnyRepository>,
     qid_config: &QidConfig,
     config: DirectorySyncJobConfig,
+) -> QidResult<DirectorySyncJobReport> {
+    run_directory_sync_job_with_connector(
+        repo,
+        qid_config,
+        config,
+        Box::new(|| Box::new(LdapDirectoryConnector::new()) as Box<dyn DirectoryConnector>),
+    )
+    .await
+}
+
+/// Run a directory sync job against a configured directory provider with an
+/// injected connector.
+///
+/// The fetch, the fault classification, and the sync are the production
+/// ones; only the connector differs.
+pub(crate) async fn run_directory_sync_job_with_connector(
+    repo: Arc<AnyRepository>,
+    qid_config: &QidConfig,
+    config: DirectorySyncJobConfig,
+    connector_factory: DirectoryConnectorFactory,
 ) -> QidResult<DirectorySyncJobReport> {
     if config.dry_run {
         return Err(QidError::BadRequest {
@@ -263,30 +288,15 @@ pub async fn run_directory_sync_job(
             ),
         });
     }
-    let mut connector: Box<dyn DirectoryConnector> = {
-        let mut ldap = LdapDirectoryConnector::new();
-        ldap.connect(&provider.connection).await?;
-        Box::new(ldap)
-    };
+    let mut connector = connector_factory();
+    connector.connect(&provider.connection).await?;
     let sync_config = provider.sync.clone();
     let mapping = provider.attribute_mapping.clone();
 
-    let entries = match connector.fetch_users(&sync_config, &mapping).await {
-        Ok(entries) => entries,
-        Err(err) => {
-            // Fall back to the test connector only in test builds so the
-            // worker remains exercisable when no real directory is
-            // configured. Production deployments always require a real
-            // connector.
-            if cfg!(test) {
-                let mut fallback = TestDirectoryConnector::new(Vec::new());
-                fallback.connect(&provider.connection).await.ok();
-                fallback.fetch_users(&sync_config, &mapping).await?
-            } else {
-                return Err(directory_fetch_error(err));
-            }
-        }
-    };
+    let entries = connector
+        .fetch_users(&sync_config, &mapping)
+        .await
+        .map_err(directory_fetch_error)?;
     connector.disconnect().await.ok();
 
     let signer = Arc::new(LocalSigner::from_secret(

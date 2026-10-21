@@ -342,35 +342,6 @@ fn map_ldap_search_entry(
     map_ldap_entry(&se.dn, &attrs, mapping, true)
 }
 
-/// In-memory test connector that returns pre-configured entries.
-pub struct TestDirectoryConnector {
-    entries: Vec<LdapDirectoryEntry>,
-}
-
-impl TestDirectoryConnector {
-    pub fn new(entries: Vec<LdapDirectoryEntry>) -> Self {
-        Self { entries }
-    }
-}
-
-#[async_trait]
-impl DirectoryConnector for TestDirectoryConnector {
-    async fn connect(&mut self, _config: &DirectoryConnectionConfig) -> QidResult<()> {
-        Ok(())
-    }
-
-    async fn fetch_users(
-        &self,
-        _sync: &DirectorySyncConfig,
-        _mapping: &DirectoryAttributeMapping,
-    ) -> QidResult<Vec<LdapDirectoryEntry>> {
-        Ok(self.entries.clone())
-    }
-
-    async fn disconnect(&mut self) -> QidResult<()> {
-        Ok(())
-    }
-}
 pub fn resolve_search_base(config: &DirectoryConnectionConfig) -> String {
     if let Some(ref base_dn) = config.base_dn {
         return base_dn.clone();
@@ -620,6 +591,7 @@ pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidRes
 
 #[cfg(test)]
 mod tests {
+    use super::connector_tests::TestDirectoryConnector;
     use super::*;
 
     #[test]

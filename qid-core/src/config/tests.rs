@@ -1331,6 +1331,21 @@ fn introspection_object_form_keeps_the_endpoint_enabled() {
 }
 
 #[test]
+fn the_removed_directory_default_provider_key_is_rejected() {
+    // `default_provider_id` named a provider the sync never consulted: every
+    // call path requires an explicit provider id. A configuration that still
+    // sets it is a configuration error, not a silently ignored key.
+    let err = serde_json::from_str::<ProtocolConfig>(
+        r#"{"directory":{"default_provider_id":"corp-ldap"}}"#,
+    )
+    .expect_err("the removed key is rejected");
+    assert!(
+        err.to_string().contains("default_provider_id"),
+        "the error names the removed key: {err}"
+    );
+}
+
+#[test]
 fn a_directory_provider_needs_usable_bind_credentials() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {

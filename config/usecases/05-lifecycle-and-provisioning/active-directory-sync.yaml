@@ -37,7 +37,6 @@ realms:
     protocols:
       directory:
         enabled: true
-        default_provider_id: corp-ad
         providers:
           - id: corp-ad
             type: active-directory

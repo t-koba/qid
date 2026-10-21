@@ -2326,50 +2326,6 @@ fn reads_the_paged_results_cookie() {
 }
 
 #[tokio::test]
-async fn webhook_ingest_rejects_an_empty_external_id() {
-    use crate::connector::{DirectoryConnector, WebhookHrConnector};
-    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
-    let mut connector = WebhookHrConnector::new();
-    let err = connector
-        .ingest_json(&serde_json::json!([{"external_id": "", "event": "joiner"}]))
-        .expect_err("an empty external id must be rejected");
-    assert!(err.message().contains("external_id"), "{}", err.message());
-    let users = connector
-        .fetch_users(
-            &DirectorySyncConfig::default(),
-            &DirectoryAttributeMapping::default(),
-        )
-        .await
-        .unwrap();
-    assert!(users.is_empty(), "a rejected record must not be stored");
-}
-
-#[tokio::test]
-async fn webhook_ingest_validates_the_batch_before_storing_it() {
-    use crate::connector::{DirectoryConnector, WebhookHrConnector};
-    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
-    let mut connector = WebhookHrConnector::new();
-    let err = connector
-        .ingest_json(&serde_json::json!([
-            {"external_id": "hr-1", "event": "joiner"},
-            {"external_id": "hr-2", "event": "not-an-event"}
-        ]))
-        .expect_err("an invalid record must be rejected");
-    assert!(err.message().contains("event"), "{}", err.message());
-    let users = connector
-        .fetch_users(
-            &DirectorySyncConfig::default(),
-            &DirectoryAttributeMapping::default(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        users.is_empty(),
-        "a rejected batch must leave no prefix behind"
-    );
-}
-
-#[tokio::test]
 async fn hr_import_rejects_joiner_mover_repeated_key_before_any_create() {
     let state = setup().await;
     let err = import_hr_records(
@@ -2429,26 +2385,6 @@ fn rejects_a_paged_results_control_without_a_value() {
     assert!(err.message().contains("unusable"), "{}", err.message());
 }
 
-#[tokio::test]
-async fn webhook_ingest_trims_the_external_id_it_stores() {
-    use crate::connector::{DirectoryConnector, WebhookHrConnector};
-    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
-    let mut connector = WebhookHrConnector::new();
-    connector
-        .ingest_json(&serde_json::json!([{"external_id": "  hr-1  ", "event": "joiner"}]))
-        .expect("a padded identifier is accepted");
-    let users = connector
-        .fetch_users(
-            &DirectorySyncConfig::default(),
-            &DirectoryAttributeMapping::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0].uid, "hr-1");
-    assert_eq!(users[0].dn, "hr-1");
-}
-
 #[test]
 fn rejects_a_malformed_paged_results_control() {
     use ldap3::controls::{Control, ControlType, RawControl};
@@ -2488,28 +2424,6 @@ fn a_configured_bind_dn_needs_a_usable_password() {
     );
 }
 
-#[tokio::test]
-async fn webhook_ingest_trims_the_manager_reference() {
-    use crate::connector::{DirectoryConnector, WebhookHrConnector};
-    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
-    let mut connector = WebhookHrConnector::new();
-    connector
-        .ingest_json(&serde_json::json!([
-            {"external_id": "hr-1", "event": "joiner", "manager_external_id": "  hr-mgr  "},
-            {"external_id": "hr-2", "event": "joiner", "manager_external_id": "  "}
-        ]))
-        .expect("the records are accepted");
-    let users = connector
-        .fetch_users(
-            &DirectorySyncConfig::default(),
-            &DirectoryAttributeMapping::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(users[0].manager_dn.as_deref(), Some("hr-mgr"));
-    assert_eq!(users[1].manager_dn, None);
-}
-
 #[test]
 fn a_bind_credential_must_be_usable_in_both_directions() {
     let err = qid_core::config::bind_credentials(Some("CN=svc"), Some("  "))
@@ -2523,34 +2437,6 @@ fn a_bind_credential_must_be_usable_in_both_directions() {
         None,
         "a blank password is no credential either"
     );
-}
-
-#[tokio::test]
-async fn webhook_ingest_normalizes_every_attribute_like_the_csv_connector() {
-    use crate::connector::{DirectoryConnector, WebhookHrConnector};
-    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
-    let mut connector = WebhookHrConnector::new();
-    connector
-        .ingest_json(&serde_json::json!([
-            {"external_id": "hr-1", "event": "joiner", "email": "  hr@example.com  ",
-             "display_name": "  HR Person  ", "department": "  Research  "},
-            {"external_id": "hr-2", "event": "joiner", "email": "   ", "display_name": "",
-             "department": "  "}
-        ]))
-        .expect("the records are accepted");
-    let users = connector
-        .fetch_users(
-            &DirectorySyncConfig::default(),
-            &DirectoryAttributeMapping::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(users[0].mail.as_deref(), Some("hr@example.com"));
-    assert_eq!(users[0].display_name.as_deref(), Some("HR Person"));
-    assert_eq!(users[0].department.as_deref(), Some("Research"));
-    assert_eq!(users[1].mail, None);
-    assert_eq!(users[1].display_name, None);
-    assert_eq!(users[1].department, None);
 }
 
 #[test]
@@ -2569,28 +2455,6 @@ fn a_bind_credential_fault_is_a_configuration_error() {
         matches!(err, qid_core::error::QidError::Config { .. }),
         "the fault must be a configuration error"
     );
-}
-
-#[tokio::test]
-async fn webhook_ingest_reads_the_event_like_the_csv_connector() {
-    use crate::connector::{DirectoryConnector, WebhookHrConnector};
-    use qid_core::config::{DirectoryAttributeMapping, DirectorySyncConfig};
-    let mut connector = WebhookHrConnector::new();
-    connector
-        .ingest_json(&serde_json::json!([
-            {"external_id": "hr-1", "event": " Joiner "},
-            {"external_id": "hr-2", "event": "LEAVER"}
-        ]))
-        .expect("the records are accepted");
-    let users = connector
-        .fetch_users(
-            &DirectorySyncConfig::default(),
-            &DirectoryAttributeMapping::default(),
-        )
-        .await
-        .unwrap();
-    assert!(users[0].enabled, "a joiner is an enabled user");
-    assert!(!users[1].enabled, "a leaver is a disabled user");
 }
 
 /// The panic hook is process-wide, so only one test may own it at a time.

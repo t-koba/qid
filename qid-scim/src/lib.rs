@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 
 mod filter;
+#[cfg(test)]
+mod filter_tests;
 mod inbound;
 mod outbound;
 mod response;

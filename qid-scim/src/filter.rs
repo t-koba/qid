@@ -2,11 +2,13 @@
 
 use qid_core::error::{QidError, QidResult};
 
+#[derive(Debug)]
 pub(crate) struct EqFilter<'a> {
     pub(crate) attribute: &'a str,
     pub(crate) value: EqFilterValue<'a>,
 }
 
+#[derive(Debug)]
 pub(crate) enum EqFilterValue<'a> {
     String(&'a str),
     Bool(bool),
@@ -26,10 +28,11 @@ pub(crate) fn parse_eq_filter<'a>(
             message: format!("SCIM filter exceeds maximum length of {MAX_FILTER_LENGTH}"),
         });
     }
+    let unquoted = without_quoted_values(filter);
     for op in &[
         " and ", " or ", " pr", " lt ", " gt ", " le ", " ge ", " ne ",
     ] {
-        if filter.contains(op) {
+        if unquoted.contains(op) {
             return Err(QidError::BadRequest {
                 message: format!("unsupported SCIM filter operator: {op}"),
             });
@@ -49,6 +52,29 @@ pub(crate) fn parse_eq_filter<'a>(
     }
     let value = parse_eq_filter_value(value.trim())?;
     Ok(EqFilter { attribute, value })
+}
+
+/// The filter with the quoted values blanked out, so an operator word inside a
+/// quoted value is not read as an operator.
+fn without_quoted_values(filter: &str) -> String {
+    let mut out = String::with_capacity(filter.len());
+    let mut quoted = false;
+    let mut escaped = false;
+    for ch in filter.chars() {
+        if quoted {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+        if escaped {
+            escaped = false;
+        } else if quoted && ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        }
+    }
+    out
 }
 
 pub(crate) fn parse_eq_filter_value(value: &str) -> QidResult<EqFilterValue<'_>> {

@@ -304,6 +304,18 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
                     ),
                 });
             }
+            if connection.max_entries.is_some_and(|entries| {
+                entries == 0 || entries > protocol::MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT
+            }) {
+                return Err(QidError::Config {
+                    message: format!(
+                        "provider {} of realm {} max_entries must be between 1 and {}",
+                        provider.id,
+                        realm.id,
+                        protocol::MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT
+                    ),
+                });
+            }
             let dn = connection.bind_dn.as_deref();
             let password = connection.bind_password.as_deref();
             bind_credentials(dn, password).map_err(|error| QidError::Config {

@@ -813,6 +813,11 @@ pub struct DirectoryConnectionConfig {
     /// not implement the paging control fails the sync.
     #[serde(default)]
     pub page_size: Option<u32>,
+    /// The most entries one search may collect. The default is
+    /// [`MAX_DIRECTORY_SEARCH_ENTRIES`]; a realm whose directory holds more
+    /// objects than the default raises it.
+    #[serde(default)]
+    pub max_entries: Option<u32>,
     #[serde(default)]
     pub tls_insecure_skip_verify: bool,
 }
@@ -821,11 +826,16 @@ pub struct DirectoryConnectionConfig {
 /// search round's work and memory finite.
 pub const MAX_DIRECTORY_PAGE_SIZE: u32 = 1000;
 
-/// The most entries one directory search may collect. The bound keeps a
-/// search's memory finite and is above the number of objects the supported
-/// directory servers are documented to hold, so an ordinary large
-/// directory still syncs.
+/// The most entries one directory search may collect when the configuration
+/// does not say. The bound keeps a search's memory finite and is above the
+/// number of objects the supported directory servers are documented to hold,
+/// so an ordinary large directory still syncs.
 pub const MAX_DIRECTORY_SEARCH_ENTRIES: u32 = 1_000_000;
+
+/// The largest entry ceiling a configuration may ask for. The limit keeps a
+/// wrong value from turning one search into an allocation the host cannot
+/// serve.
+pub const MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT: u32 = 10_000_000;
 
 /// The bind credentials a directory search uses, if any.
 pub fn bind_credentials<'a>(
@@ -875,6 +885,7 @@ impl Default for DirectoryConnectionConfig {
             base_dn: None,
             connect_timeout_seconds: Some(10),
             page_size: None,
+            max_entries: None,
             tls_insecure_skip_verify: false,
         }
     }

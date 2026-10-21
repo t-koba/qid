@@ -5,7 +5,10 @@
 //! entries into the canonical [`LdapDirectoryEntry`] used by qid's sync engine.
 
 use async_trait::async_trait;
-use qid_core::config::{MAX_DIRECTORY_SEARCH_ENTRIES, bind_credentials, valid_bind_dn};
+use qid_core::config::{
+    MAX_DIRECTORY_SEARCH_ENTRIES, MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT, bind_credentials,
+    valid_bind_dn,
+};
 use qid_core::{
     config::{DirectoryAttributeMapping, DirectoryConnectionConfig, DirectorySyncConfig},
     error::{QidError, QidResult},
@@ -161,6 +164,7 @@ impl DirectoryConnector for LdapDirectoryConnector {
 fn search_options(config: &DirectoryConnectionConfig) -> LdapSearchOptions {
     LdapSearchOptions {
         page_size: config.page_size,
+        max_entries: config.max_entries,
         tls_insecure: config.tls_insecure_skip_verify,
         timeout_secs: config.connect_timeout_seconds.unwrap_or(10),
     }
@@ -178,6 +182,9 @@ pub struct LdapSearchOptions {
     /// search expects the PagedResults control on every page and fails when
     /// the directory does not return it.
     pub page_size: Option<u32>,
+    /// The most entries one search may collect. The default applies when the
+    /// configuration does not say.
+    pub max_entries: Option<u32>,
     /// Skip the TLS certificate verification. ldap3's flag disables the server
     /// name check as well as the chain check, so it covers the whole connection.
     pub tls_insecure: bool,
@@ -188,6 +195,7 @@ impl Default for LdapSearchOptions {
     fn default() -> Self {
         Self {
             page_size: None,
+            max_entries: None,
             tls_insecure: false,
             timeout_secs: 10,
         }
@@ -485,7 +493,7 @@ pub fn run_ldap_search_with_options(
             let page_size = options.page_size.unwrap_or(0);
             let mut all_entries = Vec::new();
             let mut cookie = Vec::new();
-            let mut progress = PagedSearch::new(page_size as usize);
+            let mut progress = PagedSearch::new(page_size as usize, options.max_entries);
 
             loop {
                 if page_size > 0 {
@@ -542,8 +550,15 @@ struct PagedSearch {
 
 impl PagedSearch {
     /// The bounds for a search that requests `page_size` entries per page.
-    fn new(page_size: usize) -> Self {
-        let max_entries = MAX_DIRECTORY_SEARCH_ENTRIES as usize;
+    ///
+    /// The entry ceiling is the configured one, or the default when the
+    /// configuration does not say. The ceiling is clamped to the limit the
+    /// configuration loader accepts, so a caller that skips the loader
+    /// cannot ask for more than a host can serve.
+    fn new(page_size: usize, max_entries: Option<u32>) -> Self {
+        let max_entries = max_entries
+            .unwrap_or(MAX_DIRECTORY_SEARCH_ENTRIES)
+            .min(MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT) as usize;
         // A search without paging fetches one page, so the page bound is
         // one; a paged search may fetch the pages the entry ceiling allows
         // at the requested page size.

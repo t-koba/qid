@@ -1428,6 +1428,42 @@ fn the_boolean_or_object_form_names_the_offending_field() {
 }
 
 #[test]
+fn a_directory_entry_ceiling_must_be_within_the_supported_range() {
+    let mut config = minimal_config();
+    config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+        id: "ldap-main".to_string(),
+        provider_type: "ldap".to_string(),
+        enabled: true,
+        connection: DirectoryConnectionConfig {
+            url: "ldaps://dir.example.com".to_string(),
+            max_entries: Some(0),
+            ..DirectoryConnectionConfig::default()
+        },
+        sync: DirectorySyncConfig::default(),
+        attribute_mapping: DirectoryAttributeMapping::default(),
+    }];
+    // The ceiling is checked when the configuration loads, so an operator
+    // learns about a wrong value before the first sync.
+    let err = config
+        .validate()
+        .expect_err("a ceiling of zero is a configuration fault");
+    assert!(err.message().contains("max_entries"), "{}", err.message());
+    config.realms[0].protocols.directory.providers[0]
+        .connection
+        .max_entries = Some(10_000_001);
+    let err = config
+        .validate()
+        .expect_err("a ceiling above the limit is a configuration fault");
+    assert!(err.message().contains("max_entries"), "{}", err.message());
+    config.realms[0].protocols.directory.providers[0]
+        .connection
+        .max_entries = Some(2_000_000);
+    config
+        .validate()
+        .expect("a ceiling within the range is accepted");
+}
+
+#[test]
 fn a_directory_page_size_must_be_within_the_supported_range() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {

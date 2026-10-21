@@ -229,6 +229,7 @@ An LDAP or Active Directory provider's `connection` holds:
 | `base_dn` | The subtree the sync reads. |
 | `connect_timeout_seconds` | The timeout in seconds for the bind, the search and the unbind. Defaults to 10; the connect itself is not bounded by it. |
 | `page_size` | The page size an RFC 2696 paged search requests. Between 1 and 1000; a value outside that range is rejected when the configuration loads. |
+| `max_entries` | The most entries one directory search may collect. Defaults to 1,000,000; between 1 and 10,000,000, and a value outside that range is rejected when the configuration loads. |
 | `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
 
 The provider rules apply to a realm whose directory sync is on; a realm whose directory sync is
@@ -252,11 +253,13 @@ that ignores the request fails the sync rather than returning a partial result.
 
 One search collects at most 1,000,000 entries. That ceiling is above the
 number of objects the supported directory servers are documented to hold, so an
-ordinary large directory still syncs. The pages a search may fetch follow from
-the ceiling and the requested page size, so a directory that keeps handing back
-a paging cookie fails the sync with the bound in the error instead of running
-forever. Without `page_size` the search is one request, so it returns what that
-request returned.
+ordinary large directory still syncs. A provider's connection raises the
+ceiling with `max_entries` when its directory holds more; the setting is
+rejected when the configuration loads unless it is between 1 and 10,000,000.
+The pages a search may fetch follow from the ceiling and the requested page
+size, so a directory that keeps handing back a paging cookie fails the sync
+with the bound in the error instead of running forever. Without `page_size` the
+search is one request, so it returns what that request returned.
 
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 

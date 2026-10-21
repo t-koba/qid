@@ -35,7 +35,7 @@ form bodies.
 | `GET` | configurable `well_known_oauth_authorization_server`, default `/.well-known/oauth-authorization-server` | OAuth AS metadata. |
 | `GET` | `/.well-known/oauth-authorization-server/realms/:realm` | Realm-scoped OAuth AS metadata. |
 | `GET` | configurable `well_known_oauth_protected_resource`, default `/.well-known/oauth-protected-resource` | Protected resource metadata. |
-| `GET, POST` | configurable `authorize`, default `/oauth2/authorize` | Authorization endpoint. |
+| `GET, POST` | configurable `authorize`, default `/oauth2/authorize` | Authorization endpoint. Password login is subject to the shared account and realm admission caps; exhaustion returns `temporarily_unavailable` and issues no code. |
 | `GET` | configurable `userinfo`, default `/oidc/userinfo` | UserInfo endpoint. |
 | `POST` | configurable `logout`, default `/oidc/logout` | Logout. |
 | `POST` | configurable `backchannel_logout`, default `/oidc/logout/backchannel` | Back-channel logout. |
@@ -67,7 +67,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. The realm's password policy is the attempt limit: a locked account, and a realm that has spent its budget of failed password logins, answer `429 Too Many Requests`. |
+| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. A login is admitted before any credential is verified: the submitted email's admission count follows the realm's `password.max_failed_attempts` within `password.lockout_duration_seconds`, and the realm admits 100 password logins within 300 seconds. A refused admission, a locked account, and a realm that has spent its budget of failed password logins answer `429 Too Many Requests`. |
 | `POST` | configurable `auth_session_refresh`, default `/api/v1/:realm/auth/session/refresh` | Refresh browser session. |
 | `POST` | configurable `auth_session_revoke`, default `/api/v1/:realm/auth/session/revoke` | Revoke browser session. |
 | `POST` | configurable `auth_webauthn_start`, default `/api/v1/:realm/auth/webauthn/start` | WebAuthn registration start. |

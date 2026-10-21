@@ -8,7 +8,7 @@ pub mod provider;
 pub mod rp_metadata;
 pub mod shared_signals;
 
-pub use discovery::routes;
+pub use discovery::{routes, routes_with_password_attempt_limiter};
 
 pub(crate) fn bad_request(message: impl Into<String>) -> qid_core::error::QidError {
     qid_core::error::QidError::BadRequest {

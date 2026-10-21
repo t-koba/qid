@@ -23,12 +23,12 @@ use qid_oauth::{
     routes as oauth_routes, signed_routes as signed_oauth_routes,
     unsigned_routes as unsigned_oauth_routes,
 };
-use qid_oidc::routes as oidc_routes;
+use qid_oidc::routes_with_password_attempt_limiter as oidc_routes_with_password_attempt_limiter;
 use qid_policy::NativePolicyEngine;
 use qid_proxy::{
     capport_routes_enabled, captive_portal_routes, issue_assertion, pep_decision_routes,
 };
-use qid_session::auth_routes;
+use qid_session::{PasswordAttemptLimiter, auth_routes_with_password_attempt_limiter};
 use qid_storage::prelude::*;
 use qid_storage::{AnyRepository, FileFlushMode};
 use serde_json::json;
@@ -281,14 +281,25 @@ async fn main() -> anyhow::Result<()> {
         oauth_routes::<AnyRepository>(paths)
     };
 
+    // One password admission limiter serves both password login paths, so
+    // the session API and the OIDC authorization endpoint enforce the same
+    // admission numbers.
+    let password_limiter = Arc::new(PasswordAttemptLimiter::new());
+
     let mut app = Router::<AppState>::new()
         .route(&paths.health, get(health_handler))
         .route(&paths.ready, get(ready_handler))
         .route(&paths.jwks, get(jwks_handler))
-        .merge(oidc_routes::<AnyRepository>(paths))
+        .merge(oidc_routes_with_password_attempt_limiter::<AnyRepository>(
+            paths,
+            password_limiter.clone(),
+        ))
         .merge(oauth_router)
         .merge(qid_admin::admin_routes::<AnyRepository>(paths))
-        .merge(auth_routes::<AnyRepository>(paths))
+        .merge(auth_routes_with_password_attempt_limiter::<AnyRepository>(
+            paths,
+            password_limiter.clone(),
+        ))
         .merge(qid_session::totp_api::totp_routes::<AnyRepository>(paths))
         .merge(qid_directory::directory_routes::<AnyRepository>())
         .merge(qid_risk::risk_routes::<AnyRepository>())

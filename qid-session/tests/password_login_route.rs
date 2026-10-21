@@ -1,7 +1,5 @@
-//! The session API's password route enforces the realm's own attempt
-//! limits. The realm states how many failures lock an account, the OIDC
-//! authorization endpoint enforces the same numbers, and the route adds no
-//! limit of its own.
+//! The session API and OIDC authorization endpoint share the realm's
+//! account-lockout policy and an admission limit on credential work.
 
 use anyhow::Context;
 use axum::{
@@ -120,28 +118,29 @@ async fn the_password_route_enforces_the_realm_attempt_limit() -> anyhow::Result
         );
     }
 
-    // The eighth failure locked the account, so the next attempt is
-    // refused by the lockout.
+    // The eighth failure locked the account and spent the account's
+    // admission count, so the next attempt is refused.
     let status = post_password(app.clone(), "wrong-password").await?;
     assert_eq!(
         status,
         StatusCode::TOO_MANY_REQUESTS,
-        "the account is locked after the realm's limit"
+        "the account admission count is spent"
     );
 
-    // The lockout refuses even the correct password.
+    // The refusal holds for the correct password as well.
     let status = post_password(app, PASSWORD).await?;
     assert_eq!(
         status,
         StatusCode::TOO_MANY_REQUESTS,
-        "the lockout refuses the correct password"
+        "the account's admission count refuses the correct password"
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn the_password_route_locks_after_the_number_the_realm_states() -> anyhow::Result<()> {
-    // The realm allows two failures, so the third attempt meets the lockout.
+async fn the_password_route_refuses_after_the_account_admission_limit() -> anyhow::Result<()> {
+    // The realm allows two failed admissions. Both reach credential
+    // verification; the following request is refused before verification.
     let app = app_with_policy(2).await?;
     for _ in 0..2 {
         let status = post_password(app.clone(), "wrong-password").await?;
@@ -155,7 +154,7 @@ async fn the_password_route_locks_after_the_number_the_realm_states() -> anyhow:
     assert_eq!(
         status,
         StatusCode::TOO_MANY_REQUESTS,
-        "the account is locked after the realm's limit"
+        "the account admission count is spent"
     );
     Ok(())
 }

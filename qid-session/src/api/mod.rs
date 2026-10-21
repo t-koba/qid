@@ -18,6 +18,7 @@ use url::Url;
 
 use crate::auth::Authenticator;
 use crate::browser::SessionManager;
+use crate::password_limit::PasswordAttemptLimiter;
 use crate::webauthn::{WebAuthnService, WebAuthnState};
 
 pub(crate) fn set_session_cookie(
@@ -37,7 +38,23 @@ pub(crate) fn set_session_cookie(
     Ok(())
 }
 
+/// The session routes with a password admission limiter of their own.
+///
+/// The limiter is fresh for every router, so a test that builds a router
+/// does not share its counts with another test.
 pub fn auth_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
+    auth_routes_with_password_attempt_limiter(paths, Arc::new(PasswordAttemptLimiter::new()))
+}
+
+/// The session routes with the password admission limiter the caller owns.
+///
+/// A deployment that serves the session routes and the OIDC authorization
+/// endpoint from one process passes one limiter to both, so the two
+/// password login paths enforce the same admission numbers.
+pub fn auth_routes_with_password_attempt_limiter<R: Repository>(
+    paths: &ServerPaths,
+    limiter: Arc<PasswordAttemptLimiter>,
+) -> Router<Arc<SharedState<R>>> {
     Router::new()
         .route(&paths.auth_password, post(password_auth::<R>))
         .route(&paths.auth_session_refresh, post(session_refresh::<R>))
@@ -67,6 +84,7 @@ pub fn auth_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState
             post(webauthn_discoverable_auth_finish::<R>),
         )
         .layer(Extension(WebAuthnState::new()))
+        .layer(Extension(limiter))
 }
 
 pub(crate) fn build_webauthn_service<R: Repository>(

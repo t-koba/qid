@@ -3,7 +3,7 @@
 use base64::Engine;
 
 use axum::{
-    Form,
+    Extension, Form,
     extract::{Query, State},
     http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
@@ -18,6 +18,7 @@ use qid_core::{
 use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
 
 use qid_session::{
+    PasswordAttemptLimiter,
     auth::{Authenticator, PasswordPolicy},
     session_is_active,
 };
@@ -225,6 +226,7 @@ fn parse_cookie(cookie_header: &str, name: &str) -> Option<String> {
 /// Handle POST /oauth2/authorize by accepting credentials and redirecting.
 pub async fn authorize_post<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    Extension(limiter): Extension<Arc<PasswordAttemptLimiter>>,
     Query(req): Query<AuthorizeRequest>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
@@ -254,11 +256,25 @@ pub async fn authorize_post<R: Repository>(
         );
     }
 
-    let authenticator = Authenticator::new(
-        state.repo.clone(),
-        PasswordPolicy::from_config(&realm_config.password),
-        state.failure_budget.clone(),
-    );
+    let policy = PasswordPolicy::from_config(&realm_config.password);
+    // A login is admitted before the credential lookup and before any
+    // Argon2id work. The account's admission count and the realm's own
+    // count are the counts of the limiter the authorization endpoint and
+    // the session routes share, so both paths refuse the same logins. The
+    // count follows the address the caller named, so a refusal says
+    // nothing about whether an account carries it, and it issues no code.
+    if !limiter.admit(&client.realm_id, &form.email, &policy) {
+        metrics::counter!("qid_authn_rate_limited_total", "method" => "password").increment(1);
+        return authorization_error_response(
+            &state,
+            &resolved,
+            &client,
+            "temporarily_unavailable",
+            "too many password attempts, try again later",
+        );
+    }
+    let authenticator =
+        Authenticator::new(state.repo.clone(), policy, state.failure_budget.clone());
     let auth_result = match authenticator
         .authenticate_password(
             &RealmId::from(client.realm_id.clone()),
@@ -267,7 +283,12 @@ pub async fn authorize_post<R: Repository>(
         )
         .await
     {
-        Ok(a) => a,
+        Ok(a) => {
+            // A successful login clears the account's admission count and
+            // leaves the realm's count alone.
+            limiter.reset_user(&client.realm_id, &form.email);
+            a
+        }
         Err(e) => {
             // A realm that has spent its budget of failed password logins
             // is a temporary condition of the realm, not of the account

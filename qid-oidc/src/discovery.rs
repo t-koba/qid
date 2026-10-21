@@ -3,7 +3,7 @@
 use crate::provider::{authorize_get, authorize_post};
 use crate::{bad_request, internal_error, not_found, unauthorized};
 use axum::{
-    Form, Json, Router,
+    Extension, Form, Json, Router,
     extract::{OriginalUri, Path, Query, State},
     http::{HeaderValue, Method, header},
     response::{IntoResponse, Redirect, Response},
@@ -18,6 +18,7 @@ use qid_core::{
     tenant::RealmId,
     util,
 };
+use qid_session::PasswordAttemptLimiter;
 use qid_storage::prelude::*;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -89,7 +90,23 @@ async fn send_backchannel_logout(logout_uri: &str, logout_token: &str) -> QidRes
 }
 
 /// Build OIDC discovery routes with shared state and configurable paths.
+///
+/// The routes carry a password admission limiter of their own, so a test
+/// that builds a router does not share its counts with another test.
 pub fn routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
+    routes_with_password_attempt_limiter(paths, Arc::new(PasswordAttemptLimiter::new()))
+}
+
+/// Build OIDC discovery routes with the password admission limiter the
+/// caller owns.
+///
+/// A deployment that serves the authorization endpoint and the session
+/// routes from one process passes one limiter to both, so the two
+/// password login paths enforce the same admission numbers.
+pub fn routes_with_password_attempt_limiter<R: Repository>(
+    paths: &ServerPaths,
+    limiter: Arc<PasswordAttemptLimiter>,
+) -> Router<Arc<SharedState<R>>> {
     let protected_resource_path_inserted = format!(
         "{}/*suffix",
         paths
@@ -132,6 +149,7 @@ pub fn routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>>
         .route(&paths.frontchannel_logout, get(frontchannel_logout))
         .route("/session/check", get(check_session_iframe::<R>))
         .route("/.well-known/webfinger", get(webfinger::<R>))
+        .layer(Extension(limiter))
 }
 
 async fn openid_configuration<R: Repository>(State(state): State<Arc<SharedState<R>>>) -> Response {

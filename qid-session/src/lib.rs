@@ -7,16 +7,18 @@ pub mod api;
 pub mod auth;
 pub mod browser;
 pub mod hibp;
+mod password_limit;
 pub mod refresh;
 pub mod totp_api;
 pub mod webauthn;
 
-pub use api::auth_routes;
+pub use api::{auth_routes, auth_routes_with_password_attempt_limiter};
 pub use auth::Authenticator;
 pub use browser::{
     BrowserSession, decode_cached_session, session_cache_key, session_cache_put, session_is_active,
 };
 pub use hibp::HibpClient;
+pub use password_limit::PasswordAttemptLimiter;
 pub use webauthn::WebAuthnService;
 
 #[cfg(test)]

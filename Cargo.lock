@@ -3989,6 +3989,7 @@ dependencies = [
  "hmac 0.12.1",
  "http-body-util",
  "jsonwebtoken",
+ "metrics",
  "qid-core",
  "qid-crypto",
  "qid-http",

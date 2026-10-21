@@ -1,7 +1,7 @@
 //! Password authentication handler.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
@@ -14,9 +14,11 @@ use std::sync::Arc;
 use super::{Authenticator, PasswordAuthRequest, PasswordAuthResponse, UserResponse};
 use crate::auth::PasswordPolicy;
 use crate::browser::SessionManager;
+use crate::password_limit::PasswordAttemptLimiter;
 
 pub async fn password_auth<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    Extension(limiter): Extension<Arc<PasswordAttemptLimiter>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
     JsonObject(req): JsonObject<PasswordAuthRequest>,
@@ -32,17 +34,23 @@ pub async fn password_auth<R: Repository>(
         });
     }
 
-    // The realm's password policy is the only attempt limit a password
-    // login has. The authenticator locks the account after the realm's
-    // `max_failed_attempts` failures and refuses even the correct
-    // password until the lockout expires, and the OIDC authorization
-    // endpoint enforces the same numbers, so this route adds no second
-    // limit of its own.
-    let authenticator = Authenticator::new(
-        state.repo.clone(),
-        PasswordPolicy::from_config(&realm_config.password),
-        state.failure_budget.clone(),
-    );
+    // The realm policy sets the account's lockout numbers, which the
+    // OIDC authorization endpoint enforces as well. The shared admission
+    // limiter below separately bounds requests that reach credential work.
+    let policy = PasswordPolicy::from_config(&realm_config.password);
+    // A login is admitted before the credential lookup and before any
+    // Argon2id work. The account's admission count and the realm's own
+    // count are the counts of the limiter the session routes and the
+    // OIDC authorization endpoint share, so both paths refuse the same
+    // logins and a refused login costs no Argon2id work.
+    if !limiter.admit(&realm, &req.email, &policy) {
+        metrics::counter!("qid_authn_rate_limited_total", "method" => "password").increment(1);
+        return qid_http::error_response(QidError::TooManyRequests {
+            message: "too many login attempts, please wait and try again".to_string(),
+        });
+    }
+    let authenticator =
+        Authenticator::new(state.repo.clone(), policy, state.failure_budget.clone());
     metrics::counter!("qid_authn_attempts_total", "method" => "password").increment(1);
     let auth_result = match authenticator
         .authenticate_password(&RealmId(realm.clone()), &req.email, &req.password)
@@ -50,6 +58,9 @@ pub async fn password_auth<R: Repository>(
     {
         Ok(r) => {
             metrics::counter!("qid_authn_success_total", "method" => "password").increment(1);
+            // A successful login clears the account's admission count and
+            // leaves the realm's count alone.
+            limiter.reset_user(&realm, &req.email);
             r
         }
         Err(e) => {

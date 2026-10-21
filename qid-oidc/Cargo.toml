@@ -29,6 +29,7 @@ thiserror = "1"
 tokio = { workspace = true }
 tracing = { workspace = true }
 jsonwebtoken = { workspace = true }
+metrics = { workspace = true }
 ulid = { workspace = true }
 urlencoding = { workspace = true }
 reqwest = { workspace = true }

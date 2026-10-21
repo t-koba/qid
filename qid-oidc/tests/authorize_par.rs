@@ -1958,11 +1958,28 @@ async fn authorize_post_locks_the_account_after_the_realm_attempt_limit() {
         assert!(!location.contains("code=ac_"), "{location}");
     }
 
-    // The second failure locked the account, so the correct password is
-    // refused as well.
+    // The second failure locked the account.
+    let user = state
+        .repo
+        .get_user_by_id("par-user")
+        .await
+        .expect("user lookup failed")
+        .expect("the user is missing");
+    assert!(
+        user.locked_until.is_some(),
+        "the account is locked after the realm's limit"
+    );
+
+    // The account's admission count is spent with the realm's limit, so
+    // the correct password is refused before any credential is verified.
+    // The refusal is a temporary condition of the address, so it issues
+    // no code and says nothing about the password.
     let refused = post_form(app, authorize_query(&state, ""), LOGIN_FORM).await;
     let location = redirect_location(&refused);
-    assert!(location.contains("error=access_denied"), "{location}");
+    assert!(
+        location.contains("error=temporarily_unavailable"),
+        "{location}"
+    );
     assert!(!location.contains("code=ac_"), "{location}");
 }
 

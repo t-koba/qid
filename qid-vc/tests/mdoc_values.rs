@@ -58,6 +58,41 @@ fn a_text_value_stays_text_across_the_cbor_round_trip() {
 }
 
 #[test]
+fn an_integer_above_the_model_range_is_an_error() {
+    // An integer the model does not represent must be refused, not
+    // truncated into a different number that looks like data.
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(
+        &ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("docType".to_string()),
+                ciborium::Value::Text("org.iso.18013.5.1.mDL".to_string()),
+            ),
+            (
+                ciborium::Value::Text("namespaces".to_string()),
+                ciborium::Value::Map(vec![(
+                    ciborium::Value::Text("org.iso.18013.5.1".to_string()),
+                    ciborium::Value::Map(vec![(
+                        ciborium::Value::Text("expiration_date".to_string()),
+                        // The largest unsigned integer is above the range the
+                        // model represents.
+                        ciborium::Value::Integer(ciborium::value::Integer::from(u64::MAX)),
+                    )]),
+                )]),
+            ),
+        ]),
+        &mut buf,
+    )
+    .expect("the fixture encodes");
+    let error = decode_mdoc_document(&buf).expect_err("an integer out of range is refused");
+    assert!(
+        error.message().contains("does not represent"),
+        "unexpected error: {}",
+        error.message()
+    );
+}
+
+#[test]
 fn a_value_the_model_does_not_represent_is_an_error() {
     // A shape the model does not represent must not be presented as a text
     // value that looks like data.

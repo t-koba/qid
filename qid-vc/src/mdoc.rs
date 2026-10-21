@@ -317,7 +317,14 @@ fn mdoc_value_to_cbor(value: &MdocDataElementValue) -> CborValue {
 fn cbor_to_mdoc_value(value: &CborValue) -> QidResult<MdocDataElementValue> {
     match value {
         CborValue::Text(t) => Ok(MdocDataElementValue::Text(t.clone())),
-        CborValue::Integer(i) => Ok(MdocDataElementValue::Integer(i128::from(*i) as i64)),
+        CborValue::Integer(i) => {
+            // An integer the model does not represent is an error, not a
+            // truncated number that looks like data.
+            let value = i64::try_from(i128::from(*i)).map_err(|_| QidError::BadRequest {
+                message: "mdoc CBOR value has a type the data model does not represent".to_string(),
+            })?;
+            Ok(MdocDataElementValue::Integer(value))
+        }
         CborValue::Bool(b) => Ok(MdocDataElementValue::Boolean(*b)),
         CborValue::Bytes(b) => Ok(MdocDataElementValue::Bytes(b.clone())),
         CborValue::Tag(tag, inner) => {

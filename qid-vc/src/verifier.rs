@@ -3,6 +3,7 @@ use axum::{
     extract::State,
     response::{IntoResponse, Response},
 };
+use qid_core::web::JsonObject;
 use qid_core::{
     error::{QidError, QidResult},
     models::VcCredentialStatusRecord,
@@ -374,7 +375,7 @@ fn validate_status_matches_credential(
 
 pub(crate) async fn verify_presentation_endpoint<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
-    Json(mut request): Json<PresentationVerificationRequest>,
+    JsonObject(mut request): JsonObject<PresentationVerificationRequest>,
 ) -> Response {
     request.now_epoch_seconds = None;
     match verify_presentation_with_status(&state, request).await {

@@ -366,7 +366,7 @@ pub struct PepDecisionAuditInfo {
 async fn check<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Json(mut req): Json<PepDecisionRequest>,
+    JsonObject(mut req): JsonObject<PepDecisionRequest>,
 ) -> impl IntoResponse {
     let auth = match authenticate_pep_decision_adapter(&headers, &state, &req) {
         Ok(auth) => auth,

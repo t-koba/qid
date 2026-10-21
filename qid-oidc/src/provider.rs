@@ -435,8 +435,8 @@ async fn resolve_and_validate_authorize_request<R: Repository>(
     req: &AuthorizeRequest,
     consume_par: bool,
 ) -> QidResult<(AuthorizeParameters, Client)> {
-    let resolved = resolve_authorize_request(state, req, consume_par).await?;
-    let client = validate_authorize_request(state, &resolved).await?;
+    let (resolved, client) = resolve_authorize_request(state, req, consume_par).await?;
+    validate_authorize_request(state, &resolved, &client)?;
     Ok((resolved, client))
 }
 
@@ -444,7 +444,7 @@ async fn resolve_authorize_request<R: Repository>(
     state: &SharedState<R>,
     req: &AuthorizeRequest,
     consume_par: bool,
-) -> QidResult<AuthorizeParameters> {
+) -> QidResult<(AuthorizeParameters, Client)> {
     let mut merged = AuthorizeParameters {
         client_id: req.client_id.clone().unwrap_or_default(),
         response_type: req.response_type.clone().unwrap_or_default(),
@@ -465,36 +465,44 @@ async fn resolve_authorize_request<R: Repository>(
         dpop_proof: None,
     };
 
-    if let Some(request_object) = req.request.as_deref() {
-        merge_request_object(state, &mut merged, request_object).await?;
-    }
-
-    // FAPI 2.0 Security Profile §5.2.3: when the realm requires a signed
-    // request object, the request must carry the `request` parameter (or a
-    // `request_uri` referencing a previously-pushed JAR) before the merged
-    // parameters are accepted.
-    if req.request.is_none()
-        && req.request_uri.is_none()
-        && realm_requires_signed_request_object(state, &req.client_id).await?
-    {
-        return Err(bad_request(
-            "signed request object is required for this realm",
-        ));
-    }
+    // The client of the request is resolved once. A request object names
+    // the client that signed it, and the merged client id names it
+    // otherwise, so the realm requirements below and the validation read
+    // one client instead of resolving it again for each of them.
+    let mut client = match req.request.as_deref() {
+        Some(request_object) => {
+            Some(merge_request_object(state, &mut merged, request_object, None).await?)
+        }
+        None => None,
+    };
 
     if req.request_uri.is_none() {
+        if client.is_none() {
+            client = resolve_client_by_id(state, &merged.client_id).await?;
+        }
+
+        // FAPI 2.0 Security Profile §5.2.3: when the realm requires a
+        // signed request object, the request must carry the `request`
+        // parameter (or a `request_uri` referencing a previously-pushed
+        // JAR) before the merged parameters are accepted.
+        if req.request.is_none() && realm_requires_signed_request_object(state, client.as_ref()) {
+            return Err(bad_request(
+                "signed request object is required for this realm",
+            ));
+        }
+
         // The requirement belongs to a realm, so the client's own realm is
-        // resolved through the client-resolution contract and only that
-        // realm's setting is read: a realm that requires a pushed
-        // authorization request does not impose it on another realm's
-        // clients.
-        if realm_requires_pushed_authorization_request(state, &merged.client_id).await? {
+        // read and only that realm's setting applies: a realm that
+        // requires a pushed authorization request does not impose it on
+        // another realm's clients.
+        if realm_requires_pushed_authorization_request(state, client.as_ref()) {
             return Err(bad_request(
                 "pushed authorization request is required for this realm",
             ));
         }
         require_authorize_fields(&merged)?;
-        return Ok(merged);
+        let client = client.ok_or_else(|| bad_request("client_id required"))?;
+        return Ok((merged, client));
     }
     let request_uri = req
         .request_uri
@@ -518,7 +526,8 @@ async fn resolve_authorize_request<R: Repository>(
     let par_params: AuthorizeRequest = serde_json::from_value(par.params_json)
         .map_err(|e| bad_request(format!("invalid PAR payload: {e}")))?;
     if let Some(request_object) = par_params.request.as_deref() {
-        merge_request_object(state, &mut merged, request_object).await?;
+        client =
+            Some(merge_request_object(state, &mut merged, request_object, client.as_ref()).await?);
     }
     merge_authorize_param(&mut merged.client_id, par_params.client_id, "client_id")?;
     merge_authorize_param(
@@ -568,14 +577,21 @@ async fn resolve_authorize_request<R: Repository>(
     if consume_par {
         state.repo.mark_par_request_used(request_uri).await?;
     }
-    Ok(merged)
+    let client = match client {
+        Some(client) => client,
+        None => resolve_client_by_id(state, &merged.client_id)
+            .await?
+            .ok_or_else(|| bad_request("client_id required"))?,
+    };
+    Ok((merged, client))
 }
 
 async fn merge_request_object<R: Repository>(
     state: &SharedState<R>,
     merged: &mut AuthorizeParameters,
     request_object: &str,
-) -> QidResult<()> {
+    known_client: Option<&Client>,
+) -> QidResult<Client> {
     let header = jsonwebtoken::decode_header(request_object)
         .map_err(|e| unauthorized(format!("invalid request object header: {e}")))?;
     let alg_name = match header.alg {
@@ -593,7 +609,15 @@ async fn merge_request_object<R: Repository>(
         jsonwebtoken::Algorithm::EdDSA => "EdDSA",
     };
     let payload = parse_request_object_payload(request_object)?;
-    let client = find_request_object_client(state, &payload).await?;
+    // The request object names the client that signed it. A request that
+    // already resolved its client resolves no further.
+    let identity = request_object_string(&payload, "client_id")
+        .or_else(|| request_object_string(&payload, "sub"))
+        .or_else(|| request_object_string(&payload, "iss"));
+    let client = match known_client {
+        Some(client) if identity.as_deref() == Some(client.client_id.as_str()) => client.clone(),
+        _ => find_request_object_client(state, &payload).await?,
+    };
     enforce_allowed_request_object_alg(state, &client.realm_id, alg_name)?;
     verify_request_object_signature(request_object, &header, &client, alg_name)?;
     validate_request_object_audience(state, &client.realm_id, &payload)?;
@@ -673,7 +697,7 @@ async fn merge_request_object<R: Repository>(
         &mut merged.claims,
         payload.get("claims").map(|value| value.to_string()),
     )?;
-    Ok(())
+    Ok(client)
 }
 
 fn request_object_string(claims: &serde_json::Value, name: &str) -> Option<String> {
@@ -813,30 +837,30 @@ fn validate_request_object_time(claims: &serde_json::Value) -> QidResult<()> {
     Ok(())
 }
 
-async fn realm_requires_signed_request_object<R: Repository>(
+/// Whether the client's own realm requires a signed request object.
+///
+/// The requirement is a realm's own setting, so it is read from the realm
+/// of the client the request resolved to. A request that names no client
+/// names no realm, so it carries no requirement.
+fn realm_requires_signed_request_object<R: Repository>(
     state: &SharedState<R>,
-    client_id: &Option<String>,
-) -> QidResult<bool> {
-    let Some(client_id) = client_id
-        .as_deref()
-        .filter(|client_id| !client_id.is_empty())
-    else {
-        return Ok(false);
-    };
-    let client = find_client_across_realms(state, client_id).await?;
-    Ok(state
-        .config
-        .realms
-        .iter()
-        .find(|realm| realm.id == client.realm_id)
-        .is_some_and(|realm| {
-            realm.protocols.oidc.enabled
-                && realm
-                    .protocols
-                    .oidc
-                    .authorization_code
-                    .require_signed_request_object
-        }))
+    client: Option<&Client>,
+) -> bool {
+    client.is_some_and(|client| {
+        state
+            .config
+            .realms
+            .iter()
+            .find(|realm| realm.id == client.realm_id)
+            .is_some_and(|realm| {
+                realm.protocols.oidc.enabled
+                    && realm
+                        .protocols
+                        .oidc
+                        .authorization_code
+                        .require_signed_request_object
+            })
+    })
 }
 
 /// Whether the client's own realm requires a pushed authorization request.
@@ -845,20 +869,18 @@ async fn realm_requires_signed_request_object<R: Repository>(
 /// through the client-resolution contract rather than searched for across
 /// the realms: a realm that requires a pushed authorization request does
 /// not impose it on the clients of another realm.
-async fn realm_requires_pushed_authorization_request<R: Repository>(
+fn realm_requires_pushed_authorization_request<R: Repository>(
     state: &SharedState<R>,
-    client_id: &str,
-) -> QidResult<bool> {
-    if client_id.is_empty() {
-        return Ok(false);
-    }
-    let client = find_client_across_realms(state, client_id).await?;
-    Ok(state
-        .config
-        .realms
-        .iter()
-        .find(|realm| realm.id == client.realm_id)
-        .is_some_and(|realm| realm.protocols.oauth.require_pushed_authorization_requests))
+    client: Option<&Client>,
+) -> bool {
+    client.is_some_and(|client| {
+        state
+            .config
+            .realms
+            .iter()
+            .find(|realm| realm.id == client.realm_id)
+            .is_some_and(|realm| realm.protocols.oauth.require_pushed_authorization_requests)
+    })
 }
 
 fn validate_request_object_audience<R: Repository>(
@@ -990,12 +1012,11 @@ fn merge_optional_authorize_param(
     }
 }
 
-async fn validate_authorize_request<R: Repository>(
+fn validate_authorize_request<R: Repository>(
     state: &SharedState<R>,
     req: &AuthorizeParameters,
-) -> QidResult<Client> {
-    let client = find_client_across_realms(state, &req.client_id).await?;
-
+    client: &Client,
+) -> QidResult<()> {
     let oidc = state
         .config
         .realms
@@ -1066,7 +1087,21 @@ async fn validate_authorize_request<R: Repository>(
         qid_core::oauth::validate_authorization_details(details)?;
     }
 
-    Ok(client)
+    Ok(())
+}
+
+/// The client the request names, when it names one.
+///
+/// A request that carries no client id names no client, so the request is
+/// refused for the missing parameter rather than for an unknown client.
+async fn resolve_client_by_id<R: Repository>(
+    state: &SharedState<R>,
+    client_id: &str,
+) -> QidResult<Option<Client>> {
+    if client_id.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(find_client_across_realms(state, client_id).await?))
 }
 
 async fn find_client_across_realms<R: Repository>(

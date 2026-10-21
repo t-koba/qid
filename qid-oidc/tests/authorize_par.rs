@@ -1520,6 +1520,92 @@ async fn a_pushed_authorization_request_satisfies_the_realm_requirement() {
     assert_eq!(challenge["client_id"], "strict-client");
 }
 
+/// Build a deployment with a second realm that registers the same client
+/// id, so the client id names a client of two realms.
+async fn setup_with_a_duplicate_client_id() -> (Router, Arc<SharedState<SqlRepository>>) {
+    let mut config = test_helpers::test_config();
+    let mut other = config.realms[0].clone();
+    other.id = "other".to_string();
+    other.issuer = "https://id.example.com/realms/other".to_string();
+    config.realms.push(other);
+    let (app, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-other".into(),
+            &"other".into(),
+            "https://id.example.com/realms/other",
+            Some("Other Realm"),
+        )
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_client(&Client {
+            id: "other-client-id".to_string(),
+            realm_id: "other".to_string(),
+            client_id: "par-client".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: qid_core::models::default_client_jwks(),
+            redirect_uris: vec!["https://other.example.com/callback".to_string()],
+            grant_types: vec!["authorization_code".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        })
+        .await
+        .unwrap();
+    (app, state)
+}
+
+#[tokio::test]
+async fn an_authorization_request_without_a_client_is_refused_for_the_missing_parameter() {
+    let (app, state) = setup().await;
+
+    // A request that names no client names no realm, so it is refused for
+    // the missing parameter rather than for an unknown client.
+    let response = get_uri(
+        app,
+        format!(
+            "{}?response_type=code&redirect_uri={}",
+            state.paths.authorize,
+            urlencoding::encode("https://app.example.com/callback")
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("client_id required")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_client_id_registered_in_two_realms_is_refused() {
+    let (app, state) = setup_with_a_duplicate_client_id().await;
+
+    // The client id names a client of two realms, so the request names no
+    // single client and is refused.
+    let response = get_uri(app, authorize_query(&state, ""), None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn authorize_rejects_invalid_authorization_details_from_par() {
     let (app, state) = setup().await;

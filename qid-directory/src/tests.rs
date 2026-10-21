@@ -2023,6 +2023,7 @@ mod directory_http_truthfulness {
             provider_type: "active-directory".to_string(),
             enabled: true,
             connection: DirectoryConnectionConfig {
+                page_size: None,
                 url: "ldap://ad.example.com".to_string(),
                 base_dn: Some("dc=example,dc=com".to_string()),
                 ..Default::default()
@@ -2039,6 +2040,7 @@ mod directory_http_truthfulness {
                 provider_type: "ldap".to_string(),
                 enabled: false,
                 connection: DirectoryConnectionConfig {
+                    page_size: None,
                     url: "ldaps://retired.example.com".to_string(),
                     ..Default::default()
                 },
@@ -2254,6 +2256,7 @@ mod directory_http_truthfulness {
 fn preserves_the_configured_bind_dn() {
     use qid_core::config::DirectoryConnectionConfig;
     let config = DirectoryConnectionConfig {
+        page_size: None,
         url: "ldaps://ad.example.com:636".to_string(),
         bind_dn: Some("CN=svc,OU=Users,DC=example,DC=com".to_string()),
         ..Default::default()
@@ -2268,6 +2271,7 @@ fn preserves_the_configured_bind_dn() {
 fn preserves_an_already_escaped_bind_dn() {
     use qid_core::config::DirectoryConnectionConfig;
     let config = DirectoryConnectionConfig {
+        page_size: None,
         url: "ldaps://ad.example.com:636".to_string(),
         bind_dn: Some("CN=svc\\,ou,OU=Users,DC=example,DC=com".to_string()),
         ..Default::default()
@@ -2282,6 +2286,7 @@ fn preserves_an_already_escaped_bind_dn() {
 fn rejects_a_bind_dn_with_a_control_character() {
     use qid_core::config::DirectoryConnectionConfig;
     let config = DirectoryConnectionConfig {
+        page_size: None,
         url: "ldaps://ad.example.com:636".to_string(),
         bind_dn: Some("CN=svc\u{1},DC=example".to_string()),
         ..Default::default()

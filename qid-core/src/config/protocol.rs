@@ -827,9 +827,17 @@ pub struct DirectoryConnectionConfig {
     pub base_dn: Option<String>,
     #[serde(default)]
     pub connect_timeout_seconds: Option<u64>,
+    /// The page size an RFC 2696 paged search requests. A directory that does
+    /// not implement the paging control is read unpaged.
+    #[serde(default)]
+    pub page_size: Option<u32>,
     #[serde(default)]
     pub tls_insecure_skip_verify: bool,
 }
+
+/// The largest page a directory search may request. The bound keeps one
+/// search round's work and memory finite.
+pub const MAX_DIRECTORY_PAGE_SIZE: u32 = 1000;
 
 /// The bind credentials a directory search uses, if any.
 pub fn bind_credentials<'a>(
@@ -878,6 +886,7 @@ impl Default for DirectoryConnectionConfig {
             bind_password: None,
             base_dn: None,
             connect_timeout_seconds: Some(10),
+            page_size: None,
             tls_insecure_skip_verify: false,
         }
     }

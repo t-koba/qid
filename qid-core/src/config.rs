@@ -291,6 +291,19 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
                     ),
                 });
             }
+            if connection
+                .page_size
+                .is_some_and(|size| size == 0 || size > protocol::MAX_DIRECTORY_PAGE_SIZE)
+            {
+                return Err(QidError::Config {
+                    message: format!(
+                        "provider {} of realm {} page_size must be between 1 and {}",
+                        provider.id,
+                        realm.id,
+                        protocol::MAX_DIRECTORY_PAGE_SIZE
+                    ),
+                });
+            }
             let dn = connection.bind_dn.as_deref();
             let password = connection.bind_password.as_deref();
             bind_credentials(dn, password).map_err(|error| QidError::Config {

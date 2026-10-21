@@ -59,6 +59,9 @@ pub(crate) fn bind_dn_for(config: &DirectoryConnectionConfig) -> QidResult<Optio
 ///
 /// Each implementation connects to a directory backend, fetches users,
 /// and maps them to the canonical representation used by `sync_ldap_entries`.
+#[cfg(test)]
+mod connector_tests;
+
 #[async_trait]
 pub trait DirectoryConnector: Send + Sync {
     /// Establish a connection to the directory provider.
@@ -127,19 +130,17 @@ impl DirectoryConnector for LdapDirectoryConnector {
             .unwrap_or("(objectClass=user)");
         let sanitized_filter = sanitize_admin_search_filter(raw_filter)?;
         let mapping = mapping.clone();
-        let timeout_secs = config.connect_timeout_seconds.unwrap_or(10);
-        let tls_insecure = config.tls_insecure_skip_verify;
+        let options = search_options(config);
 
         tokio::task::spawn_blocking(move || {
-            run_ldap_search(
+            run_ldap_search_with_options(
                 &url,
                 bind_dn,
                 bind_pw,
                 &search_base,
                 &sanitized_filter,
                 &mapping,
-                timeout_secs,
-                tls_insecure,
+                options,
             )
         })
         .await
@@ -151,6 +152,20 @@ impl DirectoryConnector for LdapDirectoryConnector {
     async fn disconnect(&mut self) -> QidResult<()> {
         self.config = None;
         Ok(())
+    }
+}
+
+/// The search options a provider connection asks for. The page size is the
+/// operator's request: a directory that does not implement RFC 2696 paging is
+/// read unpaged.
+fn search_options(config: &DirectoryConnectionConfig) -> LdapSearchOptions {
+    LdapSearchOptions {
+        page_size: config.page_size,
+        // SASL is not a configuration option until the SCRAM mechanism
+        // exists, because a requested SASL bind could only fail.
+        use_sasl: false,
+        tls_insecure: config.tls_insecure_skip_verify,
+        timeout_secs: config.connect_timeout_seconds.unwrap_or(10),
     }
 }
 
@@ -327,50 +342,6 @@ fn map_ldap_search_entry(
         attrs.insert(k, v);
     }
     map_ldap_entry(&se.dn, &attrs, mapping, true)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_ldap_search(
-    url: &str,
-    bind_dn: Option<String>,
-    bind_pw: Option<String>,
-    search_base: &str,
-    search_filter: &str,
-    mapping: &DirectoryAttributeMapping,
-    timeout_secs: u64,
-    tls_insecure: bool,
-) -> QidResult<Vec<LdapDirectoryEntry>> {
-    if let Some(enabled_expr) = mapping.enabled.as_deref() {
-        validate_enabled_expression(enabled_expr)?;
-    }
-    let (settings, url) = ldap_search_settings(url, tls_insecure)?;
-
-    shared_runtime().block_on(async {
-        with_ldap_session(settings, &url, timeout_secs, async |ldap| {
-            let operation_timeout = std::time::Duration::from_secs(timeout_secs);
-            if let Some((dn, pw)) = bind_credentials(bind_dn.as_deref(), bind_pw.as_deref())? {
-                ldap_simple_bind_with_timeout(ldap, dn, pw, operation_timeout).await?;
-            }
-
-            let ldap3::SearchResult(entries, _res) = ldap_search_with_timeout(
-                ldap,
-                search_base,
-                ldap3::Scope::Subtree,
-                search_filter,
-                vec!["*", "userAccountControl"],
-                operation_timeout,
-            )
-            .await?;
-
-            let result = entries
-                .into_iter()
-                .map(|entry| map_ldap_search_entry(entry, mapping))
-                .collect::<QidResult<Vec<_>>>()?;
-
-            Ok(result)
-        })
-        .await
-    })
 }
 
 /// In-memory test connector that returns pre-configured entries.
@@ -966,6 +937,7 @@ mod tests {
     #[test]
     fn resolves_base_dn_from_url() {
         let config = DirectoryConnectionConfig {
+            page_size: None,
             url: "ldaps://ad.example.com:636".to_string(),
             ..Default::default()
         };
@@ -975,6 +947,7 @@ mod tests {
     #[test]
     fn uses_explicit_base_dn() {
         let config = DirectoryConnectionConfig {
+            page_size: None,
             url: "ldaps://ad.example.com:636".to_string(),
             base_dn: Some("dc=custom,dc=com".to_string()),
             ..Default::default()
@@ -985,6 +958,7 @@ mod tests {
     #[test]
     fn returns_empty_when_no_ldap_url() {
         let config = DirectoryConnectionConfig {
+            page_size: None,
             url: "https://api.example.com/scim".to_string(),
             ..Default::default()
         };
@@ -1300,15 +1274,14 @@ mod tests {
             ..Default::default()
         };
 
-        let error = run_ldap_search(
+        let error = run_ldap_search_with_options(
             "not-an-ldap-url",
             None,
             None,
             "dc=example,dc=com",
             "(objectClass=user)",
             &mapping,
-            1,
-            false,
+            LdapSearchOptions::default(),
         )
         .unwrap_err();
         assert!(error.message().contains("unsupported enabled expression"));

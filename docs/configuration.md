@@ -243,6 +243,14 @@ would leave the search anonymous, so a provider with only one of them is rejecte
 configuration loads. A disabled provider is not checked for credentials, because no sync
 reads it.
 
+A provider's connection can ask for RFC 2696 paging with `page_size`, a page
+size between 1 and 1000. The setting is a request: a directory that does not
+return the paging control is read unpaged, and a request that the directory
+cannot answer is an error rather than a silent truncation.
+`tls_insecure_skip_verify` disables the server name check as well as the
+certificate chain check for the whole connection, so it belongs only to a
+directory the operator controls.
+
 Boolean-like feature structs often accept either `true` / `false` or an object with `enabled`.
 
 Example:

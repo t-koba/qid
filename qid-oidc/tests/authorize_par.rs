@@ -1394,6 +1394,132 @@ async fn authorize_consumes_par_request_uri_once_after_successful_login() {
     assert_eq!(replay_response.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Build a deployment with a second realm that requires pushed
+/// authorization requests, and a client of that realm.
+async fn setup_with_a_par_realm() -> (Router, Arc<SharedState<SqlRepository>>) {
+    let mut config = test_helpers::test_config();
+    config.realms[0].issuer = "https://id.example.com/realms/test".to_string();
+    let mut strict = config.realms[0].clone();
+    strict.id = "strict".to_string();
+    strict.issuer = "https://id.example.com/realms/strict".to_string();
+    strict.protocols.oauth.par.enabled = true;
+    strict.protocols.oauth.require_pushed_authorization_requests = true;
+    config.realms.push(strict);
+    let (app, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-strict".into(),
+            &"strict".into(),
+            "https://id.example.com/realms/strict",
+            Some("Strict Realm"),
+        )
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_client(&Client {
+            id: "strict-client-id".to_string(),
+            realm_id: "strict".to_string(),
+            client_id: "strict-client".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: qid_core::models::default_client_jwks(),
+            redirect_uris: vec!["https://strict.example.com/callback".to_string()],
+            grant_types: vec!["authorization_code".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: vec!["https://strict.example.com/callback".to_string()],
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        })
+        .await
+        .unwrap();
+    (app, state)
+}
+
+/// Authorize query for the client of the realm that requires a pushed
+/// authorization request.
+fn strict_authorize_query(state: &Arc<SharedState<SqlRepository>>) -> String {
+    format!(
+        "{}?client_id=strict-client&response_type=code&redirect_uri={}&scope=openid&state=s&nonce=n&code_challenge={}&code_challenge_method=S256",
+        state.paths.authorize,
+        urlencoding::encode("https://strict.example.com/callback"),
+        util::sha256_base64url("verifier"),
+    )
+}
+
+#[tokio::test]
+async fn the_pushed_authorization_request_requirement_is_scoped_to_the_client_realm() {
+    let (app, state) = setup_with_a_par_realm().await;
+
+    // The client's own realm does not require a pushed request, so the
+    // client is served: the requirement of another realm does not reach
+    // it.
+    let response = get_uri(app.clone(), authorize_query(&state, ""), None).await;
+    assert_login_challenge(response).await;
+
+    // The client's own realm requires one, so the client is refused
+    // without it.
+    let response = get_uri(app.clone(), strict_authorize_query(&state), None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("pushed authorization request is required")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_pushed_authorization_request_satisfies_the_realm_requirement() {
+    let (app, state) = setup_with_a_par_realm().await;
+    let request_uri = "urn:ietf:params:oauth:request_uri:strict-par";
+    state
+        .repo
+        .store_par_request(&ParRequest {
+            request_uri: request_uri.to_string(),
+            client_id: "strict-client".to_string(),
+            realm_id: "strict".to_string(),
+            params_json: serde_json::json!({
+                "client_id": "strict-client",
+                "response_type": "code",
+                "redirect_uri": "https://strict.example.com/callback",
+                "scope": "openid",
+                "state": "state-strict",
+                "code_challenge": util::sha256_base64url("verifier"),
+                "code_challenge_method": "S256"
+            }),
+            expires_at: util::now_seconds() + 60,
+            used: false,
+            created_at: util::now_seconds(),
+        })
+        .await
+        .unwrap();
+
+    let challenge = get_json(
+        app.clone(),
+        format!(
+            "{}?request_uri={}",
+            state.paths.authorize,
+            urlencoding::encode(request_uri)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(challenge["client_id"], "strict-client");
+}
+
 #[tokio::test]
 async fn authorize_rejects_invalid_authorization_details_from_par() {
     let (app, state) = setup().await;

@@ -483,22 +483,14 @@ async fn resolve_authorize_request<R: Repository>(
     }
 
     if req.request_uri.is_none() {
-        let realm_id = merged.client_id.as_str();
-        let realm_config = state.config.realms.iter().find(|candidate| {
-            candidate
-                .protocols
-                .oauth
-                .resource_servers
-                .iter()
-                .any(|rs| rs.audience == realm_id)
-                || candidate
-                    .protocols
-                    .oauth
-                    .require_pushed_authorization_requests
-        });
-        if realm_config.is_some_and(|c| c.protocols.oauth.require_pushed_authorization_requests) {
+        // The requirement belongs to a realm, so the client's own realm is
+        // resolved through the client-resolution contract and only that
+        // realm's setting is read: a realm that requires a pushed
+        // authorization request does not impose it on another realm's
+        // clients.
+        if realm_requires_pushed_authorization_request(state, &merged.client_id).await? {
             return Err(bad_request(
-                "pushed authorization request is required for this server",
+                "pushed authorization request is required for this realm",
             ));
         }
         require_authorize_fields(&merged)?;
@@ -845,6 +837,28 @@ async fn realm_requires_signed_request_object<R: Repository>(
                     .authorization_code
                     .require_signed_request_object
         }))
+}
+
+/// Whether the client's own realm requires a pushed authorization request.
+///
+/// The requirement is a realm's own setting, so the realm is resolved
+/// through the client-resolution contract rather than searched for across
+/// the realms: a realm that requires a pushed authorization request does
+/// not impose it on the clients of another realm.
+async fn realm_requires_pushed_authorization_request<R: Repository>(
+    state: &SharedState<R>,
+    client_id: &str,
+) -> QidResult<bool> {
+    if client_id.is_empty() {
+        return Ok(false);
+    }
+    let client = find_client_across_realms(state, client_id).await?;
+    Ok(state
+        .config
+        .realms
+        .iter()
+        .find(|realm| realm.id == client.realm_id)
+        .is_some_and(|realm| realm.protocols.oauth.require_pushed_authorization_requests))
 }
 
 fn validate_request_object_audience<R: Repository>(

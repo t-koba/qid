@@ -87,6 +87,33 @@ impl ClientRepository for SqlRepository {
         Ok(row.map(Into::into))
     }
 
+    async fn find_clients_by_client_id(
+        &self,
+        realm_ids: &[RealmId],
+        client_id: &str,
+    ) -> QidResult<Vec<Client>> {
+        if realm_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One read answers the client id in every named realm. The index on
+        // (client_id, realm_id) keeps it cheap, and the realms outside the
+        // list are never read.
+        let placeholders = vec!["?"; realm_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint FROM clients WHERE client_id = ? AND realm_id IN ({placeholders})"
+        );
+        let mut query = sqlx::query_as::<_, ClientRow>(&sql);
+        query = query.bind(client_id);
+        for realm_id in realm_ids {
+            query = query.bind(realm_id.as_str());
+        }
+        let rows: Vec<ClientRow> = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>> {
         self.list_clients_page(realm_id, 0, usize::MAX).await
     }

@@ -129,6 +129,17 @@ pub trait ClientRepository: Send + Sync + 'static {
         realm_id: &RealmId,
         client_id: &str,
     ) -> QidResult<Option<Client>>;
+    /// Every client that carries this client id in the given realms.
+    ///
+    /// A client id is unique within a realm, so one id can name a client in
+    /// more than one realm. The answer is every client the id names in the
+    /// named realms, so a caller that needs a single client can see that the
+    /// id is ambiguous. A realm outside the list is never read.
+    async fn find_clients_by_client_id(
+        &self,
+        realm_ids: &[RealmId],
+        client_id: &str,
+    ) -> QidResult<Vec<Client>>;
     async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>> {
         self.list_clients_page(realm_id, 0, usize::MAX).await
     }

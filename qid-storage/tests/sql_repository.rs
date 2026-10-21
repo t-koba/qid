@@ -4552,3 +4552,101 @@ async fn test_file_compliance_evidence_pack_create_only_contract() {
     let repo = file_repo("test_compliance_evidence_pack_collision").await;
     assert_compliance_evidence_pack_create_only_contract(&repo).await;
 }
+
+fn sample_cross_realm_client(id: &str, realm_id: &str, client_id: &str) -> Client {
+    Client {
+        id: id.to_string(),
+        realm_id: realm_id.to_string(),
+        client_id: client_id.to_string(),
+        client_type: ClientType::Public,
+        token_endpoint_auth_method: "none".to_string(),
+        client_secret_hash: None,
+        mtls_certificate_thumbprints: Vec::new(),
+        jwks: qid_core::models::default_client_jwks(),
+        redirect_uris: vec!["https://app.example.com/callback".to_string()],
+        grant_types: vec!["authorization_code".to_string()],
+        client_name: None,
+        client_uri: None,
+        logo_uri: None,
+        contacts: Vec::new(),
+        post_logout_redirect_uris: Vec::new(),
+        default_max_age: None,
+        require_auth_time: false,
+        sector_identifier_uri: None,
+        subject_type: None,
+        backchannel_logout_uri: None,
+        frontchannel_logout_uri: None,
+        backchannel_client_notification_endpoint: None,
+    }
+}
+
+/// A client id is answered in one read over the named realms.
+#[tokio::test]
+async fn test_client_lookup_across_realms_reads_only_the_named_realms() {
+    let repo = sql_repo().await;
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"realm-a".into(),
+        "https://id.example.com/realms/a",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"realm-b".into(),
+        "https://id.example.com/realms/b",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_client(&sample_cross_realm_client(
+        "client-a",
+        "realm-a",
+        "shared-app",
+    ))
+    .await
+    .unwrap();
+    repo.create_client(&sample_cross_realm_client(
+        "client-b",
+        "realm-b",
+        "shared-app",
+    ))
+    .await
+    .unwrap();
+    repo.create_client(&sample_cross_realm_client(
+        "client-c",
+        "realm-a",
+        "other-app",
+    ))
+    .await
+    .unwrap();
+
+    let both = repo
+        .find_clients_by_client_id(
+            &[RealmId::from("realm-a"), RealmId::from("realm-b")],
+            "shared-app",
+        )
+        .await
+        .unwrap();
+    assert_eq!(both.len(), 2);
+
+    let one = repo
+        .find_clients_by_client_id(&[RealmId::from("realm-a")], "shared-app")
+        .await
+        .unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].realm_id, "realm-a");
+
+    let unnamed = repo
+        .find_clients_by_client_id(&[RealmId::from("realm-b")], "other-app")
+        .await
+        .unwrap();
+    assert!(unnamed.is_empty());
+
+    let none = repo
+        .find_clients_by_client_id(&[], "shared-app")
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+}

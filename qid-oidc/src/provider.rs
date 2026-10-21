@@ -727,16 +727,10 @@ async fn find_request_object_client<R: Repository>(
         .or_else(|| request_object_string(claims, "sub"))
         .or_else(|| request_object_string(claims, "iss"))
         .ok_or_else(|| unauthorized("request object missing client identity"))?;
-    let mut candidates = Vec::new();
-    for realm in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId(realm.id.clone()), &client_id)
-            .await?
-        {
-            candidates.push(client);
-        }
-    }
+    let candidates = state
+        .repo
+        .find_clients_by_client_id(&configured_realm_ids(state), &client_id)
+        .await?;
     let mut matching_audience: Vec<Client> = candidates
         .iter()
         .filter(|client| request_object_audience_matches_realm(state, &client.realm_id, claims))
@@ -1104,28 +1098,39 @@ async fn resolve_client_by_id<R: Repository>(
     Ok(Some(find_client_across_realms(state, client_id).await?))
 }
 
+/// The realms the deployment configures.
+///
+/// Only these realms can serve a request, so a lookup across realms names
+/// them and reads no other realm.
+fn configured_realm_ids<R: Repository>(state: &SharedState<R>) -> Vec<RealmId> {
+    state
+        .config
+        .realms
+        .iter()
+        .map(|realm_config| RealmId::from(realm_config.id.clone()))
+        .collect()
+}
+
 async fn find_client_across_realms<R: Repository>(
     state: &SharedState<R>,
     client_id: &str,
 ) -> QidResult<Client> {
-    let mut found = None;
-    for realm_config in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                tracing::warn!(client_id = %client_id, "authorization request client realm is ambiguous");
-                return Err(unauthorized("authorization request is not allowed"));
-            }
-            found = Some(client);
+    // One read answers the client id in every configured realm.
+    let clients = state
+        .repo
+        .find_clients_by_client_id(&configured_realm_ids(state), client_id)
+        .await?;
+    match clients.as_slice() {
+        [client] => Ok(client.clone()),
+        [] => {
+            tracing::warn!(client_id = %client_id, "authorization request client is unknown");
+            Err(unauthorized("authorization request is not allowed"))
+        }
+        _ => {
+            tracing::warn!(client_id = %client_id, "authorization request client realm is ambiguous");
+            Err(unauthorized("authorization request is not allowed"))
         }
     }
-    found.ok_or_else(|| {
-        tracing::warn!(client_id = %client_id, "authorization request client is unknown");
-        unauthorized("authorization request is not allowed")
-    })
 }
 
 async fn issue_authorization_code<R: Repository>(
@@ -1301,7 +1306,7 @@ async fn authorization_response_redirect<R: Repository>(
         // the response was produced for the same key. The DPoP header is
         // propagated by the caller (authorize_get / authorize_post) so
         // apv resolution works for both flows.
-        if let Some(apv) = dpop_apv_for_request(state, req, dpop_header).await {
+        if let Some(apv) = dpop_apv_for_request(client, dpop_header) {
             entries.push(("apv".to_string(), serde_json::Value::String(apv)));
         }
         let (issuer, response) = sign_jarm_response(state, req, client, entries)?;
@@ -1356,17 +1361,12 @@ async fn authorization_response_redirect<R: Repository>(
 ///   2. The first `jwk` entry in the registered client metadata
 ///      (used as a static fallback for clients that bind a key once
 ///      at registration time and never re-enroll).
-async fn dpop_apv_for_request<R: Repository>(
-    state: &SharedState<R>,
-    req: &AuthorizeParameters,
-    dpop_header: Option<&str>,
-) -> Option<String> {
+fn dpop_apv_for_request(client: &Client, dpop_header: Option<&str>) -> Option<String> {
     if let Some(proof) = dpop_header
         && let Some(jwt_thumbprint) = extract_dpop_jkt_from_proof(proof)
     {
         return Some(jwt_thumbprint);
     }
-    let client = find_client_across_realms_for_apv(state, &req.client_id).await?;
     if let Some(jwks) = client.jwks.as_object()
         && let Some(keys) = jwks.get("keys").and_then(|v| v.as_array())
     {
@@ -1374,22 +1374,6 @@ async fn dpop_apv_for_request<R: Repository>(
             if let Some(thumbprint) = jwk_thumbprint(key) {
                 return Some(thumbprint);
             }
-        }
-    }
-    None
-}
-
-async fn find_client_across_realms_for_apv<R: Repository>(
-    state: &SharedState<R>,
-    client_id: &str,
-) -> Option<qid_core::models::Client> {
-    for realm_config in &state.config.realms {
-        if let Ok(Some(client)) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
-            .await
-        {
-            return Some(client);
         }
     }
     None

@@ -2311,3 +2311,129 @@ async fn authorize_signed_request_preserves_essential_acr() {
     .await;
     assert_login_challenge(challenged).await;
 }
+
+/// A client of a realm the deployment does not configure is not served.
+///
+/// The authorization path resolves the client of a request in the realms
+/// the deployment configures, so a client stored in another realm names no
+/// client at all.
+#[tokio::test]
+async fn authorize_refuses_a_client_of_a_realm_the_deployment_does_not_configure() {
+    let (app, state) = setup().await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &"other".into(),
+            "https://id.example.com/other",
+            Some("Other Realm"),
+        )
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_client(&Client {
+            id: "hidden-client-id".to_string(),
+            realm_id: "other".to_string(),
+            client_id: "hidden-client".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: qid_core::models::default_client_jwks(),
+            redirect_uris: vec!["https://app.example.com/callback".to_string()],
+            grant_types: vec!["authorization_code".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: vec!["https://app.example.com/callback".to_string()],
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        })
+        .await
+        .unwrap();
+
+    let response = get_uri(
+        app,
+        format!(
+            "{}?client_id=hidden-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256",
+            state.paths.authorize,
+            urlencoding::encode("https://app.example.com/callback"),
+            util::sha256_base64url("verifier")
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A client id that names a client in two configured realms is ambiguous.
+///
+/// The realms the deployment configures answer the client id in one read,
+/// and a client id that names more than one of them serves no request.
+#[tokio::test]
+async fn authorize_refuses_a_client_id_that_names_two_configured_realms() {
+    let mut config = test_helpers::test_config();
+    let mut realm_b = config.realms[0].clone();
+    realm_b.id = "realm-b".to_string();
+    realm_b.issuer = "https://id.example.com/realms/realm-b".to_string();
+    config.realms.push(realm_b);
+    let (app, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &"realm-b".into(),
+            "https://id.example.com/realms/realm-b",
+            Some("Realm B"),
+        )
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_client(&Client {
+            id: "par-client-id-b".to_string(),
+            realm_id: "realm-b".to_string(),
+            client_id: "par-client".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: qid_core::models::default_client_jwks(),
+            redirect_uris: vec!["https://app.example.com/callback".to_string()],
+            grant_types: vec!["authorization_code".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: vec!["https://app.example.com/callback".to_string()],
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        })
+        .await
+        .unwrap();
+
+    let response = get_uri(
+        app,
+        format!(
+            "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256",
+            state.paths.authorize,
+            urlencoding::encode("https://app.example.com/callback"),
+            util::sha256_base64url("verifier")
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

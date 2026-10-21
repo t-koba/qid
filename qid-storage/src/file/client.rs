@@ -29,6 +29,20 @@ impl ClientRepository for FileRepository {
             .cloned())
     }
 
+    async fn find_clients_by_client_id(
+        &self,
+        realm_ids: &[RealmId],
+        client_id: &str,
+    ) -> QidResult<Vec<Client>> {
+        let store = self.store.read().await;
+        Ok(store
+            .clients
+            .values()
+            .filter(|c| c.client_id == client_id && realm_ids.iter().any(|r| r.0 == c.realm_id))
+            .cloned()
+            .collect())
+    }
+
     async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>> {
         self.list_clients_page(realm_id, 0, usize::MAX).await
     }

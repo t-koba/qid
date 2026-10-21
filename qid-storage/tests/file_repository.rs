@@ -1,4 +1,7 @@
-use qid_core::models::{AuditEvent, AuthorizationCode, Session, TokenFamily, User};
+use qid_core::models::{
+    AuditEvent, AuthorizationCode, Client, ClientType, Session, TokenFamily, User,
+    default_client_jwks,
+};
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{
     FileFlushMode, FileRepository, SiemDeliveryRecord, SiemDeliveryStatus, prelude::*,
@@ -445,4 +448,83 @@ async fn file_interval_flush_retries_after_transient_failure() {
         flushed.contains("user-retry"),
         "retry flush must persist outstanding write without another mutation"
     );
+}
+
+fn sample_client(id: &str, realm_id: &str, client_id: &str) -> Client {
+    Client {
+        id: id.to_string(),
+        realm_id: realm_id.to_string(),
+        client_id: client_id.to_string(),
+        client_type: ClientType::Public,
+        token_endpoint_auth_method: "none".to_string(),
+        client_secret_hash: None,
+        mtls_certificate_thumbprints: Vec::new(),
+        jwks: default_client_jwks(),
+        redirect_uris: vec!["https://app.example.com/callback".to_string()],
+        grant_types: vec!["authorization_code".to_string()],
+        client_name: None,
+        client_uri: None,
+        logo_uri: None,
+        contacts: Vec::new(),
+        post_logout_redirect_uris: Vec::new(),
+        default_max_age: None,
+        require_auth_time: false,
+        sector_identifier_uri: None,
+        subject_type: None,
+        backchannel_logout_uri: None,
+        frontchannel_logout_uri: None,
+        backchannel_client_notification_endpoint: None,
+    }
+}
+
+/// A client id is answered in one read over the named realms.
+#[tokio::test]
+async fn file_client_lookup_across_realms_reads_only_the_named_realms() {
+    let repo = setup().await;
+    qid_storage::RealmRepository::create_realm(
+        repo.as_ref(),
+        &TenantId::from("tenant-1"),
+        &RealmId::from("other"),
+        "https://id.example.com/other",
+        Some("Other Realm"),
+    )
+    .await
+    .unwrap();
+    repo.create_client(&sample_client("client-a", "test", "shared-app"))
+        .await
+        .unwrap();
+    repo.create_client(&sample_client("client-b", "other", "shared-app"))
+        .await
+        .unwrap();
+    repo.create_client(&sample_client("client-c", "test", "other-app"))
+        .await
+        .unwrap();
+
+    let both = repo
+        .find_clients_by_client_id(
+            &[RealmId::from("test"), RealmId::from("other")],
+            "shared-app",
+        )
+        .await
+        .unwrap();
+    assert_eq!(both.len(), 2);
+
+    let one = repo
+        .find_clients_by_client_id(&[RealmId::from("test")], "shared-app")
+        .await
+        .unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].realm_id, "test");
+
+    let unnamed = repo
+        .find_clients_by_client_id(&[RealmId::from("other")], "other-app")
+        .await
+        .unwrap();
+    assert!(unnamed.is_empty());
+
+    let none = repo
+        .find_clients_by_client_id(&[], "shared-app")
+        .await
+        .unwrap();
+    assert!(none.is_empty());
 }

@@ -131,6 +131,8 @@ Remote signer configuration is validated, but current `qidd` startup only has a 
 
 SQL repositories run migrations on connect. Repository traits are split by domain: realm, user, client, session, token, credential, SCIM, IGA, ReBAC, VC, workload, audit, SaaS, and SSF.
 
+A client id is unique within a realm, so the authorization server resolves the client of a request across the realms the deployment configures with one storage read (`find_clients_by_client_id`), which the SQL backend answers from an index on `(client_id, realm_id)`. A client id that names a client in more than one configured realm is ambiguous and serves no request.
+
 ## HTTP Assembly
 
 `qidd` always installs the core health/readiness/JWKS, OIDC/OAuth, admin, session, directory, risk, IGA, captive portal, middleware, metrics, CSRF, CSP, HSTS, security header, and CORS surfaces required by the configured profile.

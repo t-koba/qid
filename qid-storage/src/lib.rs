@@ -129,6 +129,7 @@ delegate!(ClientRepository {
     create_client(&self, client: &qid_core::models::Client) -> QidResult<()>;
     update_client(&self, client: &qid_core::models::Client) -> QidResult<()>;
     get_client_by_client_id(&self, realm_id: &qid_core::tenant::RealmId, client_id: &str) -> QidResult<Option<qid_core::models::Client>>;
+    find_clients_by_client_id(&self, realm_ids: &[qid_core::tenant::RealmId], client_id: &str) -> QidResult<Vec<qid_core::models::Client>>;
     list_clients(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::Client>>;
     list_clients_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::Client>>;
     delete_client(&self, id: &str) -> QidResult<()>;

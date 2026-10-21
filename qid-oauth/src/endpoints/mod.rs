@@ -177,24 +177,27 @@ pub(crate) async fn find_client_across_realms_with_messages<R: Repository>(
     ambiguous_message: &str,
     unknown_message: &str,
 ) -> QidResult<Client> {
-    let mut found = None;
-    for realm_config in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_config.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: ambiguous_message.to_string(),
-                });
-            }
-            found = Some(client);
-        }
+    // One read answers the client id in every realm the deployment
+    // configures; no other realm is read.
+    let realm_ids: Vec<RealmId> = state
+        .config
+        .realms
+        .iter()
+        .map(|realm_config| RealmId::from(realm_config.id.clone()))
+        .collect();
+    let clients = state
+        .repo
+        .find_clients_by_client_id(&realm_ids, client_id)
+        .await?;
+    match clients.as_slice() {
+        [client] => Ok(client.clone()),
+        [] => Err(QidError::Unauthorized {
+            message: unknown_message.to_string(),
+        }),
+        _ => Err(QidError::Unauthorized {
+            message: ambiguous_message.to_string(),
+        }),
     }
-    found.ok_or_else(|| QidError::Unauthorized {
-        message: unknown_message.to_string(),
-    })
 }
 
 pub(crate) fn token_ttl<R: Repository>(state: &SharedState<R>, realm_id: &str) -> TokenTtlConfig {

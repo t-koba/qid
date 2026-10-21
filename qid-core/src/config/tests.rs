@@ -1946,3 +1946,16 @@ fn a_realm_password_argon2id_cost_the_product_cannot_use_is_rejected() {
         err.message()
     );
 }
+
+#[test]
+fn the_decision_cache_lifetime_follows_the_class_of_the_decision() {
+    let config = PepDecisionCacheConfig {
+        positive_ttl_seconds: 7,
+        negative_ttl_seconds: 2,
+    };
+    assert_eq!(config.ttl_ms(DecisionCacheClass::Positive), 7_000);
+    assert_eq!(config.ttl_ms(DecisionCacheClass::Negative), 2_000);
+    let default = PepDecisionCacheConfig::default();
+    assert_eq!(default.ttl_ms(DecisionCacheClass::Positive), 30_000);
+    assert_eq!(default.ttl_ms(DecisionCacheClass::Negative), 5_000);
+}

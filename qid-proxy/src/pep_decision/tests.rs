@@ -1,4 +1,5 @@
 use super::*;
+use qid_core::config::DecisionCacheClass;
 use qid_ops::{CacheBackendConfig, CacheBackendKind};
 use qid_policy::{DecisionDetails, PepPolicyActions};
 
@@ -368,13 +369,28 @@ fn pep_decision_cache_put_respects_cacheable_flag() {
 }
 
 #[test]
-fn pep_decision_ttl_matches_decision_cache_policy() {
-    assert_eq!(pep_decision_ttl_ms(&Decision::Allow), 30_000);
-    assert_eq!(pep_decision_ttl_ms(&Decision::AuditOnly), 30_000);
-    assert_eq!(pep_decision_ttl_ms(&Decision::Quarantine), 30_000);
-    assert_eq!(pep_decision_ttl_ms(&Decision::Deny), 5_000);
-    assert_eq!(pep_decision_ttl_ms(&Decision::StepUp), 5_000);
-    assert_eq!(pep_decision_ttl_ms(&Decision::ApprovalRequired), 5_000);
+fn the_registration_names_the_lifetime_of_each_decision_class() {
+    let config = cache_ttl_test_config(Some((2, 7)));
+    let registration = config.realms[0]
+        .pep_registrations
+        .registrations
+        .iter()
+        .find(|registration| registration.name == "egress-main")
+        .expect("the registration");
+    assert_eq!(
+        registration
+            .decision
+            .cache
+            .ttl_ms(DecisionCacheClass::Positive),
+        7_000
+    );
+    assert_eq!(
+        registration
+            .decision
+            .cache
+            .ttl_ms(DecisionCacheClass::Negative),
+        2_000
+    );
 }
 
 fn rebac_test_config() -> QidConfig {
@@ -516,5 +532,160 @@ async fn rebac_tenant_tuples_drive_pep_decisions_without_cross_tenant_leak() {
         }
     }
 
+    std::fs::remove_file(path).ok();
+}
+
+fn cache_ttl_test_config(cache: Option<(u64, u64)>) -> QidConfig {
+    let mut registration = serde_json::json!({
+        "name": "egress-main",
+        "decision": {"fail_policy": "deny"}
+    });
+    if let Some((negative_ttl, positive_ttl)) = cache {
+        registration["decision"]["cache"] = serde_json::json!({
+            "positive_ttl_seconds": positive_ttl,
+            "negative_ttl_seconds": negative_ttl
+        });
+    }
+    serde_json::from_value(serde_json::json!({
+        "server": {"listen": "127.0.0.1:1", "public_base_url": "https://proxy.example.com"},
+        "realms": [
+            {
+                "id": "test",
+                "issuer": "https://proxy.example.com/realm-test",
+                "pep_registrations": {
+                    "enabled": true,
+                    "registrations": [registration]
+                }
+            }
+        ]
+    }))
+    .expect("test config must deserialize")
+}
+
+async fn cache_ttl_state(
+    config: QidConfig,
+    default_decision: &str,
+) -> (SharedState<qid_storage::FileRepository>, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(format!("qid-pep-cache-ttl-{}.json", ulid::Ulid::new()));
+    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
+        .await
+        .expect("file repository");
+    repo.migrate().await.expect("file repository migration");
+    repo.create_policy_bundle(&qid_core::models::PolicyBundle {
+        id: "bundle-test".to_string(),
+        realm_id: "test".to_string(),
+        name: "bundle-test".to_string(),
+        source_hash: "sha256:test".to_string(),
+        compiled_json: serde_json::json!({
+            "version": "1",
+            "default_decision": default_decision,
+            "rules": []
+        }),
+        version: 1,
+        active: true,
+    })
+    .await
+    .expect("policy bundle stored");
+    let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
+        "test",
+        b"test-secret-for-pep-decision-cache-ttl",
+    ));
+    let state = SharedState::new(config, Arc::new(repo), signer, serde_json::json!({}))
+        .expect("shared state");
+    (state, path)
+}
+
+/// How long the cached decision still lives, or `None` when the decision is
+/// not cached.
+fn cached_lifetime(
+    state: &SharedState<qid_storage::FileRepository>,
+    req: &PepDecisionRequest,
+) -> Option<std::time::Duration> {
+    let digest = pep_decision_cache_key(req, &state.policy_revision())
+        .expect("cache key")
+        .digest;
+    let cache = state.decision_cache.read().expect("cache lock");
+    cache.get(&digest).map(|entry| {
+        entry
+            .expires_at
+            .saturating_duration_since(std::time::Instant::now())
+    })
+}
+
+#[tokio::test]
+async fn the_registration_lifetime_bounds_the_cached_negative_decision() {
+    let (state, path) = cache_ttl_state(cache_ttl_test_config(Some((2, 7))), "deny").await;
+    let req = request();
+    // The first decision loads the policy bundle, so the second one can key the cache.
+    for _ in 0..2 {
+        let response = do_check(&state, &req).await.expect("decision");
+        assert_eq!(response.decision, "deny");
+        assert_eq!(
+            response.ttl_ms, 2_000,
+            "the wire names the lifetime the registration asks for"
+        );
+    }
+    let remaining = cached_lifetime(&state, &req).expect("the decision is cached");
+    assert!(
+        remaining <= std::time::Duration::from_secs(2),
+        "the negative decision lives for the registration's negative lifetime, not longer: {remaining:?}"
+    );
+    assert!(
+        remaining > std::time::Duration::from_millis(500),
+        "the negative decision is still cached: {remaining:?}"
+    );
+    std::fs::remove_file(path).ok();
+}
+
+#[tokio::test]
+async fn a_zero_negative_lifetime_keeps_the_negative_decision_out_of_the_cache() {
+    let (state, path) = cache_ttl_state(cache_ttl_test_config(Some((0, 7))), "deny").await;
+    let req = request();
+    for _ in 0..2 {
+        let response = do_check(&state, &req).await.expect("decision");
+        assert_eq!(response.decision, "deny");
+        assert_eq!(response.ttl_ms, 0, "a lifetime of zero is no lifetime");
+        assert!(!response.cacheable);
+    }
+    assert!(
+        cached_lifetime(&state, &req).is_none(),
+        "a registration that names no negative lifetime keeps negative decisions out of the cache"
+    );
+    std::fs::remove_file(path).ok();
+}
+
+#[tokio::test]
+async fn the_registration_lifetime_bounds_the_cached_positive_decision() {
+    let (state, path) = cache_ttl_state(cache_ttl_test_config(Some((2, 7))), "allow").await;
+    let req = request();
+    for _ in 0..2 {
+        let response = do_check(&state, &req).await.expect("decision");
+        assert_eq!(response.decision, "allow");
+        assert_eq!(
+            response.ttl_ms, 7_000,
+            "the wire names the lifetime the registration asks for"
+        );
+    }
+    let remaining = cached_lifetime(&state, &req).expect("the decision is cached");
+    assert!(
+        remaining <= std::time::Duration::from_secs(7),
+        "the positive decision lives for the registration's positive lifetime, not longer: {remaining:?}"
+    );
+    std::fs::remove_file(path).ok();
+}
+
+#[tokio::test]
+async fn a_registration_without_a_lifetime_keeps_the_product_defaults() {
+    let (state, path) = cache_ttl_state(cache_ttl_test_config(None), "allow").await;
+    let req = request();
+    let response = do_check(&state, &req).await.expect("decision");
+    assert_eq!(response.decision, "allow");
+    assert_eq!(response.ttl_ms, 30_000);
+    std::fs::remove_file(path).ok();
+
+    let (state, path) = cache_ttl_state(cache_ttl_test_config(None), "deny").await;
+    let response = do_check(&state, &req).await.expect("decision");
+    assert_eq!(response.decision, "deny");
+    assert_eq!(response.ttl_ms, 5_000);
     std::fs::remove_file(path).ok();
 }

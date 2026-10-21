@@ -310,13 +310,6 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
     unique
 }
 
-pub fn pep_decision_ttl_ms(decision: &Decision) -> u64 {
-    match decision {
-        Decision::Allow | Decision::AuditOnly | Decision::Quarantine => 30_000,
-        _ => 5_000,
-    }
-}
-
 pub fn pep_decision_cache_key(
     req: &PepDecisionRequest,
     policy_revision: &str,

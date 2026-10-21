@@ -459,6 +459,28 @@ impl Default for PepDecisionCacheConfig {
     }
 }
 
+/// The class of a decision in the decision cache. A positive decision is one
+/// the request proceeds on, a negative one the product refuses or defers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionCacheClass {
+    Positive,
+    Negative,
+}
+
+impl PepDecisionCacheConfig {
+    /// The lifetime, in milliseconds, the decision cache keeps a decision of
+    /// the given class: a positive decision for `positive_ttl_seconds`, a
+    /// negative one for `negative_ttl_seconds`. A lifetime of zero means the
+    /// decision is not cached at all.
+    pub fn ttl_ms(&self, class: DecisionCacheClass) -> u64 {
+        let seconds = match class {
+            DecisionCacheClass::Positive => self.positive_ttl_seconds,
+            DecisionCacheClass::Negative => self.negative_ttl_seconds,
+        };
+        seconds.saturating_mul(1000)
+    }
+}
+
 fn default_positive_ttl_seconds() -> u64 {
     30
 }

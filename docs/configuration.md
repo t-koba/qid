@@ -329,6 +329,8 @@ Capabilities declare the qid effects a PEP says it can accept. They do not remov
 
 A registration carries the audience it is identified by, the effects it accepts in `capabilities[].effect`, the lifetime of the assertions qid issues for it in `assertion.ttl_seconds`, how qid answers when it cannot decide in `decision.fail_policy`, the decision cache in `decision.cache`, and the credential the PEP authenticates with in `auth`, where `auth.active_method` names the method - only `bearer_jwt` is implemented - and `auth.replay_protection`, `auth.token_max_age_seconds` and `auth.clock_skew_seconds` bound the presented token. `auth.key_rotation` and `auth.http_message_signatures` were removed from that block: a configuration that sets either is a load-time error naming it. The endpoints are served at the server paths `server.paths.pep_decision`, `server.paths.authzen_evaluation` and `server.paths.assertion`; a registration does not name its own endpoint, and the assertion qid issues is signed with the realm's `pep_assertion` keyring and returned in the response body.
 
+The decision cache block names how long the cache may keep a decision: `positive_ttl_seconds` for a decision the request proceeds on and `negative_ttl_seconds` for one the product refuses or defers - a quarantine is a refusal, and the decision response reports it as `deny`. A lifetime of zero keeps that class of decision out of the cache, and a registration that names no lifetime keeps the product defaults of 30 seconds for a positive decision and 5 seconds for a negative one. The `ttl_ms` of a decision response is the lifetime the registration asks for, so the PEP and qid hold the decision for the same time.
+
 Policy bundles are declared with:
 
 ```yaml

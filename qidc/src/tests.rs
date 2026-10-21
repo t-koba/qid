@@ -1,12 +1,13 @@
 use super::*;
 use qid_core::config::{
     AdminConfig, AuthenticationConfig, CorsConfig, CryptoConfig, DeploymentProfile, KeyringConfig,
-    OAuthResourceServerConfig, ObservabilityConfig, OpsConfig, PepRegistrationsConfig,
-    PolicyConfig, ProtocolConfig, RealmConfig, RotationConfig, ServerConfig, ServerPaths,
-    SignerConfig, StorageConfig,
+    OAuthResourceServerConfig, ObservabilityConfig, OpsConfig, PepDecisionCacheConfig,
+    PepDecisionConfig, PepRegistrationAuthConfig, PepRegistrationConfig, PepRegistrationsConfig,
+    PolicyConfig, ProtocolConfig, ProxyAssertionConfig, RealmConfig, RotationConfig, ServerConfig,
+    ServerPaths, SignerConfig, StorageConfig,
 };
 use qid_ops::KeyPurpose;
-use qid_policy::{Decision, DecisionDetails};
+use qid_policy::{Decision, DecisionDetails, PolicyContext};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -671,4 +672,59 @@ fn totp_enrolment_refuses_a_realm_that_does_not_offer_the_factor() {
     config.realms[0].authentication.mfa.totp.enabled = true;
     let enabled = qid_core::plan::RuntimePlan::from_config(&config).expect("runtime plan");
     assert!(ensure_totp_offered(&enabled, "corp").is_ok());
+}
+
+#[test]
+fn explain_reports_the_registration_decision_cache_lifetime() {
+    let mut config = minimal_config();
+    config.realms[0]
+        .pep_registrations
+        .registrations
+        .push(PepRegistrationConfig {
+            name: "egress-main".to_string(),
+            audience: None,
+            capabilities: Vec::new(),
+            assertion: ProxyAssertionConfig::default(),
+            decision: PepDecisionConfig {
+                fail_policy: "deny".to_string(),
+                cache: PepDecisionCacheConfig {
+                    positive_ttl_seconds: 7,
+                    negative_ttl_seconds: 2,
+                },
+            },
+            auth: PepRegistrationAuthConfig::default(),
+        });
+    let ctx = PolicyContext {
+        pep_registration: Some("egress-main".to_string()),
+        ..PolicyContext::default()
+    };
+    let result = DecisionDetails {
+        decision: Decision::Deny,
+        ..DecisionDetails::default()
+    };
+    let explanation = build_explain_json(
+        DeploymentProfile::EdgePep,
+        Some(&config.realms[0]),
+        &ctx,
+        &result,
+        None,
+        None,
+    );
+    assert_eq!(explanation["pep_actions"]["ttl_ms"], 2000);
+    assert_eq!(explanation["cacheability"]["negative_ttl_seconds"], 2);
+    assert_eq!(explanation["cacheability"]["positive_ttl_seconds"], 7);
+
+    let result = DecisionDetails {
+        decision: Decision::Allow,
+        ..DecisionDetails::default()
+    };
+    let explanation = build_explain_json(
+        DeploymentProfile::EdgePep,
+        Some(&config.realms[0]),
+        &ctx,
+        &result,
+        None,
+        None,
+    );
+    assert_eq!(explanation["pep_actions"]["ttl_ms"], 7000);
 }

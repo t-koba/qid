@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
+use qid_core::config::DecisionCacheClass;
 use qid_core::error::QidResult;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,6 +39,26 @@ impl Decision {
             Decision::Quarantine => "quarantine",
             Decision::AuditOnly => "audit_only",
             Decision::Conditional => "conditional",
+        }
+    }
+
+    /// The class of the decision in a decision cache. A positive decision is
+    /// one the request proceeds on, a negative one the product refuses or
+    /// defers.
+    ///
+    /// The class decides how long the decision cache may keep the decision:
+    /// a PEP registration names a lifetime for each class, and a deployment
+    /// that names none keeps the product defaults.
+    pub fn cache_class(&self) -> DecisionCacheClass {
+        match self {
+            Decision::Allow | Decision::AuditOnly => DecisionCacheClass::Positive,
+            Decision::Deny
+            | Decision::Quarantine
+            | Decision::StepUp
+            | Decision::ConsentRequired
+            | Decision::LocalResponse
+            | Decision::ApprovalRequired
+            | Decision::Conditional => DecisionCacheClass::Negative,
         }
     }
 

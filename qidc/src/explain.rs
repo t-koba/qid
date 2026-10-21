@@ -32,7 +32,9 @@ pub(crate) fn build_explain_json(
             .find(|a| a.name == adapter_name)
             .and_then(|a| a.audience.clone())
     });
-    let (positive_ttl_seconds, negative_ttl_seconds) = realm_config
+    // The registration names how long the decision cache may keep a decision
+    // of each class; a deployment that names none keeps the product defaults.
+    let cache_config = realm_config
         .and_then(|realm| {
             let adapter_name = ctx.effective_pep_registration()?;
             realm
@@ -40,17 +42,12 @@ pub(crate) fn build_explain_json(
                 .registrations
                 .iter()
                 .find(|a| a.name == adapter_name)
-                .map(|a| {
-                    (
-                        a.decision.cache.positive_ttl_seconds,
-                        a.decision.cache.negative_ttl_seconds,
-                    )
-                })
+                .map(|a| a.decision.cache.clone())
         })
-        .unwrap_or((0, 0));
+        .unwrap_or_default();
     let cacheability = serde_json::json!({
-        "positive_ttl_seconds": positive_ttl_seconds,
-        "negative_ttl_seconds": negative_ttl_seconds,
+        "positive_ttl_seconds": cache_config.positive_ttl_seconds,
+        "negative_ttl_seconds": cache_config.negative_ttl_seconds,
         "policy_revision": active_bundle_name,
         "cache_key_inputs": {
             "subject": ctx.subject_id,
@@ -130,7 +127,11 @@ pub(crate) fn build_explain_json(
         "minimize_pii": true,
         "released_claims": explain_released_claims(ctx, result),
     });
-    let pep_actions = explain_pep_actions(result, risk_evaluation);
+    let pep_actions = explain_pep_actions(
+        result,
+        risk_evaluation,
+        cache_config.ttl_ms(result.decision.cache_class()),
+    );
     let audit_fields = serde_json::json!({
         "realm": realm_config.map(|realm| realm.id.as_str()),
         "subject": ctx.subject_id,
@@ -398,6 +399,7 @@ fn explain_required_auth(
 fn explain_pep_actions(
     result: &DecisionDetails,
     risk_evaluation: Option<&RiskEvaluation>,
+    ttl_ms: u64,
 ) -> serde_json::Value {
     let local_response = matches!(
         result.decision,
@@ -450,7 +452,7 @@ fn explain_pep_actions(
             Decision::Allow | Decision::AuditOnly | Decision::Quarantine => None,
             Decision::Conditional => Some(299),
         },
-        "ttl_ms": pep_decision_ttl_ms(&result.decision),
+        "ttl_ms": ttl_ms,
         "request_add": result.inject_headers.as_ref().map(|_| serde_json::json!({
             "x-qid-decision-id": [result.policy_id.clone()],
         })),
@@ -517,12 +519,5 @@ fn pep_decision_name(decision: &Decision) -> &'static str {
         Decision::ApprovalRequired => "approval_required",
         Decision::Quarantine => "quarantine",
         Decision::Conditional => "conditional",
-    }
-}
-
-fn pep_decision_ttl_ms(decision: &Decision) -> u64 {
-    match decision {
-        Decision::Allow | Decision::AuditOnly | Decision::Quarantine => 30_000,
-        _ => 5_000,
     }
 }

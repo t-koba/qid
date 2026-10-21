@@ -9,7 +9,7 @@ use axum::{
 };
 use qid_core::web::JsonObject;
 use qid_core::{
-    config::{QidConfig, ServerPaths},
+    config::{PepDecisionCacheConfig, QidConfig, ServerPaths},
     error::{QidError, QidResult},
     state::SharedState,
 };
@@ -996,7 +996,10 @@ async fn do_check<R: Repository>(
         .cache_bypass
         .or(risk.cache_bypass)
         .unwrap_or(false);
-    let ttl_ms = pep_decision_ttl_ms(&decision_kind);
+    // The registration names how long the decision cache may keep a decision
+    // of each class, so a refusal does not live as long as an open decision.
+    let cache_config = pep_decision_cache_config(state, &adapter_realm_id, &req.proxy.proxy_name);
+    let ttl_ms = cache_config.ttl_ms(decision_kind.cache_class());
     let response = PepDecisionResponse {
         schema_id: PEP_DECISION_RESPONSE_SCHEMA_ID.to_string(),
         decision: decision.to_string(),
@@ -1022,35 +1025,38 @@ async fn do_check<R: Repository>(
     };
 
     // --- Store in decision cache ---
-    if let Some(digest) = cache_key_digest {
-        let positive_ttl = state
-            .config
-            .realms
-            .iter()
-            .find(|realm| realm.id == req.adapter_realm_id.as_deref().unwrap_or_default())
-            .and_then(|realm| {
-                realm
-                    .pep_registrations
-                    .registrations
-                    .iter()
-                    .find(|adapter| adapter.name == req.proxy.proxy_name)
-            })
-            .map(|a| a.decision.cache.positive_ttl_seconds)
-            .unwrap_or(30);
-        let effective_ttl_ms = response.ttl_ms.min(positive_ttl * 1000);
-        if response.cacheable
-            && effective_ttl_ms > 0
-            && let Ok(response_json) = serde_json::to_value(&response)
-        {
-            state.decision_cache_put(
-                digest,
-                response_json,
-                effective_ttl_ms.div_ceil(1000).max(1),
-            );
-        }
+    if let Some(digest) = cache_key_digest
+        && response.cacheable
+        && let Ok(response_json) = serde_json::to_value(&response)
+    {
+        state.decision_cache_put(digest, response_json, ttl_ms.div_ceil(1000).max(1));
     }
 
     Ok(response)
+}
+
+/// The decision cache settings of the registration that answers the request,
+/// or the product defaults when the deployment configures no such
+/// registration.
+fn pep_decision_cache_config<R: Repository>(
+    state: &SharedState<R>,
+    realm_id: &str,
+    registration: &str,
+) -> PepDecisionCacheConfig {
+    state
+        .config
+        .realms
+        .iter()
+        .find(|realm| realm.id == realm_id)
+        .and_then(|realm| {
+            realm
+                .pep_registrations
+                .registrations
+                .iter()
+                .find(|adapter| adapter.name == registration)
+        })
+        .map(|adapter| adapter.decision.cache.clone())
+        .unwrap_or_default()
 }
 
 fn normalize_capabilities(
@@ -1272,7 +1278,7 @@ fn audit_severity(decision: &Decision) -> &'static str {
 mod decision;
 
 use decision::*;
-pub use decision::{pep_decision_cache_key, pep_decision_cache_put, pep_decision_ttl_ms};
+pub use decision::{pep_decision_cache_key, pep_decision_cache_put};
 /// Fallback bundle for a realm without a configured policy bundle: no
 /// rules, with the realm's configured default decision.
 fn fallback_bundle_for_realm(

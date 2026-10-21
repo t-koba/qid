@@ -1,17 +1,5 @@
 use qid_crypto::totp::TotpVerifier;
-use qid_mfa::{
-    MfaFactorKind, MfaPolicy, RecoveryCodeBatch, create_totp_enrollment, verify_totp_at,
-};
-use std::collections::BTreeSet;
-
-#[test]
-fn admin_step_up_requires_phishing_resistant_factor() {
-    let policy = MfaPolicy::default();
-
-    assert!(policy.step_up_satisfies_policy(&["urn:qid:amr:webauthn".to_string()], true));
-    assert!(!policy.step_up_satisfies_policy(&["urn:qid:amr:totp".to_string()], true));
-    assert!(policy.step_up_satisfies_policy(&["urn:qid:amr:totp".to_string()], false));
-}
+use qid_mfa::{RecoveryCodeBatch, create_totp_enrollment, verify_totp_at};
 
 #[test]
 fn recovery_code_is_consumed_once_and_normalized() {
@@ -40,15 +28,4 @@ fn totp_verification_requires_enabled_credential_and_time_window() {
     assert!(verify_totp_at(&plan.credential, &code, 1_000_000));
     assert!(verify_totp_at(&plan.credential, &code, 1_000_030));
     assert!(!verify_totp_at(&plan.credential, &code, 1_000_090));
-}
-
-#[test]
-fn policy_validation_rejects_admin_policy_without_allowed_webauthn() {
-    let policy = MfaPolicy {
-        allowed: BTreeSet::from([MfaFactorKind::Totp, MfaFactorKind::RecoveryCode]),
-        require_phishing_resistant_for_admin: true,
-        allow_recovery_code_for_step_up: true,
-    };
-
-    assert!(policy.validate().is_err());
 }

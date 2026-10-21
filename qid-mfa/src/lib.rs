@@ -11,99 +11,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum MfaFactorKind {
-    WebAuthn,
-    Totp,
-    RecoveryCode,
-    ClientCertificate,
-}
-
-impl MfaFactorKind {
-    pub fn amr(self) -> &'static str {
-        match self {
-            Self::WebAuthn => "urn:qid:amr:webauthn",
-            Self::Totp => "urn:qid:amr:totp",
-            Self::RecoveryCode => "urn:qid:amr:recovery_code",
-            Self::ClientCertificate => "urn:qid:amr:client_certificate",
-        }
-    }
-
-    pub fn phishing_resistant(self) -> bool {
-        matches!(self, Self::WebAuthn | Self::ClientCertificate)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MfaPolicy {
-    pub allowed: BTreeSet<MfaFactorKind>,
-    pub require_phishing_resistant_for_admin: bool,
-    pub allow_recovery_code_for_step_up: bool,
-}
-
-impl Default for MfaPolicy {
-    fn default() -> Self {
-        Self {
-            allowed: BTreeSet::from([
-                MfaFactorKind::WebAuthn,
-                MfaFactorKind::Totp,
-                MfaFactorKind::RecoveryCode,
-            ]),
-            require_phishing_resistant_for_admin: true,
-            allow_recovery_code_for_step_up: true,
-        }
-    }
-}
-
-impl MfaPolicy {
-    pub fn validate(&self) -> QidResult<()> {
-        if self.allowed.is_empty() {
-            return Err(QidError::Config {
-                message: "MFA policy must allow at least one factor".to_string(),
-            });
-        }
-        if self.require_phishing_resistant_for_admin
-            && !self
-                .allowed
-                .iter()
-                .any(|factor| factor.phishing_resistant())
-        {
-            return Err(QidError::Config {
-                message: "admin MFA policy requires at least one phishing-resistant factor"
-                    .to_string(),
-            });
-        }
-        Ok(())
-    }
-
-    pub fn allowed_amr(&self) -> Vec<&'static str> {
-        self.allowed.iter().map(|factor| factor.amr()).collect()
-    }
-
-    pub fn step_up_satisfies_policy(&self, amr: &[String], admin: bool) -> bool {
-        let used: BTreeSet<&str> = amr.iter().map(String::as_str).collect();
-        let allowed = self
-            .allowed
-            .iter()
-            .filter(|factor| {
-                self.allow_recovery_code_for_step_up || **factor != MfaFactorKind::RecoveryCode
-            })
-            .any(|factor| used.contains(factor.amr()));
-        if !allowed {
-            return false;
-        }
-        if admin && self.require_phishing_resistant_for_admin {
-            return self
-                .allowed
-                .iter()
-                .filter(|factor| factor.phishing_resistant())
-                .any(|factor| used.contains(factor.amr()));
-        }
-        true
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotpEnrollmentPlan {
     pub credential: TotpCredential,
@@ -314,22 +221,6 @@ fn percent_encode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mfa_policy_requires_phishing_resistant_admin_factor() {
-        let policy = MfaPolicy {
-            allowed: BTreeSet::from([MfaFactorKind::Totp, MfaFactorKind::RecoveryCode]),
-            require_phishing_resistant_for_admin: true,
-            allow_recovery_code_for_step_up: true,
-        };
-        assert!(policy.validate().is_err());
-
-        let policy = MfaPolicy::default();
-        assert!(policy.validate().is_ok());
-        assert!(policy.step_up_satisfies_policy(&["urn:qid:amr:webauthn".to_string()], true));
-        assert!(!policy.step_up_satisfies_policy(&["urn:qid:amr:totp".to_string()], true));
-        assert!(policy.step_up_satisfies_policy(&["urn:qid:amr:totp".to_string()], false));
-    }
 
     #[test]
     fn totp_enrollment_builds_disabled_credential_and_url() {

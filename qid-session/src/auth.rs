@@ -209,29 +209,6 @@ impl<R: Repository> Authenticator<R> {
         })
     }
 
-    /// Authenticate a user via client certificate MFA factor.
-    ///
-    /// Accepts a validated client certificate fingerprint (SHA-256 of DER)
-    /// and matches it against the user's registered fingerprints.
-    pub async fn authenticate_client_certificate_mfa(
-        &self,
-        user: &User,
-        fingerprint: &str,
-        registered_fingerprints: &[String],
-    ) -> QidResult<AuthResult> {
-        if !registered_fingerprints.iter().any(|f| f == fingerprint) {
-            return Err(QidError::Unauthorized {
-                message: "client certificate authentication failed".to_string(),
-            });
-        }
-        Ok(AuthResult {
-            user: user.clone(),
-            acr: "urn:qid:acr:phishing-resistant".to_string(),
-            amr: vec!["client_certificate".to_string()],
-            session_id: None,
-        })
-    }
-
     async fn record_failed_attempt(
         &self,
         realm_id: &RealmId,
@@ -259,13 +236,6 @@ pub trait AuthenticatorExt: Send + Sync {
         email: &str,
         password: &str,
     ) -> QidResult<AuthResult>;
-
-    async fn authenticate_client_certificate_mfa(
-        &self,
-        user: &User,
-        fingerprint: &str,
-        registered_fingerprints: &[String],
-    ) -> QidResult<AuthResult>;
 }
 
 #[async_trait]
@@ -277,16 +247,6 @@ impl<R: Repository> AuthenticatorExt for Authenticator<R> {
         password: &str,
     ) -> QidResult<AuthResult> {
         self.authenticate_password(realm_id, email, password).await
-    }
-
-    async fn authenticate_client_certificate_mfa(
-        &self,
-        user: &User,
-        fingerprint: &str,
-        registered_fingerprints: &[String],
-    ) -> QidResult<AuthResult> {
-        self.authenticate_client_certificate_mfa(user, fingerprint, registered_fingerprints)
-            .await
     }
 }
 

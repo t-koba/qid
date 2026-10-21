@@ -18,7 +18,7 @@ fn parse(bundle: serde_json::Value) -> Result<PolicyBundle, String> {
 }
 
 #[test]
-fn an_unknown_key_inside_an_expression_is_rejected_by_name() {
+fn a_mixed_operator_expression_is_rejected_naming_both_operators() {
     let error = parse(bundle_with_expression(serde_json::json!({
         "and": [{"field": "acr", "op": "equals", "value": "high"}],
         "or": []

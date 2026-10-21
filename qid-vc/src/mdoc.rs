@@ -25,14 +25,115 @@ pub struct MdocDataElement {
 /// Typed mdoc value. The full set of CBOR data types is reduced to
 /// the union below because the supporting use cases (PID, mDL) only
 /// need a handful of primitive types.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
+///
+/// The variants are tagged in CBOR, so a value keeps its type across a
+/// round trip: a date is the RFC 8949 tag 0 date/time string, not a
+/// plain text value that happens to look like one.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MdocDataElementValue {
     Text(String),
     Integer(i64),
     Boolean(bool),
     Bytes(Vec<u8>),
+    /// An ISO 18013-5 date/time value.
     Date(String),
+}
+
+/// The RFC 8949 tag number of a standard date/time string.
+const MDOC_DATE_TIME_TAG: u64 = 0;
+
+impl Serialize for MdocDataElementValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            MdocDataElementValue::Text(value) => map.serialize_entry("text", value)?,
+            MdocDataElementValue::Integer(value) => map.serialize_entry("integer", value)?,
+            MdocDataElementValue::Boolean(value) => map.serialize_entry("boolean", value)?,
+            MdocDataElementValue::Bytes(value) => map.serialize_entry("bytes", value)?,
+            MdocDataElementValue::Date(value) => map.serialize_entry("date", value)?,
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MdocDataElementValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| D::Error::custom("an mdoc value must be an object naming its type"))?;
+        if object.len() != 1 {
+            return Err(D::Error::custom(
+                "an mdoc value must name exactly one of text, integer, boolean, bytes or date",
+            ));
+        }
+        let (key, value) = object.iter().next().expect("the object has one entry");
+        match key.as_str() {
+            "text" => text_value(value, key)
+                .map(MdocDataElementValue::Text)
+                .map_err(D::Error::custom),
+            "integer" => integer_value(value, key)
+                .map(MdocDataElementValue::Integer)
+                .map_err(D::Error::custom),
+            "boolean" => boolean_value(value, key)
+                .map(MdocDataElementValue::Boolean)
+                .map_err(D::Error::custom),
+            "bytes" => bytes_value(value, key)
+                .map(MdocDataElementValue::Bytes)
+                .map_err(D::Error::custom),
+            "date" => text_value(value, key)
+                .map(MdocDataElementValue::Date)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "an mdoc value has an unknown type `{other}`"
+            ))),
+        }
+    }
+}
+
+/// The string an mdoc value carries.
+fn text_value(value: &serde_json::Value, key: &str) -> Result<String, String> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("the mdoc value `{key}` must be a string"))
+}
+
+/// The integer an mdoc value carries.
+fn integer_value(value: &serde_json::Value, key: &str) -> Result<i64, String> {
+    value
+        .as_i64()
+        .ok_or_else(|| format!("the mdoc value `{key}` must be an integer"))
+}
+
+/// The boolean an mdoc value carries.
+fn boolean_value(value: &serde_json::Value, key: &str) -> Result<bool, String> {
+    value
+        .as_bool()
+        .ok_or_else(|| format!("the mdoc value `{key}` must be a boolean"))
+}
+
+/// The bytes an mdoc value carries.
+fn bytes_value(value: &serde_json::Value, key: &str) -> Result<Vec<u8>, String> {
+    let array = value
+        .as_array()
+        .ok_or_else(|| format!("the mdoc value `{key}` must be an array of bytes"))?;
+    array
+        .iter()
+        .map(|byte| {
+            byte.as_u64()
+                .and_then(|value| u8::try_from(value).ok())
+                .ok_or_else(|| format!("the mdoc value `{key}` must be an array of bytes"))
+        })
+        .collect()
 }
 
 impl MdocDataElementValue {
@@ -170,7 +271,7 @@ pub fn decode_mdoc_document(bytes: &[u8]) -> QidResult<MdocDocument> {
                             if let Some(elem_map) = ns_v.as_map() {
                                 for (ek, ev) in elem_map {
                                     let id = ek.as_text().unwrap_or("").to_string();
-                                    let val = cbor_to_mdoc_value(ev);
+                                    let val = cbor_to_mdoc_value(ev)?;
                                     ns.insert(MdocDataElement {
                                         identifier: id,
                                         value: val,
@@ -203,17 +304,36 @@ fn mdoc_value_to_cbor(value: &MdocDataElementValue) -> CborValue {
         MdocDataElementValue::Integer(i) => CborValue::Integer(ciborium::value::Integer::from(*i)),
         MdocDataElementValue::Boolean(b) => CborValue::Bool(*b),
         MdocDataElementValue::Bytes(b) => CborValue::Bytes(b.clone()),
-        MdocDataElementValue::Date(d) => CborValue::Text(d.clone()),
+        MdocDataElementValue::Date(d) => {
+            CborValue::Tag(MDOC_DATE_TIME_TAG, Box::new(CborValue::Text(d.clone())))
+        }
     }
 }
 
-fn cbor_to_mdoc_value(value: &CborValue) -> MdocDataElementValue {
+/// The value a CBOR item carries.
+///
+/// A shape the model does not represent is an error: rendering it as a
+/// debug string would present a value that looks like data but is not.
+fn cbor_to_mdoc_value(value: &CborValue) -> QidResult<MdocDataElementValue> {
     match value {
-        CborValue::Text(t) => MdocDataElementValue::Text(t.clone()),
-        CborValue::Integer(i) => MdocDataElementValue::Integer(i128::from(*i) as i64),
-        CborValue::Bool(b) => MdocDataElementValue::Boolean(*b),
-        CborValue::Bytes(b) => MdocDataElementValue::Bytes(b.clone()),
-        _ => MdocDataElementValue::Text(format!("{:?}", value)),
+        CborValue::Text(t) => Ok(MdocDataElementValue::Text(t.clone())),
+        CborValue::Integer(i) => Ok(MdocDataElementValue::Integer(i128::from(*i) as i64)),
+        CborValue::Bool(b) => Ok(MdocDataElementValue::Boolean(*b)),
+        CborValue::Bytes(b) => Ok(MdocDataElementValue::Bytes(b.clone())),
+        CborValue::Tag(tag, inner) => {
+            if *tag != MDOC_DATE_TIME_TAG {
+                return Err(QidError::BadRequest {
+                    message: format!("mdoc CBOR value carries an unsupported tag {tag}"),
+                });
+            }
+            let text = inner.as_text().ok_or_else(|| QidError::BadRequest {
+                message: "an mdoc date/time value must be a text string".to_string(),
+            })?;
+            Ok(MdocDataElementValue::Date(text.to_string()))
+        }
+        _ => Err(QidError::BadRequest {
+            message: "mdoc CBOR value has a type the data model does not represent".to_string(),
+        }),
     }
 }
 

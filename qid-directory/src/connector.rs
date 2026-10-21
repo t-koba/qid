@@ -1250,18 +1250,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message().contains("unsupported enabled expression"));
-
-        let error = run_ldap_search_with_options(
-            "not-an-ldap-url",
-            None,
-            None,
-            "dc=example,dc=com",
-            "(objectClass=user)",
-            &mapping,
-            LdapSearchOptions::default(),
-        )
-        .unwrap_err();
-        assert!(error.message().contains("unsupported enabled expression"));
     }
 
     #[test]

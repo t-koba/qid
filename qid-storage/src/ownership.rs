@@ -14,8 +14,14 @@ pub(super) fn ensure_same_binding<T: PartialEq>(
     Ok(())
 }
 
-/// Use only after an atomic SQL upsert with an explicit owner/identity predicate.
-/// Zero rows means the predicate rejected the write, including lifecycle checks.
+/// Refuse a write the statement itself refused.
+///
+/// Use after an atomic SQL statement whose predicate names the owner and the
+/// identity (an upsert with an owner/identity WHERE clause), or, for the
+/// one-shot consumption refusals, after a statement whose predicate is the
+/// lifecycle flag. Zero rows means that predicate rejected the write. The
+/// two are the same helper because the outcome is the same (Conflict); the
+/// contract a resource states says which predicate it uses.
 pub(super) fn ensure_upsert_applied(
     rows_affected: u64,
     message: impl FnOnce() -> String,
@@ -45,3 +51,40 @@ pub(super) fn ensure_row_present(
     }
     Ok(())
 }
+
+/// The collision rule a migrated write states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum CollisionRule {
+    /// Refuse the write and leave the incumbent unchanged.
+    Refuse,
+    /// Replace the incumbent.
+    Replace,
+}
+
+/// A typed statement of a write's ownership contract: the owner key, the
+/// identity key, and the collision rule. One per migrated write; both
+/// backends enforce the same three things in their own idiom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct OwnershipContract {
+    pub owner_key: &'static str,
+    pub identity_key: &'static str,
+    pub collision: CollisionRule,
+}
+
+/// Ownership contract for the user resource (create and update).
+#[allow(dead_code)]
+pub const USER: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id",
+    identity_key: "id, email",
+    collision: CollisionRule::Refuse,
+};
+
+/// Ownership contract for the CIAM consent grant resource (store).
+#[allow(dead_code)]
+pub const CIAM_CONSENT_GRANT: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id, user_id, client_id",
+    identity_key: "id",
+    collision: CollisionRule::Replace,
+};

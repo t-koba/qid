@@ -280,6 +280,21 @@ where
         .expect("the user must still exist");
     assert_eq!(stored.email, user.email);
     assert_eq!(stored.display_name, unchanged.display_name);
+
+    // The owner (realm) of a user does not change on update: an input that
+    // names another realm is ignored, and the stored realm is unchanged.
+    let mut moved = user.clone();
+    moved.realm_id = other_realm.0.clone();
+    moved.display_name = Some("moved".to_string());
+    repo.update_user(&moved)
+        .await
+        .expect("an update may not change the owner, but must still apply");
+    let stored = repo
+        .get_user_by_id(&user.id)
+        .await
+        .expect("get user by id failed")
+        .expect("the user must still exist");
+    assert_eq!(stored.realm_id, user.realm_id, "update changed the owner");
 }
 
 pub async fn assert_workload_identity_ownership<R>(repo: &R)

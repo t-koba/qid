@@ -80,8 +80,18 @@ impl UserRepository for FileRepository {
 
     async fn update_user(&self, user: &User) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if let Some(email) = email_held_by_another(&store, user) {
-            return Err(crate::ownership::user_email_conflict(email, &user.realm_id));
+        // The owner (realm) of a user does not change on update, so keep the
+        // incumbent's realm and check the email against it, matching the SQL
+        // backend which does not update realm_id.
+        let realm_id = store
+            .users
+            .get(&user.id)
+            .map(|stored| stored.realm_id.clone())
+            .unwrap_or_else(|| user.realm_id.clone());
+        let mut user = user.clone();
+        user.realm_id = realm_id.clone();
+        if let Some(email) = email_held_by_another(&store, &user) {
+            return Err(crate::ownership::user_email_conflict(email, &realm_id));
         }
         store.users.insert(user.id.clone(), user.clone());
         drop(store);

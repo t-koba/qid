@@ -62,7 +62,8 @@ the statement, so no read precedes the write and no duplicate can slip
 between a check and an insert. The two idioms differ; the outcome does not.
 
 The shared helpers in `qid-storage/src/ownership.rs` carry the outcome so
-both backends state it once:
+both backends state it once. The typed contract they implement is
+`OwnershipContract` (owner key, identity key, collision rule):
 
 - `ensure_same_binding` - the file path, under the write lock, refuses a
   write whose identity key is bound to another owner.
@@ -73,6 +74,13 @@ both backends state it once:
   because the record is gone.
 - `user_email_conflict` - the refusal a user write earns when the realm
   already holds the email for another user.
+
+The write primitive is `OwnershipContract` plus these helpers: a migrated
+resource states its owner key, identity key and collision rule once and
+calls the primitive, so the file backend checks under its exclusive write
+lock and the SQL backend uses static SQL with no read before the insert.
+The migrated families are the user and the CIAM consent grant (alongside
+the workload identity and the client).
 
 A migrated resource costs three lines in the file path and three in the SQL
 path, because the outcome is stated once rather than at every call site.

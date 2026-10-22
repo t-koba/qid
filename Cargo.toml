@@ -51,8 +51,11 @@ exclude = ["vendor/rustls"]
 # Raised from 103263 to 103500 to accommodate the queued correctness fixes:
 # the load-time directory provider checks, the LDAP paging-control check, the
 # configuration error messages, the CSV decoder and the object-only body
-# guard. The per-crate caps and the counted-file coverage are unchanged.
-total = 103500
+# guard. Raised again to 103600 for the storage-ownership typed contract
+# (OwnershipContract plus the user and CIAM consent grant families) and the
+# symmetric duplicate-email update fix. The per-crate caps and the counted-file
+# coverage are unchanged.
+total = 103600
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

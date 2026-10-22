@@ -5,8 +5,8 @@ use super::*;
 #[async_trait]
 impl FedCmRepository for SqlRepository {
     async fn store_fedcm_identity(&self, identity: &FedCmIdentity) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO fedcm_identities (id, realm_id, account_id, email, name, given_name, picture_url, approved_clients) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO fedcm_identities (id, realm_id, account_id, email, name, given_name, picture_url, approved_clients) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&identity.id)
         .bind(&identity.realm_id)
@@ -19,6 +19,9 @@ impl FedCmRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("fedcm identity record ID {} already exists", identity.id)
+        })?;
         Ok(())
     }
 

@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use qid_core::models::{CiamConsentGrant, Client, ClientType, Device, User, WorkloadIdentity};
+use qid_core::models::{
+    CiamConsentGrant, Client, ClientType, Device, FedCmIdentity, User, WorkloadIdentity,
+};
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
 use std::path::{Path, PathBuf};
@@ -895,6 +897,65 @@ where
         .expect("the incumbent device must still exist");
     assert_eq!(
         stored.device_name, device.device_name,
+        "the refusal changed the incumbent"
+    );
+}
+
+/// The owner-bound contract of a FedCM identity: a record ID names one
+/// identity, so a second identity that carries the same ID is refused and
+/// the incumbent is left unchanged.
+pub async fn assert_fedcm_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + FedCmRepository,
+{
+    let realm = RealmId("realm-fedcm-identity".to_string());
+    repo.create_realm(
+        &TenantId("tenant-fedcm-identity".to_string()),
+        &realm,
+        "https://fedcm-identity.example.com",
+        Some("FedCM Identity Realm"),
+    )
+    .await
+    .expect("create fedcm identity realm failed");
+
+    let identity = FedCmIdentity {
+        id: "fedcm-identity-alice".to_string(),
+        realm_id: realm.0.clone(),
+        account_id: "account-alice".to_string(),
+        email: "alice@example.com".to_string(),
+        name: Some("Alice".to_string()),
+        given_name: Some("Alice".to_string()),
+        picture_url: None,
+        approved_clients: vec![],
+    };
+    repo.store_fedcm_identity(&identity)
+        .await
+        .expect("store fedcm identity failed");
+
+    let duplicate = FedCmIdentity {
+        id: identity.id.clone(),
+        name: Some("duplicate".to_string()),
+        ..identity.clone()
+    };
+    let err = repo
+        .store_fedcm_identity(&duplicate)
+        .await
+        .expect_err("a second fedcm identity for one record ID must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a second fedcm identity for one record ID must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_fedcm_identities(&realm, "account-alice")
+        .await
+        .expect("get fedcm identities failed");
+    let incumbent = stored
+        .iter()
+        .find(|i| i.id == identity.id)
+        .expect("incumbent must exist");
+    assert_eq!(
+        incumbent.name, identity.name,
         "the refusal changed the incumbent"
     );
 }

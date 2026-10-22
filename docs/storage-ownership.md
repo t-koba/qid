@@ -86,7 +86,7 @@ A migrated resource costs three lines in the file path and three in the SQL
 path, because the outcome is stated once rather than at every call site.
 
 The migrated families are the workload identity, the client, the CIAM
-consent grant, the user and the device. The remaining disagreements are listed above;
+consent grant, the user, the device and the FedCM identity. The remaining disagreements are listed above;
 they are not all defects. A write whose identity key is a token the product
 generates (an authorization code, a PAR request, a device or backchannel
 grant) has no owner to protect, and a write whose same-owner semantics are
@@ -191,7 +191,7 @@ but the table declares no uniqueness on `account_id`
 
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
-| `store_fedcm_identity` - `FedCmIdentity` | realm (`realm_id`) | record `id` | email, name, given name, picture URL, approved clients | File: overwrite of the map entry, no error (`qid-storage/src/file/fedcm.rs:11`). SQL: plain `INSERT` with `id` as primary key, so a duplicate ID is a unique violation surfaced as `Storage` (`qid-storage/src/sql/fedcm.rs:9`). **Backends disagree.** | file `qid-storage/src/file/fedcm.rs:11`; sql `qid-storage/src/sql/fedcm.rs:9` (not enforced as a conflict in SQL) |
+| `store_fedcm_identity` - `FedCmIdentity` | realm (`realm_id`) | record `id` | email, name, given name, picture URL, approved clients | File: a second identity that carries a taken record ID is refused with `Conflict` under the store's exclusive write lock (`qid-storage/src/file/fedcm.rs:10`, `qid-storage/src/file/fedcm.rs:13`). SQL: `ON CONFLICT(id) DO NOTHING` and `ensure_upsert_applied` turns a zero-row result into `Conflict` (`qid-storage/src/sql/fedcm.rs:9`, `qid-storage/src/sql/fedcm.rs:22`). Both refuse with `Conflict`. | file `qid-storage/src/file/fedcm.rs:10`, `qid-storage/src/file/fedcm.rs:13`; sql `qid-storage/src/sql/fedcm.rs:9`, `qid-storage/src/sql/fedcm.rs:22` |
 | `delete_fedcm_identity` (delete) | realm (`realm_id`) in the record; the write is not realm-filtered | record `id` | none, removal | File: the identity is removed by ID and a missing identity is a silent no-op (`qid-storage/src/file/fedcm.rs:33`). SQL: `DELETE FROM fedcm_identities WHERE id = ?` and a missing identity is a silent no-op (`qid-storage/src/sql/fedcm.rs:41`). Both delete by ID only, so an identity of another realm is removed as well. | file `qid-storage/src/file/fedcm.rs:33`; sql `qid-storage/src/sql/fedcm.rs:41` |
 
 ## iga

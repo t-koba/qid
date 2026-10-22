@@ -96,3 +96,11 @@ pub const DEVICE: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for the FedCM identity resource (store).
+#[allow(dead_code)]
+pub const FEDCM_IDENTITY: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

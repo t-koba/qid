@@ -165,17 +165,19 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             ensure!(!realm.trim().is_empty(), "realm must not be empty");
             ensure_spiffe_trust_domain(&spiffe_id, &trust_domain)?;
             let realm_id = RealmId::from(realm.clone());
-            if repo
-                .get_workload_identity_by_spiffe(&realm_id, &spiffe_id)
-                .await?
-                .is_some()
-            {
-                bail!("workload identity already exists for SPIFFE id: {spiffe_id}");
-            }
             let authorities_json: serde_json::Value = serde_json::from_str(&authorities_json)
                 .context("authorities_json must be valid JSON")?;
+            // The SPIFFE ID names the identity in the realm, so registering
+            // it again updates the identity that carries it.
+            let id = match repo
+                .get_workload_identity_by_spiffe(&realm_id, &spiffe_id)
+                .await?
+            {
+                Some(stored) => stored.id,
+                None => ulid::Ulid::new().to_string(),
+            };
             let identity = WorkloadIdentity {
-                id: ulid::Ulid::new().to_string(),
+                id,
                 realm_id: realm.clone(),
                 spiffe_id,
                 description,

@@ -289,7 +289,7 @@ only; a trusted verified mapping can coexist with unverified legacy rows.
 | --- | --- | --- |
 | `GET, POST` | `/api/v1/:realm/devices` | List/register devices. |
 | `PUT` | `/api/v1/:realm/devices/:device_id/heartbeat` | Device heartbeat. |
-| `POST` | `/api/v1/:realm/workload-identities` | Create workload identity. |
+| `POST` | `/api/v1/:realm/workload-identities` | Register a workload identity; `201 Created` for a new SPIFFE ID and `200 OK` for one the realm already holds. |
 | `GET` | `/api/v1/:realm/workload-identities/:spiffe_id` | Get workload identity. |
 | `GET, POST` | `/api/v1/:realm/workload-certificates` | List/issue workload certificates. |
 | `POST` | `/api/v1/:realm/workload-certificates/:certificate_id/revoke` | Revoke workload certificate. |
@@ -299,9 +299,12 @@ only; a trusted verified mapping can coexist with unverified legacy rows.
 
 Workload and SPIFFE routes are only merged in the `workload` profile.
 
-One SPIFFE ID names one workload identity in a realm: registering a second
-identity for the same SPIFFE ID is refused, and an identity ID that belongs to
-another realm's identity is a conflict.
+One SPIFFE ID names one workload identity in a realm. Registering that SPIFFE
+ID again updates the identity that carries it: the identity keeps its ID and
+the authorities another path recorded, and the registration states its
+description and trust domain. An identity ID that belongs to another realm's
+identity is a conflict, and the trust domain of a registration must be the
+trust domain its SPIFFE ID names.
 
 ## IGA and ReBAC
 

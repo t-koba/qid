@@ -273,7 +273,7 @@ rejected).
 | `device-register` | Register/update endpoint posture for a user device. |
 | `device-heartbeat` | Update last-seen timestamp for a device. |
 | `devices` | List devices for a user. |
-| `workload-register` | Register a SPIFFE-aware workload identity. |
+| `workload-register` | Register a SPIFFE-aware workload identity; registering the same SPIFFE ID again updates it. |
 | `workloads` | List workload identities for a realm. |
 | `workload-delete` | Delete a workload identity of a realm by ID. |
 

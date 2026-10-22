@@ -245,6 +245,104 @@ async fn workload_identity_provisioning_token_requires_realm_and_tenant_binding(
 }
 
 #[tokio::test]
+async fn registering_a_spiffe_id_again_updates_its_identity() {
+    let (app, state, _) = setup().await;
+    let spiffe_id = "spiffe://prod.example/ns/default/sa/worker";
+    let token = provisioning_token(&state, spiffe_id, "test", "tenant-1");
+    let body = format!(
+        r#"{{
+            "spiffe_id":"{spiffe_id}",
+            "trust_domain":"prod.example",
+            "description":"First registration"
+        }}"#
+    );
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/test/workload-identities",
+            body,
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = json(response).await;
+    let identity_id = created["id"].as_str().unwrap().to_string();
+
+    // Registering the same SPIFFE ID again updates that identity: it
+    // keeps its ID and states the new description.
+    let body = format!(
+        r#"{{
+            "spiffe_id":"{spiffe_id}",
+            "trust_domain":"prod.example",
+            "description":"Second registration"
+        }}"#
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/test/workload-identities",
+            body,
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated = json(response).await;
+    assert_eq!(updated["id"], identity_id.as_str());
+    assert_eq!(updated["description"], "Second registration");
+
+    // The realm holds one identity for that SPIFFE ID.
+    let listed = state
+        .repo
+        .list_workload_identities(&"test".into())
+        .await
+        .unwrap();
+    let workers: Vec<_> = listed
+        .iter()
+        .filter(|identity| identity.spiffe_id == spiffe_id)
+        .collect();
+    assert_eq!(
+        workers.len(),
+        1,
+        "the realm must hold one identity for the SPIFFE ID"
+    );
+    assert_eq!(workers[0].id, identity_id);
+    assert_eq!(
+        workers[0].description.as_deref(),
+        Some("Second registration")
+    );
+}
+
+#[tokio::test]
+async fn a_registration_must_name_the_trust_domain_of_its_spiffe_id() {
+    let (app, state, _) = setup().await;
+    let spiffe_id = "spiffe://prod.example/ns/default/sa/worker";
+    let token = provisioning_token(&state, spiffe_id, "test", "tenant-1");
+    let body = format!(
+        r#"{{
+            "spiffe_id":"{spiffe_id}",
+            "trust_domain":"other.example",
+            "description":"Mismatched trust domain"
+        }}"#
+    );
+
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/test/workload-identities",
+            body,
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn workload_certificate_lifecycle_requires_bound_workload_svid() {
     let (app, state, token) = setup().await;
     let workload_id = state

@@ -7,6 +7,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use qid_core::error::QidError;
 use qid_core::web::JsonObject;
 use qid_core::{state::SharedState, tenant::RealmId};
 use qid_storage::prelude::*;
@@ -66,18 +67,63 @@ pub async fn create_workload_identity<R: Repository>(
     {
         return e;
     }
+    let Some(observed_domain) = spiffe_trust_domain(&req.spiffe_id) else {
+        return qid_http::error_response(QidError::BadRequest {
+            message: "spiffe_id must start with spiffe:// and name a trust domain".to_string(),
+        });
+    };
+    if observed_domain != req.trust_domain {
+        return qid_http::error_response(QidError::BadRequest {
+            message: "spiffe_id trust domain does not match trust_domain".to_string(),
+        });
+    }
+    // The SPIFFE ID names the identity in the realm, so registering it
+    // again updates the identity that carries it: the identity keeps its
+    // ID and the authorities another path recorded, and the registration
+    // states its description and trust domain.
+    let existing = match state
+        .repo
+        .get_workload_identity_by_spiffe(&RealmId(realm.clone()), &req.spiffe_id)
+        .await
+    {
+        Ok(existing) => existing,
+        Err(e) => return qid_http::error_response(e),
+    };
+    let (id, authorities_json, updated) = match existing {
+        Some(stored) => (stored.id, stored.authorities_json, true),
+        None => (
+            ulid::Ulid::new().to_string(),
+            serde_json::Value::Null,
+            false,
+        ),
+    };
     let wi = WorkloadIdentity {
-        id: ulid::Ulid::new().to_string(),
+        id,
         realm_id: realm,
         spiffe_id: req.spiffe_id,
         trust_domain: req.trust_domain,
         description: req.description,
-        authorities_json: serde_json::Value::Null,
+        authorities_json,
     };
     match state.repo.create_workload_identity(&wi).await {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::json!(wi))).into_response(),
+        Ok(()) => {
+            let status = if updated {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            };
+            (status, Json(serde_json::json!(wi))).into_response()
+        }
         Err(e) => qid_http::error_response(e),
     }
+}
+
+/// The trust domain a SPIFFE ID names.
+fn spiffe_trust_domain(spiffe_id: &str) -> Option<&str> {
+    spiffe_id
+        .strip_prefix("spiffe://")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|domain| !domain.is_empty())
 }
 
 pub async fn get_workload_identity<R: Repository>(

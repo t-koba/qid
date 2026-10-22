@@ -4,7 +4,6 @@ use qid_core::{
     models::{AuditEvent, ScimUser, User},
     tenant::RealmId,
 };
-use qid_crypto::LocalSigner;
 use qid_directory::connector::{DirectoryConnector, LdapDirectoryConnector};
 use qid_scim::{
     OutboundScimClientConfig, ReqwestOutboundScimTransport, execute_outbound_user_provisioning,
@@ -300,10 +299,9 @@ pub(crate) async fn run_directory_sync_job_with_connector(
         .map_err(directory_fetch_error)?;
     connector.disconnect().await.ok();
 
-    let signer = Arc::new(LocalSigner::from_secret(
-        "directory-sync",
-        b"qid-directory-worker-signing-key",
-    ));
+    // The directory job issues no token, so it holds no signing key: a key
+    // in the source is a credential every reader of the source holds.
+    let signer = Arc::new(qid_core::jwt::NoSigningKey);
     let state: qid_core::state::SharedState<AnyRepository> =
         qid_core::state::SharedState::new(qid_config.clone(), repo, signer, serde_json::json!({}))
             .map_err(|e| QidError::Internal {

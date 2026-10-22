@@ -1,7 +1,6 @@
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use qid_core::{config::QidConfig, state::SharedState};
-use qid_crypto::LocalSigner;
 use qid_directory::{
     DeprovisionEvent, DynamicGroupRule, HrRecord, LdapDirectoryEntry, LdapSyncOptions,
     audit_deprovision_sla, expand_nested_group_members, import_hr_records, resolve_manager_chain,
@@ -177,10 +176,9 @@ async fn open_state(config_path: &Path) -> anyhow::Result<Arc<SharedState<AnyRep
             .await
             .context("failed to connect to storage")?,
     );
-    let signer = Arc::new(LocalSigner::from_secret(
-        "qid-sync",
-        b"qid-sync-directory-worker-signing-key",
-    ));
+    // The lifecycle jobs issue no token, so they hold no signing key: a
+    // key in the source is a credential every reader of the source holds.
+    let signer = Arc::new(qid_core::jwt::NoSigningKey);
     let jwks = serde_json::json!({
         "keys": []
     });

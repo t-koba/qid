@@ -111,6 +111,8 @@ When a passphrase is configured and a plaintext local PEM already exists, `qidd`
 
 Remote signer keyrings are validated by config, but current daemon startup does not include remote signer transport. Do not set high-assurance remote signer profiles expecting runtime signing to work until the transport is implemented.
 
+The job binaries `qid-worker` and `qid-sync` issue no tokens, so they hold no signing key at all: they run with a signer that refuses every signing and decoding attempt. A key in the source tree would be a credential every reader of the source holds, so the only signing material in the product is the operator's own keyring.
+
 Keyring purposes are validated and should be scoped narrowly:
 
 - `oidc_token`

@@ -18,7 +18,6 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 qid-core = { workspace = true }
-qid-crypto = { workspace = true }
 qid-directory = { workspace = true }
 qid-storage = { workspace = true }
 serde = { workspace = true }

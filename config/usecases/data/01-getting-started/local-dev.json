@@ -17,8 +17,7 @@
     "01KW748B8S0ZC44ED93N2HTT00": {
       "user_id": "01KW748B8S0ZC44ED93N2HTT00",
       "hash": "$argon2id$v=19$m=19456,t=2,p=1$uxAfwpoQaBVLfqzbeE5v8g$6WwnEDIcoxBMpJG+OukNnJ5FLAdeeMC9Xc7ZsmZan+s",
-      "algorithm": "argon2id",
-      "pepper_ref": null
+      "algorithm": "argon2id"
     }
   },
   "clients": {},

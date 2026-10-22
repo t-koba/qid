@@ -100,6 +100,42 @@ impl JwtClaims {
     }
 }
 
+/// A signer that holds no key.
+///
+/// A binary that never issues a token needs no signing material, and a key
+/// written in the source is a credential every reader of the source holds.
+/// This signer refuses every signing and decoding attempt, so a path that
+/// expects to sign reports that the process holds no key instead of
+/// producing a token anyone could forge.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoSigningKey;
+
+impl Signer for NoSigningKey {
+    fn sign(&self, _claims: &JwtClaims) -> anyhow::Result<String> {
+        anyhow::bail!("this process holds no signing key")
+    }
+
+    fn sign_with_typ(&self, _claims: &JwtClaims, _typ: &str) -> anyhow::Result<String> {
+        anyhow::bail!("this process holds no signing key")
+    }
+
+    fn decode_signature_only(&self, _token: &str) -> anyhow::Result<TokenData<JwtClaims>> {
+        anyhow::bail!("this process holds no signing key")
+    }
+
+    fn decode_with_aud(
+        &self,
+        _token: &str,
+        _expected_audience: &str,
+    ) -> anyhow::Result<TokenData<JwtClaims>> {
+        anyhow::bail!("this process holds no signing key")
+    }
+
+    fn algorithm(&self) -> &'static str {
+        "none"
+    }
+}
+
 /// Token signer abstraction.
 pub trait Signer: Send + Sync {
     fn sign(&self, claims: &JwtClaims) -> anyhow::Result<String>;
@@ -126,4 +162,41 @@ pub trait Signer: Send + Sync {
     ) -> anyhow::Result<TokenData<JwtClaims>>;
 
     fn algorithm(&self) -> &'static str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_keyless_signer_refuses_every_operation() {
+        let signer = NoSigningKey;
+        let claims = JwtClaims {
+            iss: Some("https://id.example.com".to_string()),
+            sub: None,
+            aud: None,
+            exp: None,
+            nbf: None,
+            iat: None,
+            jti: None,
+            extra: HashMap::new(),
+        };
+        assert!(
+            signer.sign(&claims).is_err(),
+            "a process without a key must not sign"
+        );
+        assert!(
+            signer.sign_with_typ(&claims, "JWT").is_err(),
+            "a process without a key must not sign"
+        );
+        assert!(
+            signer.decode_signature_only("token").is_err(),
+            "a process without a key must not decode"
+        );
+        assert!(
+            signer.decode_with_aud("token", "audience").is_err(),
+            "a process without a key must not decode"
+        );
+        assert_eq!(signer.algorithm(), "none");
+    }
 }

@@ -85,10 +85,13 @@ impl OwnershipContract {
     }
 }
 
+const fn refusal(owner_key: &'static str, identity_key: &'static str) -> OwnershipContract {
+    OwnershipContract::new(owner_key, identity_key, CollisionRule::Refuse)
+}
+
 /// Ownership contract for the user resource (create and update).
 #[allow(dead_code)]
-pub const USER: OwnershipContract =
-    OwnershipContract::new("realm_id", "id, email", CollisionRule::Refuse);
+pub const USER: OwnershipContract = refusal("realm_id", "id, email");
 
 /// Ownership contract for the CIAM consent grant resource (store).
 #[allow(dead_code)]
@@ -97,75 +100,60 @@ pub const CIAM_CONSENT_GRANT: OwnershipContract =
 
 /// Ownership contract for the device resource (register).
 #[allow(dead_code)]
-pub const DEVICE: OwnershipContract =
-    OwnershipContract::new("realm_id, user_id", "id", CollisionRule::Refuse);
+pub const DEVICE: OwnershipContract = refusal("realm_id, user_id", "id");
 
 /// Ownership contract for the FedCM identity resource (store).
 #[allow(dead_code)]
-pub const FEDCM_IDENTITY: OwnershipContract =
-    OwnershipContract::new("realm_id", "id", CollisionRule::Refuse);
+pub const FEDCM_IDENTITY: OwnershipContract = refusal("realm_id", "id");
 
 /// Ownership contract for the service-account resource (create).
 #[allow(dead_code)]
-pub const SERVICE_ACCOUNT: OwnershipContract =
-    OwnershipContract::new("realm_id", "id", CollisionRule::Refuse);
+pub const SERVICE_ACCOUNT: OwnershipContract = refusal("realm_id", "id");
 
 /// Ownership contract for the WebAuthn credential resource (store).
 #[allow(dead_code)]
-pub const WEBAUTHN_CREDENTIAL: OwnershipContract =
-    OwnershipContract::new("user_id", "id", CollisionRule::Refuse);
+pub const WEBAUTHN_CREDENTIAL: OwnershipContract = refusal("user_id", "id");
 
 /// Ownership contract for the append-only audit-event resource.
 #[allow(dead_code)]
-pub const AUDIT_EVENT: OwnershipContract =
-    OwnershipContract::new("realm_id", "id", CollisionRule::Refuse);
+pub const AUDIT_EVENT: OwnershipContract = refusal("realm_id", "id");
 
 /// Ownership contract for the one-shot admin-approval resource.
 #[allow(dead_code)]
-pub const ADMIN_APPROVAL: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const ADMIN_APPROVAL: OwnershipContract = refusal("tenant_id", "id");
 
 /// Ownership contract for the identity-bound admin-elevation resource.
 #[allow(dead_code)]
-pub const ADMIN_ELEVATION: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const ADMIN_ELEVATION: OwnershipContract = refusal("tenant_id", "id");
 
 /// Ownership contract for single-use CIAM verification challenges.
 #[allow(dead_code)]
-pub const CIAM_VERIFICATION_CHALLENGE: OwnershipContract =
-    OwnershipContract::new("realm_id", "id", CollisionRule::Refuse);
+pub const CIAM_VERIFICATION_CHALLENGE: OwnershipContract = refusal("realm_id", "id");
 
 /// Ownership contract for single-use password-reset tokens.
 #[allow(dead_code)]
-pub const PASSWORD_RESET_TOKEN: OwnershipContract =
-    OwnershipContract::new("realm_id + user_id", "id", CollisionRule::Refuse);
+pub const PASSWORD_RESET_TOKEN: OwnershipContract = refusal("realm_id + user_id", "id");
 
 /// Ownership contract for immutable IGA access review decisions.
 #[allow(dead_code)]
-pub const IGA_ACCESS_REVIEW_DECISION: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const IGA_ACCESS_REVIEW_DECISION: OwnershipContract = refusal("tenant_id", "id");
 
 /// Ownership contract for immutable IGA certifications.
 #[allow(dead_code)]
-pub const IGA_CERTIFICATION: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const IGA_CERTIFICATION: OwnershipContract = refusal("tenant_id", "id");
 
 /// Ownership contract for IGA findings with separately monotonic resolution state.
 #[allow(dead_code)]
-pub const IGA_FINDING: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const IGA_FINDING: OwnershipContract = refusal("tenant_id", "id");
 
 /// Ownership contract for mutable IGA access requests with dedicated lifecycle updates.
 #[allow(dead_code)]
-pub const IGA_ACCESS_REQUEST: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const IGA_ACCESS_REQUEST: OwnershipContract = refusal("tenant_id", "id");
 
 /// Ownership contract for immutable IGA approval decisions.
 #[allow(dead_code)]
-pub const IGA_APPROVAL: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const IGA_APPROVAL: OwnershipContract = refusal("tenant_id", "id");
 
 /// Ownership contract for mutable IGA access grants with separate revocation.
 #[allow(dead_code)]
-pub const IGA_ACCESS_GRANT: OwnershipContract =
-    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+pub const IGA_ACCESS_GRANT: OwnershipContract = refusal("tenant_id", "id");

@@ -16,7 +16,8 @@ use crate::auth::PasswordPolicy;
 ///
 /// The limiter holds no policy of its own: the account's limit and window
 /// are the realm's `max_failed_attempts` and `lockout_duration_seconds`,
-/// and the realm's limit and window are the deployment's defaults.
+/// and the realm's limit is the realm's `max_failed_attempts_per_realm`
+/// over the same window.
 pub struct PasswordAttemptLimiter {
     limiter: RateLimiter,
 }

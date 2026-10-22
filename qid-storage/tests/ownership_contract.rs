@@ -109,3 +109,11 @@ async fn admin_elevation_identity_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-admin-elevation").await;
     support::assert_admin_elevation_identity_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn ciam_verification_challenge_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_ciam_verification_challenge_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-ciam-verification").await;
+    support::assert_ciam_verification_challenge_identity_ownership(&file).await;
+}

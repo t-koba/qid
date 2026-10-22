@@ -64,6 +64,17 @@ impl CiamRepository for FileRepository {
     ) -> QidResult<()> {
         challenge.validate()?;
         let mut store = self.store.write().await;
+        if store
+            .ciam_verification_challenges
+            .contains_key(&challenge.id)
+        {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "CIAM verification challenge ID {} already exists",
+                    challenge.id
+                ),
+            });
+        }
         store
             .ciam_verification_challenges
             .insert(challenge.id.clone(), challenge.clone());

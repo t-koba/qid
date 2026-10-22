@@ -450,6 +450,9 @@ pub trait CiamRepository: Send + Sync + 'static {
         client_id: Option<&str>,
     ) -> QidResult<Vec<CiamConsentGrant>>;
     async fn revoke_ciam_consent_grant(&self, id: &str, revoked_at: u64) -> QidResult<()>;
+    /// Store a single-use verification challenge with an immutable global ID.
+    /// Reusing an ID returns `Conflict` and leaves the original challenge, including
+    /// its consumption state, unchanged.
     async fn store_ciam_verification_challenge(
         &self,
         challenge: &CiamVerificationChallengeRecord,

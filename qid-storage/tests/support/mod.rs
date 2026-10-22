@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant, Client, ClientType, Device,
-    FedCmIdentity, ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
+    Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
+    CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity, ServiceAccount,
+    User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1419,4 +1420,125 @@ where
     assert_eq!(stored.amr, elevation.amr);
     assert_eq!(stored.elevation_expires_at, elevation.elevation_expires_at);
     assert_eq!(stored.created_at, elevation.created_at);
+}
+
+/// A challenge ID is immutable so a duplicate cannot reset its single-use state.
+pub async fn assert_ciam_verification_challenge_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CiamRepository,
+{
+    let realm = RealmId("realm-ciam-verification-owner".to_string());
+    repo.create_realm(
+        &TenantId("tenant-ciam-verification-owner".to_string()),
+        &realm,
+        "https://ciam-verification-owner.example.com",
+        Some("CIAM Verification Owner"),
+    )
+    .await
+    .expect("create CIAM verification owner realm failed");
+    let other_realm = RealmId("realm-ciam-verification-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-ciam-verification-other".to_string()),
+        &other_realm,
+        "https://ciam-verification-other.example.com",
+        Some("Other CIAM Verification Realm"),
+    )
+    .await
+    .expect("create other CIAM verification realm failed");
+
+    let user = User {
+        id: "user-ciam-verification-owner".to_string(),
+        realm_id: realm.0.clone(),
+        email: Some("owner@example.com".to_string()),
+        email_verified: false,
+        display_name: Some("Owner".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create CIAM verification owner user failed");
+    let other_user = User {
+        id: "user-ciam-verification-other".to_string(),
+        realm_id: other_realm.0.clone(),
+        email: Some("other@example.com".to_string()),
+        email_verified: false,
+        display_name: Some("Other".to_string()),
+        ..user.clone()
+    };
+    repo.create_user(&other_user)
+        .await
+        .expect("create other CIAM verification user failed");
+
+    let challenge = CiamVerificationChallengeRecord {
+        id: "ciam-verification-identity".to_string(),
+        realm_id: realm.0.clone(),
+        user_id: user.id.clone(),
+        channel: "email".to_string(),
+        address: "owner@example.com".to_string(),
+        purpose: "verify_email".to_string(),
+        code_hash: "incumbent-code-hash".to_string(),
+        expires_at_epoch_seconds: 1_700_000_100,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: 1_700_000_000,
+    };
+    repo.store_ciam_verification_challenge(&challenge)
+        .await
+        .expect("store incumbent CIAM verification challenge failed");
+    repo.consume_ciam_verification_challenge(&realm, &challenge.id, 1_700_000_050)
+        .await
+        .expect("consume incumbent CIAM verification challenge failed");
+
+    let same_realm_duplicate = CiamVerificationChallengeRecord {
+        code_hash: "replacement-code-hash".to_string(),
+        consumed_at_epoch_seconds: None,
+        ..challenge.clone()
+    };
+    let err = repo
+        .store_ciam_verification_challenge(&same_realm_duplicate)
+        .await
+        .expect_err("a duplicate challenge ID in one realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-realm duplicate challenge ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_realm_duplicate = CiamVerificationChallengeRecord {
+        realm_id: other_realm.0.clone(),
+        user_id: other_user.id,
+        address: "other@example.com".to_string(),
+        code_hash: "foreign-code-hash".to_string(),
+        consumed_at_epoch_seconds: None,
+        ..challenge.clone()
+    };
+    let err = repo
+        .store_ciam_verification_challenge(&cross_realm_duplicate)
+        .await
+        .expect_err("a challenge ID held by another realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-realm duplicate challenge ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let stored = repo
+        .get_ciam_verification_challenge(&realm, &challenge.id)
+        .await
+        .expect("get incumbent CIAM verification challenge failed")
+        .expect("incumbent CIAM verification challenge must remain stored");
+    assert_eq!(
+        stored,
+        CiamVerificationChallengeRecord {
+            consumed_at_epoch_seconds: Some(1_700_000_050),
+            ..challenge
+        }
+    );
+    assert!(
+        repo.get_ciam_verification_challenge(&other_realm, &same_realm_duplicate.id)
+            .await
+            .expect("get foreign-realm challenge failed")
+            .is_none()
+    );
 }

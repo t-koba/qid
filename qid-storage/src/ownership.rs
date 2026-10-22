@@ -142,3 +142,11 @@ pub const ADMIN_ELEVATION: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for single-use CIAM verification challenges.
+#[allow(dead_code)]
+pub const CIAM_VERIFICATION_CHALLENGE: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

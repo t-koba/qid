@@ -71,8 +71,8 @@ impl CiamRepository for SqlRepository {
         challenge: &CiamVerificationChallengeRecord,
     ) -> QidResult<()> {
         challenge.validate()?;
-        sqlx::query(
-            "INSERT INTO ciam_verification_challenges (id, realm_id, user_id, channel, address, purpose, code_hash, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO ciam_verification_challenges (id, realm_id, user_id, channel, address, purpose, code_hash, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&challenge.id)
         .bind(&challenge.realm_id)
@@ -87,6 +87,12 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!(
+                "CIAM verification challenge ID {} already exists",
+                challenge.id
+            )
+        })?;
         Ok(())
     }
 

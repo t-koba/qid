@@ -398,6 +398,45 @@ fn edge_pep_profile_diagnostics_match_core_required_surface() {
 }
 
 #[test]
+fn pep_registration_diagnostics_report_only_the_registrations_a_realm_serves() {
+    let dir = temp_config_dir("pep-registration-served");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut config = minimal_config();
+    config.realms[0].pep_registrations.enabled = false;
+    config.realms[0].pep_registrations.registrations = vec![PepRegistrationConfig {
+        name: "egress-main".to_string(),
+        audience: Some("urn:qid:pep:qpx:corp/egress-main".to_string()),
+        capabilities: Vec::new(),
+        assertion: Default::default(),
+        decision: Default::default(),
+        auth: Default::default(),
+    }];
+    let plan = qid_core::plan::RuntimePlan::from_config(&config).expect("runtime plan");
+
+    let report = build_check_report(&config, &plan, &dir.join("qid.yaml"));
+
+    assert_eq!(report.summary.pep_registrations, 0);
+    // The report names the registration as declared but not served, and
+    // never as a healthy registration of the realm.
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.name == "pep_registration.corp"
+                && check.status == CheckStatus::NotApplicable
+                && check.message.contains("not served"))
+    );
+    assert!(
+        !report
+            .checks
+            .iter()
+            .any(|check| check.name == "pep_registration.corp.egress-main"
+                && check.status == CheckStatus::Ok)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn edge_pep_profile_diagnostics_ignore_disabled_registration_realms() {
     let dir = temp_config_dir("edge-pep-disabled-profile");
     std::fs::create_dir_all(&dir).expect("temp dir");

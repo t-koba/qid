@@ -207,7 +207,26 @@ pub(crate) fn check_pep_registrations(config: &QidConfig) -> Vec<CheckItem> {
                 "PEP registrations are enabled but no registrations are configured".to_string(),
             ));
         }
-        for registration in &realm.pep_registrations.registrations {
+        // A realm that declares registrations without serving them says so
+        // once, so the report names the registrations the product does not
+        // serve instead of reporting them as healthy.
+        if !realm.pep_registrations.enabled && !realm.pep_registrations.registrations.is_empty() {
+            let names: Vec<&str> = realm
+                .pep_registrations
+                .registrations
+                .iter()
+                .map(|registration| registration.name.as_str())
+                .collect();
+            checks.push(CheckItem {
+                name: format!("pep_registration.{}", realm.id),
+                status: CheckStatus::NotApplicable,
+                message: format!(
+                    "PEP registrations are declared but not served because the realm does not enable them: {}",
+                    names.join(", ")
+                ),
+            });
+        }
+        for registration in realm.pep_registrations.served() {
             let Some(audience) = registration.audience.clone() else {
                 checks.push(check_error(
                     format!("pep_registration.{}.{}", realm.id, registration.name),

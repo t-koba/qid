@@ -126,3 +126,11 @@ pub const AUDIT_EVENT: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for the one-shot admin-approval resource.
+#[allow(dead_code)]
+pub const ADMIN_APPROVAL: OwnershipContract = OwnershipContract {
+    owner_key: "tenant_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

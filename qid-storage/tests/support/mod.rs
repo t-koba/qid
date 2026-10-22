@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    AuditEvent, CiamConsentGrant, Client, ClientType, Device, FedCmIdentity, ServiceAccount, User,
-    WebAuthnCredential, WorkloadIdentity,
+    Admin, AdminApproval, AuditEvent, CiamConsentGrant, Client, ClientType, Device, FedCmIdentity,
+    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1213,5 +1213,125 @@ where
             .expect("list other realm audit events failed")
             .is_empty(),
         "a refused cross-realm ID collision created a foreign event"
+    );
+}
+
+/// Admin approval IDs are global and one-shot: collision retries must not
+/// replace an approval or reset its consumed state.
+pub async fn assert_admin_approval_identity_ownership<R>(repo: &R)
+where
+    R: AdminRepository,
+{
+    let incumbent_approver = Admin {
+        id: "admin-approval-incumbent-approver".to_string(),
+        tenant_id: "tenant-admin-approval-incumbent".to_string(),
+        subject: "incumbent-approver".to_string(),
+        roles: vec!["admin".to_string()],
+        created_at: 1_700_000_000,
+    };
+    let incumbent_target = Admin {
+        id: "admin-approval-incumbent-target".to_string(),
+        tenant_id: incumbent_approver.tenant_id.clone(),
+        subject: "incumbent-target".to_string(),
+        roles: vec!["admin".to_string()],
+        created_at: 1_700_000_000,
+    };
+    repo.upsert_admin(&incumbent_approver)
+        .await
+        .expect("create incumbent approver failed");
+    repo.upsert_admin(&incumbent_target)
+        .await
+        .expect("create incumbent target failed");
+
+    let other_approver = Admin {
+        id: "admin-approval-other-approver".to_string(),
+        tenant_id: "tenant-admin-approval-other".to_string(),
+        subject: "other-approver".to_string(),
+        roles: vec!["admin".to_string()],
+        created_at: 1_700_000_000,
+    };
+    let other_target = Admin {
+        id: "admin-approval-other-target".to_string(),
+        tenant_id: other_approver.tenant_id.clone(),
+        subject: "other-target".to_string(),
+        roles: vec!["admin".to_string()],
+        created_at: 1_700_000_000,
+    };
+    repo.upsert_admin(&other_approver)
+        .await
+        .expect("create other approver failed");
+    repo.upsert_admin(&other_target)
+        .await
+        .expect("create other target failed");
+
+    let approval = AdminApproval {
+        id: "admin-approval-ownership".to_string(),
+        tenant_id: incumbent_approver.tenant_id.clone(),
+        approver_admin_id: incumbent_approver.id.clone(),
+        target_admin_id: incumbent_target.id.clone(),
+        reason: Some("original approval".to_string()),
+        approved_at: 1_700_000_001,
+        expires_at: 1_700_000_100,
+        consumed: false,
+    };
+    repo.store_admin_approval(&approval)
+        .await
+        .expect("store incumbent approval failed");
+    assert!(
+        repo.consume_admin_approval_if_unconsumed(&approval.id)
+            .await
+            .expect("consume incumbent approval failed"),
+        "the incumbent approval should be consumable once"
+    );
+
+    // Replaying its original unconsumed form cannot reset the lifecycle.
+    let duplicate = AdminApproval {
+        reason: Some("attempted replacement".to_string()),
+        ..approval.clone()
+    };
+    let err = repo
+        .store_admin_approval(&duplicate)
+        .await
+        .expect_err("a duplicate approval ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a duplicate approval ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    // Approval IDs are global; another tenant cannot claim the same ID.
+    let cross_owner = AdminApproval {
+        tenant_id: other_approver.tenant_id.clone(),
+        approver_admin_id: other_approver.id,
+        target_admin_id: other_target.id,
+        consumed: false,
+        ..duplicate
+    };
+    let err = repo
+        .store_admin_approval(&cross_owner)
+        .await
+        .expect_err("an approval ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant approval ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let stored = repo
+        .get_admin_approval(&approval.id)
+        .await
+        .expect("get incumbent approval failed")
+        .expect("incumbent approval must remain stored");
+    assert_eq!(stored.tenant_id, approval.tenant_id);
+    assert_eq!(stored.approver_admin_id, approval.approver_admin_id);
+    assert_eq!(stored.target_admin_id, approval.target_admin_id);
+    assert_eq!(stored.reason, approval.reason);
+    assert!(stored.consumed, "the duplicate store reset consumed state");
+    assert!(
+        !repo
+            .consume_admin_approval_if_unconsumed(&approval.id)
+            .await
+            .expect("second consumption attempt failed"),
+        "a duplicate store made the approval reusable"
     );
 }

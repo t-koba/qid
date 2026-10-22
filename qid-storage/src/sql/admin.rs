@@ -78,8 +78,8 @@ impl AdminRepository for SqlRepository {
     }
 
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO admin_approvals (id, tenant_id, approver_admin_id, target_admin_id, reason, approved_at, expires_at, consumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO admin_approvals (id, tenant_id, approver_admin_id, target_admin_id, reason, approved_at, expires_at, consumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&approval.id)
         .bind(&approval.tenant_id)
@@ -92,6 +92,9 @@ impl AdminRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("Admin approval ID {} already exists", approval.id)
+        })?;
         Ok(())
     }
 

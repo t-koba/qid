@@ -93,3 +93,11 @@ async fn audit_event_identity_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-audit-event").await;
     support::assert_audit_event_identity_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn admin_approval_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_admin_approval_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-admin-approval").await;
+    support::assert_admin_approval_identity_ownership(&file).await;
+}

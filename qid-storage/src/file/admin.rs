@@ -46,12 +46,17 @@ impl AdminRepository for FileRepository {
     }
 
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()> {
-        self.map_write(|store| {
-            store
-                .admin_approvals
-                .insert(approval.id.clone(), approval.clone())
-        })
-        .await
+        let mut store = self.store.write().await;
+        if store.admin_approvals.contains_key(&approval.id) {
+            return Err(QidError::Conflict {
+                message: format!("Admin approval ID {} already exists", approval.id),
+            });
+        }
+        store
+            .admin_approvals
+            .insert(approval.id.clone(), approval.clone());
+        drop(store);
+        self.save().await
     }
 
     async fn consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool> {

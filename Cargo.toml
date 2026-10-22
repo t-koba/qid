@@ -53,8 +53,12 @@ exclude = ["vendor/rustls"]
 # configuration error messages, the CSV decoder and the object-only body
 # guard. Raised again to 103600 for the storage-ownership typed contract
 # (OwnershipContract plus the user and CIAM consent grant families) and the
-# symmetric duplicate-email update fix. The per-crate caps and the counted-file
-# coverage are unchanged.
+# symmetric duplicate-email update fix. Device registration added 23 source
+# lines and FedCM identity added 20: measured use rose from 103550 to 103593,
+# leaving 7 lines under that cap. The next service-account slice added 14,
+# reaching 103607, so the old cap was insufficient for the staged migrations.
+# The 103800 total is a 200-line ceiling, not a target; 193 lines remain after
+# that slice. Per-crate caps and counted-file coverage are unchanged.
 total = 103800
 default_per_crate = 4000
 

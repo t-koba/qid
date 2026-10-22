@@ -71,6 +71,8 @@ cargo run --bin qidc -- --config target/qid-dev/qid.yaml session create \
 
 `create` writes the realm to the repository. The product serves the realms the configuration declares, so the command reports a realm that the configuration does not declare: declare it in the configuration file to serve it and to create users in it.
 
+A realm the configuration declares belongs to the configuration: the daemon serves it with the issuer the configuration names and refuses to start when the stored issuer differs. The command therefore refuses an `--issuer` the configuration does not name, and it does not change the issuer of a realm that is already in the repository.
+
 ### qidc client
 
 | Subcommand | Key options |
@@ -78,6 +80,8 @@ cargo run --bin qidc -- --config target/qid-dev/qid.yaml session create \
 | `create` | `--realm`, `--client-id`, `--secret`, `--redirect-uri`, `--client-type confidential|public` |
 | `list` | `--realm` |
 | `delete` | `--id` |
+
+`create` writes the client to the repository. The realm must be in the repository, and a client id the configuration declares belongs to the configuration - the daemon serves that client from the configuration and refuses to start when the stored record differs - so the command refuses such a client id, and it refuses a client id the realm already holds.
 
 ### qidc user
 
@@ -88,7 +92,7 @@ cargo run --bin qidc -- --config target/qid-dev/qid.yaml session create \
 | `get` | `--id` |
 | `delete` | `--id` |
 
-`create` writes the user and its password credential to the repository. The credential is hashed with the Argon2id calibration of the realm, so `--realm` must name a realm the configuration declares; a realm the configuration does not declare is refused by name rather than hashed with a cost the product chose on the operator's behalf.
+`create` writes the user and its password credential to the repository. The credential is hashed with the Argon2id calibration of the realm, so `--realm` must name a realm the configuration declares; a realm the configuration does not declare is refused by name rather than hashed with a cost the product chose on the operator's behalf. The realm is written to the repository when it is not there yet, with the issuer the configuration names, so the user belongs to a realm the daemon serves.
 
 ### qidc session
 

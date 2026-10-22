@@ -810,6 +810,58 @@ fn a_realm_the_configuration_does_not_declare_names_the_requirement() {
 }
 
 #[test]
+fn a_declared_realm_refuses_an_issuer_the_configuration_does_not_name() {
+    let config = minimal_config();
+    assert!(realm_issuer_conflict(&config, "corp", "https://id.example.com/realms/corp").is_none());
+    let message = realm_issuer_conflict(&config, "corp", "https://id.example.com/realms/corp2")
+        .expect("a different issuer must be refused");
+    assert!(
+        message.contains("declared in the configuration"),
+        "{message}"
+    );
+    assert!(
+        message.contains("https://id.example.com/realms/corp"),
+        "{message}"
+    );
+    // A realm the configuration does not declare keeps the issuer the
+    // operator named.
+    assert!(
+        realm_issuer_conflict(&config, "other", "https://id.example.com/realms/other").is_none()
+    );
+}
+
+#[test]
+fn a_declared_client_id_refuses_a_cli_client() {
+    let mut config = minimal_config();
+    config.realms[0].clients = vec![qid_core::config::StaticClientConfig {
+        client_id: "web-app".to_string(),
+        id: None,
+        client_type: qid_core::models::ClientType::Confidential,
+        token_endpoint_auth_method: "client_secret_basic".to_string(),
+        client_secret: Some("secret".to_string()),
+        client_secret_hash: None,
+        mtls_certificate_thumbprints: Vec::new(),
+        jwks: qid_core::models::default_client_jwks(),
+        redirect_uris: vec!["https://app.example.com/cb".to_string()],
+        grant_types: vec!["authorization_code".to_string()],
+    }];
+    let message = configured_client_conflict(&config, "corp", "web-app")
+        .expect("a declared client id must be refused");
+    assert!(
+        message.contains("declared in the configuration"),
+        "{message}"
+    );
+    assert!(
+        configured_client_conflict(&config, "corp", "other-client").is_none(),
+        "a client id the configuration does not declare is the CLI's"
+    );
+    assert!(
+        configured_client_conflict(&config, "other-realm", "web-app").is_none(),
+        "a client id in another realm is the CLI's"
+    );
+}
+
+#[test]
 fn a_repository_only_realm_is_named_as_needing_a_configuration_declaration() {
     let config = minimal_config();
     assert!(realm_declaration_note(&config, "corp").is_none());

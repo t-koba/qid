@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use qid_core::{
     config::QidConfig,
@@ -531,16 +531,47 @@ async fn main() -> anyhow::Result<()> {
             let repo = open_repo(&config).await?;
             match command {
                 RealmCommand::Create(args) => {
-                    repo.create_realm(
-                        &TenantId::from("default"),
-                        &RealmId::from(args.id.clone()),
-                        &args.issuer,
-                        args.display_name.as_deref(),
-                    )
-                    .await?;
-                    println!("realm created: {}", args.id);
-                    if let Some(note) = realm_declaration_note(&config, &args.id) {
-                        println!("{note}");
+                    // The configuration owns a realm it declares: the
+                    // daemon serves that realm with the issuer the
+                    // configuration names and refuses to start when the
+                    // stored issuer differs, so the command writes the
+                    // configured issuer and refuses a different one.
+                    if let Some(declared) = declared_realm(&config, &args.id) {
+                        if let Some(message) =
+                            realm_issuer_conflict(&config, &args.id, &args.issuer)
+                        {
+                            bail!("{message}");
+                        }
+                        ensure_realm_row(&repo, &config, &args.id).await?;
+                        println!(
+                            "realm {} is declared in the configuration with issuer {}",
+                            args.id, declared.issuer
+                        );
+                    } else {
+                        // A realm the configuration does not declare lives
+                        // in the repository only, and the stored issuer of
+                        // such a realm is not changed by the command.
+                        if let Some(stored) = repo
+                            .get_realm_issuer(&RealmId::from(args.id.clone()))
+                            .await?
+                        {
+                            bail!(
+                                "realm {} already exists with issuer {stored}; the issuer of a stored \
+                                 realm is not changed by the CLI",
+                                args.id
+                            );
+                        }
+                        repo.create_realm(
+                            &TenantId::from("default"),
+                            &RealmId::from(args.id.clone()),
+                            &args.issuer,
+                            args.display_name.as_deref(),
+                        )
+                        .await?;
+                        println!("realm created: {}", args.id);
+                        if let Some(note) = realm_declaration_note(&config, &args.id) {
+                            println!("{note}");
+                        }
                     }
                 }
                 RealmCommand::List => {
@@ -573,6 +604,31 @@ async fn main() -> anyhow::Result<()> {
             let repo = open_repo(&config).await?;
             match command {
                 ClientCommand::Create(args) => {
+                    // The realm the client belongs to must be in the
+                    // repository, and a client id the configuration
+                    // declares belongs to the configuration: the daemon
+                    // serves that client from the configuration and
+                    // refuses to start when the stored record differs.
+                    ensure_realm_row(&repo, &config, &args.realm).await?;
+                    if let Some(message) =
+                        configured_client_conflict(&config, &args.realm, &args.client_id)
+                    {
+                        bail!("{message}");
+                    }
+                    if repo
+                        .get_client_by_client_id(
+                            &RealmId::from(args.realm.clone()),
+                            &args.client_id,
+                        )
+                        .await?
+                        .is_some()
+                    {
+                        bail!(
+                            "client {} already exists in realm {}",
+                            args.client_id,
+                            args.realm
+                        );
+                    }
                     let id = new_id();
                     let client_type = match args.client_type {
                         CliClientType::Confidential => ClientType::Confidential,
@@ -651,6 +707,10 @@ async fn main() -> anyhow::Result<()> {
                     // The realm is resolved before the user is written so a
                     // rejected realm leaves no half-created account behind.
                     let params = realm_password_params(&config, &args.realm)?;
+                    // The realm the user belongs to must be in the
+                    // repository, so the write names the realm that
+                    // holds the user.
+                    ensure_realm_row(&repo, &config, &args.realm).await?;
                     let hash = password::hash_password_with_params(&args.password, &params)?;
                     let id = new_id();
                     repo.create_user(&User {
@@ -907,6 +967,103 @@ fn realm_password_params(
     Ok(qid_crypto::Argon2idParams::from_cost(
         &realm.authentication.password.argon2id,
     ))
+}
+
+/// The realm the configuration declares, if it declares one.
+fn declared_realm<'a>(
+    config: &'a QidConfig,
+    realm_id: &str,
+) -> Option<&'a qid_core::config::RealmConfig> {
+    config.realms.iter().find(|realm| realm.id == realm_id)
+}
+
+/// Why a realm the configuration declares refuses the issuer the operator
+/// named, if it refuses it.
+///
+/// The daemon serves a declared realm with the issuer the configuration
+/// names and refuses to start when the stored issuer differs, so the CLI
+/// refuses an issuer that would break the next start.
+fn realm_issuer_conflict(config: &QidConfig, realm_id: &str, issuer: &str) -> Option<String> {
+    let declared = declared_realm(config, realm_id)?;
+    if declared.issuer == issuer {
+        return None;
+    }
+    Some(format!(
+        "realm {realm_id} is declared in the configuration with issuer {}; the daemon serves that \
+         realm with the configured issuer",
+        declared.issuer
+    ))
+}
+
+/// Why a client id the configuration declares refuses the CLI's client, if
+/// it refuses it.
+///
+/// The daemon serves a declared client from the configuration and refuses
+/// to start when the stored record differs, so the CLI refuses a client id
+/// the configuration owns.
+fn configured_client_conflict(
+    config: &QidConfig,
+    realm_id: &str,
+    client_id: &str,
+) -> Option<String> {
+    let declared = declared_realm(config, realm_id)?;
+    if !declared
+        .clients
+        .iter()
+        .any(|client| client.client_id == client_id)
+    {
+        return None;
+    }
+    Some(format!(
+        "client {client_id} is declared in the configuration for realm {realm_id}; the daemon serves \
+         that client from the configuration"
+    ))
+}
+
+/// Make sure the repository holds the realm a write belongs to.
+///
+/// The daemon seeds the realms the configuration declares at startup and
+/// refuses to start when a stored issuer differs from the configured one,
+/// and the SQL backend's foreign keys require the realm row before a user
+/// or a client can be written. The command therefore writes the realm the
+/// configuration describes and refuses a realm that differs from it, so
+/// the two backends answer the same way.
+async fn ensure_realm_row(
+    repo: &AnyRepository,
+    config: &QidConfig,
+    realm_id: &str,
+) -> anyhow::Result<()> {
+    let realm = RealmId::from(realm_id.to_string());
+    let stored = repo.get_realm_issuer(&realm).await?;
+    let Some(declared) = declared_realm(config, realm_id) else {
+        if stored.is_none() {
+            bail!(
+                "realm {realm_id} is not in the repository; create it with `qidc realm create` \
+                 or declare it in the configuration file"
+            );
+        }
+        return Ok(());
+    };
+    match stored {
+        Some(issuer) if issuer == declared.issuer => Ok(()),
+        Some(issuer) => bail!(
+            "realm {realm_id} is stored with issuer {issuer} but the configuration declares {}; \
+             the daemon refuses to start when the two differ",
+            declared.issuer
+        ),
+        None => {
+            // The tenant is the one the daemon seeds a configured realm
+            // with, so the row is the same whoever writes it.
+            repo.create_realm(
+                &TenantId::from("default"),
+                &realm,
+                &declared.issuer,
+                declared.display_name.as_deref(),
+            )
+            .await?;
+            Ok(())
+        }
+    }
 }
 
 /// What the operator must know about a realm the CLI created in the

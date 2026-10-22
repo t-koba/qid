@@ -709,6 +709,8 @@ pub trait IgaRepository: Send + Sync + 'static {
     /// for an already-closed campaign) and `false` when no tenant-scoped
     /// campaign exists. Absent and other-tenant IDs are indistinguishable.
     async fn close_iga_access_review_campaign(&self, tenant_id: &str, id: &str) -> QidResult<bool>;
+    /// Store an immutable IGA access review decision with a global ID.
+    /// Reusing an ID returns `Conflict` and leaves the incumbent decision unchanged.
     async fn store_iga_access_review_decision(
         &self,
         decision: &IgaAccessReviewDecisionRecord,

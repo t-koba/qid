@@ -341,6 +341,14 @@ impl IgaRepository for FileRepository {
     ) -> QidResult<()> {
         decision.validate()?;
         let mut store = self.store.write().await;
+        if store.iga_access_review_decisions.contains_key(&decision.id) {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "IGA access review decision ID {} already exists",
+                    decision.id
+                ),
+            });
+        }
         store
             .iga_access_review_decisions
             .insert(decision.id.clone(), decision.clone());

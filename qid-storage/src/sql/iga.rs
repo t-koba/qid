@@ -482,8 +482,8 @@ impl IgaRepository for SqlRepository {
         decision: &IgaAccessReviewDecisionRecord,
     ) -> QidResult<()> {
         decision.validate()?;
-        sqlx::query(
-            "INSERT INTO iga_access_review_decisions (id, tenant_id, campaign_id, subject, reviewer, decision, reason, decided_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO iga_access_review_decisions (id, tenant_id, campaign_id, subject, reviewer, decision, reason, decided_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&decision.id)
         .bind(&decision.tenant_id)
@@ -496,6 +496,12 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!(
+                "IGA access review decision ID {} already exists",
+                decision.id
+            )
+        })?;
         Ok(())
     }
 

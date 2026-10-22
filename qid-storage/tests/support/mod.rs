@@ -2,8 +2,9 @@
 
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
-    CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity, PasswordResetToken,
-    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
+    CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
+    IgaAccessReviewDecisionRecord, PasswordResetToken, ServiceAccount, User, WebAuthnCredential,
+    WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1653,5 +1654,68 @@ where
             consumed_at_epoch_seconds: Some(1_700_000_050),
             ..token
         }
+    );
+}
+
+/// A review-decision ID is immutable so a retry cannot rewrite an audited decision.
+pub async fn assert_iga_access_review_decision_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let decision = IgaAccessReviewDecisionRecord {
+        id: "iga-review-decision-identity".to_string(),
+        tenant_id: "tenant-iga-review".to_string(),
+        campaign_id: "campaign-iga-review".to_string(),
+        subject: "user-reviewed".to_string(),
+        reviewer: "admin-reviewer".to_string(),
+        decision: "revoke".to_string(),
+        reason: Some("Access is no longer required".to_string()),
+        decided_at_epoch_seconds: 1_700_000_000,
+    };
+    repo.store_iga_access_review_decision(&decision)
+        .await
+        .expect("store incumbent IGA review decision failed");
+
+    let same_tenant_duplicate = IgaAccessReviewDecisionRecord {
+        subject: "different-user".to_string(),
+        decision: "certify".to_string(),
+        reason: Some("Replacement decision".to_string()),
+        decided_at_epoch_seconds: 1_700_000_100,
+        ..decision.clone()
+    };
+    let err = repo
+        .store_iga_access_review_decision(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate review-decision ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant review-decision ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_tenant_duplicate = IgaAccessReviewDecisionRecord {
+        tenant_id: "tenant-iga-review-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_access_review_decision(&cross_tenant_duplicate)
+        .await
+        .expect_err("a review-decision ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant review-decision ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let stored = repo
+        .list_iga_access_review_decisions(&decision.tenant_id, &decision.campaign_id)
+        .await
+        .expect("list incumbent IGA review decisions failed");
+    assert_eq!(stored, vec![decision]);
+    assert!(
+        repo.list_iga_access_review_decisions("tenant-iga-review-other", "campaign-iga-review")
+            .await
+            .expect("list other-tenant IGA review decisions failed")
+            .is_empty()
     );
 }

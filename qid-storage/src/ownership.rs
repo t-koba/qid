@@ -158,3 +158,11 @@ pub const PASSWORD_RESET_TOKEN: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for immutable IGA access review decisions.
+#[allow(dead_code)]
+pub const IGA_ACCESS_REVIEW_DECISION: OwnershipContract = OwnershipContract {
+    owner_key: "tenant_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

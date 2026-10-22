@@ -5,20 +5,10 @@ use super::*;
 #[async_trait]
 impl WorkloadRepository for SqlRepository {
     async fn create_workload_identity(&self, wi: &WorkloadIdentity) -> QidResult<()> {
-        let duplicate_spiffe: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM workload_identities WHERE realm_id = ? AND spiffe_id = ? AND id <> ?",
-        )
-        .bind(&wi.realm_id)
-        .bind(&wi.spiffe_id)
-        .bind(&wi.id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage_to_qid_error)?;
-        if duplicate_spiffe.is_some() {
-            return Err(QidError::BadRequest {
-                message: "SPIFFE identity already registered in this realm".to_string(),
-            });
-        }
+        // The unique index on (realm_id, spiffe_id) holds the invariant, so
+        // the insert itself refuses a second identity for one SPIFFE ID.
+        // The conflict clause covers the identity ID, so a violation that
+        // reaches the error mapping is the SPIFFE ID's.
         let result = sqlx::query(
             "INSERT INTO workload_identities (id, realm_id, spiffe_id, description, trust_domain, authorities_json) VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET description = excluded.description, trust_domain = excluded.trust_domain, authorities_json = excluded.authorities_json \
@@ -32,7 +22,14 @@ impl WorkloadRepository for SqlRepository {
         .bind(wi.authorities_json.to_string())
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(|error| match &error {
+            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
+                QidError::BadRequest {
+                    message: "SPIFFE identity already registered in this realm".to_string(),
+                }
+            }
+            _ => storage_to_qid_error(error),
+        })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "workload identity ID belongs to another identity".to_string()
         })?;

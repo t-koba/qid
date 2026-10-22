@@ -2,8 +2,8 @@
 
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
-    CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity, ServiceAccount,
-    User, WebAuthnCredential, WorkloadIdentity,
+    CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity, PasswordResetToken,
+    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1540,5 +1540,118 @@ where
             .await
             .expect("get foreign-realm challenge failed")
             .is_none()
+    );
+}
+
+/// A password-reset token ID is immutable so retries cannot clear consumption.
+pub async fn assert_password_reset_token_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CiamRepository,
+{
+    let realm = RealmId("realm-password-reset-owner".to_string());
+    repo.create_realm(
+        &TenantId("tenant-password-reset-owner".to_string()),
+        &realm,
+        "https://password-reset-owner.example.com",
+        Some("Password Reset Owner"),
+    )
+    .await
+    .expect("create password reset owner realm failed");
+    let other_realm = RealmId("realm-password-reset-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-password-reset-other".to_string()),
+        &other_realm,
+        "https://password-reset-other.example.com",
+        Some("Other Password Reset Realm"),
+    )
+    .await
+    .expect("create other password reset realm failed");
+
+    let user = User {
+        id: "user-password-reset-owner".to_string(),
+        realm_id: realm.0.clone(),
+        email: Some("owner@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Owner".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create password reset owner user failed");
+    let other_user = User {
+        id: "user-password-reset-other".to_string(),
+        realm_id: other_realm.0.clone(),
+        email: Some("other@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Other".to_string()),
+        ..user.clone()
+    };
+    repo.create_user(&other_user)
+        .await
+        .expect("create other password reset user failed");
+
+    let token = PasswordResetToken {
+        id: "password-reset-identity".to_string(),
+        realm_id: realm.0.clone(),
+        user_id: user.id.clone(),
+        token_hash: "incumbent-token-hash".to_string(),
+        device_id: Some("device-owner".to_string()),
+        risk_json: serde_json::json!({"score": 4}),
+        expires_at_epoch_seconds: 1_700_000_100,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: 1_700_000_000,
+    };
+    repo.store_password_reset_token(&token)
+        .await
+        .expect("store incumbent password reset token failed");
+    repo.consume_password_reset_token(&token.id, 1_700_000_050)
+        .await
+        .expect("consume incumbent password reset token failed");
+
+    let same_realm_duplicate = PasswordResetToken {
+        token_hash: "replacement-token-hash".to_string(),
+        consumed_at_epoch_seconds: None,
+        ..token.clone()
+    };
+    let err = repo
+        .store_password_reset_token(&same_realm_duplicate)
+        .await
+        .expect_err("a duplicate token ID in one realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-realm duplicate token ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_realm_duplicate = PasswordResetToken {
+        realm_id: other_realm.0,
+        user_id: other_user.id,
+        token_hash: "foreign-token-hash".to_string(),
+        consumed_at_epoch_seconds: None,
+        ..token.clone()
+    };
+    let err = repo
+        .store_password_reset_token(&cross_realm_duplicate)
+        .await
+        .expect_err("a token ID held by another realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-realm duplicate token ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let stored = repo
+        .get_password_reset_token(&token.id)
+        .await
+        .expect("get incumbent password reset token failed")
+        .expect("incumbent password reset token must remain stored");
+    assert_eq!(
+        stored,
+        PasswordResetToken {
+            consumed_at_epoch_seconds: Some(1_700_000_050),
+            ..token
+        }
     );
 }

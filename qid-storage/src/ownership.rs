@@ -150,3 +150,11 @@ pub const CIAM_VERIFICATION_CHALLENGE: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for single-use password-reset tokens.
+#[allow(dead_code)]
+pub const PASSWORD_RESET_TOKEN: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id + user_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

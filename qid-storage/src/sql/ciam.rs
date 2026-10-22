@@ -259,8 +259,8 @@ impl CiamRepository for SqlRepository {
 
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()> {
         token.validate()?;
-        sqlx::query(
-            "INSERT INTO password_reset_tokens (id, realm_id, user_id, token_hash, device_id, risk_json, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO password_reset_tokens (id, realm_id, user_id, token_hash, device_id, risk_json, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&token.id)
         .bind(&token.realm_id)
@@ -274,6 +274,9 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("Password reset token ID {} already exists", token.id)
+        })?;
         Ok(())
     }
 

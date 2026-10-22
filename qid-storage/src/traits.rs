@@ -497,6 +497,9 @@ pub trait CiamRepository: Send + Sync + 'static {
         external_subject: &str,
     ) -> QidResult<Option<CiamIdentityLink>>;
     async fn delete_ciam_identity_link(&self, realm_id: &RealmId, id: &str) -> QidResult<()>;
+    /// Store a single-use password-reset token with an immutable global ID.
+    /// Reusing an ID returns `Conflict` and leaves the original token, including
+    /// its consumption state, unchanged.
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()>;
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>>;
     async fn consume_password_reset_token(&self, id: &str, consumed_at: u64) -> QidResult<()>;

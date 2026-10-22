@@ -117,3 +117,11 @@ async fn ciam_verification_challenge_identity_ownership_holds_in_both_backends()
     let file = support::file_repo("ownership-contract-ciam-verification").await;
     support::assert_ciam_verification_challenge_identity_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn password_reset_token_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_password_reset_token_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-password-reset").await;
+    support::assert_password_reset_token_identity_ownership(&file).await;
+}

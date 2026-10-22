@@ -72,8 +72,8 @@ pub async fn create_workload_identity<R: Repository>(
     }
     // The SPIFFE ID names the identity in the realm, so registering it
     // again updates the identity that carries it: the identity keeps its
-    // ID and the authorities another path recorded, and the registration
-    // states its description and trust domain.
+    // ID, and a field the registration does not state keeps the stored
+    // value.
     let existing = match state
         .repo
         .get_workload_identity_by_spiffe(&RealmId(realm.clone()), &req.spiffe_id)
@@ -82,10 +82,11 @@ pub async fn create_workload_identity<R: Repository>(
         Ok(existing) => existing,
         Err(e) => return qid_http::error_response(e),
     };
-    let (id, authorities_json, updated) = match existing {
-        Some(stored) => (stored.id, stored.authorities_json, true),
+    let (id, description, authorities_json, updated) = match existing {
+        Some(stored) => (stored.id, stored.description, stored.authorities_json, true),
         None => (
             ulid::Ulid::new().to_string(),
+            None,
             serde_json::Value::Null,
             false,
         ),
@@ -95,7 +96,7 @@ pub async fn create_workload_identity<R: Repository>(
         realm_id: realm,
         spiffe_id: req.spiffe_id,
         trust_domain: req.trust_domain,
-        description: req.description,
+        description: req.description.or(description),
         authorities_json,
     };
     match state.repo.create_workload_identity(&wi).await {

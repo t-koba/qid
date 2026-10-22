@@ -300,10 +300,11 @@ only; a trusted verified mapping can coexist with unverified legacy rows.
 Workload and SPIFFE routes are only merged in the `workload` profile.
 
 One SPIFFE ID names one workload identity in a realm. Registering that SPIFFE
-ID again updates the identity that carries it: the identity keeps its ID and
-the authorities another path recorded, and the registration states its
-description and trust domain. An identity ID that belongs to another realm's
-identity is a conflict, and the trust domain of a registration must be the
+ID again updates the identity that carries it: the identity keeps its ID, and
+every field the registration does not state keeps the stored value, so a
+registration that states only a description leaves the recorded authorities
+alone. An identity ID that belongs to another realm's identity is a conflict,
+and the trust domain of a registration must be the
 trust domain its SPIFFE ID names. A SPIFFE ID that carries whitespace, a query
 or no trust domain is refused wherever it is named.
 

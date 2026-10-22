@@ -62,8 +62,9 @@ enum Command {
         trust_domain: String,
         #[arg(long)]
         description: Option<String>,
-        #[arg(long, default_value = "{}")]
-        authorities_json: String,
+        /// The authorities to record; the stored ones are kept when this is absent.
+        #[arg(long)]
+        authorities_json: Option<String>,
     },
     /// List workload identities for a realm.
     Workloads {
@@ -165,24 +166,28 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             ensure!(!realm.trim().is_empty(), "realm must not be empty");
             ensure_spiffe_trust_domain(&spiffe_id, &trust_domain)?;
             let realm_id = RealmId::from(realm.clone());
-            let authorities_json: serde_json::Value = serde_json::from_str(&authorities_json)
+            let stated_authorities = authorities_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
                 .context("authorities_json must be valid JSON")?;
             // The SPIFFE ID names the identity in the realm, so registering
-            // it again updates the identity that carries it.
-            let id = match repo
+            // it again updates the identity that carries it. A field the
+            // operator does not state keeps its stored value.
+            let stored = repo
                 .get_workload_identity_by_spiffe(&realm_id, &spiffe_id)
-                .await?
-            {
-                Some(stored) => stored.id,
-                None => ulid::Ulid::new().to_string(),
+                .await?;
+            let (id, stored_description, stored_authorities) = match stored {
+                Some(stored) => (stored.id, stored.description, stored.authorities_json),
+                None => (ulid::Ulid::new().to_string(), None, serde_json::Value::Null),
             };
             let identity = WorkloadIdentity {
                 id,
                 realm_id: realm.clone(),
                 spiffe_id,
-                description,
+                description: description.or(stored_description),
                 trust_domain,
-                authorities_json,
+                authorities_json: stated_authorities.unwrap_or(stored_authorities),
             };
             repo.create_workload_identity(&identity).await?;
             Ok(serde_json::json!({
@@ -411,7 +416,7 @@ realms:
                 spiffe_id: "spiffe://prod.example/ns/default/sa/api".to_string(),
                 trust_domain: "prod.example".to_string(),
                 description: Some("API workload".to_string()),
-                authorities_json: r#"{"bundle":"prod"}"#.to_string(),
+                authorities_json: Some(r#"{"bundle":"prod"}"#.to_string()),
             },
         })
         .await
@@ -431,6 +436,54 @@ realms:
             .expect("workload");
         assert_eq!(identity.trust_domain, "prod.example");
         assert_eq!(identity.authorities_json["bundle"], "prod");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn workload_register_again_keeps_the_stored_authorities() {
+        let dir = temp_dir("workload-again");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let (config, store) = write_config(&dir);
+        let spiffe_id = "spiffe://prod.example/ns/default/sa/api";
+
+        run(Args {
+            config: config.clone(),
+            command: Command::WorkloadRegister {
+                realm: "corp".to_string(),
+                spiffe_id: spiffe_id.to_string(),
+                trust_domain: "prod.example".to_string(),
+                description: Some("API workload".to_string()),
+                authorities_json: Some(r#"{"bundle":"prod"}"#.to_string()),
+            },
+        })
+        .await
+        .expect("workload register");
+
+        // Registering the same SPIFFE ID again without stating authorities
+        // keeps the stored ones.
+        run(Args {
+            config,
+            command: Command::WorkloadRegister {
+                realm: "corp".to_string(),
+                spiffe_id: spiffe_id.to_string(),
+                trust_domain: "prod.example".to_string(),
+                description: None,
+                authorities_json: None,
+            },
+        })
+        .await
+        .expect("workload register again");
+
+        let repo = AnyRepository::connect(store.to_str().expect("utf-8 store"))
+            .await
+            .expect("repository");
+        let identity = repo
+            .get_workload_identity_by_spiffe(&RealmId::from("corp".to_string()), spiffe_id)
+            .await
+            .expect("workload lookup")
+            .expect("workload");
+        assert_eq!(identity.authorities_json["bundle"], "prod");
+        assert_eq!(identity.description.as_deref(), Some("API workload"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

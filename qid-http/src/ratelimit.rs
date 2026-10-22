@@ -390,6 +390,41 @@ impl RateLimiter {
             .min(now.saturating_add(limit.window_seconds));
     }
 
+    /// Give back one admission a request spent on an axis.
+    ///
+    /// A request that succeeded spends no room of its axes, so the count
+    /// of the axis falls by one. An axis whose count reaches zero loses
+    /// its entry, and an axis whose window has passed keeps the count it
+    /// had.
+    fn release_axis(&self, key: RateLimitKey) {
+        let now = now_seconds();
+        let Ok(mut state) = self.inner.lock() else {
+            tracing::error!("rate limiter lock poisoned; keeping the count");
+            return;
+        };
+        let Some(entry) = state.entries.get(&key) else {
+            return;
+        };
+        if now >= entry.window_start.saturating_add(entry.window_seconds) {
+            return;
+        }
+        if entry.count <= 1 {
+            state.entries.remove(&key);
+        } else if let Some(entry) = state.entries.get_mut(&key) {
+            entry.count -= 1;
+        }
+    }
+
+    /// Give back one admission a user axis spent.
+    pub fn release_user(&self, user_id: &str) {
+        self.release_axis(RateLimitKey::User(user_id.to_string()));
+    }
+
+    /// Give back one admission a tenant axis spent.
+    pub fn release_tenant(&self, tenant: &str) {
+        self.release_axis(RateLimitKey::Tenant(tenant.to_string()));
+    }
+
     /// Reset rate limit counters for a specific user (e.g., after successful login).
     pub fn reset_user(&self, user_id: &str) {
         if let Ok(mut state) = self.inner.lock() {

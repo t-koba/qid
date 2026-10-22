@@ -40,7 +40,7 @@ Operational guidance:
 - Prefer passkeys, especially for admin and high-assurance realms.
 - Use `passwordless_only` only with passkeys enabled.
 - Tune Argon2id cost per deployment CPU/memory budget.
-- Keep lockout enabled for password-backed realms. Password logins also use a process-local admission cap of 100 per realm per 300 seconds to bound concurrent credential work; each qidd instance enforces its own cap.
+- Keep lockout enabled for password-backed realms. Password logins also use a process-local admission cap per realm - the realm's own `password.max_failed_attempts_per_realm` within the lockout window - to bound concurrent credential work; each qidd instance enforces its own cap, and a successful login gives back the admission it spent, so the cap follows the logins that failed.
 
 ## Admin Operations
 

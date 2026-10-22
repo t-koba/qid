@@ -19,7 +19,6 @@ use crate::auth::PasswordPolicy;
 /// and the realm's limit and window are the deployment's defaults.
 pub struct PasswordAttemptLimiter {
     limiter: RateLimiter,
-    tenant_limit: AxisLimit,
 }
 
 impl Default for PasswordAttemptLimiter {
@@ -29,13 +28,10 @@ impl Default for PasswordAttemptLimiter {
 }
 
 impl PasswordAttemptLimiter {
-    /// A limiter with the deployment's default realm admission limit.
+    /// A limiter that takes every limit from the realm's password policy.
     pub fn new() -> Self {
-        let config = RateLimitConfig::default();
-        let tenant_limit = AxisLimit::new(config.max_per_tenant, config.window_seconds);
         Self {
-            limiter: RateLimiter::new(config),
-            tenant_limit,
+            limiter: RateLimiter::new(RateLimitConfig::default()),
         }
     }
 
@@ -52,7 +48,8 @@ impl PasswordAttemptLimiter {
     ///
     /// The account's count follows the realm's `max_failed_attempts` and
     /// `lockout_duration_seconds`, and the realm's own count follows the
-    /// deployment's defaults. A login refused here never spends the
+    /// realm's `max_failed_attempts_per_realm` and the same window, so
+    /// one policy owns both bounds. A login refused here never spends the
     /// realm's failure budget, so the refusal is a temporary condition of
     /// the deployment rather than a statement about the account the
     /// caller named.
@@ -61,17 +58,23 @@ impl PasswordAttemptLimiter {
             Some(&Self::user_key(realm, email)),
             AxisLimit::new(policy.max_failed_attempts, policy.lockout_duration_seconds),
             Some(realm),
-            self.tenant_limit,
+            AxisLimit::new(
+                policy.max_failed_attempts_per_realm,
+                policy.lockout_duration_seconds,
+            ),
         )
     }
 
-    /// Forget the admission count of one account in one realm.
+    /// Record a successful login of one account in one realm.
     ///
-    /// A successful login clears the account's own count and leaves the
-    /// realm's count alone: the realm's count is the deployment's bound,
-    /// not the account's.
-    pub fn reset_user(&self, realm: &str, email: &str) {
-        self.limiter.reset_user(&Self::user_key(realm, email));
+    /// The successful login gives back the admission it spent on its
+    /// account and on its realm, so both counts follow the logins that
+    /// failed and the ones still in flight: a realm whose logins succeed
+    /// keeps its room, and a successful login never spends the room of
+    /// the realm it belongs to.
+    pub fn succeeded(&self, realm: &str, email: &str) {
+        self.limiter.release_user(&Self::user_key(realm, email));
+        self.limiter.release_tenant(realm);
     }
 }
 
@@ -87,6 +90,17 @@ mod tests {
         let mut policy = PasswordPolicy::from_config(&PasswordConfig::default());
         policy.max_failed_attempts = max_failed_attempts;
         policy.lockout_duration_seconds = lockout_duration_seconds;
+        policy
+    }
+
+    /// A policy whose realm bound a test states.
+    fn policy_with_realm(
+        max_failed_attempts: u32,
+        max_failed_attempts_per_realm: u32,
+        lockout_duration_seconds: u64,
+    ) -> PasswordPolicy {
+        let mut policy = policy(max_failed_attempts, lockout_duration_seconds);
+        policy.max_failed_attempts_per_realm = max_failed_attempts_per_realm;
         policy
     }
 
@@ -124,23 +138,62 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_login_clears_the_account_count() {
+    fn a_successful_login_gives_the_account_its_admission_back() {
         let limiter = PasswordAttemptLimiter::new();
-        let policy = policy(1, 300);
+        let policy = policy(2, 300);
         assert!(limiter.admit("corp", "alice@example.com", &policy));
-        limiter.reset_user("corp", "alice@example.com");
-        // The account's count starts over after a successful login.
         assert!(limiter.admit("corp", "alice@example.com", &policy));
+        limiter.succeeded("corp", "alice@example.com");
+        // The account spent one admission on the successful login, so one
+        // attempt is left in the window.
+        assert!(limiter.admit("corp", "alice@example.com", &policy));
+        assert!(!limiter.admit("corp", "alice@example.com", &policy));
     }
 
     #[test]
-    fn resetting_an_account_does_not_reset_the_realm() {
+    fn a_successful_login_does_not_clear_the_failures_of_the_account() {
         let limiter = PasswordAttemptLimiter::new();
-        let policy = policy(1000, 300);
-        for index in 0..100 {
+        let policy = policy(2, 300);
+        // One failure, then one success.
+        assert!(limiter.admit("corp", "alice@example.com", &policy));
+        assert!(limiter.admit("corp", "alice@example.com", &policy));
+        limiter.succeeded("corp", "alice@example.com");
+        // The failure before the success is still counted, so the account
+        // has one attempt left in the window.
+        assert!(limiter.admit("corp", "alice@example.com", &policy));
+        assert!(!limiter.admit("corp", "alice@example.com", &policy));
+    }
+
+    #[test]
+    fn a_successful_login_gives_the_realm_its_room_back() {
+        let limiter = PasswordAttemptLimiter::new();
+        let policy = policy_with_realm(10, 2, 300);
+        assert!(limiter.admit("corp", "alice@example.com", &policy));
+        assert!(limiter.admit("corp", "bob@example.com", &policy));
+        limiter.succeeded("corp", "alice@example.com");
+        // The realm's count is one lower, so one login more reaches the
+        // credential work.
+        assert!(limiter.admit("corp", "carol@example.com", &policy));
+        assert!(!limiter.admit("corp", "dave@example.com", &policy));
+    }
+
+    #[test]
+    fn the_realm_count_follows_the_logins_that_failed() {
+        let limiter = PasswordAttemptLimiter::new();
+        let policy = policy_with_realm(10, 2, 300);
+        assert!(limiter.admit("corp", "alice@example.com", &policy));
+        assert!(limiter.admit("corp", "bob@example.com", &policy));
+        // The realm's count is spent, so another login is refused.
+        assert!(!limiter.admit("corp", "carol@example.com", &policy));
+    }
+
+    #[test]
+    fn the_realm_bound_follows_the_realm_policy() {
+        let limiter = PasswordAttemptLimiter::new();
+        let policy = policy_with_realm(10, 3, 300);
+        for index in 0..3 {
             assert!(limiter.admit("corp", &format!("user-{index}@example.com"), &policy));
         }
-        limiter.reset_user("corp", "user-0@example.com");
         assert!(!limiter.admit("corp", "another@example.com", &policy));
     }
 

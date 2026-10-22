@@ -67,7 +67,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. A login is admitted before any credential is verified: the submitted email's admission count follows the realm's `password.max_failed_attempts` within `password.lockout_duration_seconds`, and the realm admits 100 password logins within 300 seconds. A refused admission, a locked account, and a realm that has spent its budget of failed password logins answer `429 Too Many Requests`. |
+| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. A login is admitted before any credential is verified: the submitted email's admission count follows the realm's `password.max_failed_attempts` within `password.lockout_duration_seconds`, and the realm's admission count follows the realm's `password.max_failed_attempts_per_realm` within the same window; a successful login gives back the admission it spent on the address and on the realm. A refused admission, a locked account, and a realm that has spent its budget of failed password logins answer `429 Too Many Requests`. |
 | `POST` | configurable `auth_session_refresh`, default `/api/v1/:realm/auth/session/refresh` | Refresh browser session. |
 | `POST` | configurable `auth_session_revoke`, default `/api/v1/:realm/auth/session/revoke` | Revoke browser session. |
 | `POST` | configurable `auth_webauthn_start`, default `/api/v1/:realm/auth/webauthn/start` | WebAuthn registration start. |

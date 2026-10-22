@@ -59,8 +59,8 @@ pub async fn password_auth<R: Repository>(
         Ok(r) => {
             metrics::counter!("qid_authn_success_total", "method" => "password").increment(1);
             // A successful login clears the account's admission count and
-            // leaves the realm's count alone.
-            limiter.reset_user(&realm, &req.email);
+            // gives the realm back the admission it spent.
+            limiter.succeeded(&realm, &req.email);
             r
         }
         Err(e) => {

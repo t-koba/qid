@@ -285,8 +285,8 @@ pub async fn authorize_post<R: Repository>(
     {
         Ok(a) => {
             // A successful login clears the account's admission count and
-            // leaves the realm's count alone.
-            limiter.reset_user(&client.realm_id, &form.email);
+            // gives the realm back the admission it spent.
+            limiter.succeeded(&client.realm_id, &form.email);
             a
         }
         Err(e) => {

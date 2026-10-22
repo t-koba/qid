@@ -6,6 +6,15 @@ use super::*;
 impl DeviceRepository for FileRepository {
     async fn register_device(&self, device: &Device) -> QidResult<()> {
         let mut store = self.store.write().await;
+        // A device record ID names one device, so a register that carries an
+        // ID the store already holds is refused instead of replacing the
+        // incumbent. The check runs under the store's exclusive write lock,
+        // as atomic as the SQL backend's primary key on `id`.
+        if store.devices.contains_key(&device.id) {
+            return Err(QidError::Conflict {
+                message: format!("device record ID {} already exists", device.id),
+            });
+        }
         store.devices.insert(device.id.clone(), device.clone());
         drop(store);
         self.save().await

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use qid_core::models::{CiamConsentGrant, Client, ClientType, User, WorkloadIdentity};
+use qid_core::models::{CiamConsentGrant, Client, ClientType, Device, User, WorkloadIdentity};
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
 use std::path::{Path, PathBuf};
@@ -827,4 +827,74 @@ pub fn sample_cross_realm_client(id: &str, realm_id: &str, client_id: &str) -> C
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
     }
+}
+
+/// The owner-bound contract of a device: a record ID names one device, so a
+/// second device that carries the same ID is refused and the incumbent is
+/// left unchanged.
+pub async fn assert_device_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + DeviceRepository,
+{
+    let realm = RealmId("realm-device-identity".to_string());
+    repo.create_realm(
+        &TenantId("tenant-device-identity".to_string()),
+        &realm,
+        "https://device-identity.example.com",
+        Some("Device Identity Realm"),
+    )
+    .await
+    .expect("create device identity realm failed");
+    let user = qid_core::models::User {
+        id: "user-device-identity".to_string(),
+        realm_id: realm.0.clone(),
+        email: Some("device@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Device User".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create device user failed");
+
+    let device = Device {
+        id: "device-identity-alice".to_string(),
+        user_id: user.id.clone(),
+        realm_id: realm.0.clone(),
+        device_name: Some("Alice device".to_string()),
+        device_type: "browser".to_string(),
+        posture: vec![],
+        registered_at: 1,
+        last_seen_at: 1,
+    };
+    repo.register_device(&device)
+        .await
+        .expect("register device failed");
+
+    // A second device that carries the record ID is refused.
+    let duplicate = Device {
+        id: device.id.clone(),
+        device_name: Some("duplicate".to_string()),
+        ..device.clone()
+    };
+    let err = repo
+        .register_device(&duplicate)
+        .await
+        .expect_err("a second device for one record ID must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a second device for one record ID must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_device(&device.id)
+        .await
+        .expect("get device failed")
+        .expect("the incumbent device must still exist");
+    assert_eq!(
+        stored.device_name, device.device_name,
+        "the refusal changed the incumbent"
+    );
 }

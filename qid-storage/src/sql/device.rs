@@ -5,8 +5,11 @@ use super::*;
 #[async_trait]
 impl DeviceRepository for SqlRepository {
     async fn register_device(&self, device: &Device) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO devices (id, user_id, realm_id, device_name, device_type, posture, registered_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        // The primary key on `id` holds the identity of a device, so the
+        // insert itself refuses a second device that carries a taken record
+        // ID. The read names the reason of the refusal.
+        let result = sqlx::query(
+            "INSERT INTO devices (id, user_id, realm_id, device_name, device_type, posture, registered_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&device.id)
         .bind(&device.user_id)
@@ -19,6 +22,9 @@ impl DeviceRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("device record ID {} already exists", device.id)
+        })?;
         Ok(())
     }
 

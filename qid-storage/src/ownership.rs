@@ -88,3 +88,11 @@ pub const CIAM_CONSENT_GRANT: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Replace,
 };
+
+/// Ownership contract for the device resource (register).
+#[allow(dead_code)]
+pub const DEVICE: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id, user_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

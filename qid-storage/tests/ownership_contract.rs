@@ -53,3 +53,11 @@ async fn user_identity_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-user-identity").await;
     support::assert_user_identity_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn device_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_device_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-device-identity").await;
+    support::assert_device_identity_ownership(&file).await;
+}

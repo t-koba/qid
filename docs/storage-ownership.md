@@ -86,7 +86,7 @@ A migrated resource costs three lines in the file path and three in the SQL
 path, because the outcome is stated once rather than at every call site.
 
 The migrated families are the workload identity, the client, the CIAM
-consent grant and the user. The remaining disagreements are listed above;
+consent grant, the user and the device. The remaining disagreements are listed above;
 they are not all defects. A write whose identity key is a token the product
 generates (an authorization code, a PAR request, a device or backchannel
 grant) has no owner to protect, and a write whose same-owner semantics are
@@ -179,7 +179,7 @@ Model type: `Device`. Owner: realm and user (`realm_id`, `user_id`).
 
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
-| `register_device` - `Device` | realm + user (`realm_id`, `user_id`) | record `id` | posture, `last_seen_at`, `device_name` | File: overwrite of the map entry, no error (`qid-storage/src/file/device.rs:9`). SQL: plain `INSERT` with `id` as primary key, so a duplicate ID is a unique violation surfaced as `Storage` (`qid-storage/src/sql/device.rs:9`). **Backends disagree.** | file `qid-storage/src/file/device.rs:9`; sql `qid-storage/src/sql/device.rs:9` (not enforced as a conflict in SQL) |
+| `register_device` - `Device` | realm + user (`realm_id`, `user_id`) | record `id` | posture, `last_seen_at`, `device_name` | File: a second device that carries a taken record ID is refused with `Conflict` under the store's exclusive write lock (`qid-storage/src/file/device.rs:10`, `qid-storage/src/file/device.rs:13`). SQL: `ON CONFLICT(id) DO NOTHING` and `ensure_upsert_applied` turns a zero-row result into `Conflict` (`qid-storage/src/sql/device.rs:12`, `qid-storage/src/sql/device.rs:27`). Both refuse with `Conflict`. | file `qid-storage/src/file/device.rs:10`, `qid-storage/src/file/device.rs:13`; sql `qid-storage/src/sql/device.rs:12`, `qid-storage/src/sql/device.rs:27` |
 | `update_device_last_seen` - `Device` | realm + user | record `id` | `last_seen_at` | File: in-place update, an unknown ID is a silent no-op (`qid-storage/src/file/device.rs:32`). SQL: `UPDATE ... WHERE id = ?`; no row affected is not an error (`qid-storage/src/sql/device.rs:44`). Both are silent no-ops. | file `qid-storage/src/file/device.rs:32`; sql `qid-storage/src/sql/device.rs:44` |
 
 ## fedcm

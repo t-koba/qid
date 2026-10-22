@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    Admin, AdminApproval, AuditEvent, CiamConsentGrant, Client, ClientType, Device, FedCmIdentity,
-    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
+    Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant, Client, ClientType, Device,
+    FedCmIdentity, ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1334,4 +1334,89 @@ where
             .expect("second consumption attempt failed"),
         "a duplicate store made the approval reusable"
     );
+}
+
+/// An admin-elevation ID names one identity-bound context and must never
+/// replace or move the incumbent to another tenant.
+pub async fn assert_admin_elevation_identity_ownership<R>(repo: &R)
+where
+    R: AdminRepository,
+{
+    let admin = Admin {
+        id: "admin-elevation-owner".to_string(),
+        tenant_id: "tenant-admin-elevation".to_string(),
+        subject: "owner".to_string(),
+        roles: vec!["admin".to_string()],
+        created_at: 1_700_000_000,
+    };
+    repo.upsert_admin(&admin)
+        .await
+        .expect("create admin elevation owner failed");
+    let other_admin = Admin {
+        id: "admin-elevation-other-owner".to_string(),
+        tenant_id: "tenant-admin-elevation-other".to_string(),
+        subject: "other-owner".to_string(),
+        roles: vec!["admin".to_string()],
+        created_at: 1_700_000_000,
+    };
+    repo.upsert_admin(&other_admin)
+        .await
+        .expect("create other admin elevation owner failed");
+
+    let elevation = AdminElevation {
+        id: "admin-elevation-identity".to_string(),
+        tenant_id: admin.tenant_id.clone(),
+        admin_id: admin.id.clone(),
+        acr: Some("urn:example:loa:2".to_string()),
+        amr: vec!["pwd".to_string(), "otp".to_string()],
+        elevation_expires_at: 1_700_000_100,
+        created_at: 1_700_000_001,
+    };
+    repo.store_admin_elevation(&elevation)
+        .await
+        .expect("store incumbent admin elevation failed");
+
+    let duplicate = AdminElevation {
+        acr: Some("urn:example:loa:1".to_string()),
+        amr: vec!["pwd".to_string()],
+        elevation_expires_at: 1_700_000_200,
+        ..elevation.clone()
+    };
+    let err = repo
+        .store_admin_elevation(&duplicate)
+        .await
+        .expect_err("a duplicate admin elevation ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a duplicate admin elevation ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_owner = AdminElevation {
+        tenant_id: other_admin.tenant_id.clone(),
+        admin_id: other_admin.id,
+        acr: Some("urn:example:loa:3".to_string()),
+        ..duplicate
+    };
+    let err = repo
+        .store_admin_elevation(&cross_owner)
+        .await
+        .expect_err("an elevation ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant admin elevation ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let stored = repo
+        .get_admin_elevation(&elevation.id)
+        .await
+        .expect("get incumbent admin elevation failed")
+        .expect("incumbent admin elevation must remain stored");
+    assert_eq!(stored.tenant_id, elevation.tenant_id);
+    assert_eq!(stored.admin_id, elevation.admin_id);
+    assert_eq!(stored.acr, elevation.acr);
+    assert_eq!(stored.amr, elevation.amr);
+    assert_eq!(stored.elevation_expires_at, elevation.elevation_expires_at);
+    assert_eq!(stored.created_at, elevation.created_at);
 }

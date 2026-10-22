@@ -33,12 +33,17 @@ impl AdminRepository for FileRepository {
     }
 
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()> {
-        self.map_write(|store| {
-            store
-                .admin_elevations
-                .insert(elevation.id.clone(), elevation.clone())
-        })
-        .await
+        let mut store = self.store.write().await;
+        if store.admin_elevations.contains_key(&elevation.id) {
+            return Err(QidError::Conflict {
+                message: format!("Admin elevation ID {} already exists", elevation.id),
+            });
+        }
+        store
+            .admin_elevations
+            .insert(elevation.id.clone(), elevation.clone());
+        drop(store);
+        self.save().await
     }
 
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {

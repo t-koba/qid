@@ -51,8 +51,8 @@ impl AdminRepository for SqlRepository {
     }
 
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO admin_elevations (id, tenant_id, admin_id, acr, amr_json, elevation_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO admin_elevations (id, tenant_id, admin_id, acr, amr_json, elevation_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&elevation.id)
         .bind(&elevation.tenant_id)
@@ -64,6 +64,9 @@ impl AdminRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("Admin elevation ID {} already exists", elevation.id)
+        })?;
         Ok(())
     }
 

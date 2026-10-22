@@ -134,3 +134,11 @@ pub const ADMIN_APPROVAL: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for the identity-bound admin-elevation resource.
+#[allow(dead_code)]
+pub const ADMIN_ELEVATION: OwnershipContract = OwnershipContract {
+    owner_key: "tenant_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

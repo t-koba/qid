@@ -526,8 +526,8 @@ impl IgaRepository for SqlRepository {
         certification: &IgaCertificationRecord,
     ) -> QidResult<()> {
         certification.validate()?;
-        sqlx::query(
-            "INSERT INTO iga_certifications (id, tenant_id, certification_type, campaign_id, subject, entitlement, certifier, decision, reason, evidence_json, decided_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO iga_certifications (id, tenant_id, certification_type, campaign_id, subject, entitlement, certifier, decision, reason, evidence_json, decided_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&certification.id)
         .bind(&certification.tenant_id)
@@ -543,6 +543,9 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("IGA certification ID {} already exists", certification.id)
+        })?;
         Ok(())
     }
 

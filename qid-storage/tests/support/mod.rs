@@ -3,8 +3,8 @@
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
-    IgaAccessReviewDecisionRecord, PasswordResetToken, ServiceAccount, User, WebAuthnCredential,
-    WorkloadIdentity,
+    IgaAccessReviewDecisionRecord, IgaCertificationRecord, PasswordResetToken, ServiceAccount,
+    User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1716,6 +1716,72 @@ where
         repo.list_iga_access_review_decisions("tenant-iga-review-other", "campaign-iga-review")
             .await
             .expect("list other-tenant IGA review decisions failed")
+            .is_empty()
+    );
+}
+
+/// A certification ID is immutable so retries cannot rewrite evidence or decisions.
+pub async fn assert_iga_certification_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let certification = IgaCertificationRecord {
+        id: "iga-certification-identity".to_string(),
+        tenant_id: "tenant-iga-certification".to_string(),
+        certification_type: "manager".to_string(),
+        campaign_id: Some("campaign-iga-certification".to_string()),
+        subject: "user-certified".to_string(),
+        entitlement: "crm:admin".to_string(),
+        certifier: "manager-certifier".to_string(),
+        decision: "certify".to_string(),
+        reason: Some("Access remains required".to_string()),
+        evidence_json: serde_json::json!({"source": "original"}),
+        decided_at_epoch_seconds: 1_700_000_000,
+    };
+    repo.store_iga_certification(&certification)
+        .await
+        .expect("store incumbent IGA certification failed");
+
+    let same_tenant_duplicate = IgaCertificationRecord {
+        decision: "revoke".to_string(),
+        reason: Some("Replacement certification".to_string()),
+        evidence_json: serde_json::json!({"source": "replacement"}),
+        decided_at_epoch_seconds: 1_700_000_100,
+        ..certification.clone()
+    };
+    let err = repo
+        .store_iga_certification(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate certification ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant certification ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_tenant_duplicate = IgaCertificationRecord {
+        tenant_id: "tenant-iga-certification-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_certification(&cross_tenant_duplicate)
+        .await
+        .expect_err("a certification ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant certification ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let stored = repo
+        .list_iga_certifications(&certification.tenant_id, Some("manager"))
+        .await
+        .expect("list incumbent IGA certifications failed");
+    assert_eq!(stored, vec![certification]);
+    assert!(
+        repo.list_iga_certifications("tenant-iga-certification-other", Some("manager"))
+            .await
+            .expect("list other-tenant IGA certifications failed")
             .is_empty()
     );
 }

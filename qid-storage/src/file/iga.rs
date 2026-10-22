@@ -384,6 +384,11 @@ impl IgaRepository for FileRepository {
     ) -> QidResult<()> {
         certification.validate()?;
         let mut store = self.store.write().await;
+        if store.iga_certifications.contains_key(&certification.id) {
+            return Err(QidError::Conflict {
+                message: format!("IGA certification ID {} already exists", certification.id),
+            });
+        }
         store
             .iga_certifications
             .insert(certification.id.clone(), certification.clone());

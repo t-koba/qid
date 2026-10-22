@@ -720,6 +720,8 @@ pub trait IgaRepository: Send + Sync + 'static {
         tenant_id: &str,
         campaign_id: &str,
     ) -> QidResult<Vec<IgaAccessReviewDecisionRecord>>;
+    /// Store an immutable IGA certification with a global ID.
+    /// Reusing an ID returns `Conflict` and leaves the incumbent certification unchanged.
     async fn store_iga_certification(
         &self,
         certification: &IgaCertificationRecord,

@@ -109,6 +109,18 @@ fn fedcm_realms<R: Repository>(state: &SharedState<R>) -> Vec<&RealmConfig> {
         .collect()
 }
 
+/// Whether a realm of the deployment offers the FedCM protocol.
+///
+/// The API surface matches the discovery documents: a realm that does
+/// not enable the protocol serves none of the FedCM routes.
+fn fedcm_enabled<R: Repository>(state: &SharedState<R>, realm_id: &str) -> bool {
+    state
+        .config
+        .realms
+        .iter()
+        .any(|realm| realm.id == realm_id && realm.protocols.fedcm.enabled)
+}
+
 /// The FedCM configuration document of one realm: the endpoints a
 /// FedCM client uses for that realm.
 fn fedcm_config_document<R: Repository>(

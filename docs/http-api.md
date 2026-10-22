@@ -244,8 +244,8 @@ realms return HTTP 404.
 | `GET` | `/.well-known/web-identity` | FedCM web identity manifest. Lists the configured realms that enable the FedCM protocol. |
 | `GET` | `/.well-known/fedcm.json` | FedCM config of the realm that enables the FedCM protocol. Absent when no realm enables it; ambiguous (`400`) when several do. |
 | `GET` | `/realms/:realm/.well-known/fedcm.json` | FedCM config of one realm. Absent for a realm that does not enable the FedCM protocol. |
-| `GET, POST` | `/api/v1/:realm/fedcm/accounts` | List/create FedCM accounts. |
-| `POST` | `/api/v1/:realm/fedcm/token` | Generate FedCM token. |
+| `GET, POST` | `/api/v1/:realm/fedcm/accounts` | List/create FedCM accounts. Served only for a realm that enables the FedCM protocol; absent (`404`) for every other realm. |
+| `POST` | `/api/v1/:realm/fedcm/token` | Generate FedCM token. Served only for a realm that enables the FedCM protocol; absent (`404`) for every other realm. |
 | `GET` | `/.well-known/openid-federation` | Federation entity statement. |
 | `POST` | `/federation/v1/trust-chain/validate` | Validate trust chain. |
 | `POST` | `/federation/:realm/discover` | Discover inbound provider. |

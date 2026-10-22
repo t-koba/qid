@@ -17,7 +17,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::not_found_response;
+use super::{fedcm_enabled, not_found_response};
 use crate::session_auth;
 use qid_core::models::FedCmIdentity;
 
@@ -36,6 +36,9 @@ pub async fn list_fedcm_accounts<R: Repository>(
     Path(realm): Path<String>,
     Query(query): Query<ListFedCmAccountsQuery>,
 ) -> Response {
+    if !fedcm_enabled(&state, &realm) {
+        return not_found_response("FedCM is not enabled for this realm");
+    }
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &query.account_id).await
     {
         return e;
@@ -82,6 +85,9 @@ pub async fn create_fedcm_identity<R: Repository>(
     Path(realm): Path<String>,
     JsonObject(req): JsonObject<CreateFedCmIdentityRequest>,
 ) -> Response {
+    if !fedcm_enabled(&state, &realm) {
+        return not_found_response("FedCM is not enabled for this realm");
+    }
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.account_id).await {
         return e;
     }
@@ -113,6 +119,9 @@ pub async fn generate_fedcm_token<R: Repository>(
     Path(realm): Path<String>,
     JsonObject(req): JsonObject<FedCmTokenRequest>,
 ) -> Response {
+    if !fedcm_enabled(&state, &realm) {
+        return not_found_response("FedCM is not enabled for this realm");
+    }
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &req.account_id).await {
         return e;
     }

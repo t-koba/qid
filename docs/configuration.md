@@ -211,7 +211,7 @@ Validation rules:
 | `oauth` | Introspection, revocation, PAR, RAR, DPoP, mTLS, device flow, CIBA, DCR, private_key_jwt, JARM, token TTL, resource servers. |
 | `saml` | SAML IdP routes, metadata signing, assertion signing/encryption, SP registration, clock skew. SP signing certificates accept PEM or bare standard base64 DER; encryption certificates require a compact bare standard base64 DER value. |
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
-| `fedcm` | FedCM route surface. |
+| `fedcm` | FedCM route surface. The `enabled` switch decides whether a realm serves the FedCM routes and appears in the FedCM discovery documents; it is off unless the configuration sets it. |
 | `federation` | Inbound OIDC/SAML/social providers and claim mappings. |
 | `directory` | LDAP and Active Directory providers, sync filters and attribute mapping. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |

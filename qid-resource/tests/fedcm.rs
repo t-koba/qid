@@ -3,7 +3,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use qid_core::{config::QidConfig, state::SharedState, test_helpers};
+use qid_core::{config::QidConfig, state::SharedState, tenant::RealmId, test_helpers};
 use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
 use std::sync::Arc;
@@ -32,7 +32,9 @@ fn db_url() -> String {
 }
 
 async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
-    setup_with_config(test_helpers::test_config()).await
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.fedcm.enabled = true;
+    setup_with_config(config).await
 }
 
 /// A configuration whose realms are named, and which enable or disable
@@ -100,6 +102,58 @@ async fn add_session(state: &Arc<SharedState<SqlRepository>>, user_id: &str) -> 
     let session = qid_core::models::Session {
         id: format!("fedcm-session-{user_id}"),
         realm_id: "test".to_string(),
+        user_id: user_id.to_string(),
+        auth_time: now,
+        acr: None,
+        amr: Vec::new(),
+        absolute_expires_at: now + 3600,
+        idle_expires_at: now + 900,
+        revoked: false,
+        created_at: now,
+        cnf: None,
+    };
+    state.repo.create_session(&session).await.unwrap();
+    format!("{}={}", cookie_name, session.id)
+}
+
+/// A session in one realm of the deployment.
+async fn add_session_in_realm(
+    state: &Arc<SharedState<SqlRepository>>,
+    realm_id: &str,
+    user_id: &str,
+) -> String {
+    state
+        .repo
+        .create_realm(
+            &"tenant-fedcm".into(),
+            &RealmId(realm_id.to_string()),
+            &format!("https://{realm_id}.example.com"),
+            None,
+        )
+        .await
+        .ok();
+    let user = qid_core::models::User {
+        id: user_id.to_string(),
+        realm_id: realm_id.to_string(),
+        email: Some(format!("{user_id}@example.com")),
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    state.repo.create_user(&user).await.unwrap();
+
+    let cookie_name = &state
+        .plan
+        .realm(realm_id)
+        .unwrap()
+        .browser_session
+        .cookie_name;
+    let now = qid_core::util::now_seconds();
+    let session = qid_core::models::Session {
+        id: format!("fedcm-session-{realm_id}-{user_id}"),
+        realm_id: realm_id.to_string(),
         user_id: user_id.to_string(),
         auth_time: now,
         acr: None,
@@ -297,4 +351,73 @@ async fn fedcm_realm_configuration_is_absent_without_the_protocol() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _json) = get_json(app, "/realms/unknown/.well-known/fedcm.json").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_fedcm_api_serves_only_the_realms_that_enable_the_protocol() {
+    let (app, state) =
+        setup_with_config(config_with_realms(&[("test", true), ("realm-b", false)])).await;
+
+    // The realm that enables the protocol serves its FedCM API.
+    let cookie = add_session(&state, "acct-enabled").await;
+    let create = with_cookie(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/test/fedcm/accounts")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                r#"{"account_id":"acct-enabled","email":"enabled@example.com"}"#,
+            ))
+            .unwrap(),
+        &cookie,
+    );
+    assert_eq!(
+        app.clone().oneshot(create).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+
+    // The realm that does not enable it serves none of it, even to a
+    // session of that realm.
+    let other = add_session_in_realm(&state, "realm-b", "acct-disabled").await;
+    let list = with_cookie(
+        Request::builder()
+            .uri("/api/v1/realm-b/fedcm/accounts?account_id=acct-disabled")
+            .body(Body::empty())
+            .unwrap(),
+        &other,
+    );
+    assert_eq!(
+        app.clone().oneshot(list).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    let create = with_cookie(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/realm-b/fedcm/accounts")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                r#"{"account_id":"acct-disabled","email":"disabled@example.com"}"#,
+            ))
+            .unwrap(),
+        &other,
+    );
+    assert_eq!(
+        app.clone().oneshot(create).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    let token = with_cookie(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/realm-b/fedcm/token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                r#"{"account_id":"acct-disabled","client_id":"rp-client"}"#,
+            ))
+            .unwrap(),
+        &other,
+    );
+    assert_eq!(
+        app.oneshot(token).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
 }

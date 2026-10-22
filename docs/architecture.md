@@ -133,7 +133,7 @@ Remote signer configuration is validated, but current `qidd` startup only has a 
 
 SQL repositories run migrations on connect. Repository traits are split by domain: realm, user, client, session, token, credential, SCIM, IGA, ReBAC, VC, workload, audit, SaaS, and SSF.
 
-A client id is unique within a realm, so the authorization server resolves the client of a request across the realms the deployment configures with one storage read (`find_clients_by_client_id`), which the SQL backend answers from an index on `(client_id, realm_id)`. A client id that names a client in more than one configured realm is ambiguous and serves no request. The storage holds the uniqueness: a client whose client id the realm already holds is refused, so no creation path can leave a realm with two clients of one client id.
+A client id is unique within a realm, so the authorization server resolves the client of a request across the realms the deployment configures with one storage read (`find_clients_by_client_id`), which the SQL backend answers from an index on `(client_id, realm_id)`. A client id that names a client in more than one configured realm is ambiguous and serves no request, so the creation paths refuse it: the daemon's seeding, the dynamic registration and the CLI each name the realm that already holds the id. The storage holds the uniqueness: a client whose client id the realm already holds is refused, so no creation path can leave a realm with two clients of one client id.
 
 ## HTTP Assembly
 

@@ -629,6 +629,21 @@ async fn main() -> anyhow::Result<()> {
                             args.realm
                         );
                     }
+                    // A client id names one client among the realms the
+                    // deployment serves, so the command refuses an id
+                    // another of them holds.
+                    let served_realm_ids: Vec<RealmId> = config
+                        .realms
+                        .iter()
+                        .map(|realm| RealmId::from(realm.id.clone()))
+                        .collect();
+                    qid_storage::ensure_client_id_unambiguous(
+                        &repo,
+                        &served_realm_ids,
+                        &args.client_id,
+                        &RealmId::from(args.realm.clone()),
+                    )
+                    .await?;
                     let id = new_id();
                     let client_type = match args.client_type {
                         CliClientType::Confidential => ClientType::Confidential,

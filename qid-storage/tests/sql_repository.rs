@@ -2214,6 +2214,106 @@ where
     assert_eq!(found.len(), 2, "one client per realm must be found");
 }
 
+async fn assert_client_id_ambiguity<R>(repo: &R)
+where
+    R: RealmRepository + ClientRepository,
+{
+    let realm = RealmId("realm-client-ambiguity".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-ambiguity".to_string()),
+        &realm,
+        "https://client-ambiguity.example.com",
+        Some("Client Ambiguity Realm"),
+    )
+    .await
+    .expect("create client ambiguity realm failed");
+    let other_realm = RealmId("realm-client-ambiguity-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-ambiguity-other".to_string()),
+        &other_realm,
+        "https://client-ambiguity-other.example.com",
+        Some("Other Client Ambiguity Realm"),
+    )
+    .await
+    .expect("create other client ambiguity realm failed");
+
+    let client = sample_cross_realm_client("client-ambiguity-a", &realm.0, "shared-app");
+    repo.create_client(&client)
+        .await
+        .expect("create client failed");
+
+    // The id the realm holds is no ambiguity.
+    qid_storage::ensure_client_id_unambiguous(
+        repo,
+        &[realm.clone(), other_realm.clone()],
+        "shared-app",
+        &realm,
+    )
+    .await
+    .expect("the realm's own client id must be no ambiguity");
+
+    // The same id in another served realm is a refusal that names the
+    // realm that holds it.
+    let elsewhere = sample_cross_realm_client("client-ambiguity-b", &other_realm.0, "shared-app");
+    repo.create_client(&elsewhere)
+        .await
+        .expect("create the other client failed");
+    let error = qid_storage::ensure_client_id_unambiguous(
+        repo,
+        &[realm.clone(), other_realm.clone()],
+        "shared-app",
+        &other_realm,
+    )
+    .await
+    .expect_err("an id two served realms hold must be refused");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "the refusal must be a conflict, got: {}",
+        error.message()
+    );
+    assert!(
+        error.message().contains("shared-app"),
+        "the refusal must name the client id, got: {}",
+        error.message()
+    );
+    assert!(
+        error.message().contains(&realm.0),
+        "the refusal must name the realm that holds the id, got: {}",
+        error.message()
+    );
+
+    // A realm the deployment does not serve holds no client of a request,
+    // so an id it carries is no ambiguity.
+    qid_storage::ensure_client_id_unambiguous(
+        repo,
+        std::slice::from_ref(&other_realm),
+        "shared-app",
+        &realm,
+    )
+    .await
+    .expect("an unserved realm must not make the id ambiguous");
+}
+
+#[tokio::test]
+async fn test_sql_client_id_ambiguity() {
+    let repo = sql_repo().await;
+    assert_client_id_ambiguity(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_client_id_ambiguity() {
+    let path = std::env::temp_dir().join(format!(
+        "qid-file-client-ambiguity-{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("file repository creation failed");
+    repo.migrate().await.expect("file migration failed");
+
+    assert_client_id_ambiguity(&repo).await;
+}
+
 #[tokio::test]
 async fn test_sql_client_id_uniqueness() {
     let repo = sql_repo().await;

@@ -1020,6 +1020,11 @@ async fn seed_configured_realms_and_clients(
         .list_realms()
         .await
         .context("failed to list configured realms")?;
+    let served_realm_ids: Vec<RealmId> = config
+        .realms
+        .iter()
+        .map(|realm| RealmId::from(realm.id.clone()))
+        .collect();
     for realm in &config.realms {
         match existing_realms
             .iter()
@@ -1067,6 +1072,19 @@ async fn seed_configured_realms_and_clients(
                     );
                 }
                 None => {
+                    qid_storage::ensure_client_id_unambiguous(
+                        repo,
+                        &served_realm_ids,
+                        &expected.client_id,
+                        &RealmId::from(realm.id.clone()),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to create configured client {} in realm {}",
+                            expected.client_id, realm.id
+                        )
+                    })?;
                     repo.create_client(&expected).await.with_context(|| {
                         format!(
                             "failed to create configured client {} in realm {}",
@@ -1999,6 +2017,52 @@ mod tests {
         assert_eq!(
             client.redirect_uris,
             vec!["https://app.example.com/callback"]
+        );
+        std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_client_id_two_configured_realms_share_is_refused() {
+        let mut config = minimal_config();
+        let mut other = config.realms[0].clone();
+        other.id = "other".to_string();
+        other.issuer = "https://id.example.com/realms/other".to_string();
+        config.realms.push(other);
+        for realm in &mut config.realms {
+            realm.clients = vec![StaticClientConfig {
+                client_id: "web".to_string(),
+                id: Some(format!("client-{}", realm.id)),
+                client_type: ClientType::Public,
+                token_endpoint_auth_method: "none".to_string(),
+                client_secret: None,
+                client_secret_hash: None,
+                mtls_certificate_thumbprints: Vec::new(),
+                jwks: qid_core::models::default_client_jwks(),
+                redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                grant_types: vec!["authorization_code".to_string()],
+            }];
+        }
+        let state_dir = test_state_dir("seed-ambiguous-client");
+        let store_path = state_dir.join("store.json");
+        let repo = AnyRepository::connect(store_path.to_str().expect("valid store path"))
+            .await
+            .expect("repository should initialize");
+        let config_path = state_dir.join("qid.yaml");
+
+        // The client id names a client of two realms the deployment
+        // serves, so the daemon refuses to seed it and names the realm
+        // that holds it.
+        let error = seed_configured_realms_and_clients(&repo, &config, &config_path)
+            .await
+            .expect_err("a shared client id must be refused");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("web"),
+            "the refusal must name the client id, got: {message}"
+        );
+        assert!(
+            message.contains("corp") || message.contains("other"),
+            "the refusal must name the realm that holds the id, got: {message}"
         );
         std::fs::remove_dir_all(&state_dir).ok();
     }

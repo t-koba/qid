@@ -53,7 +53,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | configurable `token`, default `/oauth2/token` | Token endpoint. |
 | `POST` | configurable `introspect`, default `/oauth2/introspect` | Token introspection (RFC 7662). Requires confidential-client authentication before the token is examined; fails closed with 401 when no OAuth resource server authorizes the caller. |
 | `POST` | configurable `revoke`, default `/oauth2/revoke` | Token revocation. |
-| `POST` | configurable `dynamic_client_registration`, default `/oauth2/register` | Dynamic client registration. A client id the realm already holds is refused. |
+| `POST` | configurable `dynamic_client_registration`, default `/oauth2/register` | Dynamic client registration. A client id the realm already holds is refused, and so is a client id another realm the deployment serves holds, because such an id names no single client. |
 | `GET, PUT, DELETE` | configurable `dynamic_client_registration_management`, default `/oauth2/register/:client_id` | DCR management. |
 | `POST` | configurable `device_authorization`, default `/oauth2/device_authorization` | Device authorization. |
 | `POST` | `<device_authorization>/approve` | Device flow approval. |
@@ -108,7 +108,7 @@ Admin mutations require admin authorization checks and, depending on config, rea
 | `POST` | `/admin/api/v1/:realm/token-families/:family_id/revoke` | Revoke token family. |
 | `GET` | `/admin/api/v1/:realm/pep-decisions` | List PEP decisions. |
 | `GET` | `/admin/api/v1/:realm/risk-events` | List risk events. |
-| `GET, POST` | `/admin/api/v1/:realm/clients` | List/create clients. A client id the realm already holds is refused. |
+| `GET, POST` | `/admin/api/v1/:realm/clients` | List/create clients. A client id the realm already holds is refused, and so is a client id another realm the deployment serves holds. |
 | `DELETE` | `/admin/api/v1/:realm/clients/:client_id` | Delete client. |
 | `GET, POST` | `/admin/api/v1/:realm/service-accounts` | List/create service accounts. |
 | `DELETE` | `/admin/api/v1/:realm/service-accounts/:sa_id` | Delete service account. |

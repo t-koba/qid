@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use qid_core::{
-    error::QidResult,
+    error::{QidError, QidResult},
     models::*,
     tenant::{RealmId, TenantId},
 };
@@ -868,4 +868,38 @@ impl<T> Repository for T where
         + Sync
         + 'static
 {
+}
+
+/// Refuse a client id another served realm already holds.
+///
+/// The request paths resolve the client of a request across the realms the
+/// deployment serves and serve no request that names a client id two of
+/// them hold, so a creation path asks this before it writes. The refusal
+/// names the realm that holds the id. A realm the deployment does not
+/// serve holds no client of a request, so an id it carries is no
+/// ambiguity.
+pub async fn ensure_client_id_unambiguous<R: ClientRepository + ?Sized>(
+    repo: &R,
+    served_realm_ids: &[RealmId],
+    client_id: &str,
+    target_realm: &RealmId,
+) -> QidResult<()> {
+    if !served_realm_ids.iter().any(|realm| realm == target_realm) {
+        return Ok(());
+    }
+    let holders = repo
+        .find_clients_by_client_id(served_realm_ids, client_id)
+        .await?;
+    if let Some(holder) = holders
+        .iter()
+        .find(|client| client.realm_id != target_realm.as_str())
+    {
+        return Err(QidError::Conflict {
+            message: format!(
+                "client id {client_id} already exists in realm {}",
+                holder.realm_id
+            ),
+        });
+    }
+    Ok(())
 }

@@ -254,6 +254,22 @@ pub async fn dynamic_client_registration<R: Repository>(
             .backchannel_client_notification_endpoint
             .clone(),
     };
+    let served_realm_ids: Vec<RealmId> = state
+        .config
+        .realms
+        .iter()
+        .map(|realm_config| RealmId::from(realm_config.id.clone()))
+        .collect();
+    if let Err(error) = qid_storage::ensure_client_id_unambiguous(
+        state.repo.as_ref(),
+        &served_realm_ids,
+        &client.client_id,
+        &RealmId::from(client.realm_id.clone()),
+    )
+    .await
+    {
+        return qid_http::error_response(error);
+    }
     match state.repo.create_client(&client).await {
         Ok(()) => match build_dynamic_client_registration_response(
             &state,

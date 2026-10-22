@@ -2663,6 +2663,98 @@ async fn dynamic_client_registration_creates_client() {
 }
 
 #[tokio::test]
+async fn dynamic_client_registration_refuses_a_client_id_another_realm_holds() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .enabled = true;
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    let mut other = config.realms[0].clone();
+    other.id = "other".to_string();
+    other.issuer = "https://id.example.com/realms/other".to_string();
+    other.protocols.oauth.dynamic_client_registration.enabled = false;
+    other
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = false;
+    config.realms.push(other);
+    let (app, _, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-other".into(),
+            &"other".into(),
+            "https://id.example.com/realms/other",
+            Some("Other Realm"),
+        )
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_client(&Client {
+            id: "other-client".to_string(),
+            realm_id: "other".to_string(),
+            client_id: "dcr-shared".to_string(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".to_string(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: qid_core::models::default_client_jwks(),
+            redirect_uris: vec!["https://other.example.com/callback".to_string()],
+            grant_types: vec!["authorization_code".to_string()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+        })
+        .await
+        .unwrap();
+    let path = state.paths.dynamic_client_registration.clone();
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-shared","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none"}"#,
+        ))
+        .unwrap();
+
+    // The client id names a client of two realms the deployment serves,
+    // so the registration is refused and names the realm that holds it.
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("dcr-shared")),
+        "{body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("other")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn dynamic_client_registration_returns_secret_for_confidential_client() {
     let mut config = test_helpers::test_config();
     config.realms[0]

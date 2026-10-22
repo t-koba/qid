@@ -3,8 +3,9 @@
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
-    IgaAccessReviewDecisionRecord, IgaCertificationRecord, IgaFindingRecord, PasswordResetToken,
-    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
+    IgaAccessRequestRecord, IgaAccessReviewDecisionRecord, IgaCertificationRecord,
+    IgaFindingRecord, PasswordResetToken, ServiceAccount, User, WebAuthnCredential,
+    WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1851,5 +1852,81 @@ where
             .await
             .expect("list other-tenant IGA findings failed")
             .is_empty()
+    );
+}
+
+/// Duplicate access-request stores cannot erase lifecycle or approval state.
+pub async fn assert_iga_access_request_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let request = IgaAccessRequestRecord {
+        id: "iga-access-request-identity".to_string(),
+        tenant_id: "tenant-iga-access-request".to_string(),
+        subject: "user-requesting".to_string(),
+        entitlement: "crm:admin".to_string(),
+        reason: Some("Need elevated access".to_string()),
+        status: "pending".to_string(),
+        approval_steps_json: serde_json::json!([{"approver": "manager", "status": "pending"}]),
+        violations_json: serde_json::json!([{"policy": "separation-of-duties"}]),
+        package_entitlement_ids_json: serde_json::json!(["entitlement-package-entry"]),
+        expires_at_epoch_seconds: Some(1_700_086_400),
+        created_at_epoch_seconds: 1_700_000_000,
+    };
+    repo.store_iga_access_request(&request)
+        .await
+        .expect("store incumbent IGA access request failed");
+    repo.update_iga_access_request_status(&request.tenant_id, &request.id, "approved")
+        .await
+        .expect("advance incumbent IGA access request status failed");
+
+    let same_tenant_duplicate = IgaAccessRequestRecord {
+        subject: "replacement-user".to_string(),
+        status: "pending".to_string(),
+        approval_steps_json: serde_json::json!([]),
+        violations_json: serde_json::json!([]),
+        package_entitlement_ids_json: serde_json::json!([]),
+        ..request.clone()
+    };
+    let err = repo
+        .store_iga_access_request(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate access-request ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant access-request ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_tenant_duplicate = IgaAccessRequestRecord {
+        tenant_id: "tenant-iga-access-request-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_access_request(&cross_tenant_duplicate)
+        .await
+        .expect_err("an access-request ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant access-request ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let mut incumbent = request;
+    incumbent.status = "approved".to_string();
+    assert_eq!(
+        repo.get_iga_access_request(&incumbent.tenant_id, &incumbent.id)
+            .await
+            .expect("get incumbent IGA access request failed"),
+        Some(incumbent)
+    );
+    assert!(
+        repo.get_iga_access_request(
+            "tenant-iga-access-request-other",
+            "iga-access-request-identity"
+        )
+        .await
+        .expect("get other-tenant IGA access request failed")
+        .is_none()
     );
 }

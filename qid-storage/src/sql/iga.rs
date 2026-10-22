@@ -87,8 +87,8 @@ impl IgaRepository for SqlRepository {
 
     async fn store_iga_access_request(&self, request: &IgaAccessRequestRecord) -> QidResult<()> {
         request.validate()?;
-        sqlx::query(
-            "INSERT INTO iga_access_requests (id, tenant_id, subject, entitlement, reason, status, approval_steps_json, violations_json, package_entitlement_ids_json, expires_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO iga_access_requests (id, tenant_id, subject, entitlement, reason, status, approval_steps_json, violations_json, package_entitlement_ids_json, expires_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&request.id)
         .bind(&request.tenant_id)
@@ -104,6 +104,9 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("IGA access request ID {} already exists", request.id)
+        })?;
         Ok(())
     }
 

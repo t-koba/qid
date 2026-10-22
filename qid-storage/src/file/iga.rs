@@ -74,6 +74,11 @@ impl IgaRepository for FileRepository {
     async fn store_iga_access_request(&self, request: &IgaAccessRequestRecord) -> QidResult<()> {
         request.validate()?;
         let mut store = self.store.write().await;
+        if store.iga_access_requests.contains_key(&request.id) {
+            return Err(QidError::Conflict {
+                message: format!("IGA access request ID {} already exists", request.id),
+            });
+        }
         store
             .iga_access_requests
             .insert(request.id.clone(), request.clone());

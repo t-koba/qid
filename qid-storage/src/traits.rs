@@ -634,6 +634,8 @@ pub trait IgaRepository: Send + Sync + 'static {
         tenant_id: &str,
     ) -> QidResult<Vec<IgaAccessPackageRecord>>;
     async fn delete_iga_access_package(&self, tenant_id: &str, id: &str) -> QidResult<()>;
+    /// Store a tenant-owned request with a global ID; duplicate IDs return `Conflict`.
+    /// Use the dedicated status and grant methods for later lifecycle changes.
     async fn store_iga_access_request(&self, request: &IgaAccessRequestRecord) -> QidResult<()>;
     async fn get_iga_access_request(
         &self,

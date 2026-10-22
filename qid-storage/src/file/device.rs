@@ -10,11 +10,9 @@ impl DeviceRepository for FileRepository {
         // ID the store already holds is refused instead of replacing the
         // incumbent. The check runs under the store's exclusive write lock,
         // as atomic as the SQL backend's primary key on `id`.
-        if store.devices.contains_key(&device.id) {
-            return Err(QidError::Conflict {
-                message: format!("device record ID {} already exists", device.id),
-            });
-        }
+        reject_duplicate_id(store.devices.contains_key(&device.id), || {
+            format!("device record ID {} already exists", device.id)
+        })?;
         store.devices.insert(device.id.clone(), device.clone());
         drop(store);
         self.save().await

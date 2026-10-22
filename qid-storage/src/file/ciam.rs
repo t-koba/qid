@@ -64,17 +64,17 @@ impl CiamRepository for FileRepository {
     ) -> QidResult<()> {
         challenge.validate()?;
         let mut store = self.store.write().await;
-        if store
-            .ciam_verification_challenges
-            .contains_key(&challenge.id)
-        {
-            return Err(QidError::Conflict {
-                message: format!(
+        reject_duplicate_id(
+            store
+                .ciam_verification_challenges
+                .contains_key(&challenge.id),
+            || {
+                format!(
                     "CIAM verification challenge ID {} already exists",
                     challenge.id
-                ),
-            });
-        }
+                )
+            },
+        )?;
         store
             .ciam_verification_challenges
             .insert(challenge.id.clone(), challenge.clone());
@@ -221,11 +221,9 @@ impl CiamRepository for FileRepository {
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()> {
         token.validate()?;
         let mut store = self.store.write().await;
-        if store.password_reset_tokens.contains_key(&token.id) {
-            return Err(QidError::Conflict {
-                message: format!("Password reset token ID {} already exists", token.id),
-            });
-        }
+        reject_duplicate_id(store.password_reset_tokens.contains_key(&token.id), || {
+            format!("Password reset token ID {} already exists", token.id)
+        })?;
         store
             .password_reset_tokens
             .insert(token.id.clone(), token.clone());

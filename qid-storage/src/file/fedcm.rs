@@ -10,11 +10,9 @@ impl FedCmRepository for FileRepository {
         // carries an ID the store already holds is refused instead of
         // replacing the incumbent. The check runs under the store's
         // exclusive write lock, as atomic as the SQL backend's primary key.
-        if store.fedcm_identities.contains_key(&identity.id) {
-            return Err(QidError::Conflict {
-                message: format!("fedcm identity record ID {} already exists", identity.id),
-            });
-        }
+        reject_duplicate_id(store.fedcm_identities.contains_key(&identity.id), || {
+            format!("fedcm identity record ID {} already exists", identity.id)
+        })?;
         store
             .fedcm_identities
             .insert(identity.id.clone(), identity.clone());

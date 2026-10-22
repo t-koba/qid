@@ -435,6 +435,13 @@ fn acquire_process_lock(path: &std::path::Path) -> QidResult<ProcessLock> {
     }
 }
 
+fn reject_duplicate_id(exists: bool, message: impl FnOnce() -> String) -> QidResult<()> {
+    if exists {
+        return Err(QidError::Conflict { message: message() });
+    }
+    Ok(())
+}
+
 fn audit_retention_key(realm_id: Option<&str>) -> String {
     realm_id.unwrap_or("__global__").to_string()
 }

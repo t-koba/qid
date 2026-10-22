@@ -213,11 +213,9 @@ impl SaasRepository for FileRepository {
                 }
             }
         }
-        if store.app_catalog_entries.contains_key(&entry.id) {
-            return Err(QidError::Conflict {
-                message: "app catalog entry ID already exists".to_string(),
-            });
-        }
+        reject_duplicate_id(store.app_catalog_entries.contains_key(&entry.id), || {
+            "app catalog entry ID already exists".to_string()
+        })?;
         store
             .app_catalog_entries
             .insert(entry.id.clone(), entry.clone());
@@ -253,11 +251,10 @@ impl SaasRepository for FileRepository {
     async fn store_marketplace_connector(&self, connector: &MarketplaceConnector) -> QidResult<()> {
         connector.validate()?;
         let mut store = self.store.write().await;
-        if store.marketplace_connectors.contains_key(&connector.id) {
-            return Err(QidError::Conflict {
-                message: "marketplace connector ID already exists".to_string(),
-            });
-        }
+        reject_duplicate_id(
+            store.marketplace_connectors.contains_key(&connector.id),
+            || "marketplace connector ID already exists".to_string(),
+        )?;
         store
             .marketplace_connectors
             .insert(connector.id.clone(), connector.clone());
@@ -303,11 +300,9 @@ impl SaasRepository for FileRepository {
     async fn store_usage_billing_event(&self, event: &UsageBillingEvent) -> QidResult<()> {
         event.validate()?;
         let mut store = self.store.write().await;
-        if store.usage_billing_events.contains_key(&event.id) {
-            return Err(QidError::Conflict {
-                message: "usage billing event ID already exists".to_string(),
-            });
-        }
+        reject_duplicate_id(store.usage_billing_events.contains_key(&event.id), || {
+            "usage billing event ID already exists".to_string()
+        })?;
         if store.usage_billing_events.values().any(|stored| {
             stored.tenant_id == event.tenant_id && stored.idempotency_key == event.idempotency_key
         }) {
@@ -346,11 +341,10 @@ impl SaasRepository for FileRepository {
     async fn store_compliance_evidence_pack(&self, pack: &ComplianceEvidencePack) -> QidResult<()> {
         pack.validate()?;
         let mut store = self.store.write().await;
-        if store.compliance_evidence_packs.contains_key(&pack.id) {
-            return Err(QidError::Conflict {
-                message: "compliance evidence pack ID already exists".to_string(),
-            });
-        }
+        reject_duplicate_id(
+            store.compliance_evidence_packs.contains_key(&pack.id),
+            || "compliance evidence pack ID already exists".to_string(),
+        )?;
         store
             .compliance_evidence_packs
             .insert(pack.id.clone(), pack.clone());

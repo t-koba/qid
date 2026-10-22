@@ -10,11 +10,9 @@ impl ClientRepository for FileRepository {
         // carries it is refused instead of stored. The check runs under the
         // store's exclusive write lock, so the refusal is as atomic as the
         // SQL backend's unique constraint.
-        if store.clients.contains_key(&client.id) {
-            return Err(QidError::Conflict {
-                message: format!("client record ID {} already exists", client.id),
-            });
-        }
+        reject_duplicate_id(store.clients.contains_key(&client.id), || {
+            format!("client record ID {} already exists", client.id)
+        })?;
         if store.clients.values().any(|stored| {
             stored.realm_id == client.realm_id && stored.client_id == client.client_id
         }) {

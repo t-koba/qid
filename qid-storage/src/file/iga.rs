@@ -74,11 +74,9 @@ impl IgaRepository for FileRepository {
     async fn store_iga_access_request(&self, request: &IgaAccessRequestRecord) -> QidResult<()> {
         request.validate()?;
         let mut store = self.store.write().await;
-        if store.iga_access_requests.contains_key(&request.id) {
-            return Err(QidError::Conflict {
-                message: format!("IGA access request ID {} already exists", request.id),
-            });
-        }
+        reject_duplicate_id(store.iga_access_requests.contains_key(&request.id), || {
+            format!("IGA access request ID {} already exists", request.id)
+        })?;
         store
             .iga_access_requests
             .insert(request.id.clone(), request.clone());
@@ -138,11 +136,9 @@ impl IgaRepository for FileRepository {
     async fn store_iga_approval(&self, approval: &IgaApprovalRecord) -> QidResult<()> {
         approval.validate()?;
         let mut store = self.store.write().await;
-        if store.iga_approvals.contains_key(&approval.id) {
-            return Err(QidError::Conflict {
-                message: format!("IGA approval ID {} already exists", approval.id),
-            });
-        }
+        reject_duplicate_id(store.iga_approvals.contains_key(&approval.id), || {
+            format!("IGA approval ID {} already exists", approval.id)
+        })?;
         store
             .iga_approvals
             .insert(approval.id.clone(), approval.clone());
@@ -173,11 +169,9 @@ impl IgaRepository for FileRepository {
     async fn store_iga_access_grant(&self, grant: &IgaAccessGrantRecord) -> QidResult<()> {
         grant.validate()?;
         let mut store = self.store.write().await;
-        if store.iga_access_grants.contains_key(&grant.id) {
-            return Err(QidError::Conflict {
-                message: format!("IGA access grant ID {} already exists", grant.id),
-            });
-        }
+        reject_duplicate_id(store.iga_access_grants.contains_key(&grant.id), || {
+            format!("IGA access grant ID {} already exists", grant.id)
+        })?;
         store
             .iga_access_grants
             .insert(grant.id.clone(), grant.clone());
@@ -245,11 +239,10 @@ impl IgaRepository for FileRepository {
     ) -> QidResult<()> {
         grant.validate()?;
         let mut store = self.store.write().await;
-        if store.iga_jit_privilege_grants.contains_key(&grant.id) {
-            return Err(QidError::Conflict {
-                message: format!("IGA JIT privilege grant ID {} already exists", grant.id),
-            });
-        }
+        reject_duplicate_id(
+            store.iga_jit_privilege_grants.contains_key(&grant.id),
+            || format!("IGA JIT privilege grant ID {} already exists", grant.id),
+        )?;
         store
             .iga_jit_privilege_grants
             .insert(grant.id.clone(), grant.clone());
@@ -361,14 +354,15 @@ impl IgaRepository for FileRepository {
     ) -> QidResult<()> {
         decision.validate()?;
         let mut store = self.store.write().await;
-        if store.iga_access_review_decisions.contains_key(&decision.id) {
-            return Err(QidError::Conflict {
-                message: format!(
+        reject_duplicate_id(
+            store.iga_access_review_decisions.contains_key(&decision.id),
+            || {
+                format!(
                     "IGA access review decision ID {} already exists",
                     decision.id
-                ),
-            });
-        }
+                )
+            },
+        )?;
         store
             .iga_access_review_decisions
             .insert(decision.id.clone(), decision.clone());
@@ -404,11 +398,10 @@ impl IgaRepository for FileRepository {
     ) -> QidResult<()> {
         certification.validate()?;
         let mut store = self.store.write().await;
-        if store.iga_certifications.contains_key(&certification.id) {
-            return Err(QidError::Conflict {
-                message: format!("IGA certification ID {} already exists", certification.id),
-            });
-        }
+        reject_duplicate_id(
+            store.iga_certifications.contains_key(&certification.id),
+            || format!("IGA certification ID {} already exists", certification.id),
+        )?;
         store
             .iga_certifications
             .insert(certification.id.clone(), certification.clone());
@@ -443,11 +436,9 @@ impl IgaRepository for FileRepository {
     async fn store_iga_finding(&self, finding: &IgaFindingRecord) -> QidResult<()> {
         finding.validate()?;
         let mut store = self.store.write().await;
-        if store.iga_findings.contains_key(&finding.id) {
-            return Err(QidError::Conflict {
-                message: format!("IGA finding ID {} already exists", finding.id),
-            });
-        }
+        reject_duplicate_id(store.iga_findings.contains_key(&finding.id), || {
+            format!("IGA finding ID {} already exists", finding.id)
+        })?;
         store
             .iga_findings
             .insert(finding.id.clone(), finding.clone());

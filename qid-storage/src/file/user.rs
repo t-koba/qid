@@ -11,11 +11,9 @@ impl UserRepository for FileRepository {
         // instead of replacing the incumbent. The check runs under the
         // store's exclusive write lock, as atomic as the SQL backend's
         // primary key and UNIQUE(realm_id, email) index.
-        if store.users.contains_key(&user.id) {
-            return Err(QidError::Conflict {
-                message: format!("user record ID {} already exists", user.id),
-            });
-        }
+        reject_duplicate_id(store.users.contains_key(&user.id), || {
+            format!("user record ID {} already exists", user.id)
+        })?;
         if let Some(email) = email_held_by_another(&store, user) {
             return Err(crate::ownership::user_email_conflict(email, &user.realm_id));
         }

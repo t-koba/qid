@@ -40,6 +40,47 @@ Error vocabulary used below, taken from the code:
 
 Where a backend's behaviour differs from the other's, both files are named.
 
+## The ownership contract
+
+One shape covers every migrated write. A resource states three things and
+the backends enforce them in their own idiom:
+
+- the **owner key** - the realm, tenant or user the record belongs to;
+- the **identity key** - the immutable key that names the record inside its
+  owner, so a second record with the same identity belongs to no one;
+- the **collision rule** - what a write does when the identity key is
+  already taken: refuse and leave the incumbent unchanged, or replace the
+  incumbent.
+
+The file backend holds the store's exclusive write lock, so it checks the
+owner and identity keys there and refuses before the write. The SQL backend
+lets the table's primary key and unique indexes refuse the duplicate inside
+the statement, so no read precedes the write and no duplicate can slip
+between a check and an insert. The two idioms differ; the outcome does not.
+
+The shared helpers in `qid-storage/src/ownership.rs` carry the outcome so
+both backends state it once:
+
+- `ensure_same_binding` - the file path, under the write lock, refuses a
+  write whose identity key is bound to another owner.
+- `ensure_upsert_applied` - the SQL path, after an atomic upsert whose
+  predicate names the owner and the identity, refuses a write the
+  predicate rejected.
+- `ensure_row_present` - the SQL path refuses a write that changed no row
+  because the record is gone.
+- `user_email_conflict` - the refusal a user write earns when the realm
+  already holds the email for another user.
+
+A migrated resource costs three lines in the file path and three in the SQL
+path, because the outcome is stated once rather than at every call site.
+
+The migrated families are the workload identity, the client, the CIAM
+consent grant and the user. The remaining disagreements are listed above;
+they are not all defects. A write whose identity key is a token the product
+generates (an authorization code, a PAR request, a device or backchannel
+grant) has no owner to protect, and a write whose same-owner semantics are
+"replace" (an upsert of a configuration record) states that on purpose.
+
 ## admin
 
 Model types: `Admin`, `AdminElevation`, `AdminApproval`. The owner is the

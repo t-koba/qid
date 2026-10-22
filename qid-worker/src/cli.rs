@@ -5,11 +5,10 @@ use qid_ops::{KeyPurpose, KeyRotationPlan, KeyRotationRequirement, KeyringInvent
 use qid_storage::AnyRepository;
 use qid_worker::{
     AuditRetentionExecutionConfig, AuditRetentionJobConfig, AuditSiemDeliveryConfig,
-    AuditSiemHttpRequest, AuditSiemHttpResponse, AuditSiemRedriveConfig, AuditSiemRetryPolicy,
-    AuditTimestampConfig, AuditWormArchiveConfig, AuditWormObject, AuditWormPutResult,
-    DirectorySyncJobConfig, KeyRotationExecutionJobConfig, KeyRotationPlanningJobConfig,
-    NotificationChannel, NotificationDeliveryConfig, NotificationRequest, NotificationResponse,
-    NotificationRetryPolicy, NotificationTransport, SiemWebhookTransport, WormArchiveTransport,
+    AuditSiemRedriveConfig, AuditSiemRetryPolicy, AuditTimestampConfig, AuditWormArchiveConfig,
+    AuditWormObject, AuditWormPutResult, DeliveryTransport, DirectorySyncJobConfig,
+    KeyRotationExecutionJobConfig, KeyRotationPlanningJobConfig, NotificationChannel,
+    NotificationDeliveryConfig, NotificationRetryPolicy, WormArchiveTransport,
     run_audit_retention_execution_job, run_audit_retention_job, run_audit_siem_delivery_job,
     run_audit_siem_redrive_job, run_audit_worm_archive_job, run_directory_sync_job,
     run_key_rotation_execution_job, run_key_rotation_planning_job, run_notification_delivery_job,
@@ -101,7 +100,7 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 10)]
         tsa_timeout_seconds: u64,
     },
-    /// Build and deliver a SIEM webhook payload through a deterministic local transport.
+    /// Send a SIEM webhook over HTTPS; --dry-run records without sending.
     #[command(name = "audit-siem-deliver")]
     SiemDeliver {
         #[arg(long)]
@@ -110,8 +109,10 @@ pub(crate) enum Command {
         endpoint_url: String,
         #[arg(long)]
         request_output: Option<PathBuf>,
-        #[arg(long, default_value_t = 202)]
-        dry_run_status: u16,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 10)]
+        timeout_seconds: u64,
         #[arg(long, default_value_t = 1000)]
         limit: usize,
         #[arg(long)]
@@ -144,8 +145,10 @@ pub(crate) enum Command {
         id: String,
         #[arg(long)]
         request_output: Option<PathBuf>,
-        #[arg(long, default_value_t = 202)]
-        dry_run_status: u16,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 10)]
+        timeout_seconds: u64,
         #[arg(long)]
         now: Option<u64>,
         #[arg(long, default_value = "qid-worker")]
@@ -161,7 +164,7 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 60000)]
         max_delay_ms: u64,
     },
-    /// Deliver an email or push notification through a deterministic local transport.
+    /// Send an email or push notification to an HTTPS provider; --dry-run records without sending.
     #[command(name = "notification-deliver")]
     NotificationDeliver {
         #[arg(long)]
@@ -182,8 +185,10 @@ pub(crate) enum Command {
         data_json: String,
         #[arg(long)]
         request_output: Option<PathBuf>,
-        #[arg(long, default_value_t = 202)]
-        dry_run_status: u16,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 10)]
+        timeout_seconds: u64,
         #[arg(long)]
         now: Option<u64>,
         #[arg(long, default_value = "qid-worker")]
@@ -366,7 +371,8 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             realm,
             endpoint_url,
             request_output,
-            dry_run_status,
+            dry_run,
+            timeout_seconds,
             limit,
             now,
             traceparent,
@@ -381,11 +387,12 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             max_delay_ms,
         } => {
             ensure!(limit > 0, "limit must be greater than zero");
-            ensure!(
-                (100..=599).contains(&dry_run_status),
-                "dry_run_status must be an HTTP status code"
-            );
-            let transport = DryRunSiemTransport::new(dry_run_status, request_output);
+            let transport = if dry_run {
+                DeliveryTransport::dry_run(request_output)
+            } else {
+                DeliveryTransport::https(timeout_seconds, request_output)
+                    .map_err(anyhow::Error::msg)?
+            };
             let report = run_audit_siem_delivery_job(
                 repo.as_ref(),
                 &transport,
@@ -425,7 +432,8 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             template_id,
             data_json,
             request_output,
-            dry_run_status,
+            dry_run,
+            timeout_seconds,
             now,
             actor,
             reason,
@@ -435,12 +443,13 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             base_delay_ms,
             max_delay_ms,
         } => {
-            ensure!(
-                (100..=599).contains(&dry_run_status),
-                "dry_run_status must be an HTTP status code"
-            );
             let data_json = serde_json::from_str(&data_json).context("invalid data_json")?;
-            let transport = DryRunNotificationTransport::new(dry_run_status, request_output);
+            let transport = if dry_run {
+                DeliveryTransport::dry_run(request_output)
+            } else {
+                DeliveryTransport::https(timeout_seconds, request_output)
+                    .map_err(anyhow::Error::msg)?
+            };
             let report = run_notification_delivery_job(
                 repo.as_ref(),
                 &transport,
@@ -475,7 +484,8 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
         Command::SiemRedrive {
             id,
             request_output,
-            dry_run_status,
+            dry_run,
+            timeout_seconds,
             now,
             actor,
             reason,
@@ -484,11 +494,12 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             base_delay_ms,
             max_delay_ms,
         } => {
-            ensure!(
-                (100..=599).contains(&dry_run_status),
-                "dry_run_status must be an HTTP status code"
-            );
-            let transport = DryRunSiemTransport::new(dry_run_status, request_output);
+            let transport = if dry_run {
+                DeliveryTransport::dry_run(request_output)
+            } else {
+                DeliveryTransport::https(timeout_seconds, request_output)
+                    .map_err(anyhow::Error::msg)?
+            };
             let report = run_audit_siem_redrive_job(
                 repo.as_ref(),
                 &transport,
@@ -674,82 +685,6 @@ async fn open_repo(config_path: &Path) -> anyhow::Result<Arc<AnyRepository>> {
             .await
             .context("failed to connect to storage")?,
     ))
-}
-
-struct DryRunSiemTransport {
-    status: u16,
-    request_output: Option<PathBuf>,
-}
-
-impl DryRunSiemTransport {
-    fn new(status: u16, request_output: Option<PathBuf>) -> Self {
-        Self {
-            status,
-            request_output,
-        }
-    }
-
-    fn output_path(&self) -> Option<&Path> {
-        self.request_output.as_deref()
-    }
-}
-
-impl SiemWebhookTransport for DryRunSiemTransport {
-    fn send(&self, request: AuditSiemHttpRequest) -> Result<AuditSiemHttpResponse, String> {
-        if let Some(path) = &self.request_output {
-            let body_json: serde_json::Value =
-                serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
-            let captured = serde_json::json!({
-                "method": request.method,
-                "url": request.url,
-                "headers": request.headers,
-                "body": body_json,
-            });
-            let raw = serde_json::to_vec_pretty(&captured).map_err(|e| e.to_string())?;
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            fs::write(path, raw).map_err(|e| e.to_string())?;
-        }
-        Ok(AuditSiemHttpResponse {
-            status: self.status,
-            body: Vec::new(),
-        })
-    }
-}
-
-struct DryRunNotificationTransport {
-    status: u16,
-    request_output: Option<PathBuf>,
-}
-
-impl DryRunNotificationTransport {
-    fn new(status: u16, request_output: Option<PathBuf>) -> Self {
-        Self {
-            status,
-            request_output,
-        }
-    }
-
-    fn output_path(&self) -> Option<&Path> {
-        self.request_output.as_deref()
-    }
-}
-
-impl NotificationTransport for DryRunNotificationTransport {
-    fn send(&self, request: NotificationRequest) -> Result<NotificationResponse, String> {
-        if let Some(path) = &self.request_output {
-            let raw = serde_json::to_vec_pretty(&request).map_err(|e| e.to_string())?;
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            fs::write(path, raw).map_err(|e| e.to_string())?;
-        }
-        Ok(NotificationResponse {
-            status: self.status,
-            provider_message_id: Some(format!("dry-run-{}", request.channel.as_str())),
-        })
-    }
 }
 
 fn parse_notification_channel(raw: &str) -> anyhow::Result<NotificationChannel> {
@@ -1248,7 +1183,8 @@ realms:
                 realm: Some("corp".to_string()),
                 endpoint_url: "https://siem.example.com/audit".to_string(),
                 request_output: Some(request_output.clone()),
-                dry_run_status: 202,
+                dry_run: true,
+                timeout_seconds: 10,
                 limit: 10,
                 now: Some(200),
                 traceparent: None,
@@ -1267,7 +1203,23 @@ realms:
         .expect("siem deliver");
 
         assert_eq!(result["command"], "audit_siem_deliver");
-        assert_eq!(result["report"]["status"], "delivered");
+        assert_eq!(result["report"]["status"], "skipped_dry_run");
+        let repo = AnyRepository::connect(store.to_str().expect("store path"))
+            .await
+            .expect("repository");
+        let delivery_id = result["report"]["delivery_id"]
+            .as_str()
+            .expect("delivery id");
+        let queued = repo
+            .get_siem_delivery(delivery_id)
+            .await
+            .expect("queue lookup")
+            .expect("queue row");
+        assert_eq!(
+            queued.status,
+            qid_storage::prelude::SiemDeliveryStatus::Pending
+        );
+        assert_eq!(queued.attempts, 0);
         let captured: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(request_output).expect("captured request"),
         )
@@ -1290,14 +1242,15 @@ realms:
             command: Command::NotificationDeliver {
                 realm: Some("corp".to_string()),
                 channel: "email".to_string(),
-                provider: "smtp://mail.example.com".to_string(),
+                provider: "https://mail.example.com/send".to_string(),
                 recipient: "alice@example.com".to_string(),
                 subject: Some("Verify your email".to_string()),
                 body: "Use code 123456".to_string(),
                 template_id: Some("email.verify".to_string()),
                 data_json: r#"{"code":"123456"}"#.to_string(),
                 request_output: Some(request_output.clone()),
-                dry_run_status: 202,
+                dry_run: true,
+                timeout_seconds: 10,
                 now: Some(300),
                 actor: "qid-worker".to_string(),
                 reason: "scheduled notification delivery".to_string(),
@@ -1312,15 +1265,15 @@ realms:
         .expect("notification deliver");
 
         assert_eq!(result["command"], "notification_deliver");
-        assert_eq!(result["report"]["status"], "delivered");
+        assert_eq!(result["report"]["status"], "skipped_dry_run");
         assert_eq!(result["report"]["channel"], "email");
         let captured: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(request_output).expect("captured request"),
         )
         .expect("captured request JSON");
-        assert_eq!(captured["channel"], "email");
-        assert_eq!(captured["recipient"], "alice@example.com");
-        assert_eq!(captured["template_id"], "email.verify");
+        assert_eq!(captured["body"]["channel"], "email");
+        assert_eq!(captured["body"]["recipient"], "alice@example.com");
+        assert_eq!(captured["body"]["template_id"], "email.verify");
 
         let refreshed = AnyRepository::connect(store.to_str().expect("store path"))
             .await

@@ -82,6 +82,7 @@ pub struct NotificationRequest {
 pub struct NotificationResponse {
     pub status: u16,
     pub provider_message_id: Option<String>,
+    pub sent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,10 +104,12 @@ pub enum NotificationDeliveryStatus {
     Delivered,
     FailedRetryable,
     FailedPermanent,
+    SkippedDryRun,
 }
 
+#[async_trait::async_trait]
 pub trait NotificationTransport {
-    fn send(&self, request: NotificationRequest) -> Result<NotificationResponse, String>;
+    async fn send(&self, request: NotificationRequest) -> Result<NotificationResponse, String>;
 }
 
 pub async fn run_notification_delivery_job<R, T>(
@@ -121,17 +124,30 @@ where
     validate_notification_config(&config)?;
     let recipient_hash = hex_sha256(config.recipient.as_bytes());
     let body_hash = hex_sha256(config.body.as_bytes());
-    let response = transport.send(NotificationRequest {
-        channel: config.channel,
-        provider: config.provider.clone(),
-        recipient: config.recipient.clone(),
-        subject: config.subject.clone(),
-        body: config.body.clone(),
-        template_id: config.template_id.clone(),
-        data_json: config.data_json.clone(),
-    });
+    let response = transport
+        .send(NotificationRequest {
+            channel: config.channel,
+            provider: config.provider.clone(),
+            recipient: config.recipient.clone(),
+            subject: config.subject.clone(),
+            body: config.body.clone(),
+            template_id: config.template_id.clone(),
+            data_json: config.data_json.clone(),
+        })
+        .await;
 
     let (status, provider_status, provider_message_id, retry) = match response {
+        Ok(response) if !response.sent => (
+            NotificationDeliveryStatus::SkippedDryRun,
+            None,
+            None,
+            NotificationRetryDecision {
+                retry: false,
+                attempt: config.completed_attempts,
+                delay_ms: None,
+                first_error: None,
+            },
+        ),
         Ok(response) if (200..300).contains(&response.status) => (
             NotificationDeliveryStatus::Delivered,
             Some(response.status),

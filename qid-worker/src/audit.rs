@@ -110,7 +110,7 @@ pub struct AuditSiemHttpRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditSiemHttpResponse {
     pub status: u16,
-    pub body: Vec<u8>,
+    pub sent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -132,10 +132,12 @@ pub enum AuditSiemDeliveryStatus {
     FailedRetryable,
     FailedPermanent,
     SkippedNoEvents,
+    SkippedDryRun,
 }
 
+#[async_trait::async_trait]
 pub trait SiemWebhookTransport {
-    fn send(&self, request: AuditSiemHttpRequest) -> Result<AuditSiemHttpResponse, String>;
+    async fn send(&self, request: AuditSiemHttpRequest) -> Result<AuditSiemHttpResponse, String>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -587,14 +589,26 @@ where
     let body = serde_json::to_vec(&payload).map_err(|e| qid_core::error::QidError::Internal {
         message: e.to_string(),
     })?;
-    let response = transport.send(AuditSiemHttpRequest {
-        method: "POST".to_string(),
-        url: config.endpoint_url.clone(),
-        headers: siem_delivery_headers(&config, body.len()),
-        body,
-    });
+    let response = transport
+        .send(AuditSiemHttpRequest {
+            method: "POST".to_string(),
+            url: config.endpoint_url.clone(),
+            headers: siem_delivery_headers(&config, body.len()),
+            body,
+        })
+        .await;
 
     let (status, http_status, retry) = match response {
+        Ok(response) if !response.sent => (
+            AuditSiemDeliveryStatus::SkippedDryRun,
+            None,
+            AuditSiemRetryDecision {
+                retry: false,
+                attempt: config.completed_attempts,
+                delay_ms: None,
+                first_error: None,
+            },
+        ),
         Ok(response) if (200..300).contains(&response.status) => (
             AuditSiemDeliveryStatus::Delivered,
             Some(response.status),
@@ -634,20 +648,24 @@ where
         AuditSiemDeliveryStatus::Delivered => SiemDeliveryStatus::Delivered,
         AuditSiemDeliveryStatus::FailedRetryable => SiemDeliveryStatus::Pending,
         AuditSiemDeliveryStatus::FailedPermanent => SiemDeliveryStatus::Dead,
-        AuditSiemDeliveryStatus::SkippedNoEvents => SiemDeliveryStatus::Pending,
+        AuditSiemDeliveryStatus::SkippedNoEvents | AuditSiemDeliveryStatus::SkippedDryRun => {
+            SiemDeliveryStatus::Pending
+        }
     };
     let next_retry_at = retry
         .delay_ms
         .map(|delay_ms| config.now_epoch.saturating_add(delay_ms.div_ceil(1_000)));
-    repo.mark_siem_delivery_status(
-        &delivery_id,
-        queue_status,
-        retry.attempt,
-        next_retry_at,
-        retry.first_error.as_deref(),
-        config.now_epoch,
-    )
-    .await?;
+    if status != AuditSiemDeliveryStatus::SkippedDryRun {
+        repo.mark_siem_delivery_status(
+            &delivery_id,
+            queue_status,
+            retry.attempt,
+            next_retry_at,
+            retry.first_error.as_deref(),
+            config.now_epoch,
+        )
+        .await?;
+    }
 
     let event_count = events.len();
     let audit_event_id = if config.record_audit_event {
@@ -722,13 +740,25 @@ where
         "x-qid-event-type".to_string(),
         "qid.audit.webhook.v1".to_string(),
     );
-    let response = transport.send(AuditSiemHttpRequest {
-        method: "POST".to_string(),
-        url: delivery.endpoint_url.clone(),
-        headers,
-        body,
-    });
+    let response = transport
+        .send(AuditSiemHttpRequest {
+            method: "POST".to_string(),
+            url: delivery.endpoint_url.clone(),
+            headers,
+            body,
+        })
+        .await;
     let (status, http_status, retry) = match response {
+        Ok(response) if !response.sent => (
+            AuditSiemDeliveryStatus::SkippedDryRun,
+            None,
+            AuditSiemRetryDecision {
+                retry: false,
+                attempt: delivery.attempts,
+                delay_ms: None,
+                first_error: None,
+            },
+        ),
         Ok(response) if (200..300).contains(&response.status) => (
             AuditSiemDeliveryStatus::Delivered,
             Some(response.status),
@@ -763,7 +793,9 @@ where
         AuditSiemDeliveryStatus::Delivered => SiemDeliveryStatus::Delivered,
         AuditSiemDeliveryStatus::FailedRetryable => SiemDeliveryStatus::Pending,
         AuditSiemDeliveryStatus::FailedPermanent => SiemDeliveryStatus::Dead,
-        AuditSiemDeliveryStatus::SkippedNoEvents => SiemDeliveryStatus::Pending,
+        AuditSiemDeliveryStatus::SkippedNoEvents | AuditSiemDeliveryStatus::SkippedDryRun => {
+            SiemDeliveryStatus::Pending
+        }
     };
     let next_retry_at = retry
         .delay_ms
@@ -772,7 +804,11 @@ where
         &delivery.id,
         queue_status,
         retry.attempt,
-        next_retry_at,
+        if status == AuditSiemDeliveryStatus::SkippedDryRun {
+            Some(config.now_epoch)
+        } else {
+            next_retry_at
+        },
         retry.first_error.as_deref(),
         config.now_epoch,
     )

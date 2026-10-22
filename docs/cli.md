@@ -205,14 +205,16 @@ cargo run --bin qid-dev -- qpx-smoke
 
 `qid-worker` runs operational jobs and emits JSON.
 
+SIEM and notification delivery send HTTPS requests by default. Add `--dry-run` to record a prepared request without sending; dry runs report `skipped_dry_run`, and SIEM entries remain pending. `--request-output` writes a local copy of the request; protect that file because notification payloads may contain personal data. The default network timeout is 10 seconds (`--timeout-seconds`), and redirects are not followed. For `notification-deliver`, `--provider` is the HTTPS endpoint URL accepting the JSON request.
+
 | Command | Purpose |
 | --- | --- |
 | `audit-retention-evaluate` | Evaluate retention and optionally record an audit event. |
 | `audit-retention-execute` | Archive when required and report purge-ready IDs; optionally attach a verified RFC 3161 timestamp. |
 | `audit-worm-archive` | Export recent audit events to a local append-only archive directory; optionally attach a verified RFC 3161 timestamp. |
-| `audit-siem-deliver` | Build and deliver a SIEM webhook payload through deterministic local transport. |
+| `audit-siem-deliver` | Send a SIEM webhook to an HTTPS endpoint; `--dry-run` records without sending. |
 | `audit-siem-redrive` | Redrive a persistent SIEM delivery queue entry. |
-| `notification-deliver` | Deliver email or push notification through deterministic local transport. |
+| `notification-deliver` | Send email or push notification to an HTTPS endpoint; `--dry-run` records without sending. |
 | `directory-sync` | Synchronize a configured directory provider. |
 | `key-rotation-plan` | Plan key rotation and optionally record an audit event. |
 | `key-rotation-execute` | Execute supported key rotation actions from a plan JSON file. |

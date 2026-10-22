@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+pub mod delivery;
 pub mod key_rotation;
 pub mod notification;
 pub mod sync;
@@ -9,6 +10,7 @@ pub mod sync;
 mod sync_audit_test;
 
 pub use audit::*;
+pub use delivery::*;
 pub use key_rotation::*;
 pub use notification::*;
 pub use sync::*;
@@ -29,8 +31,10 @@ mod tests {
     };
     use std::cell::RefCell;
     use std::collections::BTreeMap;
-    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU16, Ordering};
+    #[path = "delivery_test.rs"]
+    mod delivery_test;
+    use std::sync::{Mutex, OnceLock};
 
     static DB_SEQ: AtomicU16 = AtomicU16::new(0);
 
@@ -78,31 +82,32 @@ mod tests {
 
     struct CapturingTransport {
         response: AuditSiemHttpResponse,
-        requests: RefCell<Vec<AuditSiemHttpRequest>>,
+        requests: Mutex<Vec<AuditSiemHttpRequest>>,
     }
 
     impl CapturingTransport {
         fn new(status: u16) -> Self {
             Self {
-                response: AuditSiemHttpResponse {
-                    status,
-                    body: Vec::new(),
-                },
-                requests: RefCell::new(Vec::new()),
+                response: AuditSiemHttpResponse { status, sent: true },
+                requests: Mutex::new(Vec::new()),
             }
         }
     }
 
+    #[async_trait::async_trait]
     impl SiemWebhookTransport for CapturingTransport {
-        fn send(&self, request: AuditSiemHttpRequest) -> Result<AuditSiemHttpResponse, String> {
-            self.requests.borrow_mut().push(request);
+        async fn send(
+            &self,
+            request: AuditSiemHttpRequest,
+        ) -> Result<AuditSiemHttpResponse, String> {
+            self.requests.lock().unwrap().push(request);
             Ok(self.response.clone())
         }
     }
 
     struct InMemoryNotificationTransport {
         response: Result<NotificationResponse, String>,
-        requests: RefCell<Vec<NotificationRequest>>,
+        requests: Mutex<Vec<NotificationRequest>>,
     }
 
     impl InMemoryNotificationTransport {
@@ -111,15 +116,17 @@ mod tests {
                 response: Ok(NotificationResponse {
                     status,
                     provider_message_id: Some("msg-1".to_string()),
+                    sent: true,
                 }),
-                requests: RefCell::new(Vec::new()),
+                requests: Mutex::new(Vec::new()),
             }
         }
     }
 
+    #[async_trait::async_trait]
     impl NotificationTransport for InMemoryNotificationTransport {
-        fn send(&self, request: NotificationRequest) -> Result<NotificationResponse, String> {
-            self.requests.borrow_mut().push(request);
+        async fn send(&self, request: NotificationRequest) -> Result<NotificationResponse, String> {
+            self.requests.lock().unwrap().push(request);
             self.response.clone()
         }
     }
@@ -401,7 +408,7 @@ mod tests {
         assert_eq!(report.http_status, Some(202));
         assert!(report.audit_event_id.is_some());
         let request = {
-            let requests = transport.requests.borrow();
+            let requests = transport.requests.lock().unwrap();
             assert_eq!(requests.len(), 1);
             requests[0].clone()
         };
@@ -571,7 +578,7 @@ mod tests {
         assert_eq!(queued.status, SiemDeliveryStatus::Delivered);
         assert_eq!(queued.attempts, 4);
         assert_eq!(queued.next_retry_at, None);
-        let requests = successful_transport.requests.borrow();
+        let requests = successful_transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["events"][0]["id"], "event-1");
@@ -610,7 +617,7 @@ mod tests {
         assert_eq!(report.provider_message_id.as_deref(), Some("msg-1"));
         assert!(report.audit_event_id.is_some());
         let request = {
-            let requests = transport.requests.borrow();
+            let requests = transport.requests.lock().unwrap();
             assert_eq!(requests.len(), 1);
             requests[0].clone()
         };

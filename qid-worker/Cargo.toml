@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 qid-core = { workspace = true }
 qid-crypto = { workspace = true }
@@ -36,7 +37,6 @@ rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 
 [dev-dependencies]
-async-trait = { workspace = true }
 base64 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }

@@ -177,6 +177,8 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-worm-archive \
 
 The worker hashes the JSONL audit body with SHA-256, sends a nonce-bearing RFC 3161 request, verifies the response imprint, nonce, CMS signature, time-stamping EKU, and certificate path, then archives the `.timestamp.tsr` response beside the body and version 2 manifest. TSA acquisition or verification failure aborts the archive job before any object is written. The current verifier accepts ECDSA TSA signing keys on P-256/P-384; configure a compatible TSA. The same TSA options are available on `audit-retention-execute`.
 
+SIEM delivery posts to the configured HTTPS endpoint by default, with a 10-second timeout and redirects disabled. Use `--dry-run` only to capture a request without sending; it reports `skipped_dry_run` and leaves the queue entry pending. Notification `--provider` is likewise an HTTPS JSON endpoint URL.
+
 SIEM delivery failures are persisted in `siem_delivery_queue`. Retryable failures stay `pending` with `next_retry_at`; exhausted failures become `dead` and can be inspected or redriven:
 
 ```sh

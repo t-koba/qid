@@ -577,8 +577,8 @@ impl IgaRepository for SqlRepository {
 
     async fn store_iga_finding(&self, finding: &IgaFindingRecord) -> QidResult<()> {
         finding.validate()?;
-        sqlx::query(
-            "INSERT INTO iga_findings (id, tenant_id, finding_type, subject, severity, evidence_json, detected_at_epoch_seconds, resolved) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO iga_findings (id, tenant_id, finding_type, subject, severity, evidence_json, detected_at_epoch_seconds, resolved) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&finding.id)
         .bind(&finding.tenant_id)
@@ -591,6 +591,9 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("IGA finding ID {} already exists", finding.id)
+        })?;
         Ok(())
     }
 

@@ -423,6 +423,11 @@ impl IgaRepository for FileRepository {
     async fn store_iga_finding(&self, finding: &IgaFindingRecord) -> QidResult<()> {
         finding.validate()?;
         let mut store = self.store.write().await;
+        if store.iga_findings.contains_key(&finding.id) {
+            return Err(QidError::Conflict {
+                message: format!("IGA finding ID {} already exists", finding.id),
+            });
+        }
         store
             .iga_findings
             .insert(finding.id.clone(), finding.clone());

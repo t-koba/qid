@@ -141,3 +141,11 @@ async fn iga_certification_identity_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-iga-certification").await;
     support::assert_iga_certification_identity_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn iga_finding_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_iga_finding_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-iga-finding").await;
+    support::assert_iga_finding_identity_ownership(&file).await;
+}

@@ -3,8 +3,8 @@
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
-    IgaAccessReviewDecisionRecord, IgaCertificationRecord, PasswordResetToken, ServiceAccount,
-    User, WebAuthnCredential, WorkloadIdentity,
+    IgaAccessReviewDecisionRecord, IgaCertificationRecord, IgaFindingRecord, PasswordResetToken,
+    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1782,6 +1782,74 @@ where
         repo.list_iga_certifications("tenant-iga-certification-other", Some("manager"))
             .await
             .expect("list other-tenant IGA certifications failed")
+            .is_empty()
+    );
+}
+
+/// Duplicate stores cannot reset the monotonic resolved state or replace finding evidence.
+pub async fn assert_iga_finding_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let finding = IgaFindingRecord {
+        id: "iga-finding-identity".to_string(),
+        tenant_id: "tenant-iga-finding".to_string(),
+        finding_type: "dormant_account".to_string(),
+        subject: "user-flagged".to_string(),
+        severity: "high".to_string(),
+        evidence_json: serde_json::json!({"source": "original"}),
+        detected_at_epoch_seconds: 1_700_000_000,
+        resolved: false,
+    };
+    repo.store_iga_finding(&finding)
+        .await
+        .expect("store incumbent IGA finding failed");
+    repo.resolve_iga_finding(&finding.id)
+        .await
+        .expect("resolve incumbent IGA finding failed");
+
+    let same_tenant_duplicate = IgaFindingRecord {
+        subject: "different-user".to_string(),
+        evidence_json: serde_json::json!({"source": "replacement"}),
+        detected_at_epoch_seconds: 1_700_000_100,
+        resolved: false,
+        ..finding.clone()
+    };
+    let err = repo
+        .store_iga_finding(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate finding ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant finding ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_tenant_duplicate = IgaFindingRecord {
+        tenant_id: "tenant-iga-finding-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_finding(&cross_tenant_duplicate)
+        .await
+        .expect_err("a finding ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant finding ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let stored = repo
+        .list_iga_findings(&finding.tenant_id, Some("dormant_account"))
+        .await
+        .expect("list incumbent IGA findings failed");
+    let mut incumbent = finding;
+    incumbent.resolved = true;
+    assert_eq!(stored, vec![incumbent]);
+    assert!(
+        repo.list_iga_findings("tenant-iga-finding-other", Some("dormant_account"))
+            .await
+            .expect("list other-tenant IGA findings failed")
             .is_empty()
     );
 }

@@ -174,3 +174,11 @@ pub const IGA_CERTIFICATION: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for IGA findings with separately monotonic resolution state.
+#[allow(dead_code)]
+pub const IGA_FINDING: OwnershipContract = OwnershipContract {
+    owner_key: "tenant_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

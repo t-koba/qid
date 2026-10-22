@@ -100,7 +100,7 @@ Admin mutations require admin authorization checks and, depending on config, rea
 | `POST` | `/admin/api/v1/:realm/policy/simulate` | Simulate policy. |
 | `GET, POST` | `/admin/api/v1/realms` | List/create realms. |
 | `GET, DELETE` | `/admin/api/v1/realms/:realm` | Get/delete realm. |
-| `GET, POST` | `/admin/api/v1/:realm/users` | List/create users. |
+| `GET, POST` | `/admin/api/v1/:realm/users` | List/create users. A user id the realm already holds is refused, and so is an email the realm already holds for another user. |
 | `GET, PUT, DELETE` | `/admin/api/v1/:realm/users/:user_id` | Get/update/delete user. |
 | `GET` | `/admin/api/v1/:realm/sessions` | List sessions. |
 | `POST` | `/admin/api/v1/:realm/sessions/:session_id/revoke` | Revoke session. |

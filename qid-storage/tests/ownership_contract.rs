@@ -1,0 +1,47 @@
+//! Cross-backend contract tests for the owner-bound storage resources.
+//!
+//! Every contract body lives in the shared support module and runs once per
+//! backend, so the file and the SQL backend answer the same owner questions
+//! the same way.
+
+mod support;
+
+#[tokio::test]
+async fn workload_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_workload_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-workload-identity").await;
+    support::assert_workload_identity_ownership(&file).await;
+}
+
+#[tokio::test]
+async fn ciam_consent_grant_owner_conflict_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_ciam_consent_grant_owner_conflict(&sql).await;
+    let file = support::file_repo("ownership-contract-ciam-consent-grant").await;
+    support::assert_ciam_consent_grant_owner_conflict(&file).await;
+}
+
+#[tokio::test]
+async fn client_id_uniqueness_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_client_id_uniqueness(&sql).await;
+    let file = support::file_repo("ownership-contract-client-id-uniqueness").await;
+    support::assert_client_id_uniqueness(&file).await;
+}
+
+#[tokio::test]
+async fn client_id_ambiguity_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_client_id_ambiguity(&sql).await;
+    let file = support::file_repo("ownership-contract-client-id-ambiguity").await;
+    support::assert_client_id_ambiguity(&file).await;
+}
+
+#[tokio::test]
+async fn workload_identity_delete_scope_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_workload_identity_delete_scope(&sql).await;
+    let file = support::file_repo("ownership-contract-workload-identity-delete").await;
+    support::assert_workload_identity_delete_scope(&file).await;
+}

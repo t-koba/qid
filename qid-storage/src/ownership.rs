@@ -164,3 +164,8 @@ pub const IGA_ACCESS_REQUEST: OwnershipContract =
 #[allow(dead_code)]
 pub const IGA_APPROVAL: OwnershipContract =
     OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+
+/// Ownership contract for mutable IGA access grants with separate revocation.
+#[allow(dead_code)]
+pub const IGA_ACCESS_GRANT: OwnershipContract =
+    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);

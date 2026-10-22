@@ -196,8 +196,8 @@ impl IgaRepository for SqlRepository {
 
     async fn store_iga_access_grant(&self, grant: &IgaAccessGrantRecord) -> QidResult<()> {
         grant.validate()?;
-        sqlx::query(
-            "INSERT INTO iga_access_grants (id, tenant_id, request_id, subject, entitlement, granted_at_epoch_seconds, expires_at_epoch_seconds, approval_ids_json, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO iga_access_grants (id, tenant_id, request_id, subject, entitlement, granted_at_epoch_seconds, expires_at_epoch_seconds, approval_ids_json, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&grant.id)
         .bind(&grant.tenant_id)
@@ -211,6 +211,7 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || "IGA grant ID".into())?;
         Ok(())
     }
 

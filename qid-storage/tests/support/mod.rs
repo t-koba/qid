@@ -3,7 +3,7 @@
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
-    IgaAccessRequestRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
+    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
     IgaCertificationRecord, IgaFindingRecord, PasswordResetToken, ServiceAccount, User,
     WebAuthnCredential, WorkloadIdentity,
 };
@@ -1990,6 +1990,74 @@ where
         repo.list_iga_approvals("tenant-iga-approval-other", "request-iga-approval")
             .await
             .expect("list other-tenant IGA approvals failed")
+            .is_empty()
+    );
+}
+
+/// Duplicate stores cannot undo a grant's revoked state.
+pub async fn assert_iga_access_grant_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let grant = IgaAccessGrantRecord {
+        id: "iga-access-grant-identity".to_string(),
+        tenant_id: "tenant-iga-access-grant".to_string(),
+        request_id: "request-iga-access-grant".to_string(),
+        subject: "user-iga-access-grant".to_string(),
+        entitlement: "crm:admin".to_string(),
+        granted_at_epoch_seconds: 1_700_000_000,
+        expires_at_epoch_seconds: Some(1_700_086_400),
+        approval_ids: vec!["approval-iga-access-grant".to_string()],
+        revoked: false,
+    };
+    repo.store_iga_access_grant(&grant)
+        .await
+        .expect("store incumbent IGA access grant failed");
+    repo.revoke_iga_access_grant(&grant.tenant_id, &grant.id)
+        .await
+        .expect("revoke incumbent IGA access grant failed");
+
+    let same_tenant_duplicate = IgaAccessGrantRecord {
+        revoked: false,
+        entitlement: "replacement-entitlement".to_string(),
+        ..grant.clone()
+    };
+    let err = repo
+        .store_iga_access_grant(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate access-grant ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant access-grant ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_tenant_duplicate = IgaAccessGrantRecord {
+        tenant_id: "tenant-iga-access-grant-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_access_grant(&cross_tenant_duplicate)
+        .await
+        .expect_err("an access-grant ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant access-grant ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let mut incumbent = grant;
+    incumbent.revoked = true;
+    assert_eq!(
+        repo.list_iga_access_grants(&incumbent.tenant_id, Some(&incumbent.subject))
+            .await
+            .expect("list incumbent IGA access grant failed"),
+        vec![incumbent]
+    );
+    assert!(
+        repo.list_iga_access_grants("tenant-iga-access-grant-other", None)
+            .await
+            .expect("list other-tenant IGA access grants failed")
             .is_empty()
     );
 }

@@ -363,8 +363,8 @@ impl IgaRepository for SqlRepository {
         grant: &IgaJitPrivilegeGrantRecord,
     ) -> QidResult<()> {
         grant.validate()?;
-        sqlx::query(
-            "INSERT INTO iga_jit_privilege_grants (id, tenant_id, subject, entitlement, requested_by, approved_by, reason, issued_at_epoch_seconds, expires_at_epoch_seconds, revoked, constraints_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO iga_jit_privilege_grants (id, tenant_id, subject, entitlement, requested_by, approved_by, reason, issued_at_epoch_seconds, expires_at_epoch_seconds, revoked, constraints_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&grant.id)
         .bind(&grant.tenant_id)
@@ -380,6 +380,9 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "IGA JIT privilege grant ID already exists".into()
+        })?;
         Ok(())
     }
 

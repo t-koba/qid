@@ -4,8 +4,8 @@ use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
     IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
-    IgaCertificationRecord, IgaFindingRecord, PasswordResetToken, ServiceAccount, User,
-    WebAuthnCredential, WorkloadIdentity,
+    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, PasswordResetToken,
+    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -2058,6 +2058,76 @@ where
         repo.list_iga_access_grants("tenant-iga-access-grant-other", None)
             .await
             .expect("list other-tenant IGA access grants failed")
+            .is_empty()
+    );
+}
+
+/// Duplicate stores cannot undo a JIT privilege grant's revoked state.
+pub async fn assert_iga_jit_privilege_grant_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let grant = IgaJitPrivilegeGrantRecord {
+        id: "iga-jit-grant-identity".to_string(),
+        tenant_id: "tenant-iga-jit-grant".to_string(),
+        subject: "user-iga-jit-grant".to_string(),
+        entitlement: "crm:admin".to_string(),
+        requested_by: "user-iga-jit-grant".to_string(),
+        approved_by: Some("manager-iga-jit-grant".to_string()),
+        reason: "Emergency access".to_string(),
+        issued_at_epoch_seconds: 1_700_000_000,
+        expires_at_epoch_seconds: 1_700_000_900,
+        revoked: false,
+        constraints_json: serde_json::json!({"ticket": "INC-jit"}),
+    };
+    repo.store_iga_jit_privilege_grant(&grant)
+        .await
+        .expect("store incumbent IGA JIT grant failed");
+    repo.revoke_iga_jit_privilege_grant(&grant.tenant_id, &grant.id)
+        .await
+        .expect("revoke incumbent IGA JIT grant failed");
+
+    let same_tenant_duplicate = IgaJitPrivilegeGrantRecord {
+        revoked: false,
+        entitlement: "replacement-entitlement".to_string(),
+        ..grant.clone()
+    };
+    let err = repo
+        .store_iga_jit_privilege_grant(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate JIT grant ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant JIT grant ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_tenant_duplicate = IgaJitPrivilegeGrantRecord {
+        tenant_id: "tenant-iga-jit-grant-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_jit_privilege_grant(&cross_tenant_duplicate)
+        .await
+        .expect_err("a JIT grant ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant JIT grant ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let mut incumbent = grant;
+    incumbent.revoked = true;
+    assert_eq!(
+        repo.list_iga_jit_privilege_grants(&incumbent.tenant_id, Some(&incumbent.subject))
+            .await
+            .expect("list incumbent IGA JIT grant failed"),
+        vec![incumbent]
+    );
+    assert!(
+        repo.list_iga_jit_privilege_grants("tenant-iga-jit-grant-other", None)
+            .await
+            .expect("list other-tenant IGA JIT grants failed")
             .is_empty()
     );
 }

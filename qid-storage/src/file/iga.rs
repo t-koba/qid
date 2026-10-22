@@ -245,6 +245,11 @@ impl IgaRepository for FileRepository {
     ) -> QidResult<()> {
         grant.validate()?;
         let mut store = self.store.write().await;
+        if store.iga_jit_privilege_grants.contains_key(&grant.id) {
+            return Err(QidError::Conflict {
+                message: format!("IGA JIT privilege grant ID {} already exists", grant.id),
+            });
+        }
         store
             .iga_jit_privilege_grants
             .insert(grant.id.clone(), grant.clone());

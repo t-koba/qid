@@ -157,3 +157,7 @@ pub const IGA_APPROVAL: OwnershipContract = refusal("tenant_id", "id");
 /// Ownership contract for mutable IGA access grants with separate revocation.
 #[allow(dead_code)]
 pub const IGA_ACCESS_GRANT: OwnershipContract = refusal("tenant_id", "id");
+
+/// Ownership contract for mutable IGA JIT privilege grants with separate revocation.
+#[allow(dead_code)]
+pub const IGA_JIT_PRIVILEGE_GRANT: OwnershipContract = refusal("tenant_id", "id");

@@ -2153,6 +2153,85 @@ async fn test_file_workload_identity_ownership() {
     assert_workload_identity_ownership(&repo).await;
 }
 
+async fn assert_client_id_uniqueness<R>(repo: &R)
+where
+    R: RealmRepository + ClientRepository,
+{
+    let realm = RealmId("realm-client-unique".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-unique".to_string()),
+        &realm,
+        "https://client-unique.example.com",
+        Some("Client Unique Realm"),
+    )
+    .await
+    .expect("create client unique realm failed");
+    let other_realm = RealmId("realm-client-unique-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-unique-other".to_string()),
+        &other_realm,
+        "https://client-unique-other.example.com",
+        Some("Other Client Unique Realm"),
+    )
+    .await
+    .expect("create other client unique realm failed");
+
+    let client = sample_cross_realm_client("client-unique-a", &realm.0, "shared-app");
+    repo.create_client(&client)
+        .await
+        .expect("create client failed");
+
+    // A second client in the same realm cannot carry the same client id.
+    let duplicate = sample_cross_realm_client("client-unique-b", &realm.0, "shared-app");
+    let err = repo
+        .create_client(&duplicate)
+        .await
+        .expect_err("a second client with one client id must be refused");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a duplicate client id must be a conflict, got: {}",
+        err.message()
+    );
+    let listed = repo
+        .list_clients(&realm)
+        .await
+        .expect("list clients failed");
+    assert_eq!(
+        listed.len(),
+        1,
+        "the refused client changed the realm's clients"
+    );
+
+    // The same client id in another realm is another client.
+    let elsewhere = sample_cross_realm_client("client-unique-c", &other_realm.0, "shared-app");
+    repo.create_client(&elsewhere)
+        .await
+        .expect("the same client id in another realm must be allowed");
+    let found = repo
+        .find_clients_by_client_id(&[realm.clone(), other_realm.clone()], "shared-app")
+        .await
+        .expect("find clients by client id failed");
+    assert_eq!(found.len(), 2, "one client per realm must be found");
+}
+
+#[tokio::test]
+async fn test_sql_client_id_uniqueness() {
+    let repo = sql_repo().await;
+    assert_client_id_uniqueness(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_client_id_uniqueness() {
+    let path =
+        std::env::temp_dir().join(format!("qid-file-client-unique-{}.json", ulid::Ulid::new()));
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("file repository creation failed");
+    repo.migrate().await.expect("file migration failed");
+
+    assert_client_id_uniqueness(&repo).await;
+}
+
 async fn assert_workload_identity_delete_scope<R>(repo: &R)
 where
     R: RealmRepository + WorkloadRepository,

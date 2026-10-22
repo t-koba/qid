@@ -122,6 +122,11 @@ pub trait UserRepository: Send + Sync + 'static {
 
 #[async_trait]
 pub trait ClientRepository: Send + Sync + 'static {
+    /// Create a client.
+    ///
+    /// A client id names one client in a realm, so a client whose record ID
+    /// is taken, or whose client id the realm already holds, is refused and
+    /// the incumbent stays as it is.
     async fn create_client(&self, client: &Client) -> QidResult<()>;
     async fn update_client(&self, client: &Client) -> QidResult<()>;
     async fn get_client_by_client_id(

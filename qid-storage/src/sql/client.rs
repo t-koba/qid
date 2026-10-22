@@ -5,8 +5,11 @@ use super::*;
 #[async_trait]
 impl ClientRepository for SqlRepository {
     async fn create_client(&self, client: &Client) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO clients (id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        // The unique constraints of the table hold the invariant, so the
+        // insert refuses a client whose record ID or whose client id in the
+        // realm is taken. The read names the reason of the refusal.
+        let result = sqlx::query(
+            "INSERT INTO clients (id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(&client.id)
         .bind(&client.realm_id)
@@ -36,6 +39,23 @@ impl ClientRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            let incumbent = self
+                .find_clients_by_client_id(
+                    &[RealmId::from(client.realm_id.clone())],
+                    &client.client_id,
+                )
+                .await?;
+            let message = if incumbent.is_empty() {
+                format!("client record ID {} already exists", client.id)
+            } else {
+                format!(
+                    "client id {} already exists in realm {}",
+                    client.client_id, client.realm_id
+                )
+            };
+            return Err(QidError::Conflict { message });
+        }
         Ok(())
     }
 

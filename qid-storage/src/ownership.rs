@@ -16,12 +16,10 @@ pub(super) fn ensure_same_binding<T: PartialEq>(
 
 /// Refuse a write the statement itself refused.
 ///
-/// Use after an atomic SQL statement whose predicate names the owner and the
-/// identity (an upsert with an owner/identity WHERE clause), or, for the
-/// one-shot consumption refusals, after a statement whose predicate is the
-/// lifecycle flag. Zero rows means that predicate rejected the write. The
-/// two are the same helper because the outcome is the same (Conflict); the
-/// contract a resource states says which predicate it uses.
+/// Use after an atomic SQL statement that returns zero rows because a
+/// duplicate identity, owner/identity predicate, or one-shot lifecycle
+/// predicate refused it. The outcome is the same (`Conflict`); the resource
+/// contract states which predicate enforces the refusal.
 pub(super) fn ensure_upsert_applied(
     rows_affected: u64,
     message: impl FnOnce() -> String,
@@ -100,6 +98,14 @@ pub const DEVICE: OwnershipContract = OwnershipContract {
 /// Ownership contract for the FedCM identity resource (store).
 #[allow(dead_code)]
 pub const FEDCM_IDENTITY: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};
+
+/// Ownership contract for the service-account resource (create).
+#[allow(dead_code)]
+pub const SERVICE_ACCOUNT: OwnershipContract = OwnershipContract {
     owner_key: "realm_id",
     identity_key: "id",
     collision: CollisionRule::Refuse,

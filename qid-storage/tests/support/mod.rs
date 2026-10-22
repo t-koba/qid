@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    CiamConsentGrant, Client, ClientType, Device, FedCmIdentity, User, WorkloadIdentity,
+    CiamConsentGrant, Client, ClientType, Device, FedCmIdentity, ServiceAccount, User,
+    WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -829,6 +830,71 @@ pub fn sample_cross_realm_client(id: &str, realm_id: &str, client_id: &str) -> C
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
     }
+}
+
+/// The owner-bound contract of a service account: a record ID names one
+/// account, so reusing it cannot replace or cross realm boundaries.
+pub async fn assert_service_account_identity_ownership<R>(repo: &R)
+where
+    R: ServiceAccountRepository,
+{
+    let account = ServiceAccount {
+        id: "service-account-ownership".to_string(),
+        client_id: "client-alice".to_string(),
+        realm_id: "realm-service-account-alice".to_string(),
+        description: Some("Alice account".to_string()),
+        created_at: 1,
+    };
+    repo.create_service_account(&account)
+        .await
+        .expect("create service account failed");
+
+    let duplicate = ServiceAccount {
+        client_id: "client-bob".to_string(),
+        realm_id: "realm-service-account-bob".to_string(),
+        description: Some("Bob account".to_string()),
+        ..account.clone()
+    };
+    let err = repo
+        .create_service_account(&duplicate)
+        .await
+        .expect_err("a second service account for one record ID must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a second service account for one record ID must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_service_account_by_client_id(&account.realm_id, &account.client_id)
+        .await
+        .expect("get service account failed")
+        .expect("the incumbent service account must still exist");
+    assert_eq!(
+        stored.id, account.id,
+        "the refusal changed the incumbent ID"
+    );
+    assert_eq!(
+        stored.realm_id, account.realm_id,
+        "the refusal changed the incumbent owner"
+    );
+    assert_eq!(
+        stored.client_id, account.client_id,
+        "the refusal changed the incumbent client"
+    );
+    assert_eq!(
+        stored.description, account.description,
+        "the refusal changed the incumbent description"
+    );
+    assert_eq!(
+        stored.created_at, account.created_at,
+        "the refusal changed the incumbent creation time"
+    );
+    assert!(
+        repo.get_service_account_by_client_id(&duplicate.realm_id, &duplicate.client_id)
+            .await
+            .expect("get duplicate service account failed")
+            .is_none()
+    );
 }
 
 /// The owner-bound contract of a device: a record ID names one device, so a

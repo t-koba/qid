@@ -5,8 +5,8 @@ use super::*;
 #[async_trait]
 impl ServiceAccountRepository for SqlRepository {
     async fn create_service_account(&self, sa: &ServiceAccount) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO service_accounts (id, client_id, realm_id, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO service_accounts (id, client_id, realm_id, description, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&sa.id)
         .bind(&sa.client_id)
@@ -16,6 +16,9 @@ impl ServiceAccountRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("service account record ID {} already exists", sa.id)
+        })?;
         Ok(())
     }
 

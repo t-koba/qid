@@ -6,6 +6,11 @@ use super::*;
 impl ServiceAccountRepository for FileRepository {
     async fn create_service_account(&self, sa: &ServiceAccount) -> QidResult<()> {
         let mut store = self.store.write().await;
+        if store.service_accounts.contains_key(&sa.id) {
+            return Err(QidError::Conflict {
+                message: format!("service account record ID {} already exists", sa.id),
+            });
+        }
         store.service_accounts.insert(sa.id.clone(), sa.clone());
         drop(store);
         self.save().await

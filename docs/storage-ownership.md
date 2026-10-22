@@ -67,26 +67,23 @@ both backends state it once. The typed contract they implement is
 
 - `ensure_same_binding` - the file path, under the write lock, refuses a
   write whose identity key is bound to another owner.
-- `ensure_upsert_applied` - the SQL path, after an atomic upsert whose
-  predicate names the owner and the identity, refuses a write the
-  predicate rejected.
+- `ensure_upsert_applied` - the SQL path translates a zero-row atomic write
+  into `Conflict` when a duplicate identity, owner/identity predicate, or
+  one-shot lifecycle predicate refused it.
 - `ensure_row_present` - the SQL path refuses a write that changed no row
   because the record is gone.
 - `user_email_conflict` - the refusal a user write earns when the realm
   already holds the email for another user.
 
-The write primitive is `OwnershipContract` plus these helpers: a migrated
-resource states its owner key, identity key and collision rule once and
-calls the primitive, so the file backend checks under its exclusive write
-lock and the SQL backend uses static SQL with no read before the insert.
-The migrated families are the user and the CIAM consent grant (alongside
-the workload identity and the client).
-
-A migrated resource costs three lines in the file path and three in the SQL
-path, because the outcome is stated once rather than at every call site.
+A migrated resource records its owner key, identity key and collision rule
+in `OwnershipContract`; backend code enforces that statement under the file
+store's write lock or in static SQL. The helper consolidates common refusal
+handling, while the per-resource cost depends on its distinct collision and
+lifecycle semantics.
 
 The migrated families are the workload identity, the client, the CIAM
-consent grant, the user, the device and the FedCM identity. The remaining disagreements are listed above;
+consent grant, the user, the device, the FedCM identity and the service
+account. The remaining disagreements are listed above;
 they are not all defects. A write whose identity key is a token the product
 generates (an authorization code, a PAR request, a device or backchannel
 grant) has no owner to protect, and a write whose same-owner semantics are
@@ -315,7 +312,7 @@ a `client_id`.
 
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
-| `create_service_account` - `ServiceAccount` | realm (`realm_id`) | record `id` | description | File: overwrite of the map entry, no error (`qid-storage/src/file/service_account.rs:9`). SQL: plain `INSERT` with `id` as primary key, so a duplicate ID is a unique violation surfaced as `Storage` (`qid-storage/src/sql/service_account.rs:9`). **Backends disagree.** | file `qid-storage/src/file/service_account.rs:9`; sql `qid-storage/src/sql/service_account.rs:9` (not enforced as a conflict in SQL) |
+| `create_service_account` - `ServiceAccount` | realm (`realm_id`) | record `id` | description | File: a second account with the same record ID is refused with `Conflict` under the exclusive write lock (`qid-storage/src/file/service_account.rs:9`, `qid-storage/src/file/service_account.rs:12`). SQL: `ON CONFLICT(id) DO NOTHING` and `ensure_upsert_applied` turns a zero-row result into `Conflict` (`qid-storage/src/sql/service_account.rs:8`, `qid-storage/src/sql/service_account.rs:21`). Both refuse a duplicate ID, including one presented for a different realm. | file `qid-storage/src/file/service_account.rs:9`, `qid-storage/src/file/service_account.rs:12`; sql `qid-storage/src/sql/service_account.rs:8`, `qid-storage/src/sql/service_account.rs:21` |
 | `delete_service_account` (delete) | realm (`realm_id`) in the record; the write is not realm-filtered | record `id` | none, removal | File: the service account is removed by ID and a missing account is a silent no-op (`qid-storage/src/file/service_account.rs:40`). SQL: `DELETE FROM service_accounts WHERE id = ?` and a missing account is a silent no-op (`qid-storage/src/sql/service_account.rs:48`). Both delete by ID only, so an account of another realm is removed as well. | file `qid-storage/src/file/service_account.rs:40`; sql `qid-storage/src/sql/service_account.rs:48` |
 
 ## session

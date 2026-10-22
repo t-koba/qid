@@ -7,7 +7,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use qid_core::error::QidError;
 use qid_core::web::JsonObject;
 use qid_core::{state::SharedState, tenant::RealmId};
 use qid_storage::prelude::*;
@@ -67,15 +66,9 @@ pub async fn create_workload_identity<R: Repository>(
     {
         return e;
     }
-    let Some(observed_domain) = spiffe_trust_domain(&req.spiffe_id) else {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "spiffe_id must start with spiffe:// and name a trust domain".to_string(),
-        });
-    };
-    if observed_domain != req.trust_domain {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "spiffe_id trust domain does not match trust_domain".to_string(),
-        });
+    if let Err(e) = qid_core::spiffe::require_spiffe_trust_domain(&req.spiffe_id, &req.trust_domain)
+    {
+        return qid_http::error_response(e);
     }
     // The SPIFFE ID names the identity in the realm, so registering it
     // again updates the identity that carries it: the identity keeps its
@@ -116,14 +109,6 @@ pub async fn create_workload_identity<R: Repository>(
         }
         Err(e) => qid_http::error_response(e),
     }
-}
-
-/// The trust domain a SPIFFE ID names.
-fn spiffe_trust_domain(spiffe_id: &str) -> Option<&str> {
-    spiffe_id
-        .strip_prefix("spiffe://")
-        .and_then(|rest| rest.split('/').next())
-        .filter(|domain| !domain.is_empty())
 }
 
 pub async fn get_workload_identity<R: Repository>(
@@ -202,7 +187,7 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
     workload: &WorkloadIdentity,
     ttl_seconds: Option<u64>,
 ) -> qid_core::error::QidResult<IssuedWorkloadCertificate> {
-    crate::eat::validate_spiffe_id(&workload.spiffe_id)?;
+    crate::validate_spiffe_id(&workload.spiffe_id)?;
     let now = qid_core::util::now_seconds();
     let ttl = ttl_seconds.unwrap_or(3600).clamp(60, 3600);
     let not_after = now + ttl;

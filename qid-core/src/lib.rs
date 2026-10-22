@@ -10,6 +10,7 @@ pub mod models;
 pub mod oauth;
 pub mod pkce;
 pub mod plan;
+pub mod spiffe;
 pub mod state;
 pub mod tenant;
 pub mod throttle;

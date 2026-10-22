@@ -109,7 +109,7 @@ async fn issue_jwt_svid<R: Repository>(
     realm: String,
     query: FetchJwtSvidQuery,
 ) -> QidResult<Response> {
-    validate_spiffe_id(&query.spiffe_id)?;
+    crate::validate_spiffe_id(&query.spiffe_id)?;
     if query.audience.is_empty() {
         return Err(qid_core::error::QidError::BadRequest {
             message: "JWT-SVID request must include at least one audience".to_string(),
@@ -191,10 +191,6 @@ impl WorkloadApproval for qid_core::models::WorkloadIdentity {
         // explicit `approved` boolean and update this predicate.
         true
     }
-}
-
-fn validate_spiffe_id(spiffe_id: &str) -> QidResult<()> {
-    crate::eat::validate_spiffe_id(spiffe_id)
 }
 
 trait RealmTrustDomain {

@@ -328,8 +328,9 @@ mod workload_auth;
 
 pub use eat::{
     CorimEntry, CoswidEntity, CoswidEntry, CoswidEvidence, EatClaims, EatProfile, SpiffeJwtSvid,
-    SpiffeX509Svid, coswid_fingerprint, validate_spiffe_id,
+    SpiffeX509Svid, coswid_fingerprint,
 };
+pub use qid_core::spiffe::validate_spiffe_id;
 
 pub use ciam::*;
 pub(crate) use device::*;

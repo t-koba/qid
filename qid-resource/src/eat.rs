@@ -213,32 +213,6 @@ pub struct SpiffeJwtSvid {
     pub issued_at: u64,
 }
 
-/// Validate that a SPIFFE ID is well-formed per the SPIFFE
-/// Specification §2.3: `spiffe://<trust_domain>/<workload_identifier>`.
-pub fn validate_spiffe_id(spiffe_id: &str) -> QidResult<()> {
-    let rest = spiffe_id
-        .strip_prefix("spiffe://")
-        .ok_or_else(|| QidError::BadRequest {
-            message: format!("SPIFFE ID {spiffe_id} is missing the spiffe:// scheme"),
-        })?;
-    if rest.is_empty() {
-        return Err(QidError::BadRequest {
-            message: "SPIFFE ID has an empty trust domain".to_string(),
-        });
-    }
-    if rest.contains(' ') {
-        return Err(QidError::BadRequest {
-            message: "SPIFFE ID must not contain whitespace".to_string(),
-        });
-    }
-    if rest.contains('?') {
-        return Err(QidError::BadRequest {
-            message: "SPIFFE ID must not contain query parameters".to_string(),
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,13 +233,6 @@ mod tests {
         let first = coswid_fingerprint(&entry);
         let second = coswid_fingerprint(&entry);
         assert_eq!(first, second);
-    }
-
-    #[test]
-    fn spiffe_id_validation() {
-        assert!(validate_spiffe_id("spiffe://trust.domain/ns/default/sa/qid").is_ok());
-        assert!(validate_spiffe_id("http://example.com").is_err());
-        assert!(validate_spiffe_id("spiffe://").is_err());
     }
 
     #[test]

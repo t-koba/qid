@@ -162,7 +162,7 @@ async fn load_workload_identity<R: Repository>(
     realm: &str,
     spiffe_id: &str,
 ) -> Result<WorkloadIdentity, axum::response::Response> {
-    crate::eat::validate_spiffe_id(spiffe_id).map_err(qid_http::error_response)?;
+    crate::validate_spiffe_id(spiffe_id).map_err(qid_http::error_response)?;
     state
         .repo
         .get_workload_identity_by_spiffe(&RealmId(realm.to_string()), spiffe_id)

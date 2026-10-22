@@ -343,6 +343,44 @@ async fn a_registration_must_name_the_trust_domain_of_its_spiffe_id() {
 }
 
 #[tokio::test]
+async fn a_registration_refuses_a_spiffe_id_the_product_cannot_use() {
+    let (app, state, _) = setup().await;
+    let spiffe_id = "spiffe://prod.example/ns/default/sa/my app";
+    let token = provisioning_token(&state, spiffe_id, "test", "tenant-1");
+    let body = format!(
+        r#"{{
+            "spiffe_id":"{spiffe_id}",
+            "trust_domain":"prod.example",
+            "description":"Malformed SPIFFE ID"
+        }}"#
+    );
+
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/test/workload-identities",
+            body,
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // The realm holds no identity for that ID.
+    let listed = state
+        .repo
+        .list_workload_identities(&"test".into())
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .iter()
+            .all(|identity| identity.spiffe_id != spiffe_id),
+        "a refused SPIFFE ID must not be stored"
+    );
+}
+
+#[tokio::test]
 async fn workload_certificate_lifecycle_requires_bound_workload_svid() {
     let (app, state, token) = setup().await;
     let workload_id = state

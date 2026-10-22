@@ -252,18 +252,7 @@ fn ensure_spiffe_trust_domain(spiffe_id: &str, trust_domain: &str) -> anyhow::Re
         !trust_domain.trim().is_empty(),
         "trust_domain must not be empty"
     );
-    let Some(rest) = spiffe_id.strip_prefix("spiffe://") else {
-        bail!("spiffe_id must start with spiffe://");
-    };
-    let observed = rest
-        .split('/')
-        .next()
-        .filter(|domain| !domain.is_empty())
-        .context("spiffe_id must contain a trust domain")?;
-    ensure!(
-        observed == trust_domain,
-        "spiffe_id trust domain does not match trust_domain"
-    );
+    qid_core::spiffe::require_spiffe_trust_domain(spiffe_id, trust_domain)?;
     Ok(())
 }
 

@@ -304,7 +304,8 @@ ID again updates the identity that carries it: the identity keeps its ID and
 the authorities another path recorded, and the registration states its
 description and trust domain. An identity ID that belongs to another realm's
 identity is a conflict, and the trust domain of a registration must be the
-trust domain its SPIFFE ID names.
+trust domain its SPIFFE ID names. A SPIFFE ID that carries whitespace, a query
+or no trust domain is refused wherever it is named.
 
 ## IGA and ReBAC
 

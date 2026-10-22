@@ -289,6 +289,15 @@ impl IgaRepository for FileRepository {
     ) -> QidResult<()> {
         campaign.validate()?;
         let mut store = self.store.write().await;
+        reject_duplicate_id(
+            store.iga_access_review_campaigns.contains_key(&campaign.id),
+            || {
+                format!(
+                    "IGA access review campaign ID {} already exists",
+                    campaign.id
+                )
+            },
+        )?;
         store
             .iga_access_review_campaigns
             .insert(campaign.id.clone(), campaign.clone());

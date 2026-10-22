@@ -3,9 +3,10 @@
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
-    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
-    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, PasswordResetToken,
-    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
+    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
+    IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
+    IgaJitPrivilegeGrantRecord, PasswordResetToken, ServiceAccount, User, WebAuthnCredential,
+    WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -2128,6 +2129,82 @@ where
         repo.list_iga_jit_privilege_grants("tenant-iga-jit-grant-other", None)
             .await
             .expect("list other-tenant IGA JIT grants failed")
+            .is_empty()
+    );
+}
+
+/// Duplicate campaign IDs cannot reopen a closed campaign in either tenant.
+pub async fn assert_iga_access_review_campaign_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let campaign = IgaAccessReviewCampaignRecord {
+        id: "iga-campaign-identity".to_string(),
+        tenant_id: "tenant-iga-campaign".to_string(),
+        reviewer: "reviewer-iga-campaign".to_string(),
+        subjects_json: serde_json::json!(["user-iga-campaign"]),
+        status: "open".to_string(),
+        created_at_epoch_seconds: 1_700_000_000,
+        due_at_epoch_seconds: Some(1_700_086_400),
+    };
+    repo.store_iga_access_review_campaign(&campaign)
+        .await
+        .expect("store incumbent IGA campaign failed");
+    assert!(
+        repo.close_iga_access_review_campaign(&campaign.tenant_id, &campaign.id)
+            .await
+            .expect("close incumbent IGA campaign failed")
+    );
+    let same_tenant_duplicate = IgaAccessReviewCampaignRecord {
+        status: "open".to_string(),
+        ..campaign.clone()
+    };
+    let err = repo
+        .store_iga_access_review_campaign(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate campaign ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant campaign ID must be a conflict, got: {}",
+        err.message()
+    );
+    let cross_tenant_duplicate = IgaAccessReviewCampaignRecord {
+        tenant_id: "tenant-iga-campaign-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_access_review_campaign(&cross_tenant_duplicate)
+        .await
+        .expect_err("a campaign ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant campaign ID must be a conflict, got: {}",
+        err.message()
+    );
+    let mut incumbent = campaign;
+    incumbent.status = "closed".to_string();
+    assert_eq!(
+        repo.get_iga_access_review_campaign(&incumbent.tenant_id, &incumbent.id)
+            .await
+            .expect("get incumbent IGA campaign failed"),
+        Some(incumbent.clone())
+    );
+    assert_eq!(
+        repo.list_iga_access_review_campaigns(&incumbent.tenant_id)
+            .await
+            .expect("list incumbent IGA campaigns failed"),
+        vec![incumbent]
+    );
+    assert!(
+        repo.get_iga_access_review_campaign("tenant-iga-campaign-other", "iga-campaign-identity")
+            .await
+            .expect("get other-tenant IGA campaign failed")
+            .is_none()
+    );
+    assert!(
+        repo.list_iga_access_review_campaigns("tenant-iga-campaign-other")
+            .await
+            .expect("list other-tenant IGA campaigns failed")
             .is_empty()
     );
 }

@@ -174,9 +174,7 @@ async fn handle_token<R: Repository>(
     let metric_realm = client.realm_id.clone();
     let result = match req.grant_type.as_str() {
         "authorization_code" => authorization_code_grant(state, req, &client, cnf.as_ref()).await,
-        "client_credentials" => {
-            client_credentials_grant(state, req, effective_client_id, cnf.as_ref()).await
-        }
+        "client_credentials" => client_credentials_grant(state, req, &client, cnf.as_ref()).await,
         "refresh_token" => refresh_token_grant(state, req, &client, cnf.as_ref()).await,
         "urn:ietf:params:oauth:grant-type:token-exchange" => {
             advanced_subject_grant(state, req, &client, "token-exchange", cnf.as_ref()).await

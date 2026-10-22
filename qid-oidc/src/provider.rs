@@ -1116,17 +1116,19 @@ async fn find_client_across_realms<R: Repository>(
     client_id: &str,
 ) -> QidResult<Client> {
     // One read answers the client id in every configured realm.
-    let clients = state
-        .repo
-        .find_clients_by_client_id(&configured_realm_ids(state), client_id)
-        .await?;
-    match clients.as_slice() {
-        [client] => Ok(client.clone()),
-        [] => {
+    match qid_storage::lookup_client_across_realms(
+        state.repo.as_ref(),
+        &configured_realm_ids(state),
+        client_id,
+    )
+    .await?
+    {
+        qid_storage::ClientLookup::Found(client) => Ok(*client),
+        qid_storage::ClientLookup::Unknown => {
             tracing::warn!(client_id = %client_id, "authorization request client is unknown");
             Err(unauthorized("authorization request is not allowed"))
         }
-        _ => {
+        qid_storage::ClientLookup::Ambiguous => {
             tracing::warn!(client_id = %client_id, "authorization request client realm is ambiguous");
             Err(unauthorized("authorization request is not allowed"))
         }

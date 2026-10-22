@@ -870,6 +870,36 @@ impl<T> Repository for T where
 {
 }
 
+/// What a client id names among the realms a deployment serves.
+#[derive(Debug)]
+pub enum ClientLookup {
+    /// Exactly one client carries the id.
+    Found(Box<Client>),
+    /// No client carries the id.
+    Unknown,
+    /// More than one client carries the id, so the id names no single
+    /// client and no request can be served for it.
+    Ambiguous,
+}
+
+/// Look a client id up among the realms a deployment serves.
+///
+/// One read answers the client id in every named realm, and no other realm
+/// is read. The id names one client, no client, or more than one; each
+/// path words its own refusal of the last two.
+pub async fn lookup_client_across_realms<R: ClientRepository + ?Sized>(
+    repo: &R,
+    realm_ids: &[RealmId],
+    client_id: &str,
+) -> QidResult<ClientLookup> {
+    let clients = repo.find_clients_by_client_id(realm_ids, client_id).await?;
+    Ok(match clients.as_slice() {
+        [client] => ClientLookup::Found(Box::new(client.clone())),
+        [] => ClientLookup::Unknown,
+        _ => ClientLookup::Ambiguous,
+    })
+}
+
 /// Refuse a client id another served realm already holds.
 ///
 /// The request paths resolve the client of a request across the realms the

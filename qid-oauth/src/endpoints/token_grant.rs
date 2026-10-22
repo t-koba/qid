@@ -118,20 +118,12 @@ pub async fn authorization_code_grant<R: Repository>(
 
     log_token_issued(&auth_code.realm_id, &user.id);
 
-    let client = state
-        .repo
-        .get_client_by_client_id(
-            &RealmId::from(auth_code.realm_id.clone()),
-            &auth_code.client_id,
-        )
-        .await?
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("client {}", auth_code.client_id),
-        })?;
+    // The code names the client the grant already resolved, so it is not
+    // read again.
     let sub_override = if client.subject_type.as_deref() == Some("pairwise") {
         Some(qid_core::compute_pairwise_sub(
             &user.id,
-            &qid_core::sector_identifier_for_client(&client),
+            &qid_core::sector_identifier_for_client(client),
             &issuer,
         ))
     } else {
@@ -175,20 +167,12 @@ pub async fn authorization_code_grant<R: Repository>(
 pub async fn client_credentials_grant<R: Repository>(
     state: &SharedState<R>,
     req: &TokenRequest,
-    effective_client_id: &str,
+    client: &Client,
     cnf: Option<&serde_json::Value>,
 ) -> QidResult<TokenResponse> {
-    let client_id = if !effective_client_id.is_empty() {
-        effective_client_id
-    } else {
-        req.client_id
-            .as_deref()
-            .ok_or_else(|| QidError::BadRequest {
-                message: "client_id required".to_string(),
-            })?
-    };
-
-    let client = super::find_client_across_realms(state, client_id).await?;
+    // The client is the one the token endpoint already resolved, so the
+    // grant reads it no second time.
+    let client_id = client.client_id.as_str();
     let realm_id = client.realm_id.clone();
     let realm_cfg = state
         .config
@@ -1390,7 +1374,10 @@ mod tests {
             ..Default::default()
         };
 
-        let result = client_credentials_grant(&state, &req, "client-in-realm-b", None).await;
+        let resolved = crate::endpoints::find_client_across_realms(&state, "client-in-realm-b")
+            .await
+            .expect("the client of the other realm must resolve");
+        let result = client_credentials_grant(&state, &req, &resolved, None).await;
         assert!(
             result.is_ok(),
             "client_credentials_grant should succeed: {:?}",

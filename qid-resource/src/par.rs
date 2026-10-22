@@ -142,24 +142,33 @@ async fn authenticate_par_client<R: Repository>(
             message: "multiple PAR client authentication methods are not allowed".to_string(),
         });
     }
-    let mut found = None;
-    for realm in &state.config.realms {
-        if let Some(client) = state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm.id.clone()), client_id)
-            .await?
-        {
-            if found.is_some() {
-                return Err(QidError::Unauthorized {
-                    message: "PAR client realm is ambiguous".to_string(),
-                });
-            }
-            found = Some(client);
+    // One read answers the client id in every realm the deployment
+    // configures; an id two of them hold names no single client.
+    let served_realm_ids: Vec<RealmId> = state
+        .config
+        .realms
+        .iter()
+        .map(|realm| RealmId::from(realm.id.clone()))
+        .collect();
+    let client = match qid_storage::lookup_client_across_realms(
+        state.repo.as_ref(),
+        &served_realm_ids,
+        client_id,
+    )
+    .await?
+    {
+        qid_storage::ClientLookup::Found(client) => *client,
+        qid_storage::ClientLookup::Unknown => {
+            return Err(QidError::Unauthorized {
+                message: "unknown PAR client".to_string(),
+            });
         }
-    }
-    let client = found.ok_or_else(|| QidError::Unauthorized {
-        message: "unknown PAR client".to_string(),
-    })?;
+        qid_storage::ClientLookup::Ambiguous => {
+            return Err(QidError::Unauthorized {
+                message: "PAR client realm is ambiguous".to_string(),
+            });
+        }
+    };
     match client.token_endpoint_auth_method.as_str() {
         "client_secret_basic" => {
             let Some((_, secret)) = basic_auth else {

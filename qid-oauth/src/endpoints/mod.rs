@@ -185,16 +185,14 @@ pub(crate) async fn find_client_across_realms_with_messages<R: Repository>(
         .iter()
         .map(|realm_config| RealmId::from(realm_config.id.clone()))
         .collect();
-    let clients = state
-        .repo
-        .find_clients_by_client_id(&realm_ids, client_id)
-        .await?;
-    match clients.as_slice() {
-        [client] => Ok(client.clone()),
-        [] => Err(QidError::Unauthorized {
+    match qid_storage::lookup_client_across_realms(state.repo.as_ref(), &realm_ids, client_id)
+        .await?
+    {
+        qid_storage::ClientLookup::Found(client) => Ok(*client),
+        qid_storage::ClientLookup::Unknown => Err(QidError::Unauthorized {
             message: unknown_message.to_string(),
         }),
-        _ => Err(QidError::Unauthorized {
+        qid_storage::ClientLookup::Ambiguous => Err(QidError::Unauthorized {
             message: ambiguous_message.to_string(),
         }),
     }

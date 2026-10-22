@@ -6,6 +6,28 @@ use super::*;
 impl UserRepository for FileRepository {
     async fn create_user(&self, user: &User) -> QidResult<()> {
         let mut store = self.store.write().await;
+        // A user record ID names one user and an email names one user in
+        // a realm, so a create that carries either taken key is refused
+        // instead of replacing the incumbent. The check runs under the
+        // store's exclusive write lock, as atomic as the SQL backend's
+        // primary key and UNIQUE(realm_id, email) index.
+        if store.users.contains_key(&user.id) {
+            return Err(QidError::Conflict {
+                message: format!("user record ID {} already exists", user.id),
+            });
+        }
+        if let Some(email) = user.email.as_deref()
+            && store.users.values().any(|stored| {
+                stored.realm_id == user.realm_id && stored.email.as_deref() == Some(email)
+            })
+        {
+            return Err(QidError::Conflict {
+                message: format!(
+                    "user email {email} already exists in realm {}",
+                    user.realm_id
+                ),
+            });
+        }
         store.users.insert(user.id.clone(), user.clone());
         drop(store);
         self.save().await

@@ -5,9 +5,12 @@ use super::*;
 #[async_trait]
 impl UserRepository for SqlRepository {
     async fn create_user(&self, user: &User) -> QidResult<()> {
-        // Email uniqueness is enforced at the application layer (qid-admin, qid-session).
-        sqlx::query(
-            "INSERT INTO users (id, realm_id, email, email_verified, display_name, failed_login_attempts, locked_until, org) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        // The primary key and the UNIQUE(realm_id, email) index hold the
+        // identity of a user, so the insert itself refuses a second user
+        // that carries a taken record ID or a taken email in the realm.
+        // The read names the reason of the refusal.
+        let result = sqlx::query(
+            "INSERT INTO users (id, realm_id, email, email_verified, display_name, failed_login_attempts, locked_until, org) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(&user.id)
         .bind(&user.realm_id)
@@ -20,6 +23,18 @@ impl UserRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            let message = if self.get_user_by_id(&user.id).await?.is_some() {
+                format!("user record ID {} already exists", user.id)
+            } else {
+                let email = user.email.as_deref().unwrap_or_default();
+                format!(
+                    "user email {email} already exists in realm {}",
+                    user.realm_id
+                )
+            };
+            return Err(QidError::Conflict { message });
+        }
         Ok(())
     }
 

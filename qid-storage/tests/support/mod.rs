@@ -114,6 +114,106 @@ pub async fn file_repo(prefix: &str) -> FileRepository {
     repo
 }
 
+/// The owner-bound contract of a user: a record ID names one user and an
+/// email names one user inside a realm, so a second user that carries
+/// either is refused and the incumbent is left unchanged.
+pub async fn assert_user_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository,
+{
+    let realm = RealmId("realm-user-identity".to_string());
+    repo.create_realm(
+        &TenantId("tenant-user-identity".to_string()),
+        &realm,
+        "https://user-identity.example.com",
+        Some("User Identity Realm"),
+    )
+    .await
+    .expect("create user identity realm failed");
+    let other_realm = RealmId("realm-user-identity-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-user-identity-other".to_string()),
+        &other_realm,
+        "https://user-identity-other.example.com",
+        Some("Other User Identity Realm"),
+    )
+    .await
+    .expect("create other user identity realm failed");
+
+    let user = User {
+        id: "user-identity-alice".to_string(),
+        realm_id: realm.0.clone(),
+        email: Some("alice@example.com".to_string()),
+        email_verified: true,
+        display_name: Some("Alice".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user).await.expect("create user failed");
+
+    // A second user that carries the email in the realm is refused.
+    let duplicate_email = User {
+        id: "user-identity-alice-duplicate".to_string(),
+        ..user.clone()
+    };
+    let err = repo
+        .create_user(&duplicate_email)
+        .await
+        .expect_err("a second user for one email in a realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a second user for one email in a realm must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_user_by_id(&user.id)
+        .await
+        .expect("get user by id failed")
+        .expect("the incumbent user must still exist");
+    assert_eq!(
+        stored.email, user.email,
+        "the refusal changed the incumbent"
+    );
+    assert_eq!(stored.display_name, user.display_name);
+    assert_eq!(stored.realm_id, user.realm_id);
+
+    // A second user that carries the record ID is refused.
+    let duplicate_id = User {
+        id: user.id.clone(),
+        email: Some("bob@example.com".to_string()),
+        ..user.clone()
+    };
+    let err = repo
+        .create_user(&duplicate_id)
+        .await
+        .expect_err("a second user for one record ID must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a second user for one record ID must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_user_by_id(&user.id)
+        .await
+        .expect("get user by id failed")
+        .expect("the incumbent user must still exist");
+    assert_eq!(
+        stored.email, user.email,
+        "the refusal changed the incumbent"
+    );
+
+    // The same email in another realm names another user, so it is allowed.
+    let other = User {
+        id: "user-identity-other-alice".to_string(),
+        realm_id: other_realm.0.clone(),
+        ..user.clone()
+    };
+    repo.create_user(&other)
+        .await
+        .expect("the same email in another realm must be allowed");
+}
+
 pub async fn assert_workload_identity_ownership<R>(repo: &R)
 where
     R: RealmRepository + WorkloadRepository,

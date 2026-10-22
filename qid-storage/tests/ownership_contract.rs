@@ -45,3 +45,11 @@ async fn workload_identity_delete_scope_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-workload-identity-delete").await;
     support::assert_workload_identity_delete_scope(&file).await;
 }
+
+#[tokio::test]
+async fn user_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_user_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-user-identity").await;
+    support::assert_user_identity_ownership(&file).await;
+}

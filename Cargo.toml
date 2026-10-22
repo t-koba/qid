@@ -55,7 +55,7 @@ exclude = ["vendor/rustls"]
 # (OwnershipContract plus the user and CIAM consent grant families) and the
 # symmetric duplicate-email update fix. The per-crate caps and the counted-file
 # coverage are unchanged.
-total = 103600
+total = 103800
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

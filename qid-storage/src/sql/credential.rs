@@ -21,8 +21,8 @@ impl CredentialRepository for SqlRepository {
         let credential_id = base64::engine::general_purpose::STANDARD.encode(&cred.credential_id);
         let public_key = base64::engine::general_purpose::STANDARD.encode(&cred.public_key);
         let aaguid = base64::engine::general_purpose::STANDARD.encode(&cred.aaguid);
-        sqlx::query(
-            "INSERT INTO credentials_webauthn (id, user_id, credential_id, public_key, counter, aaguid, device_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO credentials_webauthn (id, user_id, credential_id, public_key, counter, aaguid, device_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&cred.id)
         .bind(&cred.user_id)
@@ -35,6 +35,9 @@ impl CredentialRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("WebAuthn credential record ID {} already exists", cred.id)
+        })?;
         Ok(())
     }
 

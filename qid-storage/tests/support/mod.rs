@@ -2,7 +2,7 @@
 
 use qid_core::models::{
     CiamConsentGrant, Client, ClientType, Device, FedCmIdentity, ServiceAccount, User,
-    WorkloadIdentity,
+    WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -830,6 +830,90 @@ pub fn sample_cross_realm_client(id: &str, realm_id: &str, client_id: &str) -> C
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
     }
+}
+
+/// A WebAuthn credential record ID belongs to one user and cannot be reused
+/// to attach another user's authenticator.
+pub async fn assert_webauthn_credential_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CredentialRepository,
+{
+    let realm = RealmId("realm-webauthn-credential-ownership".to_string());
+    repo.create_realm(
+        &TenantId("tenant-webauthn-credential-ownership".to_string()),
+        &realm,
+        "https://webauthn-credential-ownership.example.com",
+        Some("WebAuthn Credential Ownership Realm"),
+    )
+    .await
+    .expect("create WebAuthn credential realm failed");
+    let user = User {
+        id: "user-webauthn-credential-alice".to_string(),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: Some("Alice".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create WebAuthn credential user failed");
+    let other_user = User {
+        id: "user-webauthn-credential-bob".to_string(),
+        display_name: Some("Bob".to_string()),
+        ..user.clone()
+    };
+    repo.create_user(&other_user)
+        .await
+        .expect("create other WebAuthn credential user failed");
+
+    let credential = WebAuthnCredential {
+        id: "webauthn-credential-ownership".to_string(),
+        user_id: user.id.clone(),
+        credential_id: vec![1],
+        public_key: vec![2],
+        counter: 1,
+        aaguid: vec![0; 16],
+        device_name: Some("Alice key".to_string()),
+        created_at: 1,
+    };
+    repo.store_webauthn_credential(&credential)
+        .await
+        .expect("store WebAuthn credential failed");
+
+    let duplicate = WebAuthnCredential {
+        user_id: other_user.id.clone(),
+        credential_id: vec![3],
+        public_key: vec![4],
+        device_name: Some("Bob key".to_string()),
+        ..credential.clone()
+    };
+    let err = repo
+        .store_webauthn_credential(&duplicate)
+        .await
+        .expect_err("a second user cannot claim one credential record ID");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a second user for one credential record ID must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_webauthn_credentials(&user.id)
+        .await
+        .expect("list incumbent WebAuthn credentials failed");
+    assert_eq!(stored.len(), 1, "the refusal changed the incumbent list");
+    assert_eq!(stored[0].user_id, credential.user_id);
+    assert_eq!(stored[0].credential_id, credential.credential_id);
+    assert_eq!(stored[0].public_key, credential.public_key);
+    assert_eq!(stored[0].device_name, credential.device_name);
+    assert!(
+        repo.get_webauthn_credentials(&other_user.id)
+            .await
+            .expect("list duplicate user's WebAuthn credentials failed")
+            .is_empty()
+    );
 }
 
 /// The owner-bound contract of a service account: a record ID names one

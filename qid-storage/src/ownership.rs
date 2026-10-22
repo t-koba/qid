@@ -110,3 +110,11 @@ pub const SERVICE_ACCOUNT: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for the WebAuthn credential resource (store).
+#[allow(dead_code)]
+pub const WEBAUTHN_CREDENTIAL: OwnershipContract = OwnershipContract {
+    owner_key: "user_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

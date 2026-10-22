@@ -15,6 +15,16 @@ impl CredentialRepository for FileRepository {
 
     async fn store_webauthn_credential(&self, cred: &WebAuthnCredential) -> QidResult<()> {
         let mut store = self.store.write().await;
+        if store
+            .webauthn_credentials
+            .values()
+            .flatten()
+            .any(|incumbent| incumbent.id == cred.id)
+        {
+            return Err(QidError::Conflict {
+                message: format!("WebAuthn credential record ID {} already exists", cred.id),
+            });
+        }
         store
             .webauthn_credentials
             .entry(cred.user_id.clone())

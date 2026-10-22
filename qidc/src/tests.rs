@@ -786,3 +786,34 @@ fn explain_reports_the_registration_decision_cache_lifetime() {
     );
     assert_eq!(explanation["pep_actions"]["ttl_ms"], 7000);
 }
+
+#[test]
+fn the_user_credential_calibration_comes_from_the_declared_realm() {
+    let mut config = minimal_config();
+    config.realms[0].authentication.password.argon2id.memory_kib = 32_768;
+    config.realms[0].authentication.password.argon2id.time_cost = 3;
+    let params = realm_password_params(&config, "corp").expect("the declared realm");
+    assert_eq!(params.memory_kib, 32_768);
+    assert_eq!(params.time_cost, 3);
+}
+
+#[test]
+fn a_realm_the_configuration_does_not_declare_names_the_requirement() {
+    let config = minimal_config();
+    let error = realm_password_params(&config, "other").expect_err("an undeclared realm");
+    let message = error.to_string();
+    assert!(
+        message.contains("not declared in the configuration"),
+        "{message}"
+    );
+    assert!(message.contains("configuration file"), "{message}");
+}
+
+#[test]
+fn a_repository_only_realm_is_named_as_needing_a_configuration_declaration() {
+    let config = minimal_config();
+    assert!(realm_declaration_note(&config, "corp").is_none());
+    let note = realm_declaration_note(&config, "other").expect("a repository-only realm");
+    assert!(note.contains("stored in the repository only"), "{note}");
+    assert!(note.contains("configuration file"), "{note}");
+}

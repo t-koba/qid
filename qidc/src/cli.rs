@@ -257,6 +257,7 @@ pub(crate) struct SiemDlqRedriveArgs {
 
 #[derive(Args)]
 pub(crate) struct CreateRealm {
+    /// The realm identifier.
     #[arg(long)]
     pub(crate) id: String,
     #[arg(long)]
@@ -279,6 +280,11 @@ pub(crate) struct DeleteRealm {
 
 #[derive(Subcommand)]
 pub(crate) enum RealmCommand {
+    /// Create a realm in the repository.
+    ///
+    /// The product serves the realms the configuration declares, so the realm
+    /// is served, and holds a user the CLI creates, only once the
+    /// configuration file declares it.
     #[command(name = "create")]
     Create(CreateRealm),
     /// List all realms.
@@ -336,6 +342,9 @@ pub(crate) enum ClientCommand {
 
 #[derive(Args)]
 pub(crate) struct CreateUser {
+    /// The realm that owns the user. The realm must be declared in the
+    /// configuration, because the credential is hashed with that realm's
+    /// Argon2id calibration.
     #[arg(long)]
     pub(crate) realm: String,
     #[arg(long)]
@@ -366,6 +375,11 @@ pub(crate) struct DeleteUser {
 
 #[derive(Subcommand)]
 pub(crate) enum UserCommand {
+    /// Create a user and its password credential.
+    ///
+    /// The realm must be declared in the configuration: the credential is
+    /// hashed with that realm's Argon2id calibration, and the product does
+    /// not choose a cost on the operator's behalf.
     #[command(name = "create")]
     Create(CreateUser),
     /// List users in a realm.

@@ -69,6 +69,8 @@ cargo run --bin qidc -- --config target/qid-dev/qid.yaml session create \
 | `get` | `--id` |
 | `delete` | `--id` |
 
+`create` writes the realm to the repository. The product serves the realms the configuration declares, so the command reports a realm that the configuration does not declare: declare it in the configuration file to serve it and to create users in it.
+
 ### qidc client
 
 | Subcommand | Key options |
@@ -85,6 +87,8 @@ cargo run --bin qidc -- --config target/qid-dev/qid.yaml session create \
 | `list` | `--realm` |
 | `get` | `--id` |
 | `delete` | `--id` |
+
+`create` writes the user and its password credential to the repository. The credential is hashed with the Argon2id calibration of the realm, so `--realm` must name a realm the configuration declares; a realm the configuration does not declare is refused by name rather than hashed with a cost the product chose on the operator's behalf.
 
 ### qidc session
 

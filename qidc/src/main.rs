@@ -473,7 +473,8 @@ async fn main() -> anyhow::Result<()> {
                 if dlq_args.limit == 0 {
                     anyhow::bail!("limit must be greater than zero");
                 }
-                let repo = open_repo(&config_paths).await?;
+                let config = load_config(&config_paths).context("failed to load config")?;
+                let repo = open_repo(&config).await?;
                 let status = dlq_args
                     .status
                     .as_deref()
@@ -496,7 +497,8 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             OpsCommand::SiemDlqRedrive(redrive_args) => {
-                let repo = open_repo(&config_paths).await?;
+                let config = load_config(&config_paths).context("failed to load config")?;
+                let repo = open_repo(&config).await?;
                 let now = redrive_args.now.unwrap_or_else(qid_core::util::now_seconds);
                 let record = repo
                     .get_siem_delivery(&redrive_args.id)
@@ -525,7 +527,8 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Command::Realm { command } => {
-            let repo = open_repo(&config_paths).await?;
+            let config = load_config(&config_paths).context("failed to load config")?;
+            let repo = open_repo(&config).await?;
             match command {
                 RealmCommand::Create(args) => {
                     repo.create_realm(
@@ -536,6 +539,9 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await?;
                     println!("realm created: {}", args.id);
+                    if let Some(note) = realm_declaration_note(&config, &args.id) {
+                        println!("{note}");
+                    }
                 }
                 RealmCommand::List => {
                     let realms = repo.list_realms().await?;
@@ -563,7 +569,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Client { command } => {
-            let repo = open_repo(&config_paths).await?;
+            let config = load_config(&config_paths).context("failed to load config")?;
+            let repo = open_repo(&config).await?;
             match command {
                 ClientCommand::Create(args) => {
                     let id = new_id();
@@ -635,31 +642,16 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::User { command } => {
-            let repo = open_repo(&config_paths).await?;
+            let config = load_config(&config_paths).context("failed to load config")?;
+            let repo = open_repo(&config).await?;
             match command {
                 UserCommand::Create(args) => {
                     // The realm's own Argon2id cost, so a credential the
                     // product creates carries the deployment's calibration.
-                    // A realm that is not in the configuration has no cost
-                    // the product may apply, so naming it is an error
-                    // rather than a silent fallback to the library
-                    // defaults. The realm is resolved before the user is
-                    // written so a rejected realm leaves no half-created
-                    // account behind.
-                    let config = load_config(&config_paths).context("failed to load config")?;
-                    let realm_config = config
-                        .realms
-                        .iter()
-                        .find(|candidate| candidate.id == args.realm)
-                        .with_context(|| {
-                            format!("realm {} is not present in the configuration", args.realm)
-                        })?;
-                    let hash = password::hash_password_with_params(
-                        &args.password,
-                        &qid_crypto::Argon2idParams::from_cost(
-                            &realm_config.authentication.password.argon2id,
-                        ),
-                    )?;
+                    // The realm is resolved before the user is written so a
+                    // rejected realm leaves no half-created account behind.
+                    let params = realm_password_params(&config, &args.realm)?;
+                    let hash = password::hash_password_with_params(&args.password, &params)?;
                     let id = new_id();
                     repo.create_user(&User {
                         id: id.clone(),
@@ -714,7 +706,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Session { command } => {
-            let repo = open_repo(&config_paths).await?;
+            let config = load_config(&config_paths).context("failed to load config")?;
+            let repo = open_repo(&config).await?;
             match command {
                 SessionCommand::Create(args) => {
                     let now = qid_core::util::now_seconds();
@@ -761,7 +754,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let config = load_config(&config_paths).context("failed to load config")?;
             let realm_config = config.realms.iter().find(|r| r.id == realm);
-            let repo = open_repo(&config_paths).await?;
+            let repo = open_repo(&config).await?;
             let bundle = repo
                 .get_active_policy_bundle(&RealmId::from(realm.clone()))
                 .await?;
@@ -826,10 +819,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Totp { command } => {
-            let repo = open_repo(&config_paths).await?;
+            let config = load_config(&config_paths).context("failed to load config")?;
+            let repo = open_repo(&config).await?;
             match command {
                 TotpCommand::Enroll(args) => {
-                    let config = load_config(&config_paths)?;
                     let plan = qid_core::plan::RuntimePlan::from_config(&config)?;
                     let user = repo
                         .get_user_by_id(&args.user_id)
@@ -865,8 +858,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn open_repo(config_paths: &[PathBuf]) -> anyhow::Result<AnyRepository> {
-    let config = QidConfig::from_files(config_paths).context("failed to load config")?;
+async fn open_repo(config: &QidConfig) -> anyhow::Result<AnyRepository> {
     let storage_url = config.storage.primary.resolve_url_or("qid-store.json");
     let repo = AnyRepository::connect(&storage_url)
         .await
@@ -888,6 +880,47 @@ fn ensure_totp_offered(plan: &qid_core::plan::RuntimePlan, realm_id: &str) -> an
 
 fn new_id() -> String {
     ulid::Ulid::new().to_string()
+}
+
+/// The Argon2id calibration a realm's password credentials are hashed with.
+///
+/// The realm's own cost is the deployment's calibration, so a credential the
+/// product creates carries it. A realm the configuration does not declare has
+/// no cost the product may apply, and the product does not choose one on the
+/// operator's behalf, so the realm is named as missing rather than the
+/// credential being hashed with a fallback cost.
+fn realm_password_params(
+    config: &QidConfig,
+    realm_id: &str,
+) -> anyhow::Result<qid_crypto::Argon2idParams> {
+    let realm = config
+        .realms
+        .iter()
+        .find(|candidate| candidate.id == realm_id)
+        .with_context(|| {
+            format!(
+                "realm {realm_id} is not declared in the configuration; the credential is hashed \
+                 with that realm's Argon2id calibration, so declare the realm in the \
+                 configuration file"
+            )
+        })?;
+    Ok(qid_crypto::Argon2idParams::from_cost(
+        &realm.authentication.password.argon2id,
+    ))
+}
+
+/// What the operator must know about a realm the CLI created in the
+/// repository: the product serves the realms the configuration declares, so a
+/// realm that only the repository knows is not served and holds no user the
+/// CLI can create.
+fn realm_declaration_note(config: &QidConfig, realm_id: &str) -> Option<String> {
+    if config.realms.iter().any(|realm| realm.id == realm_id) {
+        return None;
+    }
+    Some(format!(
+        "realm {realm_id} is stored in the repository only; declare it in the configuration file \
+         to serve it and to create users in it"
+    ))
 }
 
 #[cfg(test)]

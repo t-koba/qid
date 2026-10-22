@@ -23,8 +23,8 @@ impl AuditRepository for SqlRepository {
             .map_err(storage_to_qid_error)?
         };
         let event = event.clone().with_chain_hashes(previous_hash);
-        sqlx::query(
-            "INSERT INTO audit_events (id, realm_id, actor, action, target_type, target_id, reason, metadata_json, created_at, previous_hash, event_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO audit_events (id, realm_id, actor, action, target_type, target_id, reason, metadata_json, created_at, previous_hash, event_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&event.id)
         .bind(&event.realm_id)
@@ -40,6 +40,9 @@ impl AuditRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("Audit event ID {} already exists", event.id)
+        })?;
         Ok(())
     }
 

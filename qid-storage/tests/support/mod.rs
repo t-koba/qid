@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    CiamConsentGrant, Client, ClientType, Device, FedCmIdentity, ServiceAccount, User,
+    AuditEvent, CiamConsentGrant, Client, ClientType, Device, FedCmIdentity, ServiceAccount, User,
     WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
@@ -1107,5 +1107,111 @@ where
     assert_eq!(
         incumbent.name, identity.name,
         "the refusal changed the incumbent"
+    );
+}
+
+/// Audit event IDs are globally unique even though each immutable event belongs
+/// to one realm's append-only hash chain; collisions never change that history.
+pub async fn assert_audit_event_identity_ownership<R>(repo: &R)
+where
+    R: AuditRepository + RealmRepository,
+{
+    let realm = RealmId("realm-audit-event-ownership".to_string());
+    repo.create_realm(
+        &TenantId("tenant-audit-event-ownership".to_string()),
+        &realm,
+        "https://audit-event-ownership.example.com",
+        Some("Audit Event Ownership Realm"),
+    )
+    .await
+    .expect("create audit event realm failed");
+    let other_realm = RealmId("realm-audit-event-ownership-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-audit-event-ownership-other".to_string()),
+        &other_realm,
+        "https://audit-event-ownership-other.example.com",
+        Some("Other Audit Event Ownership Realm"),
+    )
+    .await
+    .expect("create other audit event realm failed");
+
+    let incumbent = AuditEvent {
+        id: "audit-event-ownership".to_string(),
+        realm_id: Some(realm.0.clone()),
+        actor: "incumbent-actor".to_string(),
+        action: "incumbent-action".to_string(),
+        target_type: "user".to_string(),
+        target_id: "user-1".to_string(),
+        reason: "original event".to_string(),
+        metadata_json: serde_json::json!({"state": "original"}),
+        created_at: 1_700_000_000,
+        previous_hash: None,
+        event_hash: None,
+    };
+    repo.append_audit_event(&incumbent)
+        .await
+        .expect("append incumbent audit event failed");
+
+    // A duplicate ID in the same stream is refused and cannot replace the
+    // immutable event or append a second history entry.
+    let duplicate = AuditEvent {
+        actor: "replacement-actor".to_string(),
+        action: "replacement-action".to_string(),
+        reason: "attempted replacement".to_string(),
+        ..incumbent.clone()
+    };
+    let err = repo
+        .append_audit_event(&duplicate)
+        .await
+        .expect_err("a duplicate audit event ID in one realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a duplicate audit event ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    // The database key is global, so another realm cannot claim the ID.
+    let cross_owner = AuditEvent {
+        realm_id: Some(other_realm.0.clone()),
+        actor: "other-realm-actor".to_string(),
+        ..duplicate
+    };
+    let err = repo
+        .append_audit_event(&cross_owner)
+        .await
+        .expect_err("an audit event ID held by another realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-realm audit event ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let events = repo
+        .list_audit_events(Some(&realm), 10)
+        .await
+        .expect("list audit events failed");
+    assert_eq!(
+        events.len(),
+        1,
+        "a refused event changed append-only history"
+    );
+    assert_eq!(events[0].id, incumbent.id);
+    assert_eq!(events[0].actor, incumbent.actor);
+    assert_eq!(events[0].action, incumbent.action);
+    assert_eq!(events[0].reason, incumbent.reason);
+    assert_eq!(events[0].metadata_json, incumbent.metadata_json);
+    assert!(
+        repo.verify_audit_chain(Some(&realm))
+            .await
+            .expect("verify audit chain failed")
+            .valid,
+        "refused duplicate IDs must leave the audit chain valid"
+    );
+    assert!(
+        repo.list_audit_events(Some(&other_realm), 10)
+            .await
+            .expect("list other realm audit events failed")
+            .is_empty(),
+        "a refused cross-realm ID collision created a foreign event"
     );
 }

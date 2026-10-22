@@ -6,6 +6,15 @@ use super::*;
 impl AuditRepository for FileRepository {
     async fn append_audit_event(&self, event: &AuditEvent) -> QidResult<()> {
         let mut store = self.store.write().await;
+        if store
+            .audit_events
+            .iter()
+            .any(|stored| stored.id == event.id)
+        {
+            return Err(QidError::Conflict {
+                message: format!("Audit event ID {} already exists", event.id),
+            });
+        }
         let previous_hash = store
             .audit_events
             .iter()

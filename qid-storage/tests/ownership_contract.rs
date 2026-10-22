@@ -85,3 +85,11 @@ async fn webauthn_credential_identity_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-webauthn-credential").await;
     support::assert_webauthn_credential_identity_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn audit_event_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_audit_event_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-audit-event").await;
+    support::assert_audit_event_identity_ownership(&file).await;
+}

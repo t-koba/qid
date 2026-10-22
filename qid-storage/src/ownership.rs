@@ -118,3 +118,11 @@ pub const WEBAUTHN_CREDENTIAL: OwnershipContract = OwnershipContract {
     identity_key: "id",
     collision: CollisionRule::Refuse,
 };
+
+/// Ownership contract for the append-only audit-event resource.
+#[allow(dead_code)]
+pub const AUDIT_EVENT: OwnershipContract = OwnershipContract {
+    owner_key: "realm_id",
+    identity_key: "id",
+    collision: CollisionRule::Refuse,
+};

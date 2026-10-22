@@ -284,11 +284,9 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "marketplace connector ID already exists".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "marketplace connector ID already exists".to_string()
+        })?;
         Ok(())
     }
 
@@ -344,11 +342,9 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "usage billing event ID already exists".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "usage billing event ID already exists".to_string()
+        })?;
         Ok(())
     }
 
@@ -384,11 +380,9 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "compliance evidence pack ID already exists".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "compliance evidence pack ID already exists".to_string()
+        })?;
         Ok(())
     }
 
@@ -475,11 +469,9 @@ impl SaasRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::NotFound {
-                resource: format!("delegated tenant admin {id}"),
-            });
-        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            format!("delegated tenant admin {id}")
+        })?;
         Ok(())
     }
 }

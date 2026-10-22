@@ -24,16 +24,15 @@ impl UserRepository for SqlRepository {
         .await
         .map_err(storage_to_qid_error)?;
         if result.rows_affected() == 0 {
-            let message = if self.get_user_by_id(&user.id).await?.is_some() {
-                format!("user record ID {} already exists", user.id)
-            } else {
-                let email = user.email.as_deref().unwrap_or_default();
-                format!(
-                    "user email {email} already exists in realm {}",
-                    user.realm_id
-                )
-            };
-            return Err(QidError::Conflict { message });
+            if self.get_user_by_id(&user.id).await?.is_some() {
+                return Err(QidError::Conflict {
+                    message: format!("user record ID {} already exists", user.id),
+                });
+            }
+            return Err(crate::ownership::user_email_conflict(
+                user.email.as_deref().unwrap_or_default(),
+                &user.realm_id,
+            ));
         }
         Ok(())
     }
@@ -182,7 +181,15 @@ impl UserRepository for SqlRepository {
             .bind(&user.id)
             .execute(&self.pool)
             .await
-            .map_err(storage_to_qid_error)?;
+            .map_err(|error| match &error {
+                sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
+                    crate::ownership::user_email_conflict(
+                        user.email.as_deref().unwrap_or_default(),
+                        &user.realm_id,
+                    )
+                }
+                _ => storage_to_qid_error(error),
+            })?;
         Ok(())
     }
 }

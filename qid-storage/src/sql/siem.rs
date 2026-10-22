@@ -101,11 +101,9 @@ impl SiemDeliveryRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::NotFound {
-                resource: format!("siem delivery {id}"),
-            });
-        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            format!("siem delivery {id}")
+        })?;
         Ok(())
     }
 }

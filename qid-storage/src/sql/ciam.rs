@@ -121,11 +121,9 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "CIAM verification challenge already consumed".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "CIAM verification challenge already consumed".to_string()
+        })?;
         Ok(())
     }
 
@@ -292,11 +290,9 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "password reset token already consumed".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "password reset token already consumed".to_string()
+        })?;
         Ok(())
     }
 

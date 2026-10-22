@@ -25,3 +25,23 @@ pub(super) fn ensure_upsert_applied(
     }
     Ok(())
 }
+
+/// The refusal a user write earns when the realm already holds the email.
+pub(super) fn user_email_conflict(email: &str, realm_id: &str) -> QidError {
+    QidError::Conflict {
+        message: format!("user email {email} already exists in realm {realm_id}"),
+    }
+}
+
+/// Refuse a write that changed no row because the record is gone.
+pub(super) fn ensure_row_present(
+    rows_affected: u64,
+    resource: impl FnOnce() -> String,
+) -> QidResult<()> {
+    if rows_affected == 0 {
+        return Err(QidError::NotFound {
+            resource: resource(),
+        });
+    }
+    Ok(())
+}

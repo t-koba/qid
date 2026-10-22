@@ -212,6 +212,74 @@ where
     repo.create_user(&other)
         .await
         .expect("the same email in another realm must be allowed");
+
+    // A user ID is global, so an ID another realm holds is refused too.
+    let foreign_id = User {
+        id: user.id.clone(),
+        realm_id: other_realm.0.clone(),
+        email: Some("bob@example.com".to_string()),
+        ..user.clone()
+    };
+    let err = repo
+        .create_user(&foreign_id)
+        .await
+        .expect_err("a user ID another realm holds must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a user ID another realm holds must be a conflict, got: {}",
+        err.message()
+    );
+
+    // The update path holds the same rule: a user of the realm may not
+    // take an email another user of that realm already holds, and both
+    // incumbents are left unchanged.
+    let bob = User {
+        id: "user-identity-bob".to_string(),
+        realm_id: realm.0.clone(),
+        email: Some("bob@example.com".to_string()),
+        ..user.clone()
+    };
+    repo.create_user(&bob).await.expect("create user failed");
+    let mut renamed = bob.clone();
+    renamed.email = Some("alice@example.com".to_string());
+    let err = repo
+        .update_user(&renamed)
+        .await
+        .expect_err("an update that takes another user's email must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "an update that takes another user's email must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_user_by_id(&bob.id)
+        .await
+        .expect("get user by id failed")
+        .expect("the incumbent user must still exist");
+    assert_eq!(stored.email, bob.email, "the refusal changed the incumbent");
+    let stored = repo
+        .get_user_by_id(&user.id)
+        .await
+        .expect("get user by id failed")
+        .expect("the incumbent user must still exist");
+    assert_eq!(
+        stored.email, user.email,
+        "the refusal changed the incumbent"
+    );
+
+    // A user may keep its own email.
+    let mut unchanged = user.clone();
+    unchanged.display_name = Some("Alice (renamed)".to_string());
+    repo.update_user(&unchanged)
+        .await
+        .expect("a user keeping its own email must be allowed");
+    let stored = repo
+        .get_user_by_id(&user.id)
+        .await
+        .expect("get user by id failed")
+        .expect("the user must still exist");
+    assert_eq!(stored.email, user.email);
+    assert_eq!(stored.display_name, unchanged.display_name);
 }
 
 pub async fn assert_workload_identity_ownership<R>(repo: &R)

@@ -60,11 +60,9 @@ impl TokenRepository for SqlRepository {
                 .execute(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "authorization code already consumed".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "authorization code already consumed".to_string()
+        })?;
         Ok(())
     }
 
@@ -159,11 +157,9 @@ impl TokenRepository for SqlRepository {
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::NotFound {
-                resource: format!("token family {id}"),
-            });
-        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            format!("token family {id}")
+        })?;
         Ok(())
     }
 
@@ -300,11 +296,9 @@ impl TokenRepository for SqlRepository {
                 .execute(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "PAR request already consumed".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "PAR request already consumed".to_string()
+        })?;
         Ok(())
     }
 
@@ -374,11 +368,9 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::NotFound {
-                resource: "device authorization grant".to_string(),
-            });
-        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            "device authorization grant".to_string()
+        })?;
         Ok(())
     }
 
@@ -408,11 +400,9 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "device authorization grant already consumed".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "device authorization grant already consumed".to_string()
+        })?;
         Ok(())
     }
 
@@ -471,11 +461,9 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::NotFound {
-                resource: "backchannel authentication grant".to_string(),
-            });
-        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            "backchannel authentication grant".to_string()
+        })?;
         Ok(())
     }
 
@@ -508,11 +496,9 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::Conflict {
-                message: "backchannel authentication grant already consumed".to_string(),
-            });
-        }
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "backchannel authentication grant already consumed".to_string()
+        })?;
         Ok(())
     }
 }

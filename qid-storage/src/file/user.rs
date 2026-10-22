@@ -16,17 +16,8 @@ impl UserRepository for FileRepository {
                 message: format!("user record ID {} already exists", user.id),
             });
         }
-        if let Some(email) = user.email.as_deref()
-            && store.users.values().any(|stored| {
-                stored.realm_id == user.realm_id && stored.email.as_deref() == Some(email)
-            })
-        {
-            return Err(QidError::Conflict {
-                message: format!(
-                    "user email {email} already exists in realm {}",
-                    user.realm_id
-                ),
-            });
+        if let Some(email) = email_held_by_another(&store, user) {
+            return Err(crate::ownership::user_email_conflict(email, &user.realm_id));
         }
         store.users.insert(user.id.clone(), user.clone());
         drop(store);
@@ -88,8 +79,13 @@ impl UserRepository for FileRepository {
     }
 
     async fn update_user(&self, user: &User) -> QidResult<()> {
-        self.map_write(|store| store.users.insert(user.id.clone(), user.clone()))
-            .await
+        let mut store = self.store.write().await;
+        if let Some(email) = email_held_by_another(&store, user) {
+            return Err(crate::ownership::user_email_conflict(email, &user.realm_id));
+        }
+        store.users.insert(user.id.clone(), user.clone());
+        drop(store);
+        self.save().await
     }
 
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()> {
@@ -193,4 +189,18 @@ impl Store {
         self.password_reset_tokens
             .retain(|_, token| !users.contains(&token.user_id) && !in_realm(&token.realm_id));
     }
+}
+
+/// The email another user of the realm already holds, if any.
+fn email_held_by_another<'a>(store: &Store, user: &'a User) -> Option<&'a str> {
+    let email = user.email.as_deref()?;
+    store
+        .users
+        .values()
+        .any(|stored| {
+            stored.id != user.id
+                && stored.realm_id == user.realm_id
+                && stored.email.as_deref() == Some(email)
+        })
+        .then_some(email)
 }

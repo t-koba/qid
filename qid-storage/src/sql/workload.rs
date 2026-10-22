@@ -72,11 +72,9 @@ impl WorkloadRepository for SqlRepository {
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::NotFound {
-                resource: format!("workload identity {id}"),
-            });
-        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            format!("workload identity {id}")
+        })?;
         Ok(())
     }
 
@@ -180,11 +178,9 @@ impl WorkloadRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        if result.rows_affected() == 0 {
-            return Err(QidError::NotFound {
-                resource: format!("workload certificate {id}"),
-            });
-        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            format!("workload certificate {id}")
+        })?;
         Ok(())
     }
 }

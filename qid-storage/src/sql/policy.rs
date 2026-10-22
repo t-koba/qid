@@ -5,8 +5,11 @@ use super::*;
 #[async_trait]
 impl PolicyRepository for SqlRepository {
     async fn create_policy_bundle(&self, bundle: &PolicyBundle) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO policy_bundles (id, realm_id, name, source_hash, compiled_json, version, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        // The primary key on `id` and the UNIQUE(realm_id, name) index hold
+        // the identity of a bundle, so the insert itself refuses either taken
+        // key atomically with no pre-read.
+        let result = sqlx::query(
+            "INSERT INTO policy_bundles (id, realm_id, name, source_hash, compiled_json, version, active) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(&bundle.id)
         .bind(&bundle.realm_id)
@@ -18,7 +21,12 @@ impl PolicyRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!(
+                "policy bundle {} already exists in realm {} or record ID {} is taken",
+                bundle.name, bundle.realm_id, bundle.id
+            )
+        })
     }
 
     async fn get_active_policy_bundle(

@@ -31,6 +31,7 @@ mod fedcm;
 mod iga;
 #[cfg(test)]
 mod iga_tests;
+mod insert;
 #[cfg(test)]
 mod persistence_tests;
 mod policy;

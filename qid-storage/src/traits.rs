@@ -302,6 +302,10 @@ pub trait ServiceAccountRepository: Send + Sync + 'static {
 
 #[async_trait]
 pub trait PolicyRepository: Send + Sync + 'static {
+    /// Create a policy bundle.
+    ///
+    /// A bundle ID names one bundle globally and a name names one bundle in
+    /// a realm; either taken key is `Conflict` and the incumbent is unchanged.
     async fn create_policy_bundle(&self, bundle: &PolicyBundle) -> QidResult<()>;
     async fn get_active_policy_bundle(&self, realm_id: &RealmId)
     -> QidResult<Option<PolicyBundle>>;

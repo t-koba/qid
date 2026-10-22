@@ -6,9 +6,7 @@ use super::*;
 impl PolicyRepository for FileRepository {
     async fn create_policy_bundle(&self, bundle: &PolicyBundle) -> QidResult<()> {
         let mut store = self.store.write().await;
-        store
-            .policy_bundles
-            .insert(bundle.id.clone(), bundle.clone());
+        super::insert::insert_new(&mut store.policy_bundles, bundle)?;
         drop(store);
         self.save().await
     }

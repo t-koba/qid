@@ -5,8 +5,8 @@ use qid_core::models::{
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
     IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
     IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
-    IgaJitPrivilegeGrantRecord, PasswordResetToken, ServiceAccount, User, WebAuthnCredential,
-    WorkloadIdentity,
+    IgaJitPrivilegeGrantRecord, PasswordResetToken, PolicyBundle, ServiceAccount, User,
+    WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -236,6 +236,26 @@ where
         "a user ID another realm holds must be a conflict, got: {}",
         err.message()
     );
+
+    // NULL email values do not collide, but the primary key still does.
+    for id in ["user-no-email-a", "user-no-email-b"] {
+        let anonymous = User {
+            id: id.to_string(),
+            email: None,
+            ..user.clone()
+        };
+        repo.create_user(&anonymous)
+            .await
+            .expect("NULL emails may repeat");
+        let err = repo
+            .create_user(&anonymous)
+            .await
+            .expect_err("IDs may not repeat");
+        assert!(
+            matches!(err, qid_core::error::QidError::Conflict { message }
+            if message == format!("user record ID {id} already exists"))
+        );
+    }
 
     // The update path holds the same rule: a user of the realm may not
     // take an email another user of that realm already holds, and both
@@ -2299,4 +2319,153 @@ where
             .as_deref(),
         Some(other_tenant.as_str())
     );
+}
+
+/// The owner-bound contract of a policy bundle: a record ID names one bundle
+/// globally and a name names one bundle in a realm, so a create that carries
+/// either taken key is refused with `Conflict` and the incumbent is unchanged.
+pub async fn assert_policy_bundle_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + PolicyRepository,
+{
+    let realm = RealmId("realm-policy-bundle".to_string());
+    repo.create_realm(
+        &TenantId("tenant-policy-bundle".to_string()),
+        &realm,
+        "https://policy-bundle.example.com",
+        Some("Policy Bundle Realm"),
+    )
+    .await
+    .expect("create policy bundle realm failed");
+    let other_realm = RealmId("realm-policy-bundle-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-policy-bundle-other".to_string()),
+        &other_realm,
+        "https://policy-bundle-other.example.com",
+        Some("Other Policy Bundle Realm"),
+    )
+    .await
+    .expect("create other policy bundle realm failed");
+
+    let bundle = PolicyBundle {
+        id: "policy-bundle-a".to_string(),
+        realm_id: realm.0.clone(),
+        name: "allow".to_string(),
+        source_hash: "hash-a".to_string(),
+        compiled_json: serde_json::json!({"rules": []}),
+        version: 1,
+        active: true,
+    };
+    repo.create_policy_bundle(&bundle)
+        .await
+        .expect("create policy bundle failed");
+
+    let replay = repo
+        .create_policy_bundle(&bundle)
+        .await
+        .expect_err("even an identical create replay must be refused");
+    assert!(
+        matches!(replay, qid_core::error::QidError::Conflict { .. }),
+        "an identical create replay must be a conflict, got: {}",
+        replay.message()
+    );
+    assert_eq!(
+        serde_json::to_value(repo.list_policy_bundles(&realm).await.unwrap()).unwrap(),
+        serde_json::json!([bundle]),
+        "an identical replay changed the incumbent"
+    );
+
+    // Refuse a taken name, a same-owner ID and a foreign-owner ID.
+    for duplicate in [
+        PolicyBundle {
+            id: "policy-bundle-b".to_string(),
+            ..bundle.clone()
+        },
+        PolicyBundle {
+            name: "other".to_string(),
+            ..bundle.clone()
+        },
+        PolicyBundle {
+            realm_id: other_realm.0.clone(),
+            name: "other".to_string(),
+            ..bundle.clone()
+        },
+    ] {
+        let changed = PolicyBundle {
+            source_hash: "changed".to_string(),
+            compiled_json: serde_json::json!({"rules": ["changed"]}),
+            version: 2,
+            active: false,
+            ..duplicate
+        };
+        let err = repo
+            .create_policy_bundle(&changed)
+            .await
+            .expect_err("taken key must fail");
+        assert!(
+            matches!(err, qid_core::error::QidError::Conflict { .. }),
+            "{}",
+            err.message()
+        );
+        let listed = repo.list_policy_bundles(&realm).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(listed).unwrap(),
+            serde_json::json!([bundle])
+        );
+        assert!(
+            repo.list_policy_bundles(&other_realm)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // The same name in another realm names another bundle, so it is allowed.
+    let elsewhere = PolicyBundle {
+        id: "policy-bundle-elsewhere".to_string(),
+        realm_id: other_realm.0.clone(),
+        ..bundle.clone()
+    };
+    repo.create_policy_bundle(&elsewhere)
+        .await
+        .expect("the same bundle name in another realm must be allowed");
+    let listed_elsewhere = repo
+        .list_policy_bundles(&other_realm)
+        .await
+        .expect("list other-realm bundles failed");
+    assert_eq!(listed_elsewhere.len(), 1);
+    assert_eq!(
+        serde_json::to_value(listed_elsewhere).unwrap(),
+        serde_json::json!([elsewhere]),
+        "the allowed cross-realm create must persist the complete bundle"
+    );
+
+    // A distinct name in the same realm is another bundle, so it is allowed.
+    let distinct = PolicyBundle {
+        id: "policy-bundle-distinct".to_string(),
+        name: "deny".to_string(),
+        source_hash: "hash-deny".to_string(),
+        ..bundle.clone()
+    };
+    repo.create_policy_bundle(&distinct)
+        .await
+        .expect("a distinct bundle name in the same realm must be allowed");
+    let listed = repo
+        .list_policy_bundles(&realm)
+        .await
+        .expect("list policy bundles failed");
+    assert_eq!(
+        listed.len(),
+        2,
+        "both distinct realm bundles must be listed"
+    );
+    for expected in [&bundle, &distinct] {
+        assert!(
+            listed.iter().any(|stored| {
+                serde_json::to_value(stored).unwrap() == serde_json::to_value(expected).unwrap()
+            }),
+            "the allowed same-realm create must persist the full bundle {}",
+            expected.id
+        );
+    }
 }

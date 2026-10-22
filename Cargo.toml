@@ -59,8 +59,11 @@ exclude = ["vendor/rustls"]
 # reaching 103607, so the old cap was insufficient for the staged migrations.
 # The 103800 total was a 200-line ceiling, not a target. The realm ownership
 # fix adds 18 measured product-source lines; six came from existing headroom,
-# so the cap rises by 12 to 103812, exactly the new source count.
-total = 103812
+# so the cap rises by 12 to 103812, exactly the new source count. The typed
+# create-only map operation for policy bundles, users and clients, policy SQL
+# refusal and repository contract add 51 net product-source lines against that
+# baseline (xtask budget: 103812 -> 103863), so the cap rises by exactly 51.
+total = 103863
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

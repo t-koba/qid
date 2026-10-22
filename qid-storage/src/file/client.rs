@@ -6,24 +6,7 @@ use super::*;
 impl ClientRepository for FileRepository {
     async fn create_client(&self, client: &Client) -> QidResult<()> {
         let mut store = self.store.write().await;
-        // A client id names one client in a realm, so a second client that
-        // carries it is refused instead of stored. The check runs under the
-        // store's exclusive write lock, so the refusal is as atomic as the
-        // SQL backend's unique constraint.
-        reject_duplicate_id(store.clients.contains_key(&client.id), || {
-            format!("client record ID {} already exists", client.id)
-        })?;
-        if store.clients.values().any(|stored| {
-            stored.realm_id == client.realm_id && stored.client_id == client.client_id
-        }) {
-            return Err(QidError::Conflict {
-                message: format!(
-                    "client id {} already exists in realm {}",
-                    client.client_id, client.realm_id
-                ),
-            });
-        }
-        store.clients.insert(client.id.clone(), client.clone());
+        super::insert::insert_new(&mut store.clients, client)?;
         drop(store);
         self.save().await
     }

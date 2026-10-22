@@ -197,3 +197,30 @@ async fn realm_identity_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-realm-identity").await;
     support::assert_realm_identity_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn policy_bundle_identity_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_policy_bundle_identity_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-policy-bundle").await;
+    support::assert_policy_bundle_identity_ownership(&file).await;
+}
+
+#[tokio::test]
+async fn policy_bundle_foreign_key_failure_remains_storage_error() {
+    use qid_core::{error::QidError, models::PolicyBundle};
+    use qid_storage::PolicyRepository;
+
+    let sql = support::sql_repo().await;
+    let bundle = PolicyBundle {
+        id: "orphan-bundle".to_string(),
+        realm_id: "missing-realm".to_string(),
+        name: "allow".to_string(),
+        source_hash: "hash".to_string(),
+        compiled_json: serde_json::json!({"rules": []}),
+        version: 1,
+        active: true,
+    };
+    let err = sql.create_policy_bundle(&bundle).await.unwrap_err();
+    assert!(matches!(err, QidError::Storage { .. }), "{}", err.message());
+}

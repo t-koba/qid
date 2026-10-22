@@ -27,7 +27,7 @@ pub(crate) fn build_explain_json(
         let adapter_name = ctx.effective_pep_registration()?;
         realm
             .pep_registrations
-            .registrations
+            .served()
             .iter()
             .find(|a| a.name == adapter_name)
             .and_then(|a| a.audience.clone())
@@ -39,7 +39,7 @@ pub(crate) fn build_explain_json(
             let adapter_name = ctx.effective_pep_registration()?;
             realm
                 .pep_registrations
-                .registrations
+                .served()
                 .iter()
                 .find(|a| a.name == adapter_name)
                 .map(|a| a.decision.cache.clone())
@@ -349,8 +349,8 @@ fn explain_deployment_profile(
     let realm_status = realm_config.map(|realm| {
         serde_json::json!({
             "realm": realm.id,
-            "pep_registrations": realm.pep_registrations.registrations.len(),
-            "all_pep_decision_fail_closed": realm.pep_registrations.registrations.iter().all(|adapter| adapter.decision.fail_policy == "deny"),
+            "pep_registrations": realm.pep_registrations.served().len(),
+            "all_pep_decision_fail_closed": realm.pep_registrations.served().iter().all(|adapter| adapter.decision.fail_policy == "deny"),
             "passkeys_enabled": realm.authentication.passkeys.enabled,
             "scim_enabled": realm.protocols.scim.enabled,
             "par_enabled": realm.protocols.oauth.par.enabled,

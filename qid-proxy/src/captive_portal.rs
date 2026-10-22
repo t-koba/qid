@@ -331,7 +331,7 @@ fn authenticate_capport_control_adapter<R: Repository>(
         })?;
 
     let mut authenticated = false;
-    for adapter in &realm.pep_registrations.registrations {
+    for adapter in realm.pep_registrations.served() {
         if !adapter.capabilities.iter().any(|capability| {
             capability.effect == CAPPORT_CONTROL_CAPABILITY
                 || capability.effect == CAPPORT_CONTROL_CAPABILITY_ALIAS

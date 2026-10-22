@@ -292,7 +292,7 @@ fn authenticate_risk_adapter<R: Repository>(
     })?;
     let mut last_error = None;
     for realm in &state.config.realms {
-        for adapter in &realm.pep_registrations.registrations {
+        for adapter in realm.pep_registrations.served() {
             let Some(audience) = adapter.audience.as_deref() else {
                 continue;
             };

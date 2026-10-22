@@ -403,7 +403,7 @@ fn authenticate_pep_decision_adapter<R: Repository>(
     for realm in &state.config.realms {
         for adapter in realm
             .pep_registrations
-            .registrations
+            .served()
             .iter()
             .filter(|adapter| adapter.name == req.proxy.proxy_name)
         {
@@ -620,7 +620,7 @@ fn authenticate_authzen_adapter<R: Repository>(
     })?;
     let mut matches = Vec::new();
     for realm in &state.config.realms {
-        for adapter in &realm.pep_registrations.registrations {
+        for adapter in realm.pep_registrations.served() {
             let capabilities = normalize_capabilities(&adapter.capabilities);
             if !capabilities.contains("authzen") {
                 continue;
@@ -1051,7 +1051,7 @@ fn pep_decision_cache_config<R: Repository>(
         .and_then(|realm| {
             realm
                 .pep_registrations
-                .registrations
+                .served()
                 .iter()
                 .find(|adapter| adapter.name == registration)
         })

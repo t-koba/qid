@@ -355,8 +355,7 @@ fn validate_edge_pep_profile(config: &QidConfig) -> QidResult<()> {
     let registration_count = config
         .realms
         .iter()
-        .filter(|realm| realm.pep_registrations.enabled)
-        .flat_map(|realm| realm.pep_registrations.registrations.iter())
+        .flat_map(|realm| realm.pep_registrations.served())
         .count();
     if registration_count == 0 {
         return Err(QidError::Config {
@@ -370,7 +369,7 @@ fn validate_edge_pep_profile(config: &QidConfig) -> QidResult<()> {
                     message: format!("profile edge-pep requires mTLS for realm {}", realm.id),
                 });
             }
-            for registration in &realm.pep_registrations.registrations {
+            for registration in realm.pep_registrations.served() {
                 for &capability in EDGE_PEP_REQUIRED_CAPABILITY_EFFECTS {
                     if !registration
                         .capabilities

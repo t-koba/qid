@@ -675,8 +675,66 @@ fn totp_enrolment_refuses_a_realm_that_does_not_offer_the_factor() {
 }
 
 #[test]
+fn explain_reports_the_registrations_the_realm_serves() {
+    let mut config = minimal_config();
+    config.realms[0]
+        .pep_registrations
+        .registrations
+        .push(PepRegistrationConfig {
+            name: "egress-main".to_string(),
+            audience: None,
+            capabilities: Vec::new(),
+            assertion: ProxyAssertionConfig::default(),
+            decision: PepDecisionConfig {
+                fail_policy: "deny".to_string(),
+                cache: PepDecisionCacheConfig {
+                    positive_ttl_seconds: 7,
+                    negative_ttl_seconds: 2,
+                },
+            },
+            auth: PepRegistrationAuthConfig::default(),
+        });
+    let ctx = PolicyContext {
+        pep_registration: Some("egress-main".to_string()),
+        ..PolicyContext::default()
+    };
+    let result = DecisionDetails {
+        decision: Decision::Deny,
+        ..DecisionDetails::default()
+    };
+
+    let explanation = build_explain_json(
+        DeploymentProfile::EdgePep,
+        Some(&config.realms[0]),
+        &ctx,
+        &result,
+        None,
+        None,
+    );
+    assert_eq!(
+        explanation["deployment_profile"]["realm_status"]["pep_registrations"], 0,
+        "a realm that disables its registrations serves none of them"
+    );
+
+    config.realms[0].pep_registrations.enabled = true;
+    let explanation = build_explain_json(
+        DeploymentProfile::EdgePep,
+        Some(&config.realms[0]),
+        &ctx,
+        &result,
+        None,
+        None,
+    );
+    assert_eq!(
+        explanation["deployment_profile"]["realm_status"]["pep_registrations"],
+        1
+    );
+}
+
+#[test]
 fn explain_reports_the_registration_decision_cache_lifetime() {
     let mut config = minimal_config();
+    config.realms[0].pep_registrations.enabled = true;
     config.realms[0]
         .pep_registrations
         .registrations

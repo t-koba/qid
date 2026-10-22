@@ -113,7 +113,7 @@ async fn do_issue_assertion<R: Repository>(
         })?;
         let edge_config = realm
             .pep_registrations
-            .registrations
+            .served()
             .iter()
             .find(|e| e.name == edge_name)
             .ok_or_else(|| QidError::Unauthorized {
@@ -192,7 +192,7 @@ async fn do_issue_assertion<R: Repository>(
 
     let edge_config = realm
         .pep_registrations
-        .registrations
+        .served()
         .iter()
         .find(|e| e.name == edge_name)
         .ok_or_else(|| QidError::Unauthorized {
@@ -829,6 +829,81 @@ mod tests {
 
         assert!(
             err.message().contains("dedicated pep_assertion keyring"),
+            "unexpected error: {}",
+            err.message()
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn a_realm_that_disables_its_registrations_serves_no_assertion() {
+        let mut config = qid_core::test_helpers::test_config();
+        config.realms[0].pep_registrations.enabled = false;
+        config.realms[0].pep_registrations.registrations =
+            vec![qid_core::config::PepRegistrationConfig {
+                name: "egress-main".to_string(),
+                audience: Some("urn:qid:pep:qpx:test/egress-main".to_string()),
+                capabilities: Vec::new(),
+                assertion: qid_core::config::ProxyAssertionConfig::default(),
+                decision: qid_core::config::PepDecisionConfig::default(),
+                auth: qid_core::config::PepRegistrationAuthConfig::default(),
+            }];
+        let path =
+            std::env::temp_dir().join(format!("qid-proxy-assertion-{}.json", ulid::Ulid::new()));
+        let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
+            .await
+            .expect("file repository");
+        repo.migrate().await.expect("file repository migration");
+        let now = qid_core::util::now_seconds();
+        let user = User {
+            id: "usr_qpx_disabled_registration".to_string(),
+            realm_id: "test".to_string(),
+            email: Some("alice@example.com".to_string()),
+            email_verified: true,
+            display_name: Some("Alice".to_string()),
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        };
+        repo.create_user(&user).await.expect("user created");
+        repo.create_session(&Session {
+            id: "sess_qpx_disabled_registration".to_string(),
+            realm_id: "test".to_string(),
+            user_id: user.id.clone(),
+            auth_time: now - 30,
+            acr: Some("urn:qid:acr:password".to_string()),
+            amr: vec!["pwd".to_string()],
+            idle_expires_at: now + 300,
+            absolute_expires_at: now + 3_600,
+            revoked: false,
+            created_at: now - 30,
+            cnf: None,
+        })
+        .await
+        .expect("session created");
+
+        let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
+            "oidc-token",
+            b"test-secret-for-disabled-pep-registration",
+        ));
+        let state = SharedState::new(config, Arc::new(repo), signer, serde_json::json!({}))
+            .expect("shared state");
+
+        let err = do_issue_assertion(
+            &state,
+            "test",
+            &AssertionRequest {
+                edge: Some("egress-main".to_string()),
+                session: Some("sess_qpx_disabled_registration".to_string()),
+                access_token: None,
+            },
+            &HeaderMap::new(),
+        )
+        .await
+        .expect_err("a realm that disables its registrations serves no assertion");
+
+        assert!(
+            err.message().contains("unknown PEP adapter"),
             "unexpected error: {}",
             err.message()
         );

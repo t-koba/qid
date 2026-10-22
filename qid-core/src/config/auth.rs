@@ -337,6 +337,23 @@ pub struct PepRegistrationsConfig {
     pub registrations: Vec<PepRegistrationConfig>,
 }
 
+impl PepRegistrationsConfig {
+    /// The registrations the realm serves.
+    ///
+    /// `enabled` is the switch that decides whether the realm serves its PEP
+    /// registrations at all: a realm that leaves the switch off serves none of
+    /// them, so the decision, assertion and AuthZEN endpoints never
+    /// authenticate a PEP of that realm, and the PAR and OAuth mTLS paths
+    /// never accept its PEP metadata.
+    pub fn served(&self) -> &[PepRegistrationConfig] {
+        if self.enabled {
+            &self.registrations
+        } else {
+            &[]
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PepRegistrationConfig {

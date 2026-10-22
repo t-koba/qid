@@ -108,6 +108,8 @@ qid exposes provider-neutral PEP surfaces:
 
 PEP registration is a qid trust record for an external enforcement point. qid validates the credential-bound PEP identity, audience, replay state, and declared capabilities. Request-body declarations such as edge name, route, realm, audience, or capability are checked against the authenticated registration; they are not trusted by themselves.
 
+A realm serves its PEP registrations only while it enables them. A realm that leaves `pep_registrations.enabled` off serves none of them: the decision, assertion and AuthZEN endpoints authenticate no PEP of that realm, and the PAR and OAuth mTLS paths accept no PEP metadata of that realm. The switch is off unless the configuration sets it.
+
 qid does not ingest arbitrary traffic bodies for normal authorization. PEP decision inputs are headers, connection metadata, identity context, device/workload posture, destination labels, and capability declarations. If a deployment needs content-aware inspection, that result should be produced by the data plane or a DLP component and passed to qid as a derived label.
 
 ## Runtime State

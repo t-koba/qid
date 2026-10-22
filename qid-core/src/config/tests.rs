@@ -800,6 +800,27 @@ fn pep_registration_requires_explicit_audience() {
 }
 
 #[test]
+fn a_realm_that_disables_its_pep_registrations_serves_none_of_them() {
+    let mut config = minimal_config();
+    config.realms[0].pep_registrations.registrations = vec![PepRegistrationConfig {
+        name: "egress-main".to_string(),
+        audience: Some("urn:qid:pep:qpx:corp/egress-main".to_string()),
+        capabilities: Vec::new(),
+        assertion: ProxyAssertionConfig::default(),
+        decision: PepDecisionConfig::default(),
+        auth: PepRegistrationAuthConfig::default(),
+    }];
+
+    assert!(
+        config.realms[0].pep_registrations.served().is_empty(),
+        "a realm that disables its registrations serves none of them"
+    );
+
+    config.realms[0].pep_registrations.enabled = true;
+    assert_eq!(config.realms[0].pep_registrations.served().len(), 1);
+}
+
+#[test]
 fn deployment_profiles_enforce_required_capabilities() {
     assert_eq!(
         serde_json::from_value::<DeploymentProfile>(serde_json::json!("edge-pep")).unwrap(),

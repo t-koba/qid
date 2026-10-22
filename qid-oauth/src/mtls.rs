@@ -68,7 +68,7 @@ pub fn extract_mtls_x5t_s256<R: Repository>(
         .config
         .realms
         .iter()
-        .flat_map(|realm| realm.pep_registrations.registrations.iter())
+        .flat_map(|realm| realm.pep_registrations.served().iter())
     {
         let Some(audience) = adapter.audience.as_deref() else {
             continue;

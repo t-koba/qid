@@ -314,6 +314,8 @@ Validation rules:
 
 `pep_registrations` declares external PEP identities that may receive qid assertions or call qid decision endpoints. A registration can represent qpx, Envoy, NGINX, HAProxy, a service mesh, an API gateway, a custom reverse proxy, or another enforcement component.
 
+`pep_registrations.enabled` decides whether the realm serves its registrations at all. The switch is off unless the configuration sets it, so a realm that lists registrations without enabling them serves none of them: the decision, assertion and AuthZEN endpoints authenticate no PEP of that realm, and the PAR and OAuth mTLS paths accept no PEP metadata of that realm. The registrations stay declared, so a deployment can turn the serving off and on again without rewriting them.
+
 Important rules:
 
 - Registration names must be unique per realm.

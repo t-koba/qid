@@ -535,6 +535,104 @@ async fn rebac_tenant_tuples_drive_pep_decisions_without_cross_tenant_leak() {
     std::fs::remove_file(path).ok();
 }
 
+fn pep_adapter_config(enabled: bool) -> QidConfig {
+    serde_json::from_value(serde_json::json!({
+        "server": {"listen": "127.0.0.1:1", "public_base_url": "https://proxy.example.com"},
+        "realms": [
+            {
+                "id": "test",
+                "issuer": "https://proxy.example.com/realm-test",
+                "pep_registrations": {
+                    "enabled": enabled,
+                    "registrations": [{
+                        "name": "egress-main",
+                        "audience": "urn:qid:pep:test/egress-main",
+                        "capabilities": [{"effect": "local_response"}],
+                        "decision": {"fail_policy": "deny"}
+                    }]
+                }
+            }
+        ]
+    }))
+    .expect("test config must deserialize")
+}
+
+async fn pep_adapter_state(
+    enabled: bool,
+) -> (SharedState<qid_storage::FileRepository>, std::path::PathBuf) {
+    let path =
+        std::env::temp_dir().join(format!("qid-pep-registration-{}.json", ulid::Ulid::new()));
+    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
+        .await
+        .expect("file repository");
+    repo.migrate().await.expect("file repository migration");
+    let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
+        "test",
+        b"test-secret-for-disabled-pep-registrations",
+    ));
+    let state = SharedState::new(
+        pep_adapter_config(enabled),
+        Arc::new(repo),
+        signer,
+        serde_json::json!({}),
+    )
+    .expect("shared state");
+    (state, path)
+}
+
+fn pep_adapter_token(state: &SharedState<qid_storage::FileRepository>) -> String {
+    let now = qid_core::util::now_seconds();
+    let mut extra = HashMap::new();
+    extra.insert(
+        "realm_id".to_string(),
+        serde_json::Value::String("test".to_string()),
+    );
+    state
+        .signer
+        .sign(&qid_core::jwt::JwtClaims {
+            iss: Some("https://proxy.example.com".to_string()),
+            sub: Some("egress-main".to_string()),
+            aud: Some(qid_core::jwt::Audience::single(
+                "urn:qid:pep:test/egress-main".to_string(),
+            )),
+            exp: Some((now + 60) as usize),
+            nbf: Some((now - 5) as usize),
+            iat: Some(now as usize),
+            jti: Some(format!("pep-adapter-{now}")),
+            extra,
+        })
+        .expect("adapter token")
+}
+
+#[tokio::test]
+async fn a_realm_that_disables_its_registrations_serves_no_pep() {
+    let (enabled_state, enabled_path) = pep_adapter_state(true).await;
+    let token = pep_adapter_token(&enabled_state);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {token}")
+            .parse()
+            .expect("authorization header"),
+    );
+    let req = request();
+
+    let auth = authenticate_pep_decision_adapter(&headers, &enabled_state, &req)
+        .expect("the enabled realm serves its registration");
+    assert_eq!(auth.realm_id, "test");
+
+    let (disabled_state, disabled_path) = pep_adapter_state(false).await;
+    let err = authenticate_pep_decision_adapter(&headers, &disabled_state, &req)
+        .expect_err("a realm that disables its registrations serves no PEP");
+    assert!(
+        err.message()
+            .contains("invalid PEP registration authentication token")
+    );
+
+    std::fs::remove_file(enabled_path).ok();
+    std::fs::remove_file(disabled_path).ok();
+}
+
 fn cache_ttl_test_config(cache: Option<(u64, u64)>) -> QidConfig {
     let mut registration = serde_json::json!({
         "name": "egress-main",

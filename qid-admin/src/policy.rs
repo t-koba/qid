@@ -214,7 +214,7 @@ async fn build_admin_dashboard<R: Repository>(state: &SharedState<R>) -> QidResu
         .config
         .realms
         .iter()
-        .map(|realm| realm.pep_registrations.registrations.len())
+        .map(|realm| realm.pep_registrations.served().len())
         .sum();
     Ok(AdminDashboard {
         realm_count: realm_dashboards.len(),

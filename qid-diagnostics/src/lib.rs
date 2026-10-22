@@ -109,7 +109,7 @@ pub fn build_check_report(
     let pep_registrations = config
         .realms
         .iter()
-        .map(|realm| realm.pep_registrations.registrations.len())
+        .map(|realm| realm.pep_registrations.served().len())
         .sum();
     let status = if errors > 0 {
         "error"

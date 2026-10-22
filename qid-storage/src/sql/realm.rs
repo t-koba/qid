@@ -11,14 +11,19 @@ impl RealmRepository for SqlRepository {
         issuer: &str,
         display_name: Option<&str>,
     ) -> QidResult<()> {
-        sqlx::query("INSERT INTO realms (id, tenant_id, issuer, display_name) VALUES (?, ?, ?, ?)")
-            .bind(realm_id.as_str())
-            .bind(tenant.as_str())
-            .bind(issuer)
-            .bind(display_name)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
+        let result = sqlx::query(
+            "INSERT INTO realms (id, tenant_id, issuer, display_name) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .bind(realm_id.as_str())
+        .bind(tenant.as_str())
+        .bind(issuer)
+        .bind(display_name)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "realm ID or issuer already exists".to_string()
+        })?;
         Ok(())
     }
 

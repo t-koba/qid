@@ -12,6 +12,15 @@ impl RealmRepository for FileRepository {
         _display_name: Option<&str>,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
+        reject_duplicate_id(
+            store.realm_issuers.contains_key(&realm_id.0)
+                || store.realm_tenants.contains_key(&realm_id.0)
+                || store
+                    .realm_issuers
+                    .values()
+                    .any(|stored_issuer| stored_issuer == issuer),
+            || "realm ID or issuer already exists".to_string(),
+        )?;
         store
             .realm_issuers
             .insert(realm_id.0.clone(), issuer.to_string());

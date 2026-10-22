@@ -57,9 +57,10 @@ exclude = ["vendor/rustls"]
 # lines and FedCM identity added 20: measured use rose from 103550 to 103593,
 # leaving 7 lines under that cap. The next service-account slice added 14,
 # reaching 103607, so the old cap was insufficient for the staged migrations.
-# The 103800 total is a 200-line ceiling, not a target; 193 lines remain after
-# that slice. Per-crate caps and counted-file coverage are unchanged.
-total = 103800
+# The 103800 total was a 200-line ceiling, not a target. The realm ownership
+# fix adds 18 measured product-source lines; six came from existing headroom,
+# so the cap rises by 12 to 103812, exactly the new source count.
+total = 103812
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

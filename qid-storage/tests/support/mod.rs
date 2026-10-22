@@ -2208,3 +2208,95 @@ where
             .is_empty()
     );
 }
+
+/// Realm IDs and issuers are globally unique and refusals preserve ownership.
+pub async fn assert_realm_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository,
+{
+    let owner = TenantId("tenant-realm-owner".to_string());
+    let realm = RealmId("realm-owner".to_string());
+    let issuer = "https://realm-owner.example.com";
+    repo.create_realm(&owner, &realm, issuer, Some("Owner realm"))
+        .await
+        .expect("create incumbent realm failed");
+
+    let other_tenant = TenantId("tenant-realm-other".to_string());
+    let duplicate_id = repo
+        .create_realm(
+            &other_tenant,
+            &realm,
+            "https://realm-attacker.example.com",
+            Some("Other tenant realm"),
+        )
+        .await
+        .expect_err("a realm ID held by another tenant must fail");
+    assert!(
+        matches!(duplicate_id, qid_core::error::QidError::Conflict { .. }),
+        "duplicate realm ID must be a conflict, got: {}",
+        duplicate_id.message()
+    );
+    assert_eq!(
+        repo.get_realm_issuer(&realm)
+            .await
+            .expect("get incumbent issuer failed")
+            .as_deref(),
+        Some(issuer),
+        "duplicate realm ID changed the incumbent issuer"
+    );
+    assert_eq!(
+        repo.get_realm_tenant(&realm)
+            .await
+            .expect("get incumbent tenant failed")
+            .as_deref(),
+        Some(owner.as_str()),
+        "duplicate realm ID changed the incumbent tenant"
+    );
+
+    let duplicate_issuer_realm = RealmId("realm-duplicate-issuer".to_string());
+    let duplicate_issuer = repo
+        .create_realm(
+            &other_tenant,
+            &duplicate_issuer_realm,
+            issuer,
+            Some("Duplicate issuer realm"),
+        )
+        .await
+        .expect_err("a realm issuer already held by another ID must fail");
+    assert!(
+        matches!(duplicate_issuer, qid_core::error::QidError::Conflict { .. }),
+        "duplicate realm issuer must be a conflict, got: {}",
+        duplicate_issuer.message()
+    );
+    assert!(
+        repo.get_realm_issuer(&duplicate_issuer_realm)
+            .await
+            .expect("get rejected realm issuer failed")
+            .is_none(),
+        "duplicate issuer created another realm"
+    );
+    assert!(
+        repo.get_realm_tenant(&duplicate_issuer_realm)
+            .await
+            .expect("get rejected realm tenant failed")
+            .is_none(),
+        "duplicate issuer created another tenant binding"
+    );
+
+    let unrelated = RealmId("realm-unrelated".to_string());
+    repo.create_realm(
+        &other_tenant,
+        &unrelated,
+        "https://realm-unrelated.example.com",
+        Some("Unrelated realm"),
+    )
+    .await
+    .expect("a distinct realm identity must be allowed");
+    assert_eq!(
+        repo.get_realm_tenant(&unrelated)
+            .await
+            .expect("get unrelated realm tenant failed")
+            .as_deref(),
+        Some(other_tenant.as_str())
+    );
+}

@@ -82,11 +82,12 @@ handling, while the per-resource cost depends on its distinct collision and
 lifecycle semantics.
 
 The migrated families are the workload identity, the client, the CIAM
-consent grant, the user, the device, the FedCM identity, the service account,
-the WebAuthn credential, IGA access requests, approvals, access grants and JIT
-privilege grants. The remaining disagreements are listed above; they are not all
-defects. A write whose identity key is a token the product generates (an
-authorization code, a PAR request, a device or backchannel grant) has no owner
+consent grant, the user, the realm, the device, the FedCM identity, the service
+account, the WebAuthn credential, IGA access requests, approvals, access grants,
+JIT privilege grants, and access review campaigns. The remaining disagreements
+are listed above; they are not all defects. A write whose identity key is a
+token the product generates (an authorization code, a PAR request, a device or
+backchannel grant) has no owner
 to protect, and a write whose same-owner semantics are
 "replace" (an upsert of a configuration record) states that on purpose.
 
@@ -245,7 +246,7 @@ tenant (`tenant_id`); the table declares `UNIQUE(issuer)`
 
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
-| `create_realm` - `realms` row | tenant (`tenant_id`) | realm `id`; the schema also makes `issuer` unique | issuer, `display_name` | File: both maps are overwritten, so a repeated realm ID or issuer is accepted silently (`qid-storage/src/file/realm.rs:15`, `qid-storage/src/file/realm.rs:18`). SQL: plain `INSERT`, so a duplicate realm ID or a duplicate issuer is a unique violation surfaced as `Storage` (`qid-storage/src/sql/realm.rs:14`). **Backends disagree.** | file `qid-storage/src/file/realm.rs:15`; sql `qid-storage/src/sql/realm.rs:14` (not enforced as a conflict in SQL); schema `qid-storage/migrations/20250101000001_initial_schema.sql:6` |
+| `create_realm` - `realms` row | tenant (`tenant_id`) | globally unique realm `id` and `issuer` | issuer, `display_name` | File: duplicate IDs in either realm map and duplicate issuers return `Conflict` before either map is changed (`qid-storage/src/file/realm.rs:15`, `qid-storage/src/file/realm.rs:23`). SQL: static `ON CONFLICT DO NOTHING`; `ensure_upsert_applied` maps a duplicate ID or issuer to `Conflict` (`qid-storage/src/sql/realm.rs:15`, `qid-storage/src/sql/realm.rs:24`). Both preserve the incumbent realm and tenant binding. | file `qid-storage/src/file/realm.rs:23`; sql `qid-storage/src/sql/realm.rs:24`; schema `qid-storage/migrations/20250101000001_initial_schema.sql:6` |
 | `delete_realm` (delete) | realm (`realm_id`) | realm `id` | none, removal of the realm and the live state it owns | File: `remove_realm` drops the realm's users and their authentication state, then the realm-scoped clients, service accounts, policy bundles, credential statuses, PAR requests, SCIM, FedCM, workload, SaaS and SSF records, and the realm's issuer and tenant bindings (`qid-storage/src/file/realm.rs:99`, `qid-storage/src/file/realm.rs:105`, `qid-storage/src/file/realm.rs:136`); an unknown realm is a silent no-op. SQL: the realm-scoped rows are deleted in one transaction and the realm row is deleted last (`qid-storage/src/sql/realm.rs:56`, `qid-storage/src/sql/realm.rs:93`); an unknown realm is a silent no-op. Both keep the audit, retention and SIEM history. | file `qid-storage/src/file/realm.rs:105`; sql `qid-storage/src/sql/realm.rs:93` |
 
 ## rebac

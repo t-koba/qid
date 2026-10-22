@@ -89,6 +89,10 @@ const fn refusal(owner_key: &'static str, identity_key: &'static str) -> Ownersh
     OwnershipContract::new(owner_key, identity_key, CollisionRule::Refuse)
 }
 
+/// Ownership contract for globally unique realm IDs and issuers.
+#[allow(dead_code)]
+pub const REALM: OwnershipContract = refusal("tenant_id", "id, issuer");
+
 /// Ownership contract for the user resource (create and update).
 #[allow(dead_code)]
 pub const USER: OwnershipContract = refusal("realm_id", "id, email");

@@ -299,6 +299,10 @@ only; a trusted verified mapping can coexist with unverified legacy rows.
 
 Workload and SPIFFE routes are only merged in the `workload` profile.
 
+One SPIFFE ID names one workload identity in a realm: registering a second
+identity for the same SPIFFE ID is refused, and an identity ID that belongs to
+another realm's identity is a conflict.
+
 ## IGA and ReBAC
 
 | Method | Path | Notes |

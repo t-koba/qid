@@ -339,6 +339,137 @@ where
     assert_eq!(revoked[0].revoked_at, Some(1_800_000_100));
 }
 
+async fn assert_workload_identity_ownership<R>(repo: &R)
+where
+    R: RealmRepository + WorkloadRepository,
+{
+    let realm = RealmId("realm-workload-identity".to_string());
+    repo.create_realm(
+        &TenantId("tenant-workload-identity".to_string()),
+        &realm,
+        "https://workload-identity.example.com",
+        Some("Workload Identity Realm"),
+    )
+    .await
+    .expect("create workload identity realm failed");
+    let other_realm = RealmId("realm-workload-identity-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-workload-identity-other".to_string()),
+        &other_realm,
+        "https://workload-identity-other.example.com",
+        Some("Other Workload Identity Realm"),
+    )
+    .await
+    .expect("create other workload identity realm failed");
+
+    let identity = WorkloadIdentity {
+        id: "workload-identity-api".to_string(),
+        realm_id: realm.0.clone(),
+        spiffe_id: "spiffe://corp.example/workload/identity-api".to_string(),
+        description: Some("API workload".to_string()),
+        trust_domain: "corp.example".to_string(),
+        authorities_json: serde_json::json!({"issuer": "ca-api"}),
+    };
+    repo.create_workload_identity(&identity)
+        .await
+        .expect("create workload identity failed");
+
+    // A second identity for one SPIFFE ID in one realm is refused.
+    let duplicate_spiffe = WorkloadIdentity {
+        id: "workload-identity-api-duplicate".to_string(),
+        ..identity.clone()
+    };
+    let err = repo
+        .create_workload_identity(&duplicate_spiffe)
+        .await
+        .expect_err("a second identity for one SPIFFE ID must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::BadRequest { .. }),
+        "a second identity for one SPIFFE ID must be a bad request, got: {}",
+        err.message()
+    );
+    assert!(
+        err.message()
+            .contains("SPIFFE identity already registered in this realm"),
+        "the refused registration must name the registered SPIFFE ID, got: {}",
+        err.message()
+    );
+    let listed = repo
+        .list_workload_identities(&realm)
+        .await
+        .expect("list workload identities failed");
+    assert_eq!(
+        listed.len(),
+        1,
+        "the refused registration changed the realm identities"
+    );
+    assert_eq!(listed[0].id, identity.id);
+
+    // An identity ID that belongs to another realm's identity is a conflict.
+    let collision = WorkloadIdentity {
+        id: identity.id.clone(),
+        realm_id: other_realm.0.clone(),
+        spiffe_id: "spiffe://other.example/workload/worker".to_string(),
+        description: Some("Other workload".to_string()),
+        trust_domain: "other.example".to_string(),
+        authorities_json: serde_json::json!({"issuer": "ca-other"}),
+    };
+    let err = repo
+        .create_workload_identity(&collision)
+        .await
+        .expect_err("an identity ID of another realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "an identity ID of another realm must be a conflict, got: {}",
+        err.message()
+    );
+    assert!(
+        err.message()
+            .contains("workload identity ID belongs to another identity"),
+        "the refused collision must name the owner of the ID, got: {}",
+        err.message()
+    );
+    assert!(
+        repo.list_workload_identities(&other_realm)
+            .await
+            .expect("list other realm workload identities failed")
+            .is_empty(),
+        "the collision created an identity in the other realm"
+    );
+    let listed = repo
+        .list_workload_identities(&realm)
+        .await
+        .expect("list workload identities failed");
+    assert_eq!(
+        listed.len(),
+        1,
+        "the collision changed the incumbent identity"
+    );
+    assert_eq!(listed[0].realm_id, identity.realm_id);
+    assert_eq!(listed[0].spiffe_id, identity.spiffe_id);
+
+    // The same identity may be written again: ID, realm and SPIFFE ID match.
+    let mut updated = identity.clone();
+    updated.description = Some("API workload (updated)".to_string());
+    repo.create_workload_identity(&updated)
+        .await
+        .expect("re-create of the same workload identity failed");
+    let listed = repo
+        .list_workload_identities(&realm)
+        .await
+        .expect("list workload identities failed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].description, updated.description);
+    assert_eq!(
+        repo.get_workload_identity_by_spiffe(&realm, &identity.spiffe_id)
+            .await
+            .expect("get workload identity by SPIFFE ID failed")
+            .map(|found| found.id),
+        Some(identity.id.clone()),
+        "the SPIFFE ID lookup must answer the registered identity"
+    );
+}
+
 #[tokio::test]
 async fn test_connect_and_migrate() {
     let url = db_url();
@@ -2000,6 +2131,26 @@ async fn test_file_workload_certificate_round_trip() {
     repo.migrate().await.expect("file migration failed");
 
     assert_workload_certificate_round_trip(&repo).await;
+}
+
+#[tokio::test]
+async fn test_sql_workload_identity_ownership() {
+    let repo = sql_repo().await;
+    assert_workload_identity_ownership(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_workload_identity_ownership() {
+    let path = std::env::temp_dir().join(format!(
+        "qid-file-workload-identity-{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("file repository creation failed");
+    repo.migrate().await.expect("file migration failed");
+
+    assert_workload_identity_ownership(&repo).await;
 }
 
 #[tokio::test]

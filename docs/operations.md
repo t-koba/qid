@@ -60,6 +60,8 @@ For Postgres, set `QID_DATABASE_URL` or pass `--database-url`.
 
 Storage diagnostics are a startup safety gate. A storage audit error means qid may not have verified realm, tenant, connector, SAML, OIDC, or SaaS object references; daemon preflight treats that as an error.
 
+One SPIFFE ID names one workload identity in a realm. A database that already holds two workload identities with the same SPIFFE ID in one realm fails the migration that adds the unique index; remove the redundant identity before migrating.
+
 ## Shared Cache
 
 Set `ops.cache.kind` to `redis` or `valkey` for every multi-instance deployment. The shared cache backs DPoP and JWT assertion replay guards, PEP decision cache entries, and browser session cache entries. `kind: disabled` is only appropriate for single-process deployments.

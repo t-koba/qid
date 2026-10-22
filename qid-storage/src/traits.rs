@@ -528,6 +528,9 @@ pub trait CiamRepository: Send + Sync + 'static {
 
 #[async_trait]
 pub trait WorkloadRepository: Send + Sync + 'static {
+    /// Create or update a workload identity for its realm and SPIFFE ID.
+    /// A global ID collision with another identity returns `Conflict`; a SPIFFE ID
+    /// already registered in the realm is refused. Neither changes the incumbent.
     async fn create_workload_identity(&self, wi: &WorkloadIdentity) -> QidResult<()>;
     async fn get_workload_identity_by_spiffe(
         &self,

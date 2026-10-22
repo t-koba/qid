@@ -5,8 +5,24 @@ use super::*;
 #[async_trait]
 impl WorkloadRepository for SqlRepository {
     async fn create_workload_identity(&self, wi: &WorkloadIdentity) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO workload_identities (id, realm_id, spiffe_id, description, trust_domain, authorities_json) VALUES (?, ?, ?, ?, ?, ?)",
+        let duplicate_spiffe: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM workload_identities WHERE realm_id = ? AND spiffe_id = ? AND id <> ?",
+        )
+        .bind(&wi.realm_id)
+        .bind(&wi.spiffe_id)
+        .bind(&wi.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
+        if duplicate_spiffe.is_some() {
+            return Err(QidError::BadRequest {
+                message: "SPIFFE identity already registered in this realm".to_string(),
+            });
+        }
+        let result = sqlx::query(
+            "INSERT INTO workload_identities (id, realm_id, spiffe_id, description, trust_domain, authorities_json) VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET description = excluded.description, trust_domain = excluded.trust_domain, authorities_json = excluded.authorities_json \
+             WHERE workload_identities.realm_id = excluded.realm_id AND workload_identities.spiffe_id = excluded.spiffe_id",
         )
         .bind(&wi.id)
         .bind(&wi.realm_id)
@@ -17,6 +33,9 @@ impl WorkloadRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "workload identity ID belongs to another identity".to_string()
+        })?;
         Ok(())
     }
 
@@ -41,7 +60,7 @@ impl WorkloadRepository for SqlRepository {
         realm_id: &RealmId,
     ) -> QidResult<Vec<WorkloadIdentity>> {
         let rows: Vec<WorkloadIdentityRow> =
-            sqlx::query_as("SELECT * FROM workload_identities WHERE realm_id = ?")
+            sqlx::query_as("SELECT * FROM workload_identities WHERE realm_id = ? ORDER BY id")
                 .bind(realm_id.as_str())
                 .fetch_all(&self.pool)
                 .await

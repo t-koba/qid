@@ -6,6 +6,21 @@ use super::*;
 impl WorkloadRepository for FileRepository {
     async fn create_workload_identity(&self, wi: &WorkloadIdentity) -> QidResult<()> {
         let mut store = self.store.write().await;
+        crate::ownership::ensure_same_binding(
+            store
+                .workload_identities
+                .get(&wi.id)
+                .map(|stored| (&stored.realm_id, &stored.spiffe_id)),
+            (&wi.realm_id, &wi.spiffe_id),
+            || "workload identity ID belongs to another identity".to_string(),
+        )?;
+        if store.workload_identities.values().any(|stored| {
+            stored.id != wi.id && stored.realm_id == wi.realm_id && stored.spiffe_id == wi.spiffe_id
+        }) {
+            return Err(QidError::BadRequest {
+                message: "SPIFFE identity already registered in this realm".to_string(),
+            });
+        }
         store.workload_identities.insert(wi.id.clone(), wi.clone());
         drop(store);
         self.save().await
@@ -17,10 +32,13 @@ impl WorkloadRepository for FileRepository {
         spiffe_id: &str,
     ) -> QidResult<Option<WorkloadIdentity>> {
         let store = self.store.read().await;
+        // A file written before the SPIFFE ID was unique can hold two identities
+        // for one SPIFFE ID; the oldest registration answers the lookup.
         Ok(store
             .workload_identities
             .values()
-            .find(|wi| wi.realm_id == realm_id.0 && wi.spiffe_id == spiffe_id)
+            .filter(|wi| wi.realm_id == realm_id.0 && wi.spiffe_id == spiffe_id)
+            .min_by(|a, b| a.id.cmp(&b.id))
             .cloned())
     }
 

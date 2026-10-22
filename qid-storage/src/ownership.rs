@@ -159,3 +159,8 @@ pub const IGA_FINDING: OwnershipContract =
 #[allow(dead_code)]
 pub const IGA_ACCESS_REQUEST: OwnershipContract =
     OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);
+
+/// Ownership contract for immutable IGA approval decisions.
+#[allow(dead_code)]
+pub const IGA_APPROVAL: OwnershipContract =
+    OwnershipContract::new("tenant_id", "id", CollisionRule::Refuse);

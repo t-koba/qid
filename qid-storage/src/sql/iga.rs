@@ -158,8 +158,8 @@ impl IgaRepository for SqlRepository {
 
     async fn store_iga_approval(&self, approval: &IgaApprovalRecord) -> QidResult<()> {
         approval.validate()?;
-        sqlx::query(
-            "INSERT INTO iga_approvals (id, tenant_id, request_id, approver, decision, approved_at_epoch_seconds, expires_at_epoch_seconds, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO iga_approvals (id, tenant_id, request_id, approver, decision, approved_at_epoch_seconds, expires_at_epoch_seconds, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&approval.id)
         .bind(&approval.tenant_id)
@@ -172,6 +172,9 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("IGA approval ID {} already exists", approval.id)
+        })?;
         Ok(())
     }
 

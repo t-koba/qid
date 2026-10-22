@@ -138,6 +138,11 @@ impl IgaRepository for FileRepository {
     async fn store_iga_approval(&self, approval: &IgaApprovalRecord) -> QidResult<()> {
         approval.validate()?;
         let mut store = self.store.write().await;
+        if store.iga_approvals.contains_key(&approval.id) {
+            return Err(QidError::Conflict {
+                message: format!("IGA approval ID {} already exists", approval.id),
+            });
+        }
         store
             .iga_approvals
             .insert(approval.id.clone(), approval.clone());

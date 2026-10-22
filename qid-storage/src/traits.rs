@@ -652,6 +652,7 @@ pub trait IgaRepository: Send + Sync + 'static {
         &self,
         tenant_id: &str,
     ) -> QidResult<Vec<IgaAccessRequestRecord>>;
+    /// Store an immutable tenant-owned approval with a global ID; duplicates return `Conflict`.
     async fn store_iga_approval(&self, approval: &IgaApprovalRecord) -> QidResult<()>;
     async fn list_iga_approvals(
         &self,

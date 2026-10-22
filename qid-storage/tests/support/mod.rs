@@ -3,9 +3,9 @@
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
-    IgaAccessRequestRecord, IgaAccessReviewDecisionRecord, IgaCertificationRecord,
-    IgaFindingRecord, PasswordResetToken, ServiceAccount, User, WebAuthnCredential,
-    WorkloadIdentity,
+    IgaAccessRequestRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
+    IgaCertificationRecord, IgaFindingRecord, PasswordResetToken, ServiceAccount, User,
+    WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -1928,5 +1928,68 @@ where
         .await
         .expect("get other-tenant IGA access request failed")
         .is_none()
+    );
+}
+
+/// Duplicate IGA approvals cannot replace immutable decision evidence.
+pub async fn assert_iga_approval_identity_ownership<R>(repo: &R)
+where
+    R: IgaRepository,
+{
+    let approval = IgaApprovalRecord {
+        id: "iga-approval-identity".to_string(),
+        tenant_id: "tenant-iga-approval".to_string(),
+        request_id: "request-iga-approval".to_string(),
+        approver: "manager".to_string(),
+        decision: "approved".to_string(),
+        approved_at_epoch_seconds: 1_700_000_000,
+        expires_at_epoch_seconds: Some(1_700_086_400),
+        reason: Some("Approved for the requested work".to_string()),
+    };
+    repo.store_iga_approval(&approval)
+        .await
+        .expect("store incumbent IGA approval failed");
+
+    let same_tenant_duplicate = IgaApprovalRecord {
+        decision: "rejected".to_string(),
+        approver: "replacement-approver".to_string(),
+        reason: Some("Replacement evidence".to_string()),
+        ..approval.clone()
+    };
+    let err = repo
+        .store_iga_approval(&same_tenant_duplicate)
+        .await
+        .expect_err("a duplicate approval ID in one tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a same-tenant approval ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    let cross_tenant_duplicate = IgaApprovalRecord {
+        tenant_id: "tenant-iga-approval-other".to_string(),
+        ..same_tenant_duplicate
+    };
+    let err = repo
+        .store_iga_approval(&cross_tenant_duplicate)
+        .await
+        .expect_err("an approval ID held by another tenant must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a cross-tenant approval ID must be a conflict, got: {}",
+        err.message()
+    );
+
+    assert_eq!(
+        repo.list_iga_approvals(&approval.tenant_id, &approval.request_id)
+            .await
+            .expect("list incumbent IGA approvals failed"),
+        vec![approval]
+    );
+    assert!(
+        repo.list_iga_approvals("tenant-iga-approval-other", "request-iga-approval")
+            .await
+            .expect("list other-tenant IGA approvals failed")
+            .is_empty()
     );
 }

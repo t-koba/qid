@@ -2153,6 +2153,111 @@ async fn test_file_workload_identity_ownership() {
     assert_workload_identity_ownership(&repo).await;
 }
 
+async fn assert_workload_identity_delete_scope<R>(repo: &R)
+where
+    R: RealmRepository + WorkloadRepository,
+{
+    let realm = RealmId("realm-workload-delete".to_string());
+    repo.create_realm(
+        &TenantId("tenant-workload-delete".to_string()),
+        &realm,
+        "https://workload-delete.example.com",
+        Some("Workload Delete Realm"),
+    )
+    .await
+    .expect("create workload delete realm failed");
+    let other_realm = RealmId("realm-workload-delete-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-workload-delete-other".to_string()),
+        &other_realm,
+        "https://workload-delete-other.example.com",
+        Some("Other Workload Delete Realm"),
+    )
+    .await
+    .expect("create other workload delete realm failed");
+
+    let identity = WorkloadIdentity {
+        id: "workload-delete-api".to_string(),
+        realm_id: realm.0.clone(),
+        spiffe_id: "spiffe://corp.example/workload/delete-api".to_string(),
+        description: Some("API workload".to_string()),
+        trust_domain: "corp.example".to_string(),
+        authorities_json: serde_json::json!({"issuer": "ca-api"}),
+    };
+    repo.create_workload_identity(&identity)
+        .await
+        .expect("create workload identity failed");
+
+    // Another realm may not delete this identity.
+    let err = repo
+        .delete_workload_identity(&other_realm, &identity.id)
+        .await
+        .expect_err("another realm must not delete the identity");
+    assert!(
+        matches!(err, qid_core::error::QidError::NotFound { .. }),
+        "another realm's delete must be not found, got: {}",
+        err.message()
+    );
+    assert_eq!(
+        repo.list_workload_identities(&realm)
+            .await
+            .expect("list workload identities failed")
+            .len(),
+        1,
+        "another realm's delete removed the identity"
+    );
+
+    // An unknown identity is not found in its realm.
+    let err = repo
+        .delete_workload_identity(&realm, "workload-delete-unknown")
+        .await
+        .expect_err("an unknown identity must not be deleted");
+    assert!(
+        matches!(err, qid_core::error::QidError::NotFound { .. }),
+        "an unknown identity must be not found, got: {}",
+        err.message()
+    );
+
+    // The owning realm deletes its own identity.
+    repo.delete_workload_identity(&realm, &identity.id)
+        .await
+        .expect("the owning realm must delete its identity");
+    assert!(
+        repo.list_workload_identities(&realm)
+            .await
+            .expect("list workload identities failed")
+            .is_empty(),
+        "the deleted identity is still listed"
+    );
+    assert!(
+        repo.get_workload_identity_by_spiffe(&realm, &identity.spiffe_id)
+            .await
+            .expect("get workload identity by spiffe failed")
+            .is_none(),
+        "the deleted identity is still found by its SPIFFE ID"
+    );
+}
+
+#[tokio::test]
+async fn test_sql_workload_identity_delete_scope() {
+    let repo = sql_repo().await;
+    assert_workload_identity_delete_scope(&repo).await;
+}
+
+#[tokio::test]
+async fn test_file_workload_identity_delete_scope() {
+    let path = std::env::temp_dir().join(format!(
+        "qid-file-workload-delete-{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("file repository creation failed");
+    repo.migrate().await.expect("file migration failed");
+
+    assert_workload_identity_delete_scope(&repo).await;
+}
+
 #[tokio::test]
 async fn test_vc_credential_status_crud_and_revocation() {
     let repo = sql_repo().await;

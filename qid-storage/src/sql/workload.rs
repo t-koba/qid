@@ -68,12 +68,18 @@ impl WorkloadRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn delete_workload_identity(&self, id: &str) -> QidResult<()> {
-        sqlx::query("DELETE FROM workload_identities WHERE id = ?")
+    async fn delete_workload_identity(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
+        let result = sqlx::query("DELETE FROM workload_identities WHERE realm_id = ? AND id = ?")
+            .bind(realm_id.as_str())
             .bind(id)
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            return Err(QidError::NotFound {
+                resource: format!("workload identity {id}"),
+            });
+        }
         Ok(())
     }
 

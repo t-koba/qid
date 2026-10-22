@@ -275,7 +275,11 @@ rejected).
 | `devices` | List devices for a user. |
 | `workload-register` | Register a SPIFFE-aware workload identity. |
 | `workloads` | List workload identities for a realm. |
-| `workload-delete` | Delete workload identity by ID. |
+| `workload-delete` | Delete a workload identity of a realm by ID. |
+
+`workload-delete` takes the owning realm as well as the identity ID; deleting
+an identity that belongs to another realm, or an unknown ID, reports that the
+identity was not found.
 
 Example:
 

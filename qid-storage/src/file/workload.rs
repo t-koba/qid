@@ -57,9 +57,20 @@ impl WorkloadRepository for FileRepository {
         Ok(identities)
     }
 
-    async fn delete_workload_identity(&self, id: &str) -> QidResult<()> {
-        self.map_write(|store| store.workload_identities.remove(id))
-            .await
+    async fn delete_workload_identity(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
+        let mut store = self.store.write().await;
+        let owned = store
+            .workload_identities
+            .get(id)
+            .is_some_and(|stored| stored.realm_id == realm_id.0);
+        if !owned {
+            return Err(QidError::NotFound {
+                resource: format!("workload identity {id}"),
+            });
+        }
+        store.workload_identities.remove(id);
+        drop(store);
+        self.save().await
     }
 
     async fn store_workload_certificate(&self, certificate: &WorkloadCertificate) -> QidResult<()> {

@@ -277,7 +277,7 @@ delegate!(WorkloadRepository {
     create_workload_identity(&self, wi: &qid_core::models::WorkloadIdentity) -> QidResult<()>;
     get_workload_identity_by_spiffe(&self, realm_id: &qid_core::tenant::RealmId, spiffe_id: &str) -> QidResult<Option<qid_core::models::WorkloadIdentity>>;
     list_workload_identities(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::WorkloadIdentity>>;
-    delete_workload_identity(&self, id: &str) -> QidResult<()>;
+    delete_workload_identity(&self, realm_id: &qid_core::tenant::RealmId, id: &str) -> QidResult<()>;
     store_workload_certificate(&self, certificate: &qid_core::models::WorkloadCertificate) -> QidResult<()>;
     list_workload_certificates(&self, realm_id: &qid_core::tenant::RealmId, workload_id: Option<&str>) -> QidResult<Vec<qid_core::models::WorkloadCertificate>>;
     revoke_workload_certificate(&self, realm_id: &qid_core::tenant::RealmId, id: &str, revoked_at: u64) -> QidResult<()>;

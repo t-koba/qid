@@ -70,8 +70,10 @@ enum Command {
         #[arg(long)]
         realm: String,
     },
-    /// Delete a workload identity by id.
+    /// Delete a workload identity of a realm by id.
     WorkloadDelete {
+        #[arg(long)]
+        realm: String,
         #[arg(long)]
         id: String,
     },
@@ -197,11 +199,14 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
                 "workload_identities": identities,
             }))
         }
-        Command::WorkloadDelete { id } => {
+        Command::WorkloadDelete { realm, id } => {
+            ensure!(!realm.trim().is_empty(), "realm must not be empty");
             ensure!(!id.trim().is_empty(), "id must not be empty");
-            repo.delete_workload_identity(&id).await?;
+            let realm_id = RealmId::from(realm.clone());
+            repo.delete_workload_identity(&realm_id, &id).await?;
             Ok(serde_json::json!({
                 "command": "workload_delete",
+                "realm": realm,
                 "id": id,
                 "deleted": true,
             }))

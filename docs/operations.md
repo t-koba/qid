@@ -62,6 +62,8 @@ Storage diagnostics are a startup safety gate. A storage audit error means qid m
 
 One SPIFFE ID names one workload identity in a realm. A database that already holds two workload identities with the same SPIFFE ID in one realm fails the migration that adds the unique index; remove the redundant identity before migrating.
 
+A workload identity belongs to its realm: registration binds it to that realm, and listing and deletion are scoped to that realm, so one realm's identity cannot be read or removed by another realm's request.
+
 ## Shared Cache
 
 Set `ops.cache.kind` to `redis` or `valkey` for every multi-instance deployment. The shared cache backs DPoP and JWT assertion replay guards, PEP decision cache entries, and browser session cache entries. `kind: disabled` is only appropriate for single-process deployments.

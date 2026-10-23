@@ -8,7 +8,7 @@ use anyhow::Context;
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ciborium::value::Value as CborValue;
@@ -103,6 +103,16 @@ async fn post(
     body: serde_json::Value,
     cookie: Option<&str>,
 ) -> anyhow::Result<(StatusCode, String)> {
+    let (status, _, body) = post_with_headers(app, path, body, cookie).await?;
+    Ok((status, body))
+}
+
+async fn post_with_headers(
+    app: Router,
+    path: &str,
+    body: serde_json::Value,
+    cookie: Option<&str>,
+) -> anyhow::Result<(StatusCode, HeaderMap, String)> {
     let response = app
         .oneshot(
             Request::builder()
@@ -115,10 +125,11 @@ async fn post(
         .await
         .context("request failed")?;
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .context("response body read failed")?;
-    Ok((status, String::from_utf8_lossy(&bytes).to_string()))
+    Ok((status, headers, String::from_utf8_lossy(&bytes).to_string()))
 }
 
 #[tokio::test]

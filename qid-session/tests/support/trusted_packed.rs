@@ -15,6 +15,7 @@ struct Pki {
     root: Vec<u8>,
     chain: Vec<Vec<u8>>,
     key: EcdsaKeyPair,
+    credential_key: EcdsaKeyPair,
 }
 
 impl Pki {
@@ -106,7 +107,18 @@ impl Pki {
             chain.push(extra_cert.der().to_vec());
         }
         chain.push(intermediate_cert.der().to_vec());
+        // Retain a separate synthetic credential key so enrolled credentials can
+        // authenticate without confusing the attestation and credential signers.
+        let credential_pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &SystemRandom::new())
+                .map_err(|_| anyhow::anyhow!("synthetic credential key"))?;
         Ok(Self {
+            credential_key: EcdsaKeyPair::from_pkcs8(
+                &ECDSA_P256_SHA256_ASN1_SIGNING,
+                credential_pkcs8.as_ref(),
+                &SystemRandom::new(),
+            )
+            .map_err(|_| anyhow::anyhow!("synthetic credential key"))?,
             root: root.der().to_vec(),
             chain,
             key: EcdsaKeyPair::from_pkcs8(
@@ -125,19 +137,67 @@ impl Pki {
         }))?)
     }
 
+    fn assertion(
+        &self,
+        challenge: &serde_json::Value,
+        counter: u32,
+        case: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let client_data = serde_json::to_vec(&json!({
+            "type": "webauthn.get",
+            "challenge": if case == "challenge" {
+                json!(URL_SAFE_NO_PAD.encode([0; 32]))
+            } else {
+                challenge["challenge"]["challenge"].clone()
+            },
+            "origin": "https://id.example.com",
+            "crossOrigin": false
+        }))?;
+        let mut auth_data = Sha256::digest(b"id.example.com").to_vec();
+        auth_data.push(0x01); // User present, same as enrollment.
+        auth_data.extend_from_slice(&counter.to_be_bytes());
+        let mut signed = auth_data.clone();
+        signed.extend_from_slice(&Sha256::digest(&client_data));
+        let mut signature = self
+            .credential_key
+            .sign(&SystemRandom::new(), &signed)
+            .map_err(|_| anyhow::anyhow!("synthetic assertion signature"))?
+            .as_ref()
+            .to_vec();
+        if case == "signature" {
+            *signature.last_mut().context("signature")? ^= 1;
+        }
+        Ok(json!({
+            "id": URL_SAFE_NO_PAD.encode(b"cred"),
+            "rawId": URL_SAFE_NO_PAD.encode(b"cred"),
+            "type": "public-key",
+            "response": {
+                "clientDataJSON": URL_SAFE_NO_PAD.encode(client_data),
+                "authenticatorData": URL_SAFE_NO_PAD.encode(auth_data),
+                "signature": URL_SAFE_NO_PAD.encode(signature),
+                "userHandle": URL_SAFE_NO_PAD.encode(&Sha256::digest(b"alice")[..16])
+            }
+        }))
+    }
+
     fn response(
         &self,
         challenge: &serde_json::Value,
         case: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let mut fields = attestation_fields()?;
-        if case == "self" {
-            // A genuine valid self-attestation uses the credential's own key.
+        {
+            // Self-attestation signs with the credential key; all other cases
+            // bind a distinct credential key to the PKI attestation statement.
             let CborValue::Bytes(auth_data) = &mut fields[1].1 else {
                 anyhow::bail!("auth data")
             };
             auth_data.truncate(59); // RP/flags/counter/AAGUID/credential ID.
-            let key = self.key.public_key().as_ref();
+            let key = if case == "self" {
+                self.key.public_key().as_ref()
+            } else {
+                self.credential_key.public_key().as_ref()
+            };
             auth_data.extend(cbor(CborValue::Map(vec![
                 (1.into(), 2.into()),
                 (3.into(), (-7).into()),
@@ -277,6 +337,119 @@ async fn trusted_packed_route_enrolls_only_after_trust_and_ceremony_verification
     let (status, body) = finish(&app, response).await?;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("no registration in progress"), "{body}");
+
+    // Exercise both public authentication handlers with the enrolled key, not
+    // the attestation key. All requests are anonymous (no enrollment cookie).
+    for (route, counter) in [("auth", 1u32), ("discoverable", 2u32)] {
+        for case in ["challenge", "signature", "valid"] {
+            let start_path = format!("/api/v1/corp/auth/webauthn/{route}/start");
+            let finish_path = format!("/api/v1/corp/auth/webauthn/{route}/finish");
+            let (status, body) = post(
+                app.router.clone(),
+                &start_path,
+                if route == "discoverable" {
+                    json!({})
+                } else {
+                    json!({"email": "alice@example.com"})
+                },
+                None,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{route}: {body}");
+            let challenge: serde_json::Value = serde_json::from_str(&body)?;
+            let request = |assertion| {
+                if route == "discoverable" {
+                    json!({"ceremony_id": challenge["ceremony_id"], "response": assertion})
+                } else {
+                    json!({"email": "alice@example.com", "response": assertion})
+                }
+            };
+            let before = app.repo.list_sessions("corp", None).await?;
+            let response = request(pki.assertion(&challenge, counter, case)?);
+            let (status, headers, body) =
+                post_with_headers(app.router.clone(), &finish_path, response.clone(), None).await?;
+            if case == "valid" {
+                assert_eq!(status, StatusCode::OK, "{route}: {body}");
+                let parsed: serde_json::Value = serde_json::from_str(&body)?;
+                assert_eq!(parsed["user"]["id"], "alice");
+                assert_eq!(parsed["user"]["email"], "alice@example.com");
+                let id = parsed["session"].as_str().context("session id")?;
+                let cookie = headers
+                    .get("set-cookie")
+                    .context("session cookie")?
+                    .to_str()?;
+                assert_eq!(
+                    cookie.split(';').next(),
+                    Some(format!("__Host-qid={id}").as_str())
+                );
+                assert_ne!(format!("__Host-qid={id}"), app.cookie);
+                let session = app
+                    .repo
+                    .get_session(id)
+                    .await?
+                    .context("persisted session")?;
+                assert_eq!(session.realm_id, "corp");
+                assert_eq!(session.user_id, "alice");
+                assert_eq!(session.acr.as_deref(), Some("phr"));
+                assert_eq!(session.amr, ["webauthn"]); // No hwk or swk claim.
+                assert_eq!(
+                    app.repo.list_sessions("corp", None).await?.len(),
+                    before.len() + 1
+                );
+            } else {
+                assert_failed_authentication(&app, status, &headers, &body, before.len()).await?;
+            }
+            let expected_counter = if case == "valid" {
+                counter
+            } else {
+                counter - 1
+            };
+            assert_eq!(
+                app.repo.get_webauthn_credentials("alice").await?[0].counter,
+                u64::from(expected_counter)
+            );
+
+            // Successes cannot be replayed; even a valid assertion cannot rescue
+            // the ceremony consumed by an invalid challenge or signature.
+            let sessions = app.repo.list_sessions("corp", None).await?.len();
+            let retry = if case == "valid" {
+                response
+            } else {
+                request(pki.assertion(&challenge, counter, "valid")?)
+            };
+            let (status, headers, body) =
+                post_with_headers(app.router.clone(), &finish_path, retry, None).await?;
+            assert_failed_authentication(&app, status, &headers, &body, sessions).await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{route}: {body}");
+            assert!(
+                body.contains("no authentication in progress")
+                    || body.contains("no discoverable authentication in progress"),
+                "{route}: {body}"
+            );
+            assert_eq!(
+                app.repo.get_webauthn_credentials("alice").await?[0].counter,
+                u64::from(expected_counter)
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn assert_failed_authentication(
+    app: &TestApp,
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: &str,
+    session_count: usize,
+) -> anyhow::Result<()> {
+    assert!(!status.is_success(), "{body}");
+    assert!(!headers.contains_key("set-cookie"), "{body}");
+    let parsed: serde_json::Value = serde_json::from_str(body)?;
+    assert!(parsed.get("session").is_none(), "{body}");
+    assert_eq!(
+        app.repo.list_sessions("corp", None).await?.len(),
+        session_count
+    );
     Ok(())
 }
 

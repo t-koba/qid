@@ -248,3 +248,11 @@ async fn rebac_tuple_identity_conflict_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-rebac-tuple").await;
     support::assert_rebac_tuple_identity_conflict(&file).await;
 }
+
+#[tokio::test]
+async fn par_request_identity_conflict_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_par_request_identity_conflict(&sql).await;
+    let file = support::file_repo("ownership-contract-par-request").await;
+    support::assert_par_request_identity_conflict(&file).await;
+}

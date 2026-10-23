@@ -165,9 +165,7 @@ impl TokenRepository for FileRepository {
 
     async fn store_par_request(&self, req: &ParRequest) -> QidResult<()> {
         let mut store = self.store.write().await;
-        store
-            .par_requests
-            .insert(req.request_uri.clone(), req.clone());
+        super::insert::insert_new(&mut store.par_requests, req)?;
         drop(store);
         self.save().await
     }

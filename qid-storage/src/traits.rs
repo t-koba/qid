@@ -212,6 +212,8 @@ pub trait TokenRepository: Send + Sync + 'static {
     async fn create_access_token(&self, token: &AccessToken) -> QidResult<()>;
     async fn get_access_token(&self, jti: &str) -> QidResult<Option<AccessToken>>;
     async fn revoke_access_token(&self, jti: &str) -> QidResult<()>;
+    /// Store a unique `request_uri`; duplicates return `Conflict` without
+    /// replacing the incumbent or resetting its single-use state.
     async fn store_par_request(&self, req: &ParRequest) -> QidResult<()>;
     async fn get_par_request(&self, request_uri: &str) -> QidResult<Option<ParRequest>>;
     async fn mark_par_request_used(&self, request_uri: &str) -> QidResult<()>;

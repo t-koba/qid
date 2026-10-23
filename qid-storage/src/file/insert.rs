@@ -120,3 +120,14 @@ pub(super) fn replace_guarded<T: StableUpdateIdentity>(
     map.insert(record.id().to_owned(), record.clone());
     Ok(())
 }
+
+impl InsertIdentity for ParRequest {
+    const RECORD: &'static str = "PAR request";
+    const IDENTITY: &'static str = "PAR request URI";
+    fn id(&self) -> &str {
+        &self.request_uri
+    }
+    fn identity(&self) -> Option<(&str, &str)> {
+        None
+    }
+}

@@ -263,8 +263,8 @@ impl TokenRepository for SqlRepository {
     }
 
     async fn store_par_request(&self, req: &ParRequest) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO par_requests (request_uri, client_id, realm_id, params_json, expires_at, used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO par_requests (request_uri, client_id, realm_id, params_json, expires_at, used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_uri) DO NOTHING",
         )
         .bind(&req.request_uri)
         .bind(&req.client_id)
@@ -276,7 +276,9 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("PAR request record ID {} already exists", req.request_uri)
+        })
     }
 
     async fn get_par_request(&self, request_uri: &str) -> QidResult<Option<ParRequest>> {

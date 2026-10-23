@@ -79,7 +79,9 @@ exclude = ["vendor/rustls"]
 # product lines (104056 -> 104072), so the cap rises by exactly 16.
 # ReBAC tuple identity refusal across file and SQL and its trait contract add
 # 17 measured product lines (104072 -> 104089); the shared test is uncapped.
-total = 104089
+# PAR request create-only identity reuses the file insert primitive and adds a
+# SQL refusal plus trait contract (net +13: 104089 -> 104102); tests are uncapped.
+total = 104102
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

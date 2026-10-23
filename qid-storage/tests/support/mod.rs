@@ -5,7 +5,7 @@ use qid_core::models::{
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
     IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
     IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
-    IgaJitPrivilegeGrantRecord, PasswordResetToken, PolicyBundle, RelationshipTuple,
+    IgaJitPrivilegeGrantRecord, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
     ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
@@ -2787,4 +2787,56 @@ where
         .await
         .expect("list relationship tuples");
     assert_eq!(stored, vec![tuple], "duplicate changed the incumbent tuple");
+}
+
+pub async fn assert_par_request_identity_conflict<R>(repo: &R)
+where
+    R: TokenRepository,
+{
+    let initial = ParRequest {
+        request_uri: "urn:par:identity-contract".into(),
+        client_id: "client-par-contract".into(),
+        realm_id: "realm-par-contract".into(),
+        params_json: serde_json::json!({"scope": "read"}),
+        expires_at: 3000,
+        used: false,
+        created_at: 1,
+    };
+    repo.store_par_request(&initial)
+        .await
+        .expect("store initial PAR request");
+    repo.mark_par_request_used(&initial.request_uri)
+        .await
+        .expect("consume initial PAR request");
+
+    let duplicate = ParRequest {
+        request_uri: initial.request_uri.clone(),
+        client_id: "other-client".into(),
+        realm_id: "other-realm".into(),
+        params_json: serde_json::json!({"scope": "admin"}),
+        expires_at: 4000,
+        used: false,
+        created_at: 2,
+    };
+    let error = repo
+        .store_par_request(&duplicate)
+        .await
+        .expect_err("duplicate request URI must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate PAR request URI returned {error:?}"
+    );
+
+    let stored = repo
+        .get_par_request(&initial.request_uri)
+        .await
+        .expect("get incumbent PAR request")
+        .expect("incumbent PAR request missing");
+    assert_eq!(stored.request_uri, initial.request_uri);
+    assert_eq!(stored.client_id, initial.client_id);
+    assert_eq!(stored.realm_id, initial.realm_id);
+    assert_eq!(stored.params_json, initial.params_json);
+    assert_eq!(stored.expires_at, initial.expires_at);
+    assert_eq!(stored.created_at, initial.created_at);
+    assert!(stored.used, "duplicate reset the consumed PAR request");
 }

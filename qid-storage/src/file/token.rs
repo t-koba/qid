@@ -287,9 +287,7 @@ impl TokenRepository for FileRepository {
         grant: &BackchannelAuthenticationGrant,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        store
-            .backchannel_authentication_grants
-            .insert(grant.auth_req_id_hash.clone(), grant.clone());
+        super::insert::insert_new(&mut store.backchannel_authentication_grants, grant)?;
         drop(store);
         self.save().await
     }

@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
-    CiamVerificationChallengeRecord, Client, ClientType, Device, DeviceAuthorizationGrant,
-    FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
-    IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
-    IgaJitPrivilegeGrantRecord, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
-    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
+    Admin, AdminApproval, AdminElevation, AuditEvent, BackchannelAuthenticationGrant,
+    CiamConsentGrant, CiamVerificationChallengeRecord, Client, ClientType, Device,
+    DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
+    IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
+    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, ParRequest,
+    PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, User, WebAuthnCredential,
+    WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -2981,4 +2982,114 @@ where
     assert_eq!(stored.approved_at, Some(1200));
     assert!(stored.consumed, "duplicate reset the consumed device grant");
     assert_eq!(stored.last_poll_at, Some(1100));
+}
+
+/// The create-only contract of a backchannel authentication grant: the
+/// `auth_req_id_hash` names one grant, so a second grant with the same hash
+/// is refused with `Conflict` and the incumbent keeps its owner, payload,
+/// approval, consumed and poll state.
+pub async fn assert_backchannel_authentication_grant_create_only<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + TokenRepository,
+{
+    let realm = RealmId("realm-backchannel-contract".to_string());
+    repo.create_realm(
+        &TenantId("tenant-backchannel-contract".to_string()),
+        &realm,
+        "https://backchannel-contract.example.com",
+        Some("Backchannel Contract Realm"),
+    )
+    .await
+    .expect("create backchannel contract realm failed");
+    let approver = User {
+        id: "user-backchannel-contract".to_string(),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&approver)
+        .await
+        .expect("create backchannel contract user failed");
+
+    let incumbent = BackchannelAuthenticationGrant {
+        auth_req_id_hash: "auth-req-contract".into(),
+        client_id: "client-backchannel-contract".into(),
+        realm_id: "realm-backchannel-contract".into(),
+        login_hint: "user@example.com".into(),
+        binding_message: Some("bind-one".into()),
+        scopes: vec!["openid".to_string()],
+        user_id: None,
+        expires_at: 3000,
+        approved_at: None,
+        consumed: false,
+        last_poll_at: None,
+        poll_interval_seconds: 5,
+        created_at: 1,
+    };
+    repo.store_backchannel_authentication_grant(&incumbent)
+        .await
+        .expect("store initial backchannel grant");
+    repo.record_backchannel_authentication_poll(&incumbent.auth_req_id_hash, 1100, 10)
+        .await
+        .expect("poll initial backchannel grant");
+    repo.approve_backchannel_authentication_grant(
+        &incumbent.auth_req_id_hash,
+        "user-backchannel-contract",
+        1200,
+    )
+    .await
+    .expect("approve initial backchannel grant");
+    repo.consume_backchannel_authentication_grant(&incumbent.auth_req_id_hash)
+        .await
+        .expect("consume initial backchannel grant");
+
+    // A second grant for the same hash is refused, even with a changed owner
+    // and payload and reset lifecycle fields.
+    let duplicate = BackchannelAuthenticationGrant {
+        auth_req_id_hash: incumbent.auth_req_id_hash.clone(),
+        client_id: "other-client".into(),
+        realm_id: "other-realm".into(),
+        login_hint: "other@example.com".into(),
+        binding_message: Some("other-bind".into()),
+        scopes: vec!["admin".to_string()],
+        user_id: None,
+        expires_at: 4000,
+        approved_at: None,
+        consumed: false,
+        last_poll_at: None,
+        poll_interval_seconds: 5,
+        created_at: 2,
+    };
+    let error = repo
+        .store_backchannel_authentication_grant(&duplicate)
+        .await
+        .expect_err("duplicate auth request ID must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate auth request ID returned {error:?}"
+    );
+    let stored = repo
+        .get_backchannel_authentication_grant(&incumbent.auth_req_id_hash)
+        .await
+        .expect("get incumbent backchannel grant")
+        .expect("incumbent backchannel grant missing");
+    assert_eq!(stored.realm_id, incumbent.realm_id);
+    assert_eq!(stored.client_id, incumbent.client_id);
+    assert_eq!(stored.login_hint, incumbent.login_hint);
+    assert_eq!(stored.binding_message, incumbent.binding_message);
+    assert_eq!(stored.scopes, incumbent.scopes);
+    assert_eq!(stored.user_id.as_deref(), Some("user-backchannel-contract"));
+    assert_eq!(stored.approved_at, Some(1200));
+    assert!(
+        stored.consumed,
+        "duplicate reset the consumed backchannel grant"
+    );
+    assert_eq!(stored.last_poll_at, Some(1100));
+    assert_eq!(stored.poll_interval_seconds, 10);
+    assert_eq!(stored.expires_at, incumbent.expires_at);
+    assert_eq!(stored.created_at, incumbent.created_at);
 }

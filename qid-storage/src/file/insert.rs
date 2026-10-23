@@ -148,3 +148,14 @@ impl InsertIdentity for DeviceAuthorizationGrant {
         Some(("", &self.user_code))
     }
 }
+
+impl InsertIdentity for BackchannelAuthenticationGrant {
+    const RECORD: &'static str = "backchannel authentication grant";
+    const IDENTITY: &'static str = "backchannel authentication grant";
+    fn id(&self) -> &str {
+        &self.auth_req_id_hash
+    }
+    fn identity(&self) -> Option<(&str, &str)> {
+        None
+    }
+}

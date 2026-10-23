@@ -264,3 +264,11 @@ async fn device_authorization_grant_create_only_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-device-grant").await;
     support::assert_device_authorization_grant_create_only(&file).await;
 }
+
+#[tokio::test]
+async fn backchannel_authentication_grant_create_only_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_backchannel_authentication_grant_create_only(&sql).await;
+    let file = support::file_repo("ownership-contract-backchannel-grant").await;
+    support::assert_backchannel_authentication_grant_create_only(&file).await;
+}

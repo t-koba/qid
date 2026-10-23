@@ -84,7 +84,10 @@ exclude = ["vendor/rustls"]
 # Device authorization grant create-only identity (typed file identity with
 # explicit global user-code scope, static SQL refusal and contract) adds 17
 # measured product lines (104102 -> 104119); the shared test is uncapped.
-total = 104119
+# Backchannel authentication grant create-only identity (typed file identity
+# with no secondary identity, static SQL refusal and contract) adds 14
+# measured product lines (104119 -> 104133); the shared test is uncapped.
+total = 104133
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

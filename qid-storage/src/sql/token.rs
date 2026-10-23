@@ -414,8 +414,8 @@ impl TokenRepository for SqlRepository {
         &self,
         grant: &BackchannelAuthenticationGrant,
     ) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO backchannel_authentication_grants (auth_req_id_hash, client_id, realm_id, login_hint, binding_message, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO backchannel_authentication_grants (auth_req_id_hash, client_id, realm_id, login_hint, binding_message, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (auth_req_id_hash) DO NOTHING",
         )
         .bind(&grant.auth_req_id_hash)
         .bind(&grant.client_id)
@@ -433,7 +433,12 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!(
+                "backchannel authentication grant record ID {} already exists",
+                grant.auth_req_id_hash
+            )
+        })
     }
 
     async fn get_backchannel_authentication_grant(

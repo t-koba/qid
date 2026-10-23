@@ -1628,7 +1628,7 @@ where
         .expect("a challenge is valid at the inclusive expiry second");
     for (attempt_realm, is_owner) in [(&realm, true), (&other_realm, false)] {
         let err = repo
-            .consume_ciam_verification_challenge(attempt_realm, &challenge.id, 1_700_000_101)
+            .consume_ciam_verification_challenge(attempt_realm, &challenge.id, 1_700_000_100)
             .await
             .expect_err("consumed challenge must not be consumed again");
         assert!(

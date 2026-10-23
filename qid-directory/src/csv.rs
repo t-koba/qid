@@ -9,7 +9,7 @@
 //!
 //! The whole file is validated before any record is returned, so the worker
 //! never writes a prefix of a rejected batch; lifecycle, duplicate-ID
-//! preflight and mover-clear semantics stay owned by [`import_hr_records`].
+//! preflight and mover-clear semantics stay owned by [`crate::import_hr_records`].
 
 use tokio::io::AsyncReadExt;
 

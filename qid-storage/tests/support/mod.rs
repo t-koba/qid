@@ -937,6 +937,7 @@ pub fn sample_cross_realm_client(id: &str, realm_id: &str, client_id: &str) -> C
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     }
 }
 

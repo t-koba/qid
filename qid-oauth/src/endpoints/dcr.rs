@@ -56,6 +56,8 @@ pub struct DynamicClientRegistrationRequest {
     pub frontchannel_logout_uri: Option<String>,
     #[serde(default)]
     pub backchannel_client_notification_endpoint: Option<String>,
+    #[serde(default)]
+    pub require_pushed_authorization_requests: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,6 +95,7 @@ pub struct DynamicClientRegistrationResponse {
     pub subject_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backchannel_client_notification_endpoint: Option<String>,
+    pub require_pushed_authorization_requests: bool,
 }
 
 #[derive(Debug)]
@@ -100,6 +103,14 @@ struct DynamicClientMetadata {
     client_type: ClientType,
     auth_method: String,
     grant_types: Vec<String>,
+}
+
+fn unsupported_par_client_metadata_response() -> Response {
+    qid_http::oauth_error_response_with_description(
+        axum::http::StatusCode::BAD_REQUEST,
+        qid_core::error::ErrorCode::InvalidClientMetadata.as_str(),
+        "the client requires PAR but PAR is disabled for its realm",
+    )
 }
 
 pub async fn dynamic_client_registration<R: Repository>(
@@ -216,6 +227,11 @@ pub async fn dynamic_client_registration<R: Repository>(
         }
     };
     let metadata = super::error_response_or_return!(validate_dynamic_client_metadata(&req));
+    if req.require_pushed_authorization_requests
+        && !oauth_feature_enabled(&state, &realm.id, |oauth| oauth.par.enabled)
+    {
+        return unsupported_par_client_metadata_response();
+    }
     let client_id = req
         .client_id
         .clone()
@@ -253,6 +269,7 @@ pub async fn dynamic_client_registration<R: Repository>(
         backchannel_client_notification_endpoint: req
             .backchannel_client_notification_endpoint
             .clone(),
+        require_pushed_authorization_requests: req.require_pushed_authorization_requests,
     };
     let served_realm_ids: Vec<RealmId> = state
         .config
@@ -294,6 +311,7 @@ pub async fn dynamic_client_registration<R: Repository>(
                 backchannel_client_notification_endpoint: req
                     .backchannel_client_notification_endpoint
                     .clone(),
+                require_pushed_authorization_requests: req.require_pushed_authorization_requests,
             },
         ) {
             Ok(response) => Json(response).into_response(),
@@ -321,6 +339,7 @@ struct DynamicClientRegistrationResponseInput {
     sector_identifier_uri: Option<String>,
     subject_type: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
+    require_pushed_authorization_requests: bool,
 }
 
 fn build_dynamic_client_registration_response<R: Repository>(
@@ -356,6 +375,7 @@ fn build_dynamic_client_registration_response<R: Repository>(
         sector_identifier_uri: input.sector_identifier_uri,
         subject_type: input.subject_type,
         backchannel_client_notification_endpoint: input.backchannel_client_notification_endpoint,
+        require_pushed_authorization_requests: input.require_pushed_authorization_requests,
     })
 }
 
@@ -697,6 +717,7 @@ pub async fn dynamic_client_registration_get<R: Repository>(
                 subject_type: client.subject_type,
                 backchannel_client_notification_endpoint: client
                     .backchannel_client_notification_endpoint,
+                require_pushed_authorization_requests: client.require_pushed_authorization_requests,
             },
         ) {
             Ok(response) => Json(response).into_response(),
@@ -738,6 +759,11 @@ pub async fn dynamic_client_registration_update<R: Repository>(
     super::error_response_or_return!(
         authenticate_dcr_management_client(&state, &headers, &realm_id, &client_id).await
     );
+    if req.require_pushed_authorization_requests
+        && !oauth_feature_enabled(&state, &realm_id, |oauth| oauth.par.enabled)
+    {
+        return unsupported_par_client_metadata_response();
+    }
     let existing = match super::error_response_or_return!(
         state
             .repo
@@ -795,6 +821,7 @@ pub async fn dynamic_client_registration_update<R: Repository>(
         backchannel_client_notification_endpoint: req
             .backchannel_client_notification_endpoint
             .clone(),
+        require_pushed_authorization_requests: req.require_pushed_authorization_requests,
     };
     match state.repo.update_client(&updated).await {
         Ok(()) => match build_dynamic_client_registration_response(
@@ -820,6 +847,7 @@ pub async fn dynamic_client_registration_update<R: Repository>(
                 backchannel_client_notification_endpoint: req
                     .backchannel_client_notification_endpoint
                     .clone(),
+                require_pushed_authorization_requests: req.require_pushed_authorization_requests,
             },
         ) {
             Ok(response) => Json(response).into_response(),

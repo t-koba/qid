@@ -223,6 +223,7 @@ async fn setup_with_config(config: QidConfig) -> (Router, Arc<SharedState<SqlRep
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     })
     .await
     .unwrap();
@@ -1441,6 +1442,7 @@ async fn setup_with_a_par_realm() -> (Router, Arc<SharedState<SqlRepository>>) {
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .unwrap();
@@ -1564,6 +1566,7 @@ async fn setup_with_a_duplicate_client_id() -> (Router, Arc<SharedState<SqlRepos
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .unwrap();
@@ -1968,6 +1971,7 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .unwrap();
@@ -2355,6 +2359,7 @@ async fn authorize_refuses_a_client_of_a_realm_the_deployment_does_not_configure
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .unwrap();
@@ -2420,6 +2425,7 @@ async fn authorize_refuses_a_client_id_that_names_two_configured_realms() {
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .unwrap();
@@ -2436,4 +2442,178 @@ async fn authorize_refuses_a_client_id_that_names_two_configured_realms() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Build the default deployment with a flagged client that requires a
+/// pushed request for itself and an unmarked client beside it.
+async fn setup_with_a_per_client_par_flag() -> (Router, Arc<SharedState<SqlRepository>>) {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.par.enabled = true;
+    let (app, state) = setup_with_config(config).await;
+    for (id, client_id, callback, flagged) in [
+        (
+            "par-flagged-id",
+            "par-flagged-client",
+            "https://flagged.example.com/callback",
+            true,
+        ),
+        (
+            "par-plain-id",
+            "par-plain-client",
+            "https://plain.example.com/callback",
+            false,
+        ),
+    ] {
+        state
+            .repo
+            .create_client(&Client {
+                id: id.to_string(),
+                realm_id: "test".to_string(),
+                client_id: client_id.to_string(),
+                client_type: ClientType::Public,
+                token_endpoint_auth_method: "none".to_string(),
+                client_secret_hash: None,
+                mtls_certificate_thumbprints: Vec::new(),
+                jwks: qid_core::models::default_client_jwks(),
+                redirect_uris: vec![callback.to_string()],
+                grant_types: vec!["authorization_code".to_string()],
+                client_name: None,
+                client_uri: None,
+                logo_uri: None,
+                contacts: Vec::new(),
+                post_logout_redirect_uris: vec![callback.to_string()],
+                default_max_age: None,
+                require_auth_time: false,
+                sector_identifier_uri: None,
+                subject_type: None,
+                backchannel_logout_uri: None,
+                frontchannel_logout_uri: None,
+                backchannel_client_notification_endpoint: None,
+                require_pushed_authorization_requests: flagged,
+            })
+            .await
+            .unwrap();
+    }
+    (app, state)
+}
+
+/// Authorize query for a named client of the default test realm.
+fn named_authorize_query(
+    state: &Arc<SharedState<SqlRepository>>,
+    client_id: &str,
+    callback: &str,
+) -> String {
+    format!(
+        "{}?client_id={}&response_type=code&redirect_uri={}&scope=openid&state=s&nonce=n&code_challenge={}&code_challenge_method=S256",
+        state.paths.authorize,
+        client_id,
+        urlencoding::encode(callback),
+        util::sha256_base64url("verifier"),
+    )
+}
+
+#[tokio::test]
+async fn a_client_flagged_for_par_is_refused_without_a_pushed_request() {
+    let (app, state) = setup_with_a_per_client_par_flag().await;
+
+    let response = get_uri(
+        app,
+        named_authorize_query(
+            &state,
+            "par-flagged-client",
+            "https://flagged.example.com/callback",
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("pushed authorization request is required")),
+        "{body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("for this client")),
+        "the per-client refusal names the client, not the realm: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_pushed_request_satisfies_the_per_client_par_flag() {
+    let (app, state) = setup_with_a_per_client_par_flag().await;
+    let request_uri = "urn:ietf:params:oauth:request_uri:flagged-par";
+    state
+        .repo
+        .store_par_request(&ParRequest {
+            request_uri: request_uri.to_string(),
+            client_id: "par-flagged-client".to_string(),
+            realm_id: "test".to_string(),
+            params_json: serde_json::json!({
+                "client_id": "par-flagged-client",
+                "response_type": "code",
+                "redirect_uri": "https://flagged.example.com/callback",
+                "scope": "openid",
+                "state": "state-flagged",
+                "code_challenge": util::sha256_base64url("verifier"),
+                "code_challenge_method": "S256"
+            }),
+            expires_at: util::now_seconds() + 60,
+            used: false,
+            created_at: util::now_seconds(),
+        })
+        .await
+        .unwrap();
+
+    let challenge = get_json(
+        app,
+        format!(
+            "{}?request_uri={}",
+            state.paths.authorize,
+            urlencoding::encode(request_uri)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(challenge["client_id"], "par-flagged-client");
+}
+
+#[tokio::test]
+async fn the_per_client_par_flag_leaves_an_unmarked_client_alone() {
+    let (app, state) = setup_with_a_per_client_par_flag().await;
+
+    // The same realm serves the unmarked client with no pushed request:
+    // the flag binds one client, never its neighbors.
+    let response = get_uri(
+        app,
+        named_authorize_query(
+            &state,
+            "par-plain-client",
+            "https://plain.example.com/callback",
+        ),
+        None,
+    )
+    .await;
+    assert_login_challenge(response).await;
+}
+
+#[tokio::test]
+async fn the_realm_wide_par_requirement_still_binds_unmarked_clients() {
+    let (app, state) = setup_with_a_par_realm().await;
+
+    // The realm's own requirement keeps its wording and reaches a client
+    // whose RFC 9126 metadata is false, so restoring the per-client flag
+    // does not narrow the existing realm-wide behavior.
+    let response = get_uri(app, strict_authorize_query(&state), None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("for this realm")),
+        "the realm-wide refusal names the realm: {body}"
+    );
 }

@@ -474,6 +474,7 @@ fn sample_client(id: &str, realm_id: &str, client_id: &str) -> Client {
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     }
 }
 
@@ -527,4 +528,50 @@ async fn file_client_lookup_across_realms_reads_only_the_named_realms() {
         .await
         .unwrap();
     assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn file_client_require_par_round_trip() {
+    let repo = setup().await;
+    let mut flagged = sample_client("client-par", "test", "par-required-app");
+    flagged.require_pushed_authorization_requests = true;
+    repo.create_client(&flagged).await.unwrap();
+    let loaded = repo
+        .get_client_by_client_id(&RealmId::from("test"), "par-required-app")
+        .await
+        .unwrap()
+        .expect("flagged client must be found");
+    assert!(
+        loaded.require_pushed_authorization_requests,
+        "the RFC 9126 PAR flag must survive file persistence"
+    );
+
+    let mut cleared = loaded.clone();
+    cleared.require_pushed_authorization_requests = false;
+    repo.update_client(&cleared).await.unwrap();
+    let reloaded = repo
+        .get_client_by_client_id(&RealmId::from("test"), "par-required-app")
+        .await
+        .unwrap()
+        .expect("updated client must be found");
+    assert!(
+        !reloaded.require_pushed_authorization_requests,
+        "clearing the PAR flag must survive file persistence"
+    );
+
+    // A record written before the flag existed carries no key, so the
+    // serde default keeps it opt-in rather than locking the client out.
+    let legacy: Client = serde_json::from_value(serde_json::json!({
+        "id": "client-legacy",
+        "realm_id": "test",
+        "client_id": "legacy-app",
+        "client_type": "public",
+        "redirect_uris": [],
+        "grant_types": ["authorization_code"],
+    }))
+    .expect("a client record without the PAR flag must still parse");
+    assert!(
+        !legacy.require_pushed_authorization_requests,
+        "the PAR flag defaults to false for legacy records"
+    );
 }

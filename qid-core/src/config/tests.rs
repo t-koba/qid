@@ -1498,11 +1498,9 @@ fn the_removed_sms_mfa_switch_is_rejected() {
 
 #[test]
 fn the_removed_par_required_for_setting_is_rejected() {
-    // The requirement to push an authorization request is the realm's own
-    // setting, so a list of clients beside it named a per-client rule the
-    // product never applied: the realm either requires a pushed request
-    // or it does not. A configuration that still sets the list is a
-    // configuration error naming the key.
+    // The list-valued `oauth.par.required_for` setting named client IDs but
+    // was never applied. Per-client policy is now the RFC 9126 metadata on
+    // Client; this obsolete config shape remains a configuration error.
     let err = serde_json::from_str::<OAuthProtocolConfig>(r#"{"par":{"required_for":["openid"]}}"#)
         .expect_err("the removed setting is rejected");
     assert!(

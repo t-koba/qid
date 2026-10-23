@@ -72,6 +72,7 @@ async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     })
     .await
     .unwrap();

@@ -2173,6 +2173,7 @@ async fn test_client_crud_preserves_token_endpoint_auth_method() {
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     };
 
     repo.create_client(&client)
@@ -2814,6 +2815,7 @@ fn sample_saas_client() -> Client {
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     }
 }
 
@@ -4566,4 +4568,66 @@ async fn test_client_lookup_across_realms_reads_only_the_named_realms() {
         .await
         .unwrap();
     assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn test_sql_client_require_par_round_trip() {
+    let repo = sql_repo().await;
+    repo.create_realm(
+        &TenantId::from("tenant-client-par"),
+        &RealmId::from("realm-client-par"),
+        "https://client-par.example.com",
+        Some("Client PAR Realm"),
+    )
+    .await
+    .unwrap();
+    let mut flagged = sample_saas_client();
+    flagged.id = "client-par-flagged".to_string();
+    flagged.realm_id = "realm-client-par".to_string();
+    flagged.client_id = "par-required-app".to_string();
+    flagged.require_pushed_authorization_requests = true;
+    repo.create_client(&flagged).await.unwrap();
+    let loaded = repo
+        .get_client_by_client_id(&RealmId::from("realm-client-par"), "par-required-app")
+        .await
+        .unwrap()
+        .expect("flagged client must be found");
+    assert!(
+        loaded.require_pushed_authorization_requests,
+        "the RFC 9126 PAR flag must survive SQL persistence"
+    );
+
+    let mut cleared = loaded.clone();
+    cleared.require_pushed_authorization_requests = false;
+    repo.update_client(&cleared).await.unwrap();
+    let reloaded = repo
+        .get_client_by_client_id(&RealmId::from("realm-client-par"), "par-required-app")
+        .await
+        .unwrap()
+        .expect("updated client must be found");
+    assert!(
+        !reloaded.require_pushed_authorization_requests,
+        "clearing the PAR flag must survive SQL persistence"
+    );
+
+    // Records written before the migration carry the schema default, so
+    // the flag stays opt-in rather than locking existing clients out.
+    let mut plain = sample_saas_client();
+    plain.id = "client-par-plain".to_string();
+    plain.realm_id = "realm-client-par".to_string();
+    plain.client_id = "par-plain-app".to_string();
+    assert!(
+        !plain.require_pushed_authorization_requests,
+        "the PAR flag defaults to false for new clients"
+    );
+    repo.create_client(&plain).await.unwrap();
+    let found = repo
+        .get_client_by_client_id(&RealmId::from("realm-client-par"), "par-plain-app")
+        .await
+        .unwrap()
+        .expect("plain client must be found");
+    assert!(
+        !found.require_pushed_authorization_requests,
+        "an unmarked client must stay unmarked in SQL"
+    );
 }

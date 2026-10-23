@@ -94,6 +94,7 @@ async fn seed_saas_realm_client(state: &SharedState<SqlRepository>) {
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .expect("create SaaS client failed");
@@ -637,6 +638,7 @@ async fn admin_ui_shell_and_dashboard_report_operational_status() {
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .unwrap();

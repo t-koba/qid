@@ -686,6 +686,7 @@ async fn main() -> anyhow::Result<()> {
                         backchannel_logout_uri: None,
                         frontchannel_logout_uri: None,
                         backchannel_client_notification_endpoint: None,
+                        require_pushed_authorization_requests: false,
                     })
                     .await?;
                     if let Some(secret) = raw_secret {

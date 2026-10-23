@@ -278,9 +278,17 @@ oauth:
 `oauth.require_pushed_authorization_requests` is a realm's own requirement: a realm
 that sets it refuses an authorization request that carries no pushed request. The
 requirement is read from the realm of the client that made the request, so it
-reaches the clients of that realm and no other. The per-client list
-`oauth.par.required_for` was removed: the product never read it, so a
-configuration that still sets it is a configuration error naming the key.
+reaches the clients of that realm and no other. Beside it, the standard
+[RFC 9126](https://www.rfc-editor.org/rfc/rfc9126.html) client metadata boolean
+`require_pushed_authorization_requests` (default `false`) requires a pushed
+request for that client only: it is set per client through dynamic client
+registration, persisted with the client record, and enforced alongside the
+realm-wide setting, so a flagged client is refused without `request_uri` while
+an unmarked client of the same realm is unaffected. Registration or update
+with this metadata is refused when the client's realm has not enabled the PAR
+endpoint. The per-client list `oauth.par.required_for` was removed: the product
+never read it, so a configuration that still sets it is a configuration error
+naming the key.
 
 ## Authentication and Sessions
 

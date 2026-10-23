@@ -51,6 +51,7 @@ pub(in crate::sql) struct ClientRow {
     backchannel_logout_uri: Option<String>,
     frontchannel_logout_uri: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
+    require_pushed_authorization_requests: i64,
 }
 
 impl From<ClientRow> for Client {
@@ -97,6 +98,7 @@ impl From<ClientRow> for Client {
             backchannel_logout_uri: row.backchannel_logout_uri,
             frontchannel_logout_uri: row.frontchannel_logout_uri,
             backchannel_client_notification_endpoint: row.backchannel_client_notification_endpoint,
+            require_pushed_authorization_requests: row.require_pushed_authorization_requests != 0,
         }
     }
 }

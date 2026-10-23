@@ -478,6 +478,7 @@ pub(crate) async fn create_client<R: Repository>(
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     };
     match state.repo.create_client(&client).await {
         Ok(()) => {

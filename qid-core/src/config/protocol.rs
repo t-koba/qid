@@ -376,10 +376,10 @@ impl<'de> Deserialize<'de> for CibaConfig {
 
 /// The realm's pushed authorization request setting.
 ///
-/// The requirement to push a request is the realm's own setting,
-/// `require_pushed_authorization_requests`. A per-client list beside it
-/// named clients the product never read, so it was removed: a
-/// configuration that still sets `required_for` is a configuration error
+/// Realm-wide enforcement uses `require_pushed_authorization_requests`, while
+/// RFC 9126 also defines the separate per-client metadata on `Client`. The
+/// former config list named clients the product never read, so it was removed:
+/// a configuration that still sets `required_for` is a configuration error
 /// naming the key.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParConfig {

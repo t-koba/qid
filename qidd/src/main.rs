@@ -1207,6 +1207,7 @@ fn static_client_to_model(realm_id: &str, config: &StaticClientConfig) -> Client
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     }
 }
 

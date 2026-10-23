@@ -491,10 +491,18 @@ async fn resolve_authorize_request<R: Repository>(
             ));
         }
 
-        // The requirement belongs to a realm, so the client's own realm is
-        // read and only that realm's setting applies: a realm that
-        // requires a pushed authorization request does not impose it on
-        // another realm's clients.
+        // RFC 9126 client metadata sits beside the realm-wide setting:
+        // the client's own flag requires a pushed request for that client
+        // only, while the client's own realm setting requires it for every
+        // client of that realm and no other.
+        if client
+            .as_ref()
+            .is_some_and(|client| client.require_pushed_authorization_requests)
+        {
+            return Err(bad_request(
+                "pushed authorization request is required for this client",
+            ));
+        }
         if realm_requires_pushed_authorization_request(state, client.as_ref()) {
             return Err(bad_request(
                 "pushed authorization request is required for this realm",
@@ -862,7 +870,9 @@ fn realm_requires_signed_request_object<R: Repository>(
 /// The requirement is a realm's own setting, so the realm is resolved
 /// through the client-resolution contract rather than searched for across
 /// the realms: a realm that requires a pushed authorization request does
-/// not impose it on the clients of another realm.
+/// not impose it on the clients of another realm. A client that sets the
+/// RFC 9126 `require_pushed_authorization_requests` metadata requires a
+/// pushed request for itself regardless of this setting.
 fn realm_requires_pushed_authorization_request<R: Repository>(
     state: &SharedState<R>,
     client: Option<&Client>,

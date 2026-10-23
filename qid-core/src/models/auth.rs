@@ -52,6 +52,11 @@ pub struct Client {
     /// to this URI when the end-user has authenticated.
     #[serde(default)]
     pub backchannel_client_notification_endpoint: Option<String>,
+    /// RFC 9126 client metadata: when true, this client must use PAR.
+    /// Default `false`; the realm-wide `require_pushed_authorization_requests`
+    /// setting applies independently of this flag.
+    #[serde(default)]
+    pub require_pushed_authorization_requests: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -448,6 +448,7 @@ fn base_test_client(
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         backchannel_client_notification_endpoint: None,
+        require_pushed_authorization_requests: false,
     }
 }
 
@@ -2721,6 +2722,7 @@ async fn dynamic_client_registration_refuses_a_client_id_another_realm_holds() {
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
         })
         .await
         .unwrap();
@@ -3702,4 +3704,234 @@ async fn multi_audience_issuance_names_every_resource_server() {
     )
     .await;
     assert_eq!(ambiguous["active"], serde_json::Value::Bool(false));
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_defaults_require_par_to_false() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .enabled = true;
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    let (app, _, state) = setup_with_config(config).await;
+    let path = state.paths.dynamic_client_registration.clone();
+
+    // A request that omits the RFC 9126 metadata registers an opt-out
+    // client, so existing integrations keep their behavior.
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-par-default","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none"}"#,
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    assert_eq!(
+        json["require_pushed_authorization_requests"],
+        serde_json::Value::Bool(false)
+    );
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "dcr-par-default")
+        .await
+        .unwrap()
+        .expect("DCR should persist the default client");
+    assert!(
+        !client.require_pushed_authorization_requests,
+        "an omitted PAR metadata must persist as false"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_round_trips_require_par() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .enabled = true;
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    config.realms[0].protocols.oauth.par.enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    let create_path = state.paths.dynamic_client_registration.clone();
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri(&create_path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-par-flagged","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none","require_pushed_authorization_requests":true}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let create_json = json_body(create_response).await;
+    assert_eq!(
+        create_json["require_pushed_authorization_requests"],
+        serde_json::Value::Bool(true)
+    );
+    let registration_access_token = create_json["registration_access_token"]
+        .as_str()
+        .expect("DCR must issue a management token")
+        .to_string();
+
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "dcr-par-flagged")
+        .await
+        .unwrap()
+        .expect("DCR should persist the flagged client");
+    assert!(
+        client.require_pushed_authorization_requests,
+        "the RFC 9126 metadata must persist on create"
+    );
+
+    // The management read answers the stored metadata.
+    let update_path = state
+        .paths
+        .dynamic_client_registration_management
+        .replace(":client_id", "dcr-par-flagged");
+    let get_request = Request::builder()
+        .method(Method::GET)
+        .uri(&update_path)
+        .header(
+            "Authorization",
+            format!("Bearer {registration_access_token}"),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let get_response = app.clone().oneshot(get_request).await.unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(get_response).await["require_pushed_authorization_requests"],
+        serde_json::Value::Bool(true)
+    );
+
+    // The management update carries the metadata back to opt-out.
+    let update_request = Request::builder()
+        .method(Method::PUT)
+        .uri(&update_path)
+        .header("Content-Type", "application/json")
+        .header(
+            "Authorization",
+            format!("Bearer {registration_access_token}"),
+        )
+        .body(Body::from(
+            r#"{"client_id":"dcr-par-flagged","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none","require_pushed_authorization_requests":false}"#,
+        ))
+        .unwrap();
+    let update_response = app.oneshot(update_request).await.unwrap();
+    assert_eq!(update_response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(update_response).await["require_pushed_authorization_requests"],
+        serde_json::Value::Bool(false)
+    );
+    let updated = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "dcr-par-flagged")
+        .await
+        .unwrap()
+        .expect("DCR management update should preserve client");
+    assert!(
+        !updated.require_pushed_authorization_requests,
+        "the RFC 9126 metadata must persist on update"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_refuses_required_par_when_par_is_disabled() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .enabled = true;
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    let (app, _, state) = setup_with_config(config).await;
+    let path = state.paths.dynamic_client_registration.clone();
+
+    let rejected_create = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-par-disabled","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none","require_pushed_authorization_requests":true}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(rejected_create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(response).await["error"],
+        "invalid_client_metadata"
+    );
+
+    // The rejected create left no client; an opt-out client can register in
+    // this realm, but cannot change to requiring PAR while the endpoint is
+    // disabled.
+    let accepted_create = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-par-disabled","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none"}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(accepted_create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let registration = json_body(response).await;
+    let registration_access_token = registration["registration_access_token"]
+        .as_str()
+        .expect("DCR must issue a management token")
+        .to_string();
+
+    let update_path = state
+        .paths
+        .dynamic_client_registration_management
+        .replace(":client_id", "dcr-par-disabled");
+    let rejected_update = Request::builder()
+        .method(Method::PUT)
+        .uri(&update_path)
+        .header("Content-Type", "application/json")
+        .header(
+            "Authorization",
+            format!("Bearer {registration_access_token}"),
+        )
+        .body(Body::from(
+            r#"{"client_id":"dcr-par-disabled","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none","require_pushed_authorization_requests":true}"#,
+        ))
+        .unwrap();
+    let response = app.oneshot(rejected_update).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(response).await["error"],
+        "invalid_client_metadata"
+    );
+
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "dcr-par-disabled")
+        .await
+        .unwrap()
+        .expect("the original unmarked client must remain");
+    assert!(
+        !client.require_pushed_authorization_requests,
+        "rejected DCR metadata must not mutate the existing client"
+    );
 }

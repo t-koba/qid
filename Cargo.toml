@@ -87,7 +87,15 @@ exclude = ["vendor/rustls"]
 # Backchannel authentication grant create-only identity (typed file identity
 # with no secondary identity, static SQL refusal and contract) adds 14
 # measured product lines (104119 -> 104133); the shared test is uncapped.
-total = 104133
+# The RFC 9126 per-client PAR flag (client metadata field, DCR
+# request/response/update plumbing, SQL row conversion with INSERT/UPDATE
+# binds, file/SQL persistence via serde default plus migration, and the
+# authorization-endpoint client check beside the realm-wide setting) adds 33
+# measured product lines (104133 -> 104166); the DCR, persistence and
+# endpoint tests are uncapped. DCR also rejects the metadata on create/update
+# when its realm has PAR disabled using RFC invalid_client_metadata (18 lines,
+# measured 104166 -> 104184); tests remain uncapped.
+total = 104184
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

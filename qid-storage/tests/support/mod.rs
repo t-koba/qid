@@ -1509,9 +1509,41 @@ where
     repo.store_ciam_verification_challenge(&challenge)
         .await
         .expect("store incumbent CIAM verification challenge failed");
+    for (attempt_realm, id) in [(&realm, "unknown-challenge"), (&other_realm, &challenge.id)] {
+        let err = repo
+            .consume_ciam_verification_challenge(attempt_realm, id, 1_700_000_040)
+            .await
+            .expect_err("unknown or foreign-realm challenge consumption must fail");
+        assert!(
+            matches!(err, qid_core::error::QidError::NotFound { .. }),
+            "unknown or foreign-realm consumption must be NotFound, got: {}",
+            err.message()
+        );
+        assert_eq!(
+            repo.get_ciam_verification_challenge(&realm, &challenge.id)
+                .await
+                .expect("get challenge after rejected consumption failed"),
+            Some(challenge.clone())
+        );
+    }
     repo.consume_ciam_verification_challenge(&realm, &challenge.id, 1_700_000_050)
         .await
         .expect("consume incumbent CIAM verification challenge failed");
+    for (attempt_realm, is_owner) in [(&realm, true), (&other_realm, false)] {
+        let err = repo
+            .consume_ciam_verification_challenge(attempt_realm, &challenge.id, 1_700_000_060)
+            .await
+            .expect_err("consumed challenge must not be consumed again");
+        assert!(
+            if is_owner {
+                matches!(err, qid_core::error::QidError::Conflict { .. })
+            } else {
+                matches!(err, qid_core::error::QidError::NotFound { .. })
+            },
+            "repeat must be Conflict for owner and NotFound for foreign realm, got: {}",
+            err.message()
+        );
+    }
 
     let same_realm_duplicate = CiamVerificationChallengeRecord {
         code_hash: "replacement-code-hash".to_string(),

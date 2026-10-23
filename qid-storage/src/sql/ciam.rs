@@ -127,9 +127,24 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
-            "CIAM verification challenge already consumed".to_string()
-        })?;
+        if result.rows_affected() == 0 {
+            let owner: Option<String> = sqlx::query_scalar(
+                "SELECT realm_id FROM ciam_verification_challenges WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
+            if owner.as_deref() != Some(realm_id.as_str()) {
+                return Err(QidError::NotFound {
+                    resource: format!("CIAM verification challenge {id}"),
+                });
+            }
+            // A consumed incumbent conflicts; fail closed if it is still unconsumed.
+            return Err(QidError::Conflict {
+                message: "CIAM verification challenge already consumed".to_string(),
+            });
+        }
         Ok(())
     }
 

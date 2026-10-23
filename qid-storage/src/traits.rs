@@ -491,7 +491,10 @@ pub trait CiamRepository: Send + Sync + 'static {
         realm_id: &RealmId,
         id: &str,
     ) -> QidResult<Option<CiamVerificationChallengeRecord>>;
-    /// Consume a challenge only within its owning realm; a wrong-realm call leaves it intact.
+    /// Atomically consume a challenge only within its owning realm.
+    /// Unknown IDs and wrong-realm calls return `NotFound`, even if already consumed.
+    /// Repeated consumption in the owning realm returns `Conflict`.
+    /// Rejected calls leave the challenge unchanged.
     async fn consume_ciam_verification_challenge(
         &self,
         realm_id: &RealmId,

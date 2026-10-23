@@ -308,8 +308,8 @@ impl TokenRepository for SqlRepository {
         &self,
         grant: &DeviceAuthorizationGrant,
     ) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO device_authorization_grants (device_code_hash, user_code, client_id, realm_id, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO device_authorization_grants (device_code_hash, user_code, client_id, realm_id, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(&grant.device_code_hash)
         .bind(&grant.user_code)
@@ -326,7 +326,9 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "device authorization grant device code hash or user code already exists".to_string()
+        })
     }
 
     async fn get_device_authorization_grant(

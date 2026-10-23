@@ -2,8 +2,8 @@
 
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, CiamConsentGrant,
-    CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
-    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
+    CiamVerificationChallengeRecord, Client, ClientType, Device, DeviceAuthorizationGrant,
+    FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
     IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
     IgaJitPrivilegeGrantRecord, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
     ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
@@ -2839,4 +2839,146 @@ where
     assert_eq!(stored.expires_at, initial.expires_at);
     assert_eq!(stored.created_at, initial.created_at);
     assert!(stored.used, "duplicate reset the consumed PAR request");
+}
+
+/// The create-only contract of a device authorization grant: the device code
+/// hash names one grant and the user code names one grant globally, so a
+/// second grant that carries either is refused with `Conflict` and the
+/// incumbent keeps its owner, payload and lifecycle state.
+pub async fn assert_device_authorization_grant_create_only<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + TokenRepository,
+{
+    let realm = RealmId("realm-device-contract".to_string());
+    repo.create_realm(
+        &TenantId("tenant-device-contract".to_string()),
+        &realm,
+        "https://device-contract.example.com",
+        Some("Device Contract Realm"),
+    )
+    .await
+    .expect("create device contract realm failed");
+    let approver = User {
+        id: "user-device-contract".to_string(),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&approver)
+        .await
+        .expect("create device contract user failed");
+
+    let incumbent = DeviceAuthorizationGrant {
+        device_code_hash: "device-code-contract".into(),
+        user_code: "DEVICE-CONTRACT".into(),
+        client_id: "client-device-contract".into(),
+        realm_id: "realm-device-contract".into(),
+        scopes: vec!["read".to_string()],
+        user_id: None,
+        expires_at: 3000,
+        approved_at: None,
+        consumed: false,
+        last_poll_at: None,
+        poll_interval_seconds: 5,
+        created_at: 1,
+    };
+    repo.store_device_authorization_grant(&incumbent)
+        .await
+        .expect("store initial device grant");
+    repo.record_device_authorization_poll(&incumbent.device_code_hash, 1100, 10)
+        .await
+        .expect("poll initial device grant");
+    repo.approve_device_authorization_grant(&incumbent.user_code, "user-device-contract", 1200)
+        .await
+        .expect("approve initial device grant");
+    repo.consume_device_authorization_grant(&incumbent.device_code_hash)
+        .await
+        .expect("consume initial device grant");
+
+    // A second grant for the same device code hash is refused, even with a
+    // changed owner and payload and reset lifecycle fields.
+    let duplicate_hash = DeviceAuthorizationGrant {
+        device_code_hash: incumbent.device_code_hash.clone(),
+        user_code: "DEVICE-OTHER".into(),
+        client_id: "other-client".into(),
+        realm_id: "other-realm".into(),
+        scopes: vec!["admin".to_string()],
+        user_id: None,
+        expires_at: 4000,
+        approved_at: None,
+        consumed: false,
+        last_poll_at: None,
+        poll_interval_seconds: 5,
+        created_at: 2,
+    };
+    let error = repo
+        .store_device_authorization_grant(&duplicate_hash)
+        .await
+        .expect_err("duplicate device code hash must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate device code hash returned {error:?}"
+    );
+    let stored = repo
+        .get_device_authorization_grant(&incumbent.device_code_hash)
+        .await
+        .expect("get incumbent device grant")
+        .expect("incumbent device grant missing");
+    assert_eq!(stored.realm_id, incumbent.realm_id);
+    assert_eq!(stored.client_id, incumbent.client_id);
+    assert_eq!(stored.user_code, incumbent.user_code);
+    assert_eq!(stored.scopes, incumbent.scopes);
+    assert_eq!(stored.user_id.as_deref(), Some("user-device-contract"));
+    assert_eq!(stored.approved_at, Some(1200));
+    assert!(stored.consumed, "duplicate reset the consumed device grant");
+    assert_eq!(stored.last_poll_at, Some(1100));
+    assert_eq!(stored.poll_interval_seconds, 10);
+
+    // A second grant that carries the incumbent user code under a distinct
+    // hash is refused, and the new hash stays absent.
+    let duplicate_code = DeviceAuthorizationGrant {
+        device_code_hash: "device-code-contract-other".into(),
+        user_code: incumbent.user_code.clone(),
+        client_id: "other-client".into(),
+        realm_id: "other-realm".into(),
+        scopes: vec!["admin".to_string()],
+        user_id: None,
+        expires_at: 4000,
+        approved_at: None,
+        consumed: false,
+        last_poll_at: None,
+        poll_interval_seconds: 5,
+        created_at: 2,
+    };
+    let error = repo
+        .store_device_authorization_grant(&duplicate_code)
+        .await
+        .expect_err("duplicate user code must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate user code returned {error:?}"
+    );
+    assert!(
+        repo.get_device_authorization_grant(&duplicate_code.device_code_hash)
+            .await
+            .expect("get duplicate user-code hash")
+            .is_none(),
+        "the refused user-code grant must stay absent"
+    );
+    let stored = repo
+        .get_device_authorization_grant(&incumbent.device_code_hash)
+        .await
+        .expect("get incumbent device grant")
+        .expect("incumbent device grant missing");
+    assert_eq!(stored.realm_id, incumbent.realm_id);
+    assert_eq!(stored.client_id, incumbent.client_id);
+    assert_eq!(stored.user_code, incumbent.user_code);
+    assert_eq!(stored.user_id.as_deref(), Some("user-device-contract"));
+    assert_eq!(stored.approved_at, Some(1200));
+    assert!(stored.consumed, "duplicate reset the consumed device grant");
+    assert_eq!(stored.last_poll_at, Some(1100));
 }

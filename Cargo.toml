@@ -81,7 +81,10 @@ exclude = ["vendor/rustls"]
 # 17 measured product lines (104072 -> 104089); the shared test is uncapped.
 # PAR request create-only identity reuses the file insert primitive and adds a
 # SQL refusal plus trait contract (net +13: 104089 -> 104102); tests are uncapped.
-total = 104102
+# Device authorization grant create-only identity (typed file identity with
+# explicit global user-code scope, static SQL refusal and contract) adds 17
+# measured product lines (104102 -> 104119); the shared test is uncapped.
+total = 104119
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

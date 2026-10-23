@@ -199,9 +199,7 @@ impl TokenRepository for FileRepository {
         grant: &DeviceAuthorizationGrant,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        store
-            .device_authorization_grants
-            .insert(grant.device_code_hash.clone(), grant.clone());
+        super::insert::insert_new(&mut store.device_authorization_grants, grant)?;
         drop(store);
         self.save().await
     }

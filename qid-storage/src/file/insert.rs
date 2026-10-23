@@ -4,6 +4,7 @@ use super::*;
 pub(super) trait InsertIdentity: Clone {
     const RECORD: &'static str;
     const IDENTITY: &'static str;
+    const GLOBAL_IDENTITY: bool = false;
     fn id(&self) -> &str;
     fn identity(&self) -> Option<(&str, &str)>;
 }
@@ -81,9 +82,12 @@ pub(super) fn insert_new<T: InsertIdentity>(
             .values()
             .any(|stored| stored.identity() == Some((owner, identity)))
     {
-        return Err(QidError::Conflict {
-            message: format!("{} {identity} already exists in realm {owner}", T::IDENTITY),
-        });
+        let message = if T::GLOBAL_IDENTITY {
+            format!("{} {identity} already exists globally", T::IDENTITY)
+        } else {
+            format!("{} {identity} already exists in realm {owner}", T::IDENTITY)
+        };
+        return Err(QidError::Conflict { message });
     }
     map.insert(record.id().to_owned(), record.clone());
     Ok(())
@@ -129,5 +133,18 @@ impl InsertIdentity for ParRequest {
     }
     fn identity(&self) -> Option<(&str, &str)> {
         None
+    }
+}
+
+impl InsertIdentity for DeviceAuthorizationGrant {
+    const RECORD: &'static str = "device authorization grant";
+    const IDENTITY: &'static str = "device user code";
+    const GLOBAL_IDENTITY: bool = true;
+    fn id(&self) -> &str {
+        &self.device_code_hash
+    }
+    fn identity(&self) -> Option<(&str, &str)> {
+        // The user code is globally unique, so every grant shares one scope.
+        Some(("", &self.user_code))
     }
 }

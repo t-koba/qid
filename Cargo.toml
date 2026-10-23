@@ -131,7 +131,9 @@ exclude = ["vendor/rustls"]
 # cap changes and no credential schema, SQL or dependency changes are needed.
 # Advisory passkey preference restores a promised capability in the existing
 # OIDC challenge and realm policy: measured net +29, with no parallel service.
-total = 106483
+# Unambiguous registration CBOR replaces the old AAGUID extractor: measured
+# net +25 source lines, sharing one map validator for object and statement.
+total = 106508
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

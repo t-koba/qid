@@ -542,38 +542,63 @@ fn matching_credential(
     })
 }
 
+// Validate the original evidence before caden sees it; never resolve duplicate
+// keys by choosing a value or by re-encoding the object passed to the verifier.
 fn registration_aaguid(attestation_object: &[u8]) -> QidResult<Vec<u8>> {
+    let mut remaining = attestation_object;
     let cbor: CborValue =
-        ciborium::from_reader(attestation_object).map_err(|e| QidError::BadRequest {
+        ciborium::from_reader(&mut remaining).map_err(|e| QidError::BadRequest {
             message: format!("invalid WebAuthn attestation object: {e}"),
         })?;
-    let CborValue::Map(map) = cbor else {
-        return Err(QidError::BadRequest {
-            message: "invalid WebAuthn attestation object: expected map".to_string(),
-        });
+    if !remaining.is_empty() {
+        return Err(invalid_attestation_evidence());
+    }
+    let mut fields = attestation_fields(cbor)?;
+    if !matches!(fields.remove("fmt"), Some(CborValue::Text(_))) {
+        return Err(invalid_attestation_evidence());
+    }
+    attestation_fields(
+        fields
+            .remove("attStmt")
+            .ok_or_else(invalid_attestation_evidence)?,
+    )?;
+    let Some(CborValue::Bytes(auth_data)) = fields.remove("authData") else {
+        return Err(invalid_attestation_evidence());
     };
+    let parsed =
+        webauthn::authenticator_data::parse_authenticator_data(&auth_data).map_err(|e| {
+            QidError::BadRequest {
+                message: format!("invalid WebAuthn authenticator data: {e}"),
+            }
+        })?;
+    parsed
+        .attested_credential_data
+        .map(|data| data.aaguid.to_vec())
+        .ok_or_else(|| QidError::BadRequest {
+            message: "WebAuthn attestation is missing attested credential data".to_string(),
+        })
+}
+
+fn attestation_fields(value: CborValue) -> QidResult<HashMap<String, CborValue>> {
+    let CborValue::Map(map) = value else {
+        return Err(invalid_attestation_evidence());
+    };
+    let mut fields = HashMap::new();
     for (key, value) in map {
-        if matches!(key, CborValue::Text(ref text) if text == "authData") {
-            let CborValue::Bytes(auth_data) = value else {
-                return Err(QidError::BadRequest {
-                    message: "invalid WebAuthn attestation authData".to_string(),
-                });
-            };
-            let parsed = webauthn::authenticator_data::parse_authenticator_data(&auth_data)
-                .map_err(|e| QidError::BadRequest {
-                    message: format!("invalid WebAuthn authenticator data: {e}"),
-                })?;
-            return parsed
-                .attested_credential_data
-                .map(|data| data.aaguid.to_vec())
-                .ok_or_else(|| QidError::BadRequest {
-                    message: "WebAuthn attestation is missing attested credential data".to_string(),
-                });
+        let CborValue::Text(key) = key else {
+            return Err(invalid_attestation_evidence());
+        };
+        if fields.insert(key, value).is_some() {
+            return Err(invalid_attestation_evidence());
         }
     }
-    Err(QidError::BadRequest {
-        message: "WebAuthn attestation object is missing authData".to_string(),
-    })
+    Ok(fields)
+}
+
+fn invalid_attestation_evidence() -> QidError {
+    QidError::BadRequest {
+        message: "invalid WebAuthn attestation evidence: expected complete CBOR with unique text map keys and fmt/authData/attStmt fields".to_string(),
+    }
 }
 
 fn encode_bytes(bytes: &[u8]) -> String {

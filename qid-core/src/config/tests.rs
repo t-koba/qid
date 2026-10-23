@@ -1510,20 +1510,18 @@ fn the_removed_par_required_for_setting_is_rejected() {
 }
 
 #[test]
-fn the_removed_passkey_attestation_setting_is_rejected() {
-    // The registration ceremony requests attestation "none" and the product
-    // verifies no attestation statement, so a setting that chose an
-    // attestation policy named a capability the product does not have: any
-    // value but "none" was refused at the ceremony. A configuration that
-    // still sets it is a configuration error naming the key.
-    let err = serde_json::from_str::<AuthenticationConfig>(
-        r#"{"passkeys":{"enabled":true,"attestation":"enterprise"}}"#,
-    )
-    .expect_err("the removed setting is rejected");
+fn the_legacy_string_passkey_attestation_setting_is_rejected() {
+    // Attestation is now a typed required-packed policy, never an unchecked
+    // browser conveyance preference (including the old "enterprise" value).
     assert!(
-        err.to_string().contains("attestation"),
-        "the error names the removed key: {err}"
+        serde_json::from_str::<AuthenticationConfig>(
+            r#"{"passkeys":{"enabled":true,"attestation":"enterprise"}}"#,
+        )
+        .is_err()
     );
+    let defaults: PasskeyConfig = serde_json::from_str("{}").unwrap();
+    assert!(defaults.attestation.is_none());
+    assert!(PasskeyConfig::default().attestation.is_none());
 }
 
 #[test]

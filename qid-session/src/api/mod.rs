@@ -87,10 +87,10 @@ pub fn auth_routes_with_password_attempt_limiter<R: Repository>(
         .layer(Extension(limiter))
 }
 
-pub(crate) fn build_webauthn_service<R: Repository>(
-    state: &Arc<SharedState<R>>,
+pub(crate) fn build_webauthn_service<'a, R: Repository>(
+    state: &'a Arc<SharedState<R>>,
     realm: &str,
-) -> Result<WebAuthnService, QidError> {
+) -> Result<WebAuthnService<'a>, QidError> {
     let realm_config = state.require_realm(realm)?;
     let passkey_config = &realm_config.passkeys;
     if !passkey_config.enabled {
@@ -118,7 +118,8 @@ pub(crate) fn build_webauthn_service<R: Repository>(
             .unwrap_or_else(|| "https://localhost".to_string())
     });
     let rp_name = &passkey_config.rp_name;
-    WebAuthnService::new(&rp_id, rp_name, &rp_origin)
+    Ok(WebAuthnService::new(&rp_id, rp_name, &rp_origin)?
+        .with_attestation(passkey_config.attestation.as_ref()))
 }
 
 #[derive(Debug, Deserialize)]

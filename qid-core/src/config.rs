@@ -1408,6 +1408,9 @@ impl RealmConfig {
         }
         self.sessions.refresh_tokens.validate(&self.id)?;
         self.authentication.password.validate(&self.id)?;
+        if let Some(policy) = &self.authentication.passkeys.attestation {
+            policy.validate(self.authentication.passkeys.enabled)?;
+        }
         if self.authentication.passkeys.preferred && !self.authentication.passkeys.enabled {
             return Err(QidError::Config {
                 message: format!(
@@ -1735,6 +1738,8 @@ mod protocol;
 
 pub use auth::*;
 
+mod attestation;
+pub use attestation::*;
 mod auth;
 
 fn validate_scim_event_callback_allowed_host(host: &str, realm_id: &str) -> QidResult<()> {

@@ -1,3 +1,6 @@
+mod attestation;
+
+use qid_core::config::PackedAttestationPolicy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -159,7 +162,8 @@ impl WebAuthnState {
     }
 }
 
-pub struct WebAuthnService {
+pub struct WebAuthnService<'a> {
+    attestation: Option<&'a PackedAttestationPolicy>,
     rp: RelyingParty,
     rp_id: String,
     rp_name: String,
@@ -210,7 +214,17 @@ struct ParsedAuthenticationCredential {
     response: AuthenticatorAssertionResponse,
 }
 
-impl WebAuthnService {
+impl<'a> WebAuthnService<'a> {
+    /// Attach the realm's policy after configuration validation.
+    ///
+    /// Any supplied policy must have passed `PackedAttestationPolicy::validate`
+    /// with passkeys enabled (normally through `Config::validate`). This borrows
+    /// validated configuration; it does not repeat startup certificate parsing.
+    pub fn with_attestation(mut self, policy: Option<&'a PackedAttestationPolicy>) -> Self {
+        self.attestation = policy;
+        self
+    }
+
     pub fn new(rp_id: &str, rp_name: &str, rp_origin: &str) -> QidResult<Self> {
         let parsed = Url::parse(rp_origin).map_err(|e| QidError::BadRequest {
             message: format!("invalid rp_origin: {e}"),
@@ -229,6 +243,7 @@ impl WebAuthnService {
             });
         }
         Ok(Self {
+            attestation: None,
             rp: RelyingParty::new(rp_id, rp_origin, rp_name)
                 .allowed_algorithms([COSE_ES256, COSE_ES384, COSE_EDDSA, COSE_RS256]),
             rp_id: rp_id.to_string(),
@@ -266,7 +281,7 @@ impl WebAuthnService {
                 { "type": "public-key", "alg": COSE_RS256 },
             ],
             "timeout": 300000u64,
-            "attestation": "none",
+            "attestation": if self.attestation.is_some() { "direct" } else { "none" },
             "authenticatorSelection": {
                 "residentKey": "preferred",
                 "requireResidentKey": false,
@@ -282,9 +297,30 @@ impl WebAuthnService {
         user_id: &str,
         response: serde_json::Value,
     ) -> QidResult<WebAuthnCredential> {
+        // Required-trust attempts consume their ceremony even on a size/encoding
+        // refusal. Preserve the default service's response-decoding order.
+        let consumed = if let Some(policy) = self.attestation {
+            let challenge = webauthn_state.remove_reg(realm, user_id)?;
+            attestation::check_encoded_sizes(&response, &policy.limits)?;
+            Some(challenge)
+        } else {
+            None
+        };
         let parsed = parse_registration_response(response)?;
-        let challenge = webauthn_state.remove_reg(realm, user_id)?;
-        let aaguid = registration_aaguid(&parsed.response.attestation_object)?;
+        let challenge = match consumed {
+            Some(challenge) => challenge,
+            None => webauthn_state.remove_reg(realm, user_id)?,
+        };
+        let evidence = registration_evidence(&parsed.response.attestation_object)?;
+        if let Some(policy) = self.attestation {
+            attestation::verify(
+                policy,
+                &evidence,
+                &parsed.response.client_data_json,
+                qid_core::util::now_seconds(),
+            )?;
+        }
+        let aaguid = evidence.aaguid;
         let result = self
             .rp
             .verify_registration(&challenge, &parsed.response, &stable_user_handle(user_id))
@@ -544,7 +580,14 @@ fn matching_credential(
 
 // Validate the original evidence before caden sees it; never resolve duplicate
 // keys by choosing a value or by re-encoding the object passed to the verifier.
-fn registration_aaguid(attestation_object: &[u8]) -> QidResult<Vec<u8>> {
+struct RegistrationEvidence {
+    format: String,
+    auth_data: Vec<u8>,
+    statement: HashMap<String, CborValue>,
+    aaguid: Vec<u8>,
+}
+
+fn registration_evidence(attestation_object: &[u8]) -> QidResult<RegistrationEvidence> {
     let mut remaining = attestation_object;
     let cbor: CborValue =
         ciborium::from_reader(&mut remaining).map_err(|e| QidError::BadRequest {
@@ -554,10 +597,10 @@ fn registration_aaguid(attestation_object: &[u8]) -> QidResult<Vec<u8>> {
         return Err(invalid_attestation_evidence());
     }
     let mut fields = attestation_fields(cbor)?;
-    if !matches!(fields.remove("fmt"), Some(CborValue::Text(_))) {
+    let Some(CborValue::Text(format)) = fields.remove("fmt") else {
         return Err(invalid_attestation_evidence());
-    }
-    attestation_fields(
+    };
+    let statement = attestation_fields(
         fields
             .remove("attStmt")
             .ok_or_else(invalid_attestation_evidence)?,
@@ -571,12 +614,18 @@ fn registration_aaguid(attestation_object: &[u8]) -> QidResult<Vec<u8>> {
                 message: format!("invalid WebAuthn authenticator data: {e}"),
             }
         })?;
-    parsed
+    let aaguid = parsed
         .attested_credential_data
         .map(|data| data.aaguid.to_vec())
         .ok_or_else(|| QidError::BadRequest {
             message: "WebAuthn attestation is missing attested credential data".to_string(),
-        })
+        })?;
+    Ok(RegistrationEvidence {
+        format,
+        auth_data,
+        statement,
+        aaguid,
+    })
 }
 
 fn attestation_fields(value: CborValue) -> QidResult<HashMap<String, CborValue>> {

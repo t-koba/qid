@@ -27,6 +27,9 @@ pub struct AuthenticationConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PasskeyConfig {
+    /// Absent: none attestation. Present: require operator-trusted packed enrollment.
+    #[serde(default)]
+    pub attestation: Option<PackedAttestationPolicy>,
     /// Advertise WebAuthn before password in OIDC login choices (advisory only).
     #[serde(default = "default_false")]
     pub preferred: bool,
@@ -43,6 +46,7 @@ pub struct PasskeyConfig {
 impl Default for PasskeyConfig {
     fn default() -> Self {
         Self {
+            attestation: None,
             enabled: default_false(),
             preferred: default_false(),
             rp_id: None,

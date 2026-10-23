@@ -362,7 +362,7 @@ naming the key.
 
 `authentication` includes:
 
-- `passkeys.enabled`, `rp_id`, `rp_origin`, `rp_name`
+- `passkeys.enabled`, `rp_id`, `rp_origin`, `rp_name`, `preferred`, optional `attestation`
 - `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `max_failed_attempts_per_realm`, `argon2id`, `pepper`
 - `mfa.totp.enabled`
 - `passwordless_only`
@@ -378,12 +378,104 @@ Validation rules:
 - `password.max_failed_attempts`, `password.max_failed_attempts_per_realm` and `password.lockout_duration_seconds` must be at least 1.
 - `password.argon2id` must be a usable cost: `time_cost` and `parallelism` at least 1, and `memory_kib` at least 8 KiB per lane.
 
-`passkeys` names the realm's WebAuthn relying party. `enabled` states whether the realm offers the factor, `rp_id` and `rp_origin` override the relying-party ID and origin the ceremony uses, and `rp_name` names the relying party to the authenticator. The ceremony always requests attestation `none` and the product verifies no attestation statement, so there is no attestation setting: `passkeys.attestation` was removed, and a configuration that still sets it is a configuration error naming the key. `passkeys.preferred` defaults to `false` and requires `passkeys.enabled: true` when set to `true`. The OIDC GET authorization endpoint's `login_required` JSON challenge includes an `authentication_methods` string array for the validated client's realm: `password` then `webauthn` by default, or `webauthn` then `password` when preferred. Only enabled factors are listed, and `passwordless_only` suppresses password even if its configuration enables it. This order is advisory for API clients, not an authentication requirement or automatic browser UI; qid does not host a login UI.
+`passkeys` names the realm's WebAuthn relying party. `enabled` states whether the realm offers the factor, `rp_id` and `rp_origin` override the relying-party ID and origin the ceremony uses, and `rp_name` names the relying party to the authenticator. Without `passkeys.attestation`, registration requests `none` and adds no attestation trust requirement. The optional typed policy below requests `direct` and requires trusted packed evidence; legacy string values such as `attestation: enterprise` remain configuration errors. `passkeys.preferred` defaults to `false` and requires `passkeys.enabled: true` when set to `true`. The OIDC GET authorization endpoint's `login_required` JSON challenge includes an `authentication_methods` string array for the validated client's realm: `password` then `webauthn` by default, or `webauthn` then `password` when preferred. Only enabled factors are listed, and `passwordless_only` suppresses password even if its configuration enables it. This order is advisory for API clients, not an authentication requirement or automatic browser UI; qid does not host a login UI.
+
 
 To execute a login choice (default paths shown; deployments may customize them):
 
 - `password`: POST to `/oauth2/authorize` with the original authorization request parameters in the query string and an `application/x-www-form-urlencoded` body containing `email` and `password`.
 - `webauthn`: POST JSON `{"email":"..."}` to `/api/v1/:realm/auth/webauthn/auth/start`, pass the returned `challenge` options to the browser's `navigator.credentials.get`, then POST `{"email":"...","response":...}` to `/api/v1/:realm/auth/webauthn/auth/finish`. For a discoverable credential, POST `{}` to `/api/v1/:realm/auth/webauthn/discoverable/start` and POST `{"ceremony_id":"...","response":...}` to `/api/v1/:realm/auth/webauthn/discoverable/finish` instead, using the `ceremony_id` returned by the start route. Replace `:realm` with the client's realm ID. Both finish routes establish a realm browser session and return its `Set-Cookie`; retain/send that cookie when repeating the original GET `/oauth2/authorize` request to resume OIDC and receive the authorization redirect. Keep the original authorization parameters (or PAR `request_uri`), not just the subset echoed in the challenge. Session reuse still respects realm, expiry, `max_age`, and essential ACR requirements; `prompt=login` forces a new login, so do not carry it into a session-resume GET.
+
+### Required trusted packed enrollment
+
+`passkeys.attestation` is an optional **enrollment-only** operator trust policy.
+Omit it for the default `none` request and existing registration algorithms and
+behavior. When present, passkeys must be enabled, registration requests `direct`,
+and finish requires the policy below as well as the ordinary caden ceremony
+checks. Browsers may withhold attestation; `none`, self-attestation, other formats,
+and unsupported algorithms then refuse enrollment rather than silently downgrade.
+Existing credentials, authentication, discoverable login and session AMR are
+unchanged: an old stored AAGUID never gains retrospective trust, and this policy
+does not establish a `hwk` factor or a hardware/non-exportability claim.
+
+Example shape under a realm's `authentication.passkeys` (replace the certificate
+placeholder and validity interval before use):
+
+```yaml
+enabled: true
+attestation:
+  metadata:
+    not_before: 1767225600  # inclusive Unix seconds
+    expires_at: 1893456000  # exclusive Unix seconds
+    models:
+      "11111111-1111-1111-1111-111111111111":
+        status: allowed     # allowed | blocked
+        roots: ["<standard padded base64 DER trust-anchor certificate>"]
+  limits:                  # these are the defaults; every field is optional
+    evidence_bytes: 16384
+    client_data_bytes: 4096
+    certificates: 4
+    certificate_bytes: 4096
+    models: 128
+    roots_per_model: 4
+```
+
+The inline metadata is trusted **because the operator controls the configuration**,
+not because qid verifies a FIDO Metadata Service signature. There is no network,
+file-provider, MDS fetch, certificate AIA fetch or system-root fallback. Supply
+curated roots only for the corresponding authenticator model; sharing a broad root
+across models broadens the authority trusted to assert those models. Model IDs
+must be unique canonical lower-case, hyphenated 16-byte AAGUIDs. Metadata must have
+an ordered validity interval and nonempty bounded models and roots, with valid
+base64 DER certificates usable by webpki's runtime trust-anchor extraction and
+positive limits. `blocked` models still require roots
+in configuration, but cannot enroll. At **finish**, current time must be in
+`[not_before, expires_at)` and the signed AAGUID must select an `allowed` model.
+Missing/unknown/blocked models, stale/not-yet-valid metadata and any trust failure
+refuse enrollment without a credential write and consume the one-use ceremony.
+Start is not a freshness guarantee. Update configuration and restart through the
+normal deployment procedure before the metadata expires.
+
+The intentionally narrow trusted profile supports **packed x5c with ES256/P-256**
+statement and certificate-chain signatures only. The leaf must be X.509 v3, have
+nonempty subject C (syntactically two uppercase ASCII letters, without ISO country
+registry membership validation), O and CN, exactly one OU equal
+to `Authenticator Attestation`, and explicit BasicConstraints `CA=false`.
+KeyUsage, if present, must include digitalSignature on the leaf and keyCertSign
+on every supplied intermediate. EKU must be absent on all supplied certificates
+(including empty or malformed EKU, which is rejected); no standardized packed EKU
+OID is assumed. Unlike generic packed attestation, this profile **requires** the
+noncritical FIDO AAGUID certificate extension, containing exactly a DER OCTET STRING
+of 16 bytes equal to the signed authenticator-data AAGUID. Otherwise valid packed
+evidence lacking this extension is deliberately not trusted by this profile.
+
+qid uses non-TLS webpki path validation to the selected model's configured pins
+and independently verifies the exact `authData || SHA256(clientDataJSON)` statement
+with the parsed leaf SPKI. It checks certificate validity, CA/path-length/name
+constraints and unknown critical extensions in the path. A configured root is a
+**trust anchor, not a path member**: its self-signature, expiration, CA flag and
+path-length are not inferred to be chain constraints. The operator is responsible
+for pin authorization and retirement. Send the leaf followed by intermediates in
+x5c, not roots. Neither CRL/OCSP nor MDS status revocation is claimed: metadata
+expiry/model blocking controls new enrollment only, not existing credentials or
+sessions. Use credential/session administration for those.
+
+Limits are independent ceilings, not truncation. The encoded attestation object
+and client-data lengths are checked before base64 decode/CBOR allocation; chain
+count and each DER size are checked before certificate work. Metadata model/root
+counts and root DER sizes are validated at configuration load. The default bounds
+leave room above the generated test fixture (about 0.5 KiB leaf, 0.4 KiB intermediate,
+1.2 KiB attestation object and 138-byte client data) without an unbounded chain or
+metadata set. Raise limits only for a measured deployment need. There is no
+per-request filesystem work; the active service borrows the realm policy.
+
+Enrollment uses the existing cookie-authenticated
+`POST /api/v1/:realm/auth/webauthn/start` (`{"email":"..."}`) and
+`POST /api/v1/:realm/auth/webauthn/finish` (`{"user_id":"...","response":...}`)
+routes. Both the browser session and user must belong to the request realm;
+there is no extra trusted-enrollment endpoint or hosted enrollment UI.
+
+### Password policy
 
 `password` is the realm's password policy, and every setting in it has an effect. `hash` names the algorithm the product creates credentials with, so any other value is a configuration error naming the key. `max_failed_attempts` and `lockout_duration_seconds` are the limits the realm's password logins enforce: the session API and the OIDC authorization endpoint both lock the account after that many failed attempts and refuse even the correct password until the lockout expires. `max_failed_attempts_per_realm` bounds the failures the realm accepts as a whole: within the lockout window the realm accepts that many failed password logins and refuses further password logins with `429 Too Many Requests` until the window passes, so a spray that tests one guess per account cannot run without bound, and one burst cannot lock every account of a realm. The budget counts failures only, so a successful login never spends it, and a refused login is refused before any credential is verified, so it costs no Argon2id work. The budget is kept in the process that enforces it, so a deployment with several instances applies the limit to each of them. Both password login paths share the budget of the realm, so they enforce the same numbers. Before the credential work, a password login is admitted by an admission count: the submitted email's admission count follows `max_failed_attempts` within `lockout_duration_seconds`, and the realm's admission count follows `max_failed_attempts_per_realm` within the same window. The admission cap counts the logins that reach the credential work, while the budget counts only the logins that failed, so the two answer different questions: the cap bounds the work a spray of guesses can cause, and the budget bounds the failures a realm accepts. A login the cap refuses answers `429 Too Many Requests` before any credential is verified, so it costs no Argon2id work, and the session API and the authorization endpoint share the cap, so both paths refuse the same logins. A successful login gives back the admission it spent on the submitted address and on the realm, so both counts follow the logins that failed and the ones still in flight: a realm whose logins succeed keeps its room, and one success never spends the room of the realm it belongs to. The admission limiter is process-local, so each qidd instance enforces its own counts and restarts clear them. `argon2id` is the cost the product hashes with whenever it creates a credential - a user the CLI creates, a user a seed writes, a password a reset consumes - and the cost every credential of the realm ends up carrying: a credential whose stored parameters differ from the realm's is rehashed with the realm's cost at the next successful login, so an imported credential and a credential created at an older cost both reach it; verification always honours the parameters stored in the hash. The obsolete `pepper_ref` is rejected; use the explicit versioned `pepper` key configuration below.
 

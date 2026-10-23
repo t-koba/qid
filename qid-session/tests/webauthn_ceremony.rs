@@ -28,7 +28,16 @@ struct TestApp {
     _dir: tempfile::TempDir,
 }
 
+#[path = "support/trusted_packed.rs"]
+mod trusted_packed;
+
 async fn app() -> anyhow::Result<TestApp> {
+    app_with_policy(None).await
+}
+
+async fn app_with_policy(
+    policy: Option<qid_core::config::PackedAttestationPolicy>,
+) -> anyhow::Result<TestApp> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("webauthn.json");
     let repo = Arc::new(
@@ -70,6 +79,7 @@ async fn app() -> anyhow::Result<TestApp> {
     let mut config = test_helpers::test_config();
     config.realms[0].id = "corp".to_string();
     config.realms[0].authentication.passkeys.enabled = true;
+    config.realms[0].authentication.passkeys.attestation = policy;
     let state = Arc::new(
         SharedState::new(
             config,
@@ -229,6 +239,13 @@ fn registration_response(challenge: &serde_json::Value, evidence: &[u8]) -> serd
 }
 
 async fn start_registration(app: &TestApp) -> anyhow::Result<serde_json::Value> {
+    start_with_attestation(app, "none").await
+}
+
+async fn start_with_attestation(
+    app: &TestApp,
+    attestation: &str,
+) -> anyhow::Result<serde_json::Value> {
     let (status, body) = post(
         app.router.clone(),
         "/api/v1/corp/auth/webauthn/start",
@@ -238,7 +255,7 @@ async fn start_registration(app: &TestApp) -> anyhow::Result<serde_json::Value> 
     .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
     let challenge: serde_json::Value = serde_json::from_str(&body)?;
-    assert_eq!(challenge["challenge"]["attestation"], "none");
+    assert_eq!(challenge["challenge"]["attestation"], attestation);
     Ok(challenge)
 }
 

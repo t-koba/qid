@@ -133,7 +133,10 @@ exclude = ["vendor/rustls"]
 # OIDC challenge and realm policy: measured net +29, with no parallel service.
 # Unambiguous registration CBOR replaces the old AAGUID extractor: measured
 # net +25 source lines, sharing one map validator for object and statement.
-total = 106508
+# Required packed enrollment adds 432 measured source lines for typed inline
+# metadata and service-owned path/profile/signature enforcement; no extra
+# WebAuthn service, metadata fetcher or custom path builder is introduced.
+total = 106940
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

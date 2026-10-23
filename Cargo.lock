@@ -3880,6 +3880,8 @@ dependencies = [
  "rand 0.8.8",
  "redis",
  "rsa",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4379,7 +4381,11 @@ dependencies = [
  "qid-ops",
  "qid-storage",
  "rand 0.8.8",
+ "rcgen",
  "reqwest 0.12.28",
+ "ring",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha1",
@@ -4392,6 +4398,7 @@ dependencies = [
  "ulid",
  "url",
  "uuid",
+ "x509-parser 0.17.0",
 ]
 
 [[package]]

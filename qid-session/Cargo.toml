@@ -11,6 +11,9 @@ documentation.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+x509-parser = { workspace = true }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["std", "ring"] }
+rustls-pki-types = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -38,6 +41,8 @@ rand = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
+rcgen = { workspace = true }
+ring = "0.17"
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

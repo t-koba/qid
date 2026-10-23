@@ -261,7 +261,7 @@ delegate!(CiamRepository {
     revoke_ciam_consent_grant(&self, id: &str, revoked_at: u64) -> QidResult<()>;
     store_ciam_verification_challenge(&self, challenge: &qid_core::models::CiamVerificationChallengeRecord) -> QidResult<()>;
     get_ciam_verification_challenge(&self, realm_id: &qid_core::tenant::RealmId, id: &str) -> QidResult<Option<qid_core::models::CiamVerificationChallengeRecord>>;
-    consume_ciam_verification_challenge(&self, realm_id: &qid_core::tenant::RealmId, id: &str, consumed_at: u64) -> QidResult<()>;
+    attempt_ciam_verification_challenge(&self, realm_id: &qid_core::tenant::RealmId, id: &str, expected_code_hash: &str, verified: bool, attempted_at: u64, max_attempts: u32) -> QidResult<()>;
     store_ciam_identity_link(&self, link: &qid_core::models::CiamIdentityLink) -> QidResult<()>;
     list_ciam_identity_links(&self, realm_id: &qid_core::tenant::RealmId, user_id: &str) -> QidResult<Vec<qid_core::models::CiamIdentityLink>>;
     get_ciam_identity_link(&self, realm_id: &qid_core::tenant::RealmId, id: &str) -> QidResult<Option<qid_core::models::CiamIdentityLink>>;

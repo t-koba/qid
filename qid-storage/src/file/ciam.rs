@@ -91,11 +91,14 @@ impl CiamRepository for FileRepository {
             .cloned())
     }
 
-    async fn consume_ciam_verification_challenge(
+    async fn attempt_ciam_verification_challenge(
         &self,
         realm_id: &RealmId,
         id: &str,
-        consumed_at: u64,
+        expected_code_hash: &str,
+        verified: bool,
+        attempted_at: u64,
+        max_attempts: u32,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
         let challenge = store
@@ -105,14 +108,21 @@ impl CiamRepository for FileRepository {
             .ok_or_else(|| QidError::NotFound {
                 resource: format!("CIAM verification challenge {id}"),
             })?;
-        if challenge.consumed_at_epoch_seconds.is_some()
-            || consumed_at > challenge.expires_at_epoch_seconds
+        if !qid_core::util::constant_time_eq(
+            challenge.code_hash.as_bytes(),
+            expected_code_hash.as_bytes(),
+        ) || challenge.consumed_at_epoch_seconds.is_some()
+            || attempted_at > challenge.expires_at_epoch_seconds
+            || challenge.attempt_count >= max_attempts
         {
             return Err(QidError::Conflict {
-                message: "CIAM verification challenge already consumed or expired".to_string(),
+                message: "CIAM verification challenge unavailable".to_string(),
             });
         }
-        challenge.consumed_at_epoch_seconds = Some(consumed_at);
+        challenge.attempt_count += 1;
+        if verified {
+            challenge.consumed_at_epoch_seconds = Some(attempted_at);
+        }
         drop(store);
         self.save().await
     }

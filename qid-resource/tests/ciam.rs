@@ -838,6 +838,7 @@ async fn ciam_verification_confirmation_fails_closed_without_attempt_protection(
             address: challenge.address.clone(),
             purpose: challenge.purpose.clone(),
             code_hash: issued.code_hash,
+            attempt_count: 0,
             expires_at_epoch_seconds: challenge.expires_at_epoch_seconds,
             consumed_at_epoch_seconds: None,
             created_at_epoch_seconds: now,

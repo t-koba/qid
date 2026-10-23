@@ -72,7 +72,7 @@ impl CiamRepository for SqlRepository {
     ) -> QidResult<()> {
         challenge.validate()?;
         let result = sqlx::query(
-            "INSERT INTO ciam_verification_challenges (id, realm_id, user_id, channel, address, purpose, code_hash, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO ciam_verification_challenges (id, realm_id, user_id, channel, address, purpose, code_hash, attempt_count, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&challenge.id)
         .bind(&challenge.realm_id)
@@ -81,6 +81,7 @@ impl CiamRepository for SqlRepository {
         .bind(&challenge.address)
         .bind(&challenge.purpose)
         .bind(&challenge.code_hash)
+        .bind(challenge.attempt_count as i64)
         .bind(challenge.expires_at_epoch_seconds as i64)
         .bind(challenge.consumed_at_epoch_seconds.map(|value| value as i64))
         .bind(challenge.created_at_epoch_seconds as i64)
@@ -112,18 +113,25 @@ impl CiamRepository for SqlRepository {
         Ok(row.map(Into::into))
     }
 
-    async fn consume_ciam_verification_challenge(
+    async fn attempt_ciam_verification_challenge(
         &self,
         realm_id: &RealmId,
         id: &str,
-        consumed_at: u64,
+        expected_code_hash: &str,
+        verified: bool,
+        attempted_at: u64,
+        max_attempts: u32,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = ? WHERE realm_id = ? AND id = ? AND consumed_at_epoch_seconds IS NULL AND expires_at_epoch_seconds >= ?",
+            "UPDATE ciam_verification_challenges SET attempt_count = attempt_count + 1, consumed_at_epoch_seconds = CASE WHEN ? != 0 THEN ? ELSE consumed_at_epoch_seconds END WHERE realm_id = ? AND id = ? AND code_hash = ? AND consumed_at_epoch_seconds IS NULL AND expires_at_epoch_seconds >= ? AND attempt_count < ?",
         )
-        .bind(consumed_at as i64)
+        .bind(verified as i64)
+        .bind(attempted_at as i64)
         .bind(realm_id.as_str())
-        .bind(id).bind(consumed_at as i64)
+        .bind(id)
+        .bind(expected_code_hash)
+        .bind(attempted_at as i64)
+        .bind(max_attempts as i64)
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
@@ -140,9 +148,8 @@ impl CiamRepository for SqlRepository {
                     resource: format!("CIAM verification challenge {id}"),
                 });
             }
-            // A consumed or expired incumbent conflicts.
             return Err(QidError::Conflict {
-                message: "CIAM verification challenge already consumed or expired".to_string(),
+                message: "CIAM verification challenge unavailable".to_string(),
             });
         }
         Ok(())

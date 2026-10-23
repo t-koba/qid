@@ -506,13 +506,17 @@ pub trait CiamRepository: Send + Sync + 'static {
         realm_id: &RealmId,
         id: &str,
     ) -> QidResult<Option<CiamVerificationChallengeRecord>>;
-    /// Atomic consume requires an unexpired challenge in its owning realm.
-    /// Unknown/foreign IDs are `NotFound`; expired/used IDs conflict; refusals leave it unchanged.
-    async fn consume_ciam_verification_challenge(
+    /// Atomically records an attempt against the exact challenge snapshot read by the caller.
+    /// Active attempts increment the persisted count; a verified attempt consumes the challenge.
+    /// Expired, consumed, stale or exhausted rows conflict; unknown/foreign IDs are `NotFound`.
+    async fn attempt_ciam_verification_challenge(
         &self,
         realm_id: &RealmId,
         id: &str,
-        consumed_at: u64,
+        expected_code_hash: &str,
+        verified: bool,
+        attempted_at: u64,
+        max_attempts: u32,
     ) -> QidResult<()>;
     /// Trusted federation callers must validate provider proof before storing verified links.
     /// Session-only API callers cannot create or update links, regardless of verified status.

@@ -51,6 +51,8 @@ pub struct CiamVerificationChallengeRecord {
     pub address: String,
     pub purpose: String,
     pub code_hash: String,
+    #[serde(default)]
+    pub attempt_count: u32,
     pub expires_at_epoch_seconds: u64,
     pub consumed_at_epoch_seconds: Option<u64>,
     pub created_at_epoch_seconds: u64,

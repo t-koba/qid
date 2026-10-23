@@ -136,7 +136,10 @@ exclude = ["vendor/rustls"]
 # Required packed enrollment adds 432 measured source lines for typed inline
 # metadata and service-owned path/profile/signature enforcement; no extra
 # WebAuthn service, metadata fetcher or custom path builder is introduced.
-total = 106940
+# Persisted CIAM verification attempts add 25 measured source lines
+# (106940 -> 106965): one serde-compatible counter and one atomic storage
+# operation implemented by the required file and SQL backends.
+total = 106965
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

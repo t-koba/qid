@@ -1587,6 +1587,7 @@ where
         address: "owner@example.com".to_string(),
         purpose: "verify_email".to_string(),
         code_hash: "incumbent-code-hash".to_string(),
+        attempt_count: 0,
         expires_at_epoch_seconds: 1_700_000_100,
         consumed_at_epoch_seconds: None,
         created_at_epoch_seconds: 1_700_000_000,
@@ -1596,7 +1597,14 @@ where
         .expect("store incumbent CIAM verification challenge failed");
     for (attempt_realm, id) in [(&realm, "unknown-challenge"), (&other_realm, &challenge.id)] {
         let err = repo
-            .consume_ciam_verification_challenge(attempt_realm, id, 1_700_000_040)
+            .attempt_ciam_verification_challenge(
+                attempt_realm,
+                id,
+                &challenge.code_hash,
+                false,
+                1_700_000_040,
+                5,
+            )
             .await
             .expect_err("unknown or foreign-realm challenge consumption must fail");
         assert!(
@@ -1612,7 +1620,14 @@ where
         );
     }
     let err = repo
-        .consume_ciam_verification_challenge(&realm, &challenge.id, 1_700_000_101)
+        .attempt_ciam_verification_challenge(
+            &realm,
+            &challenge.id,
+            &challenge.code_hash,
+            false,
+            1_700_000_101,
+            5,
+        )
         .await
         .expect_err("an expired challenge must not be consumed");
     assert!(matches!(err, qid_core::error::QidError::Conflict { .. }));
@@ -1623,12 +1638,26 @@ where
         Some(challenge.clone()),
         "expired consumption must leave the challenge unchanged"
     );
-    repo.consume_ciam_verification_challenge(&realm, &challenge.id, 1_700_000_100)
-        .await
-        .expect("a challenge is valid at the inclusive expiry second");
+    repo.attempt_ciam_verification_challenge(
+        &realm,
+        &challenge.id,
+        &challenge.code_hash,
+        true,
+        1_700_000_100,
+        5,
+    )
+    .await
+    .expect("a challenge is valid at the inclusive expiry second");
     for (attempt_realm, is_owner) in [(&realm, true), (&other_realm, false)] {
         let err = repo
-            .consume_ciam_verification_challenge(attempt_realm, &challenge.id, 1_700_000_100)
+            .attempt_ciam_verification_challenge(
+                attempt_realm,
+                &challenge.id,
+                &challenge.code_hash,
+                true,
+                1_700_000_100,
+                5,
+            )
             .await
             .expect_err("consumed challenge must not be consumed again");
         assert!(
@@ -1641,6 +1670,151 @@ where
             err.message()
         );
     }
+
+    let bounded = CiamVerificationChallengeRecord {
+        id: "ciam-verification-bounded".to_string(),
+        realm_id: realm.0.clone(),
+        user_id: user.id.clone(),
+        channel: "email".to_string(),
+        address: "owner@example.com".to_string(),
+        purpose: "verify_email".to_string(),
+        code_hash: "bounded-code-hash".to_string(),
+        attempt_count: 0,
+        expires_at_epoch_seconds: 1_700_000_100,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: 1_700_000_000,
+    };
+    repo.store_ciam_verification_challenge(&bounded)
+        .await
+        .expect("store bounded CIAM challenge failed");
+    let err = repo
+        .attempt_ciam_verification_challenge(
+            &realm,
+            &bounded.id,
+            "stale-code-hash",
+            false,
+            1_700_000_010,
+            2,
+        )
+        .await
+        .expect_err("an attempt against a stale challenge hash must fail");
+    assert!(matches!(err, qid_core::error::QidError::Conflict { .. }));
+    for attempted_at in [1_700_000_010, 1_700_000_020] {
+        repo.attempt_ciam_verification_challenge(
+            &realm,
+            &bounded.id,
+            &bounded.code_hash,
+            false,
+            attempted_at,
+            2,
+        )
+        .await
+        .expect("wrong codes should be counted until the configured limit");
+    }
+    let exhausted = repo
+        .get_ciam_verification_challenge(&realm, &bounded.id)
+        .await
+        .expect("read exhausted CIAM challenge failed")
+        .expect("bounded CIAM challenge missing");
+    assert_eq!(exhausted.attempt_count, 2);
+    assert_eq!(exhausted.consumed_at_epoch_seconds, None);
+    let err = repo
+        .attempt_ciam_verification_challenge(
+            &realm,
+            &bounded.id,
+            &bounded.code_hash,
+            false,
+            1_700_000_030,
+            2,
+        )
+        .await
+        .expect_err("an exhausted CIAM challenge must refuse further attempts");
+    assert!(matches!(err, qid_core::error::QidError::Conflict { .. }));
+    assert_eq!(
+        repo.get_ciam_verification_challenge(&realm, &bounded.id)
+            .await
+            .expect("re-read exhausted CIAM challenge failed"),
+        Some(exhausted),
+        "an exhausted attempt must not mutate the challenge"
+    );
+
+    let concurrent = CiamVerificationChallengeRecord {
+        id: "ciam-verification-concurrent".to_string(),
+        code_hash: "concurrent-code-hash".to_string(),
+        attempt_count: 0,
+        consumed_at_epoch_seconds: None,
+        ..bounded
+    };
+    repo.store_ciam_verification_challenge(&concurrent)
+        .await
+        .expect("store concurrent CIAM challenge failed");
+    let (a, b, c, d, e) = tokio::join!(
+        repo.attempt_ciam_verification_challenge(
+            &realm,
+            &concurrent.id,
+            &concurrent.code_hash,
+            false,
+            1_700_000_010,
+            3
+        ),
+        repo.attempt_ciam_verification_challenge(
+            &realm,
+            &concurrent.id,
+            &concurrent.code_hash,
+            false,
+            1_700_000_010,
+            3
+        ),
+        repo.attempt_ciam_verification_challenge(
+            &realm,
+            &concurrent.id,
+            &concurrent.code_hash,
+            false,
+            1_700_000_010,
+            3
+        ),
+        repo.attempt_ciam_verification_challenge(
+            &realm,
+            &concurrent.id,
+            &concurrent.code_hash,
+            false,
+            1_700_000_010,
+            3
+        ),
+        repo.attempt_ciam_verification_challenge(
+            &realm,
+            &concurrent.id,
+            &concurrent.code_hash,
+            false,
+            1_700_000_010,
+            3
+        ),
+    );
+    assert_eq!(
+        [&a, &b, &c, &d, &e]
+            .iter()
+            .filter(|result| result.is_ok())
+            .count(),
+        3,
+        "the cross-backend attempt limit must be atomic under concurrency"
+    );
+    for result in [&a, &b, &c, &d, &e] {
+        if let Err(error) = result {
+            assert!(
+                matches!(error, qid_core::error::QidError::Conflict { .. }),
+                "exhausted concurrent attempts must conflict, got: {}",
+                error.message()
+            );
+        }
+    }
+    assert_eq!(
+        repo.get_ciam_verification_challenge(&realm, &concurrent.id)
+            .await
+            .expect("read concurrent CIAM challenge failed")
+            .expect("concurrent CIAM challenge missing")
+            .attempt_count,
+        3
+    );
 
     let same_realm_duplicate = CiamVerificationChallengeRecord {
         code_hash: "replacement-code-hash".to_string(),
@@ -1683,6 +1857,7 @@ where
     assert_eq!(
         stored,
         CiamVerificationChallengeRecord {
+            attempt_count: 1,
             consumed_at_epoch_seconds: Some(1_700_000_100),
             ..challenge
         }

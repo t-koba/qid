@@ -1,6 +1,6 @@
 use qid_core::models::{
-    AuditEvent, AuthorizationCode, Client, ClientType, Session, TokenFamily, User,
-    default_client_jwks,
+    AuditEvent, AuthorizationCode, CiamVerificationChallengeRecord, Client, ClientType, Session,
+    TokenFamily, User, default_client_jwks,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{
@@ -53,6 +53,64 @@ async fn file_session_crud() {
     repo.revoke_session("session-1").await.unwrap();
     let after_revoke = repo.get_session("session-1").await.unwrap().unwrap();
     assert!(after_revoke.revoked);
+}
+
+#[tokio::test]
+async fn file_ciam_verification_attempts_survive_reopen_and_legacy_rows_default_zero() {
+    let path =
+        std::env::temp_dir().join(format!("qid_file_ciam_attempts_{}.json", ulid::Ulid::new()));
+    let repo = setup_at(path.clone()).await;
+    let challenge = CiamVerificationChallengeRecord {
+        id: "verify-persist".to_string(),
+        realm_id: "test".to_string(),
+        user_id: "user-1".to_string(),
+        channel: "email".to_string(),
+        address: "persist@example.com".to_string(),
+        purpose: "email_verification".to_string(),
+        code_hash: "persisted-code-hash".to_string(),
+        attempt_count: 0,
+        expires_at_epoch_seconds: 1_800_000_600,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: 1_800_000_000,
+    };
+    repo.store_ciam_verification_challenge(&challenge)
+        .await
+        .unwrap();
+    repo.attempt_ciam_verification_challenge(
+        &RealmId::from("test"),
+        &challenge.id,
+        &challenge.code_hash,
+        false,
+        1_800_000_010,
+        5,
+    )
+    .await
+    .unwrap();
+    drop(repo);
+
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let loaded = repo
+        .get_ciam_verification_challenge(&RealmId::from("test"), &challenge.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.attempt_count, 1);
+    drop(repo);
+
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    stored["ciam_verification_challenges"][&challenge.id]
+        .as_object_mut()
+        .unwrap()
+        .remove("attempt_count");
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let legacy = repo
+        .get_ciam_verification_challenge(&RealmId::from("test"), &challenge.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(legacy.attempt_count, 0);
 }
 
 #[tokio::test]

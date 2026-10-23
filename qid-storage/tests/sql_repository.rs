@@ -834,6 +834,7 @@ async fn assert_ciam_repository_round_trip(
         address: "ciam@example.com".to_string(),
         purpose: "email_verification".to_string(),
         code_hash: "hash".to_string(),
+        attempt_count: 0,
         expires_at_epoch_seconds: 1_800_000_600,
         consumed_at_epoch_seconds: None,
         created_at_epoch_seconds: 1_800_000_000,
@@ -851,9 +852,16 @@ async fn assert_ciam_repository_round_trip(
         "verification challenges must be hidden outside their realm"
     );
     assert!(
-        repo.consume_ciam_verification_challenge(&wrong_realm, "verify-1", 1_800_000_040)
-            .await
-            .is_err(),
+        repo.attempt_ciam_verification_challenge(
+            &wrong_realm,
+            "verify-1",
+            &challenge.code_hash,
+            false,
+            1_800_000_040,
+            5,
+        )
+        .await
+        .is_err(),
         "wrong realm must not consume a verification challenge"
     );
     let unconsumed = repo
@@ -863,9 +871,16 @@ async fn assert_ciam_repository_round_trip(
         .expect("CIAM verification missing");
     assert_eq!(unconsumed.consumed_at_epoch_seconds, None);
 
-    repo.consume_ciam_verification_challenge(&realm, "verify-1", 1_800_000_050)
-        .await
-        .expect("consume CIAM verification failed");
+    repo.attempt_ciam_verification_challenge(
+        &realm,
+        "verify-1",
+        &challenge.code_hash,
+        true,
+        1_800_000_050,
+        5,
+    )
+    .await
+    .expect("consume CIAM verification failed");
     let consumed = repo
         .get_ciam_verification_challenge(&realm, "verify-1")
         .await
@@ -1013,6 +1028,7 @@ impl CiamDeletionFixture {
                 address: format!("{id}@example.com"),
                 purpose: "email_verification".into(),
                 code_hash: "code-hash".into(),
+                attempt_count: 0,
                 expires_at_epoch_seconds: 900,
                 consumed_at_epoch_seconds: None,
                 created_at_epoch_seconds: 100,

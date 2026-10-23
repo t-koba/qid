@@ -126,7 +126,7 @@ async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
     .await
     .expect("seed user");
     let cfg_path = dir.join("qid.yaml");
-    std::fs::write(&cfg_path, format!("server:\n  listen: \"127.0.0.1:0\"\n  public_base_url: \"https://id.example.com\"\nstorage:\n  primary:\n    url: {}\nrealms:\n  - id: corp\n    issuer: \"https://id.example.com/realms/corp\"\n    protocols:\n      directory:\n        enabled: true\n        providers:\n          - id: corp-ldap\n            type: ldap\n            enabled: true\n            connection:\n              url: \"ldap://dir.invalid\"\n            sync:\n              deactivate_missing: true\n", serde_json::to_string(&db_path.to_string_lossy()).expect("store url"))).expect("write config");
+    std::fs::write(&cfg_path, format!("server:\n  listen: \"127.0.0.1:0\"\n  public_base_url: \"https://id.example.com\"\nstorage:\n  primary:\n    url: {}\nrealms:\n  - id: corp\n    issuer: \"https://id.example.com/realms/corp\"\n    protocols:\n      directory:\n        enabled: true\n        providers:\n          - id: corp-ldap\n            type: ldap\n            enabled: true\n            connection:\n              url: \"ldap://dir.invalid\"\n", serde_json::to_string(&db_path.to_string_lossy()).expect("store url"))).expect("write config");
     let config = qid_core::config::QidConfig::from_file(cfg_path.to_str().expect("cfg path"))
         .expect("config");
     let any = Arc::new(AnyRepository::Sql(repo));

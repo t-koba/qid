@@ -2087,6 +2087,32 @@ fn a_csv_directory_provider_rejects_ldap_only_settings() {
 }
 
 #[test]
+fn a_csv_directory_provider_rejects_snapshot_deactivation() {
+    for deactivate_missing in [None, Some(false)] {
+        let mut provider = csv_provider("/var/lib/qid/hr/workforce.csv");
+        provider.sync.deactivate_missing = deactivate_missing;
+        let mut config = minimal_config();
+        config.realms[0].protocols.directory.providers = vec![provider];
+        config
+            .validate()
+            .expect("CSV event batches accept unset or false snapshot deactivation");
+    }
+
+    let mut provider = csv_provider("/var/lib/qid/hr/workforce.csv");
+    provider.sync.deactivate_missing = Some(true);
+    let mut config = minimal_config();
+    config.realms[0].protocols.directory.providers = vec![provider];
+    let err = config
+        .validate()
+        .expect_err("CSV must reject an ignored snapshot-deactivation request");
+    assert!(
+        err.message().contains("sync.deactivate_missing"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
 fn a_csv_directory_provider_keeps_a_settable_record_ceiling() {
     let mut config = minimal_config();
     let mut provider = csv_provider("/var/lib/qid/hr/workforce.csv");

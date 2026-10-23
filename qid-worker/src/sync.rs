@@ -317,7 +317,7 @@ pub(crate) async fn run_directory_sync_job_with_connector(
         &provider.id,
         &entries,
         qid_directory::LdapSyncOptions {
-            deactivate_missing: provider.sync.deactivate_missing,
+            deactivate_missing: provider.sync.deactivate_missing.unwrap_or(true),
             synced_at: config.now_epoch,
         },
     )

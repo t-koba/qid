@@ -334,7 +334,8 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
 /// Validate a CSV HR directory provider: `connection.url` names the local CSV
 /// file, and LDAP-only settings are rejected instead of silently ignored.
 /// `max_entries` stays settable as the CSV record ceiling; omitted mapping and
-/// sync filter defaults are accepted, any LDAP-tuned deviation is not.
+/// sync filter defaults are accepted. CSV batches require `deactivate_missing`
+/// to be unset or false because they are events, not directory snapshots.
 fn validate_csv_directory_provider(
     provider: &DirectoryProviderConfig,
     realm_id: &str,
@@ -416,6 +417,14 @@ fn validate_csv_directory_provider(
                 "provider {} of realm {realm_id} max_entries must be between 1 and {}",
                 provider.id,
                 protocol::MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT
+            ),
+        });
+    }
+    if provider.sync.deactivate_missing == Some(true) {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} sync.deactivate_missing is LDAP-only and a CSV source would ignore it",
+                provider.id
             ),
         });
     }

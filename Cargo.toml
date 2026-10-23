@@ -106,7 +106,10 @@ exclude = ["vendor/rustls"]
 # CSV parser hardening adds 43 measured product lines (104868 -> 104911):
 # bounded reads, incremental records, strict quote states and timeout validation;
 # qid-directory 3521 -> 3553, qid-core 10063 -> 10074, qid-worker unchanged.
-total = 104911
+# CSV now rejects the LDAP snapshot-only deactivation setting instead of
+# silently ignoring it. Preserving LDAP/AD defaults and the effective admin
+# response adds 16 measured source lines (104911 -> 104927).
+total = 104927
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

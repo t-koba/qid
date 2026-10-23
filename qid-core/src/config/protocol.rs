@@ -905,8 +905,9 @@ pub struct DirectorySyncConfig {
     pub user_search_filter: Option<String>,
     #[serde(default)]
     pub sync_interval_minutes: Option<u64>,
+    /// Unset keeps the LDAP/AD snapshot default enabled; CSV accepts only unset or false.
     #[serde(default)]
-    pub deactivate_missing: bool,
+    pub deactivate_missing: Option<bool>,
 }
 
 impl Default for DirectorySyncConfig {
@@ -914,7 +915,7 @@ impl Default for DirectorySyncConfig {
         Self {
             user_search_filter: Some("(objectClass=user)".to_string()),
             sync_interval_minutes: Some(60),
-            deactivate_missing: true,
+            deactivate_missing: None,
         }
     }
 }

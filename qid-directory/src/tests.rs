@@ -2008,6 +2008,7 @@ mod directory_http_truthfulness {
 
     const ADMIN_SESSION_ID_HEADER: &str = "x-qid-admin-session-id";
     const CONFIGURED_PROVIDER_ID: &str = "ad-main";
+    const CONFIGURED_CSV_PROVIDER_ID: &str = "hr-csv";
     const UNKNOWN_PROVIDER_ID: &str = "missing-provider";
     const DISABLED_PROVIDER_ID: &str = "ad-retired";
 
@@ -2031,6 +2032,21 @@ mod directory_http_truthfulness {
             sync: Default::default(),
             attribute_mapping: Default::default(),
         }];
+        config.realms[0]
+            .protocols
+            .directory
+            .providers
+            .push(DirectoryProviderConfig {
+                id: CONFIGURED_CSV_PROVIDER_ID.to_string(),
+                provider_type: "csv".to_string(),
+                enabled: true,
+                connection: DirectoryConnectionConfig {
+                    url: "/var/lib/qid/hr/workforce.csv".to_string(),
+                    ..Default::default()
+                },
+                sync: Default::default(),
+                attribute_mapping: Default::default(),
+            });
         config.realms[0]
             .protocols
             .directory
@@ -2239,6 +2255,18 @@ mod directory_http_truthfulness {
         assert_eq!(body["id"], CONFIGURED_PROVIDER_ID);
         assert_eq!(body["type"], "active-directory");
         assert_eq!(body["url"], "ldap://ad.example.com");
+        assert_eq!(body["deactivate_missing"], true);
+
+        let (app, _, session) = setup_routes().await;
+        let (status, csv_body) = directory_call(
+            app,
+            Method::GET,
+            &format!("/directory/v1/providers/{CONFIGURED_CSV_PROVIDER_ID}"),
+            Some(&session),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(csv_body["deactivate_missing"], false);
 
         let (app, _, _) = setup_routes().await;
         let (status, _) = directory_call(

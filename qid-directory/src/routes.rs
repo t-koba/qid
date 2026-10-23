@@ -87,17 +87,23 @@ async fn get_provider<R: Repository>(
         .cloned();
 
     match provider {
-        Some(p) => Json(serde_json::json!({
-            "id": p.id,
-            "type": p.provider_type,
-            "enabled": p.enabled,
-            "url": p.connection.url,
-            "base_dn": p.connection.base_dn,
-            "sync_interval_minutes": p.sync.sync_interval_minutes,
-            "deactivate_missing": p.sync.deactivate_missing,
-            "user_search_filter": p.sync.user_search_filter,
-        }))
-        .into_response(),
+        Some(p) => {
+            let deactivate_missing = p
+                .sync
+                .deactivate_missing
+                .unwrap_or(p.provider_type != "csv");
+            Json(serde_json::json!({
+                "id": p.id,
+                "type": p.provider_type,
+                "enabled": p.enabled,
+                "url": p.connection.url,
+                "base_dn": p.connection.base_dn,
+                "sync_interval_minutes": p.sync.sync_interval_minutes,
+                "deactivate_missing": deactivate_missing,
+                "user_search_filter": p.sync.user_search_filter,
+            }))
+            .into_response()
+        }
         None => directory_provider_not_found(&id),
     }
 }

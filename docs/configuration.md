@@ -248,6 +248,8 @@ is rejected), and the LDAP-only
 anything but their defaults, because a CSV source would silently ignore them.
 The LDAP-only `connect_timeout_seconds` likewise accepts only its default `10`
 or unset for CSV; neither applies a timeout to local file reads.
+`sync.deactivate_missing` defaults to true for LDAP/AD snapshots; CSV accepts
+only false or unset and never deactivates users missing from its HR event batch.
 `max_entries` stays settable as the CSV record ceiling (default 1,000,000).
 The CSV keeps the historical columns `external_id`, `email`, `display_name`,
 `department`, `manager_external_id`, and `event` (joiner/mover/leaver); an
@@ -258,8 +260,7 @@ Quotes may open only at field start, and after a closing quote only a comma,
 record terminator, or EOF is allowed. Input must be valid UTF-8. The source is
 bounded to 8 MiB and the whole file is validated before any write, so a
 rejected row writes nothing; joiner/mover/leaver lifecycle, duplicate-ID
-preflight, and mover-clear semantics stay owned by the HR importer, and
-`deactivate_missing` does not apply to the event batch.
+preflight, and mover-clear semantics stay owned by the HR importer.
 
 An enabled LDAP/Active Directory provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
 bind DN must be absent and the bind password blank. A bind DN without a usable password is

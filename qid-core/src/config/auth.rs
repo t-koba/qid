@@ -548,6 +548,75 @@ pub struct ObservabilityConfig {
     pub logs: LogConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub tracing: TracingConfig,
+}
+
+/// Optional OTLP/gRPC span export. No endpoint means no exporter.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TracingConfig {
+    pub endpoint: Option<String>,
+    pub service_name: String,
+    pub scheduled_delay_ms: u64,
+    pub export_timeout_ms: u64,
+    pub max_queue_size: usize,
+    pub max_export_batch_size: usize,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            service_name: "qidd".to_string(),
+            scheduled_delay_ms: 5_000,
+            export_timeout_ms: 3_000,
+            max_queue_size: 2_048,
+            max_export_batch_size: 512,
+        }
+    }
+}
+
+impl TracingConfig {
+    /// Validate without including the endpoint (which may contain secrets) in errors.
+    pub fn validate(&self) -> crate::error::QidResult<()> {
+        let invalid = |message: &str| crate::error::QidError::Config {
+            message: format!("observability.tracing: {message}"),
+        };
+        if let Some(endpoint) = &self.endpoint {
+            let url = url::Url::parse(endpoint)
+                .map_err(|_| invalid("endpoint must be an absolute HTTP or HTTPS URL"))?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                return Err(invalid("endpoint must be an absolute HTTP or HTTPS URL"));
+            }
+            if !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(invalid(
+                    "endpoint must not contain credentials, query or fragment",
+                ));
+            }
+        }
+        if self.service_name.trim().is_empty() {
+            return Err(invalid("service_name must not be empty"));
+        }
+        if self.scheduled_delay_ms == 0 || self.export_timeout_ms == 0 {
+            return Err(invalid(
+                "scheduled_delay_ms and export_timeout_ms must be positive",
+            ));
+        }
+        if self.max_queue_size == 0
+            || self.max_export_batch_size == 0
+            || self.max_export_batch_size > self.max_queue_size
+        {
+            return Err(invalid(
+                "batch and queue sizes must be positive, with batch <= queue",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

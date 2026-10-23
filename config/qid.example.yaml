@@ -166,3 +166,7 @@ observability:
     format: json
   metrics:
     listen: "127.0.0.1:9464"
+  # Optional OTLP/gRPC spans: requires a qidd build with --features otel-otlp.
+  # No endpoint means no export; see docs/operations.md for all defaults.
+  # tracing:
+  #   endpoint: "http://127.0.0.1:4317"

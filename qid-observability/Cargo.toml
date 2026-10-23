@@ -10,12 +10,25 @@ homepage.workspace = true
 documentation.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+otel-otlp = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "dep:tonic",
+]
+
 [dependencies]
 anyhow = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
+opentelemetry = { version = "0.28", optional = true, default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.28", optional = true, default-features = false, features = ["trace", "rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
+opentelemetry-otlp = { version = "0.28", optional = true, default-features = false, features = ["trace", "grpc-tonic", "tls-roots"] }
 qid-core = { workspace = true }
 rand = { workspace = true }
 rsa = { workspace = true, features = ["sha2"] }
@@ -23,8 +36,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
+tonic = { version = "0.12", optional = true, default-features = false, features = ["transport"] }
 tracing = { workspace = true }
+tracing-opentelemetry = { version = "0.29", optional = true, default-features = false }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# Local OTLP collector support; dev-dependencies cannot be optional.
+opentelemetry-proto = { version = "0.28", default-features = false, features = ["gen-tonic", "trace"] }
+tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
+tonic = { version = "0.12", default-features = false, features = ["transport"] }
 tokio = { workspace = true }

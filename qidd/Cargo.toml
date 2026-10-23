@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [features]
 default = []
+otel-otlp = ["qid-observability/otel-otlp"]
 quic = ["qid-network/quic"]
 
 [dependencies]

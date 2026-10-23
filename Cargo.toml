@@ -118,7 +118,11 @@ exclude = ["vendor/rustls"]
 # Webhook sync/status refusals avoid directing an inbound-only provider to the
 # periodic worker, adding 12 measured product lines (105693 -> 105705;
 # qid-directory 3778 -> 3790); tests remain uncapped.
-total = 105705
+# Configured OTLP tracing through the daemon subscriber adds 224 measured
+# product lines (105705 -> 105929): validated opt-in configuration, one
+# composed subscriber, SDK/exporter setup and explicit async shutdown.
+# All per-crate limits still pass; collector and configuration tests are uncapped.
+total = 105929
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

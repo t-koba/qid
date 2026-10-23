@@ -129,6 +129,10 @@ smallest interoperable OIDC authorization-code deployment, then move to
 - `text-logs.yaml`: plain-text logs with an explicit metrics listener.
 - `metrics-loopback.yaml`: explicit loopback metrics listener.
 
+OTLP/gRPC span export is opt-in with `observability.tracing.endpoint` and a
+`qidd --features otel-otlp` build. See [operations](../docs/operations.md#optional-otlp-tracing)
+for configuration, defaults and shutdown/outage behavior. The examples leave it disabled.
+
 ### 12-composition
 
 - `multi-realm-ciam-and-workforce.yaml`: workforce and customer realm composition.

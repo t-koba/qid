@@ -1737,8 +1737,8 @@ fn the_log_format_selects_the_daemon_log_shape() {
 
 #[test]
 fn the_removed_observability_keys_are_rejected() {
-    // `redact_pii` named a redaction the product never performed, the OTLP
-    // endpoint named an environment variable nothing read, and the audit sink
+    // `redact_pii` named a redaction the product never performed, the old OTLP
+    // endpoint key named an environment variable nothing read, and the audit sink
     // named a file the product never wrote. A configuration that still sets
     // them is a configuration error, not a silently ignored key.
     let err = serde_json::from_str::<ObservabilityConfig>(r#"{"logs":{"redact_pii":true}}"#)
@@ -1753,7 +1753,7 @@ fn the_removed_observability_keys_are_rejected() {
     )
     .expect_err("the removed key is rejected");
     assert!(
-        err.to_string().contains("tracing"),
+        err.to_string().contains("otlp_endpoint_env"),
         "the error names the removed key: {err}"
     );
 
@@ -2226,4 +2226,46 @@ fn webhook_configuration_is_bounded_disabled_by_default_and_type_specific() {
     let config = QidConfig::from_file(path.to_str().unwrap()).unwrap();
     assert!(!config.realms[0].protocols.directory.providers[0].enabled);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn tracing_config_is_explicit_and_validated() {
+    let mut config = minimal_config();
+    assert_eq!(config.observability.tracing.endpoint, None);
+    let defaults: TracingConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(defaults, TracingConfig::default());
+    for endpoint in ["http://127.0.0.1:4317", "https://collector.example.com"] {
+        config.observability.tracing.endpoint = Some(endpoint.into());
+        config.validate().unwrap();
+    }
+    for endpoint in [
+        "",
+        "secret",
+        "ftp://secret",
+        "http://user:secret@localhost",
+        "http://localhost?secret",
+        "http://localhost#secret",
+    ] {
+        config.observability.tracing.endpoint = Some(endpoint.into());
+        let message = config.validate().unwrap_err().to_string();
+        assert!(message.contains("observability.tracing"));
+        assert!(!message.contains("secret"));
+    }
+    let mut tracing = defaults;
+    tracing.max_export_batch_size = tracing.max_queue_size + 1;
+    assert!(tracing.validate().is_err());
+    tracing.max_export_batch_size = 0;
+    assert!(tracing.validate().is_err());
+    tracing.max_export_batch_size = 1;
+    tracing.max_queue_size = 0;
+    assert!(tracing.validate().is_err());
+    tracing.max_queue_size = 1;
+    tracing.export_timeout_ms = 0;
+    assert!(tracing.validate().is_err());
+    tracing.export_timeout_ms = 1;
+    tracing.scheduled_delay_ms = 0;
+    assert!(tracing.validate().is_err());
+    tracing.scheduled_delay_ms = 1;
+    tracing.service_name.clear();
+    assert!(tracing.validate().is_err());
 }

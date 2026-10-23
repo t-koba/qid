@@ -122,6 +122,72 @@ observability:
     listen: "127.0.0.1:9464"
 ```
 
+### Optional OTLP tracing
+
+Build the daemon with `cargo build -p qidd --features otel-otlp --locked` to
+export spans using OTLP/gRPC (protobuf, not OTLP/HTTP). Export is **disabled by
+default**, even in that build. Enable it only with an explicit collector URL:
+
+```yaml
+observability:
+  tracing:
+    endpoint: "http://127.0.0.1:4317"
+    service_name: qidd
+    scheduled_delay_ms: 5000
+    export_timeout_ms: 3000
+    max_queue_size: 2048
+    max_export_batch_size: 512
+```
+
+All values other than `endpoint` above are their defaults. Omit `endpoint` (or
+set it to null) to disable export. Setting it on a binary without `otel-otlp`
+is a startup error, not a silently ignored option. The endpoint must be an
+absolute `http` or `https` URL with a host and no credentials, query or fragment.
+Use HTTP for a trusted local collector; HTTPS validates the server name and
+certificate chain using the platform's normal certificate roots. There is no
+insecure TLS mode. qidd selects the same AWS-LC crypto provider as its native
+TLS server before initializing tracing, avoiding ambiguous dependency backend
+selection. gRPC supplies its own service path; a URL path is not an
+OTLP/HTTP ingestion path. Errors do not echo the endpoint or collector response.
+
+`QID_OBSERVABILITY__TRACING__ENDPOINT` can supply the endpoint through the normal
+qid configuration environment overlay. The validated qid endpoint and timeouts
+are not overridden by `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or the SDK's timeout variables. Other
+exporter-level environment settings (such as OTLP headers/compression) retain
+the upstream exporter's behavior; no authentication/propagation integration is
+added by qid. Service name, batching, resource and sampling are owned by the qid
+configuration/initializer, not the SDK environment defaults.
+
+One subscriber writes existing JSON/text logs and exports spans, including the
+HTTP middleware's `http_request` span and its child spans. `RUST_LOG` filters both
+surfaces, defaulting to `info` when absent or invalid. In-process parent/child
+trace linkage is preserved; roots are sampled and children respect their parent.
+Arbitrary tracing log events (including error events) are **not** exported as
+span events. Logs themselves are unchanged and are not redacted. No additional
+request headers, query strings or bodies are attached to spans. Existing span
+fields, including request IDs and paths, still need an appropriate collector
+access/retention policy. Prometheus configuration and behavior are unchanged.
+
+Export is best-effort, not an audit delivery guarantee: an unreachable collector
+does not prevent startup or request handling. The SDK queues completed spans in
+memory, exports on the delay or batch threshold, drops on queue overflow, and
+discards failed/timed-out batches rather than persisting/retrying them. The queue
+and batch sizes must be positive with batch <= queue; both durations must be
+positive. One batch is exported at a time, with `export_timeout_ms` bounding both
+transport and SDK export work. Tune these configuration values for the desired
+memory/latency/loss tradeoff; periodic failures need collector-side monitoring.
+
+On normal shutdown, and on returned startup/serve errors after initialization,
+qidd explicitly flushes completed spans and shuts down the retained SDK provider
+in `spawn_blocking` while Tokio is still running. This avoids blocking a
+current-thread runtime and does not wait for the normal batch delay. Shutdown can
+still take multiple export timeouts when draining a full queue; it is bounded by
+the configured finite queue/batch work and per-export timeout. Flush/shutdown
+failure returns a sanitized error if the daemon was otherwise successful; an
+existing daemon error remains the primary error. Abrupt process termination or
+spans still open at shutdown can lose spans.
+
 HTTP request metrics include:
 
 - `qid_http_requests_total`

@@ -142,6 +142,7 @@ impl QidConfig {
         self.ops.validate()?;
         self.profile.validate_config(self)?;
         validate_directory_providers(self)?;
+        self.observability.tracing.validate()?;
         validate_metrics_listen(&self.observability)?;
         validate_observability_log_format(&self.observability)?;
 

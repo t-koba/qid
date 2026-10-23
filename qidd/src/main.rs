@@ -174,15 +174,23 @@ fn log_and_reject_diagnostic_checks(checks: &[CheckItem], phase: &str) -> anyhow
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    let config = QidConfig::from_files(&args.config).context("failed to load config")?;
+    // Tonic uses the process default. Select the same provider as native TLS;
+    // dependency feature unification can otherwise enable both ring and AWS-LC.
+    #[cfg(feature = "otel-otlp")]
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let logging = qid_observability::init_logging(&config.observability).await?;
+    let result = run(&args, config).await;
+    // Also flush on startup/serve errors, before the Tokio runtime is dropped.
+    let shutdown_result = logging.shutdown().await;
+    result.and(shutdown_result)
+}
+
+async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
     let primary_config_path = args
         .config
         .last()
         .context("at least one config path is required")?;
-    let config = QidConfig::from_files(&args.config).context("failed to load config")?;
-
-    // The configured format decides how the daemon writes its logs, so logging
-    // starts once the configuration is known.
-    qid_observability::init_logging(config.observability.logs.json());
     let plan = qid_core::plan::RuntimePlan::from_config(&config)
         .context("runtime plan validation failed")?;
     let diagnostics = build_check_report(&config, &plan, primary_config_path);
@@ -1678,6 +1686,19 @@ mod tests {
             .expect("clock before epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("qid-qidd-{name}-{suffix}"))
+    }
+
+    #[cfg(feature = "otel-otlp")]
+    #[tokio::test]
+    async fn https_tracing_uses_the_daemon_crypto_provider() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mut config = ObservabilityConfig::default();
+        config.tracing.endpoint = Some("https://localhost:4317".into());
+        let logging = qid_observability::init_logging(&config).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), logging.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

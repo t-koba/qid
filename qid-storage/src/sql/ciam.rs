@@ -314,9 +314,22 @@ impl CiamRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
-            "password reset token already consumed".to_string()
-        })?;
+        if result.rows_affected() == 0 {
+            let exists: Option<String> =
+                sqlx::query_scalar("SELECT id FROM password_reset_tokens WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(storage_to_qid_error)?;
+            if exists.is_none() {
+                return Err(QidError::NotFound {
+                    resource: format!("password reset token {id}"),
+                });
+            }
+            return Err(QidError::Conflict {
+                message: "password reset token already consumed".to_string(),
+            });
+        }
         Ok(())
     }
 

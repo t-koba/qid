@@ -75,7 +75,9 @@ exclude = ["vendor/rustls"]
 # (104001 -> 104038), so the cap rises by exactly 37.
 # Owner-specific CIAM challenge consume outcomes and trait contract add 18
 # measured product lines (104038 -> 104056), so the cap rises by exactly 18.
-total = 104056
+# Password-reset token consume outcomes and trait contract add 16 measured
+# product lines (104056 -> 104072), so the cap rises by exactly 16.
+total = 104072
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

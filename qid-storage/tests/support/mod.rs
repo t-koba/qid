@@ -1661,9 +1661,41 @@ where
     repo.store_password_reset_token(&token)
         .await
         .expect("store incumbent password reset token failed");
+    let err = repo
+        .consume_password_reset_token("unknown-password-reset", 1_700_000_040)
+        .await
+        .expect_err("unknown password reset token consumption must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::NotFound { .. }),
+        "unknown consumption must be NotFound, got: {}",
+        err.message()
+    );
+    assert_eq!(
+        repo.get_password_reset_token(&token.id)
+            .await
+            .expect("get token after rejected consumption failed"),
+        Some(token.clone())
+    );
     repo.consume_password_reset_token(&token.id, 1_700_000_050)
         .await
         .expect("consume incumbent password reset token failed");
+    let err = repo
+        .consume_password_reset_token(&token.id, 1_700_000_060)
+        .await
+        .expect_err("consumed password reset token must not be consumed again");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "repeat consumption must be Conflict, got: {}",
+        err.message()
+    );
+    assert_eq!(
+        repo.get_password_reset_token(&token.id)
+            .await
+            .expect("get token after repeat consumption failed")
+            .expect("incumbent password reset token must remain stored")
+            .consumed_at_epoch_seconds,
+        Some(1_700_000_050)
+    );
 
     let same_realm_duplicate = PasswordResetToken {
         token_hash: "replacement-token-hash".to_string(),

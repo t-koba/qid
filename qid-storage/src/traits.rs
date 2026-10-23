@@ -533,6 +533,9 @@ pub trait CiamRepository: Send + Sync + 'static {
     /// its consumption state, unchanged.
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()>;
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>>;
+    /// Atomically consume a single-use token.
+    /// Unknown IDs return `NotFound`; repeated consumption returns `Conflict`.
+    /// Rejected calls leave the token unchanged.
     async fn consume_password_reset_token(&self, id: &str, consumed_at: u64) -> QidResult<()>;
     /// Validate an unused, unexpired, owner/device/hash-bound reset token and
     /// replace its owner's credential in the same atomic storage operation.

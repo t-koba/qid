@@ -63,7 +63,9 @@ exclude = ["vendor/rustls"]
 # create-only map operation for policy bundles, users and clients, policy SQL
 # refusal and repository contract add 51 net product-source lines against that
 # baseline (xtask budget: 103812 -> 103863), so the cap rises by exactly 51.
-total = 103863
+# The stable client-update binding guard and static SQL contract add 69 lines
+# (xtask budget: 103863 -> 103932), so the cap rises by exactly 69.
+total = 103932
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

@@ -60,8 +60,12 @@ impl ClientRepository for SqlRepository {
     }
 
     async fn update_client(&self, client: &Client) -> QidResult<()> {
-        sqlx::query(
-            "UPDATE clients SET client_type = ?, token_endpoint_auth_method = ?, client_secret_hash = ?, mtls_certificate_thumbprints = ?, jwks = ?, redirect_uris = ?, grant_types = ?, client_name = ?, client_uri = ?, logo_uri = ?, contacts = ?, post_logout_redirect_uris = ?, default_max_age = ?, require_auth_time = ?, sector_identifier_uri = ?, subject_type = ?, backchannel_logout_uri = ?, frontchannel_logout_uri = ?, backchannel_client_notification_endpoint = ? WHERE id = ?",
+        // The owner/identity predicate holds the invariant atomically: only a
+        // row with the same record ID and the same (realm_id, client_id)
+        // binding is updated, so a caller cannot move a client to another
+        // realm or rename its client ID. No pre-read precedes the write.
+        let result = sqlx::query(
+            "UPDATE clients SET client_type = ?, token_endpoint_auth_method = ?, client_secret_hash = ?, mtls_certificate_thumbprints = ?, jwks = ?, redirect_uris = ?, grant_types = ?, client_name = ?, client_uri = ?, logo_uri = ?, contacts = ?, post_logout_redirect_uris = ?, default_max_age = ?, require_auth_time = ?, sector_identifier_uri = ?, subject_type = ?, backchannel_logout_uri = ?, frontchannel_logout_uri = ?, backchannel_client_notification_endpoint = ? WHERE id = ? AND realm_id = ? AND client_id = ?",
         )
         .bind(match client.client_type {
             ClientType::Confidential => "confidential",
@@ -86,9 +90,28 @@ impl ClientRepository for SqlRepository {
         .bind(&client.frontchannel_logout_uri)
         .bind(&client.backchannel_client_notification_endpoint)
         .bind(&client.id)
+        .bind(&client.realm_id)
+        .bind(&client.client_id)
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 {
+            // Classify only after the guarded write failed, never to decide it:
+            // a missing ID stays a silent no-op, a present mismatched binding
+            // is a conflict, and a present matching binding is the identical
+            // update SQLite reports as zero changed rows.
+            let incumbent: Option<(String, String)> =
+                sqlx::query_as("SELECT realm_id, client_id FROM clients WHERE id = ?")
+                    .bind(&client.id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(storage_to_qid_error)?;
+            crate::ownership::ensure_same_binding(
+                incumbent,
+                (client.realm_id.clone(), client.client_id.clone()),
+                || "client ID belongs to another identity".to_string(),
+            )?;
+        }
         Ok(())
     }
 

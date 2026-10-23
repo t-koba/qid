@@ -66,3 +66,35 @@ pub(super) fn insert_new<T: InsertIdentity>(
     map.insert(record.id().to_owned(), record.clone());
     Ok(())
 }
+
+/// Stable identity for updates: the owner/identity that must not change.
+pub(super) trait StableUpdateIdentity: Clone {
+    const RECORD: &'static str;
+    fn id(&self) -> &str;
+    fn stable_binding(&self) -> (&str, &str);
+}
+
+impl StableUpdateIdentity for Client {
+    const RECORD: &'static str = "client";
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn stable_binding(&self) -> (&str, &str) {
+        (&self.realm_id, &self.client_id)
+    }
+}
+
+/// Replace under the caller's exclusive lock, refusing a binding change.
+/// A missing ID inserts, preserving the legacy file update semantics.
+pub(super) fn replace_guarded<T: StableUpdateIdentity>(
+    map: &mut HashMap<String, T>,
+    record: &T,
+) -> QidResult<()> {
+    crate::ownership::ensure_same_binding(
+        map.get(record.id()).map(|stored| stored.stable_binding()),
+        record.stable_binding(),
+        || format!("{} ID belongs to another identity", T::RECORD),
+    )?;
+    map.insert(record.id().to_owned(), record.clone());
+    Ok(())
+}

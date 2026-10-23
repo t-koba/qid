@@ -12,8 +12,10 @@ impl ClientRepository for FileRepository {
     }
 
     async fn update_client(&self, client: &Client) -> QidResult<()> {
-        self.map_write(|store| store.clients.insert(client.id.clone(), client.clone()))
-            .await
+        let mut store = self.store.write().await;
+        super::insert::replace_guarded(&mut store.clients, client)?;
+        drop(store);
+        self.save().await
     }
 
     async fn get_client_by_client_id(

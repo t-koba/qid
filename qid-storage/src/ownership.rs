@@ -2,7 +2,7 @@
 
 use qid_core::error::{QidError, QidResult};
 
-/// Compare bindings while holding the file store's exclusive write lock.
+/// Refuse a present binding that differs from the requested one.
 pub(super) fn ensure_same_binding<T: PartialEq>(
     incumbent: Option<T>,
     incoming: T,
@@ -96,6 +96,10 @@ pub const REALM: OwnershipContract = refusal("tenant_id", "id, issuer");
 /// Ownership contract for the user resource (create and update).
 #[allow(dead_code)]
 pub const USER: OwnershipContract = refusal("realm_id", "id, email");
+
+/// Ownership contract for the client resource (create and update).
+#[allow(dead_code)]
+pub const CLIENT: OwnershipContract = refusal("realm_id", "id, client_id");
 
 /// Ownership contract for the CIAM consent grant resource (store).
 #[allow(dead_code)]

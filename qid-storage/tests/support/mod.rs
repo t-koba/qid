@@ -2469,3 +2469,140 @@ where
         );
     }
 }
+
+/// The stable update identity of a client: an existing record ID accepts only
+/// the same `(realm_id, client_id)` binding, and a mismatched binding is a
+/// conflict that changes no field.
+pub async fn assert_client_update_identity<R>(repo: &R)
+where
+    R: RealmRepository + ClientRepository,
+{
+    let realm = RealmId("realm-client-update".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-update".to_string()),
+        &realm,
+        "https://client-update.example.com",
+        Some("Client Update Realm"),
+    )
+    .await
+    .expect("create client update realm failed");
+    let other_realm = RealmId("realm-client-update-other".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-update-other".to_string()),
+        &other_realm,
+        "https://client-update-other.example.com",
+        Some("Other Client Update Realm"),
+    )
+    .await
+    .expect("create other client update realm failed");
+
+    let client = sample_cross_realm_client("client-update-a", &realm.0, "update-app");
+    repo.create_client(&client)
+        .await
+        .expect("create client failed");
+
+    // A same-identity metadata update succeeds.
+    let mut updated = client.clone();
+    updated.client_name = Some("Updated App".to_string());
+    repo.update_client(&updated)
+        .await
+        .expect("a same-identity metadata update must succeed");
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_client_by_client_id(&realm, "update-app")
+                .await
+                .expect("get updated client failed")
+        )
+        .expect("serialize updated client failed"),
+        serde_json::to_value(Some(updated.clone())).expect("serialize expected failed"),
+        "the metadata update must persist"
+    );
+
+    // An identical retry succeeds.
+    repo.update_client(&updated)
+        .await
+        .expect("an identical update must succeed");
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_client_by_client_id(&realm, "update-app")
+                .await
+                .expect("get retried client failed")
+        )
+        .expect("serialize retried client failed"),
+        serde_json::to_value(Some(updated.clone())).expect("serialize expected failed"),
+        "the identical update must leave the client unchanged"
+    );
+
+    // The other realm is seeded but holds no client, so only the identity
+    // check can refuse the move below.
+    assert!(
+        repo.get_client_by_client_id(&other_realm, "update-app")
+            .await
+            .expect("get other-realm client failed")
+            .is_none(),
+        "the other realm must hold no client before the move"
+    );
+
+    // Moving the record ID to another realm is refused without changing it.
+    let mut moved = updated.clone();
+    moved.realm_id = other_realm.0.clone();
+    moved.client_name = Some("Moved App".to_string());
+    let err = repo
+        .update_client(&moved)
+        .await
+        .expect_err("moving a client to another realm must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "moving a client to another realm must be a conflict, got: {}",
+        err.message()
+    );
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_client_by_client_id(&realm, "update-app")
+                .await
+                .expect("get incumbent client failed")
+        )
+        .expect("serialize incumbent client failed"),
+        serde_json::to_value(Some(updated.clone())).expect("serialize expected failed"),
+        "the refused move changed the incumbent"
+    );
+    assert!(
+        repo.get_client_by_client_id(&other_realm, "update-app")
+            .await
+            .expect("get other-realm client failed")
+            .is_none(),
+        "the refused move created a client in the other realm"
+    );
+
+    // Renaming the client ID to an otherwise unused ID is refused likewise.
+    // The unused ID guarantees no unique violation can mask the check.
+    let mut renamed = updated.clone();
+    renamed.client_id = "update-app-unused".to_string();
+    renamed.client_name = Some("Renamed App".to_string());
+    let err = repo
+        .update_client(&renamed)
+        .await
+        .expect_err("renaming a client ID must fail");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "renaming a client ID must be a conflict, got: {}",
+        err.message()
+    );
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_client_by_client_id(&realm, "update-app")
+                .await
+                .expect("get incumbent client failed")
+        )
+        .expect("serialize incumbent client failed"),
+        serde_json::to_value(Some(updated.clone())).expect("serialize expected failed"),
+        "the refused rename changed the incumbent"
+    );
+    assert!(
+        repo.get_client_by_client_id(&realm, "update-app-unused")
+            .await
+            .expect("get renamed client failed")
+            .is_none(),
+        "the refused rename created a client under the new ID"
+    );
+}

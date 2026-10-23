@@ -224,3 +224,11 @@ async fn policy_bundle_foreign_key_failure_remains_storage_error() {
     let err = sql.create_policy_bundle(&bundle).await.unwrap_err();
     assert!(matches!(err, QidError::Storage { .. }), "{}", err.message());
 }
+
+#[tokio::test]
+async fn client_update_identity_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_client_update_identity(&sql).await;
+    let file = support::file_repo("ownership-contract-client-update").await;
+    support::assert_client_update_identity(&file).await;
+}

@@ -17,6 +17,10 @@ use qid_core::{
 use crate::ldap_filter;
 use crate::types::LdapDirectoryEntry;
 
+// `std::panic::set_hook` is process-wide. Tests use this same lock to verify
+// restoration only while no parser temporarily installs its silent hook.
+pub(crate) static PAGED_RESULTS_PANIC_HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Escape a string for safe inclusion in an LDAP search filter
 /// (RFC 4515 §3). Any character outside a conservative allow-list is
 /// rejected outright; the four reserved characters
@@ -654,8 +658,9 @@ pub(crate) fn paged_results_cookie(ctrls: &[ldap3::controls::Control]) -> QidRes
     // runs, so an unusable control produces an error and no panic output. The
     // hook is process-wide, so the swap is serialized: a second caller must
     // not restore the silent hook.
-    static PANIC_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = PANIC_HOOK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = PAGED_RESULTS_PANIC_HOOK_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let parsed = std::panic::catch_unwind(|| raw.parse::<PagedResults>());

@@ -139,12 +139,13 @@ exclude = ["vendor/rustls"]
 # Persisted CIAM verification attempts add 25 measured source lines
 # (106940 -> 106965): one serde-compatible counter and one atomic storage
 # operation implemented by the required file and SQL backends.
-# Notification transport seam adds 191 measured source lines
-# (106965 -> 107156): owner-neutral core contract, optional server
-# notification config, absent-by-default shared-state transport, worker
-# re-export/import, and daemon-only HTTPS/SMTP composition; per-crate
-# limits still pass and new contract tests are uncapped.
-total = 107156
+# Configured notification delivery and session-bound CIAM email verification
+# add 537 measured product-source lines (106965 -> 107502), including the
+# core contract/configuration, handler, dual-backend atomic confirmation,
+# worker transport and daemon composition. The measured per-crate increases
+# are qid-storage 12971 -> 13147 and qid-worker 5542 -> 5571; other crates
+# remain within their existing caps. Contract tests are uncapped.
+total = 107502
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -153,7 +154,7 @@ qid-network = 4500
 qid-admin = 6000
 qid-core = 14000
 qid-crypto = 5972
-qid-storage = 13000
+qid-storage = 13147
 qid-oidc = 6000
 qid-oauth = 12000
 qid-saml = 7200
@@ -162,7 +163,7 @@ qid-federation = 5000
 qid-iga = 6300
 qid-resource = 5200
 qid-scim = 4600
-qid-worker = 5542
+qid-worker = 5571
 
 [workspace.package]
 version = "0.1.0"

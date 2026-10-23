@@ -22,7 +22,7 @@ use crate::types::{HrRecord, LifecycleEvent};
 
 /// The most bytes a CSV HR source may hold, so one sync cannot allocate an
 /// unbounded file into memory.
-pub const MAX_CSV_HR_FILE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_CSV_HR_FILE_BYTES: usize = qid_core::config::MAX_HR_REQUEST_BYTES;
 
 /// Read and parse the CSV HR source at `path`, bounding the source size and
 /// the record count (`max_entries` is the configured ceiling, the default

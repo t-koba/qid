@@ -24,6 +24,8 @@ pub const BREAK_GLASS_SCHEMA: &str = "urn:qid:directory:break_glass";
 pub mod csv;
 pub mod ldap_filter;
 
+mod webhook;
+pub(crate) use webhook::{HrEnvelope, import_hr_webhook};
 mod routes;
 pub use routes::directory_routes;
 

@@ -340,11 +340,12 @@ or no trust domain is refused wherever it is named.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/directory/v1/providers` | List directory providers, including the disabled ones with their `enabled` flag. |
+| `GET` | `/directory/v1/providers` | List directory providers, including disabled bindings, their `enabled`/`syncable` flags, and supported pull/inbound types. |
 | `GET` | `/directory/v1/providers/:id` | Read provider configuration (`404` for unknown IDs); connection and sync settings are managed through QID configuration. |
 | `PATCH` | `/directory/v1/providers/:id` | Unsupported (`501` for configured providers, `404` for unknown IDs); no provider status is asserted or changed. |
-| `POST` | `/directory/v1/providers/:id/sync` | Unsupported over HTTP (`501` for configured providers, `404` for unknown IDs); no job is scheduled. Use `qid-worker directory-sync --realm <realm> --provider-id <id>`. |
+| `POST` | `/directory/v1/providers/:id/sync` | Unsupported over HTTP (`501` for configured providers, `404` for unknown IDs); no job is scheduled. Use `qid-worker directory-sync --realm <realm> --provider-id <id>` for LDAP/AD/CSV only. |
 | `GET` | `/directory/v1/providers/:id/sync/status` | Unsupported (`501` for configured providers, `404` for unknown IDs); the HTTP API does not track sync-job state. |
+| `POST` | `/directory/v1/providers/:id/hr` | Synchronous ordered HR batch for an enabled configured webhook binding; see below. |
 | `POST` | `/risk/v1/evaluate` | Evaluate risk. |
 | `GET` | `/.well-known/ssf-configuration` | SSF config. |
 | `GET` | `/realms/:realm/.well-known/ssf-configuration` | Realm SSF config. |
@@ -361,3 +362,91 @@ or no trust domain is refused wherever it is named.
 | `POST` | `/vc/v1/presentation/verify` | Verify presentation. |
 
 VC routes are only merged in the `vc` profile.
+
+### Inbound HR lifecycle batches
+
+`POST /directory/v1/providers/:id/hr?realm=<realm>` requires
+`x-qid-admin-session-id`, the existing administrator step-up/elevation policy,
+and one of `tenant.owner`, `realm.admin`, `directory.admin`, or `security.admin`.
+The realm selector follows the directory routes: it may be omitted only for a
+single configured realm. Its configured `tenant_id` must match the session's
+administrator and elevation tenant. A path/query identifier selects a resource,
+never authorizes it. Directory and selected provider must both be enabled,
+and the provider type must be `webhook`. There is no unauthenticated fallback,
+new secret, pull job or deployment-exposure setting.
+
+The body must use `Content-Type: application/json` (optional parameters such as
+`charset` are accepted) and is a strict JSON object (not an array), with only
+`sequence` and `records`; each record is an object with only the fields shown
+below. Unknown fields, including caller-supplied realm/tenant/provider authority,
+are rejected.
+Required nonblank record fields are `external_id` and `user_name`; `event` is
+also required and is `joiner`, `mover`, or `leaver`. The four other fields are
+optional strings or null. On movers, absent/null department and manager clear
+those stored values; joiner/leaver absent department/manager preserve them.
+Joiner and mover absent email/display-name clear those projections; leavers
+preserve them. HR target lookup matches raw external ID uniquely within the
+realm, including provider-owned users; duplicates/ambiguity are never resolved
+by choosing a first match.
+
+```json
+{
+  "sequence": 1,
+  "records": [{
+    "external_id": "employee-example",
+    "user_name": "worker@example.com",
+    "event": "joiner",
+    "email": "worker@example.com",
+    "display_name": "Example Worker",
+    "department": "Research",
+    "manager_external_id": null
+  }]
+}
+```
+
+The sequence is a positive integer in 1..=9,223,372,036,854,775,807, contiguous
+per `(realm_id, provider_id)`, starting at 1. Empty batches are allowed and
+advance the sequence. The source **must send batches in order**. On a timeout,
+connection failure or uncertain response, retry the **identical sequence and
+exact request bytes**, including whitespace and field ordering; qid hashes the
+accepted bytes with SHA-256, not a normalized JSON representation.
+
+- Next contiguous sequence: fully preflight, revalidate targeted expected users
+  at backend serialization, and commit all user mutations and the receipt together.
+- Latest sequence plus identical bytes: `200` with the stored summary and
+  `replayed: true`, with no user or receipt writes.
+- Latest sequence with different bytes, any gap, zero/out-of-range or stale
+  sequence: `409`, no effects. An old joiner cannot reactivate a user after a
+  later leaver by replaying its old sequence.
+- Duplicate external IDs in a batch, ambiguous realm targets, missing leaver
+  targets, username collisions or targets changed since planning also produce
+  `409`, with no batch effects or sequence advance.
+
+Only the latest successful sequence, request digest and non-PII counters are
+retained per binding; older response history is not retained. Provider IDs must
+remain stable and **must not be reused for a different source**. A successful
+response contains no employee identifiers, names, emails or record results:
+
+```json
+{"sequence":1,"created":1,"updated":0,"deprovisioned":0,"replayed":false}
+```
+
+Both file and SQL backends commit atomically. File imports persist a candidate
+under the save/state locks before publishing it in memory, even with interval
+flushing; once started they finish despite request cancellation. SQL uses one
+transaction with a guarded sequence advance and serialized target revalidation.
+This is **durable ordered idempotency for this binding**, not exactly-once across
+network or external effects. The route does not perform external provisioning.
+
+Failure responses contain no record values. A non-`application/json` content
+type returns `415`; invalid JSON/shape/unknown fields or blank required
+`external_id`/`user_name` return `400`; byte or record ceilings return `413`
+before preflight. Missing or
+ineligible administrator sessions/tenant bindings return `401`; unknown configured
+realm/provider returns `404`; a disabled directory/provider or non-webhook type
+returns `403`. No import has started for these failures. `409` means no effects
+from this attempt. Storage/connection/commit uncertainty returns `503` instructing
+an identical retry; it does **not** claim rollback or commit. If the response is
+lost, retry identically regardless of whether the caller saw a status. Do not
+change the body/sequence to work around an uncertain outcome. Limits and their
+bounded defaults are documented in [configuration](configuration.md#inbound-hr-webhook-bindings).

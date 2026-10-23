@@ -28,6 +28,7 @@ mod client;
 mod credential;
 mod device;
 mod fedcm;
+mod hr;
 mod iga;
 #[cfg(test)]
 mod iga_tests;
@@ -77,6 +78,8 @@ struct Store {
     device_authorization_grants: HashMap<String, DeviceAuthorizationGrant>,
     backchannel_authentication_grants: HashMap<String, BackchannelAuthenticationGrant>,
     scim_users: HashMap<String, ScimUser>,
+    #[serde(default)]
+    hr_receipts: HashMap<String, HashMap<String, crate::HrReceipt>>,
     scim_groups: HashMap<String, ScimGroup>,
     #[serde(default)]
     scim_devices: HashMap<String, ScimDeviceRecord>,

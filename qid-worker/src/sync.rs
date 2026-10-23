@@ -1,5 +1,5 @@
 use qid_core::{
-    config::{DIRECTORY_PROVIDER_TYPES, DirectoryProviderConfig, QidConfig},
+    config::{DIRECTORY_SYNC_PROVIDER_TYPES, DirectoryProviderConfig, QidConfig},
     error::{QidError, QidResult},
     models::{AuditEvent, ScimUser, User},
     tenant::RealmId,
@@ -280,7 +280,7 @@ pub(crate) async fn run_directory_sync_job_with_connector(
             });
         }
     };
-    if !DIRECTORY_PROVIDER_TYPES.contains(&provider.provider_type.as_str()) {
+    if !DIRECTORY_SYNC_PROVIDER_TYPES.contains(&provider.provider_type.as_str()) {
         return Err(QidError::Config {
             message: format!(
                 "directory provider '{}' has unsupported type '{}'",

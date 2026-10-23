@@ -24,6 +24,7 @@ pub enum EmploymentState {
 /// `None` preserves the stored value. Unrelated enterprise attributes are
 /// always preserved.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HrRecord {
     pub external_id: String,
     pub user_name: String,

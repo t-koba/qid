@@ -213,7 +213,7 @@ Validation rules:
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. The `enabled` switch decides whether a realm serves the FedCM routes and appears in the FedCM discovery documents; it is off unless the configuration sets it. |
 | `federation` | Inbound OIDC/SAML/social providers and claim mappings. |
-| `directory` | LDAP, Active Directory, and CSV HR providers, sync filters and attribute mapping. |
+| `directory` | LDAP, Active Directory, CSV HR pulls, and inbound HR webhook bindings; sync filters and attribute mapping apply only to pulls. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
 | `vc` | OID4VCI/OID4VP/HAIP/status/holder binding. |
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |
@@ -232,9 +232,11 @@ An LDAP or Active Directory provider's `connection` holds:
 | `max_entries` | The most entries one directory search or CSV batch may collect. Defaults to 1,000,000; between 1 and 10,000,000, and a value outside that range is rejected when the configuration loads. |
 | `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
 
-The provider rules apply to a realm whose directory sync is on; a realm whose directory sync is
-off is not checked for them. For such a realm, every provider, enabled or not, needs a unique
-id, a source in `connection.url` and a `type` of `ldap`, `active-directory`, or `csv`.
+For a realm whose directory is enabled, every provider, enabled or not, needs a
+unique nonblank id and a supported `type` (`ldap`, `active-directory`, `csv`, or
+`webhook`). Pull providers need a source in `connection.url`; webhooks do not.
+The pull source-specific rules below apply when both directory and provider
+are enabled. Webhook-specific settings are always validated, even when disabled.
 An enabled LDAP/Active Directory provider is checked for the LDAP URL scheme and
 the credential rules below; an enabled CSV provider follows the local-file rules
 below instead. Disabled providers are not checked for these source-specific rules.
@@ -261,6 +263,48 @@ record terminator, or EOF is allowed. Input must be valid UTF-8. The source is
 bounded to 8 MiB and the whole file is validated before any write, so a
 rejected row writes nothing; joiner/mover/leaver lifecycle, duplicate-ID
 preflight, and mover-clear semantics stay owned by the HR importer.
+
+### Inbound HR webhook bindings
+
+A `webhook` provider receives ordered lifecycle batches at
+`POST /directory/v1/providers/:id/hr?realm=<realm>`. It is not a periodic
+source: `qid-worker directory-sync` refuses it before constructing any LDAP
+connector or reading CSV. Directory and provider `enabled` must both be true
+(provider `enabled` defaults to false; the existing directory default stays
+true), and the realm must have a nonblank `tenant_id`
+matching the authenticated directory administrator's tenant. Provider IDs are
+stable ordering domains: **never reuse an ID for a different source**.
+
+```yaml
+# Inside one configured realm (with tenant_id set):
+protocols:
+  directory:
+    enabled: true
+    providers:
+      - id: workforce-events
+        type: webhook
+        enabled: true
+        webhook:
+          max_request_bytes: 8388608
+          max_records: 1000000
+```
+
+`webhook.max_request_bytes` defaults to 8 MiB (8,388,608 bytes), the same
+ceiling as CSV HR files; allowed range is 1..=8,388,608. The raw body is bounded
+before JSON parsing. `webhook.max_records` defaults to
+`MAX_DIRECTORY_SEARCH_ENTRIES` (1,000,000), allowed range
+1..=`MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT` (10,000,000), checked before preflight.
+Omitting the `webhook` block uses those defaults. Unknown keys are rejected.
+The block is rejected on non-webhook types. For webhooks, `connection`,
+`sync`, and `attribute_mapping` must be omitted or equal their defaults;
+non-default settings (including CSV paths, LDAP credentials, search filters,
+intervals or snapshot-deactivation options) are rejected rather than ignored.
+These rules hold even for an inert disabled webhook provider.
+
+The route uses the existing elevated administrator session, not a new webhook
+secret or signature protocol. See [HTTP API](http-api.md#inbound-hr-lifecycle-batches)
+for the strict envelope, ordered retry contract, non-PII summaries, and failure
+semantics. No queue or external delivery is involved.
 
 An enabled LDAP/Active Directory provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
 bind DN must be absent and the bind password blank. A bind DN without a usable password is

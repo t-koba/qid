@@ -269,6 +269,28 @@ impl DeploymentProfile {
 /// A directory provider must state usable bind credentials.
 fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
     for realm in &config.realms {
+        for provider in &realm.protocols.directory.providers {
+            validate_webhook_provider(provider)?;
+            if provider.provider_type == "webhook"
+                && (provider.id.trim().is_empty()
+                    || realm
+                        .protocols
+                        .directory
+                        .providers
+                        .iter()
+                        .filter(|p| p.id == provider.id)
+                        .count()
+                        != 1
+                    || (provider.enabled
+                        && realm.protocols.directory.enabled
+                        && realm
+                            .tenant_id
+                            .as_deref()
+                            .is_none_or(|t| t.trim().is_empty())))
+            {
+                return Err(QidError::Config { message: "webhook requires a unique nonblank provider ID and an enabled binding requires a realm tenant".into() });
+            }
+        }
         if !realm.protocols.directory.enabled {
             continue;
         }
@@ -281,6 +303,9 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
                         provider.id, realm.id, provider.provider_type
                     ),
                 });
+            }
+            if provider.provider_type == "webhook" {
+                continue;
             }
             if provider.provider_type == "csv" {
                 validate_csv_directory_provider(provider, &realm.id)?;
@@ -327,6 +352,28 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
                 message: format!("provider {} of realm {}: {error}", provider.id, realm.id),
             })?;
         }
+    }
+    Ok(())
+}
+
+fn validate_webhook_provider(provider: &DirectoryProviderConfig) -> QidResult<()> {
+    let invalid = if provider.provider_type == "webhook" {
+        let limits = provider.webhook.clone().unwrap_or_default();
+        provider.connection != DirectoryConnectionConfig::default()
+            || provider.sync != DirectorySyncConfig::default()
+            || provider.attribute_mapping != DirectoryAttributeMapping::default()
+            || !(1..=protocol::MAX_HR_REQUEST_BYTES).contains(&limits.max_request_bytes)
+            || !(1..=protocol::MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT).contains(&limits.max_records)
+    } else {
+        provider.webhook.is_some()
+    };
+    if invalid {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {}: webhook accepts only webhook limits (bytes 1..=8388608, records 1..=10000000); connection, sync and mapping must remain defaults; webhook settings require type webhook",
+                provider.id
+            ),
+        });
     }
     Ok(())
 }
@@ -1132,7 +1179,7 @@ impl RealmConfig {
                         ),
                     });
                 }
-                if p.connection.url.trim().is_empty() {
+                if p.provider_type != "webhook" && p.connection.url.trim().is_empty() {
                     return Err(QidError::Config {
                         message: format!(
                             "realm {} directory provider {} connection.url is required",

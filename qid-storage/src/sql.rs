@@ -23,6 +23,7 @@ mod client;
 mod credential;
 mod device;
 mod fedcm;
+mod hr;
 mod iga;
 #[cfg(test)]
 mod iga_tests;

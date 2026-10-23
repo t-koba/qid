@@ -120,6 +120,7 @@ impl Store {
         self.vc_credential_statuses
             .retain(|_, value| value.realm_id != realm);
         self.par_requests.retain(|_, value| value.realm_id != realm);
+        self.hr_receipts.remove(realm);
         self.scim_users.retain(|_, value| value.realm_id != realm);
         self.scim_groups.retain(|_, value| value.realm_id != realm);
         self.scim_devices.retain(|_, value| value.realm_id != realm);

@@ -11,7 +11,9 @@ use qid_core::error::{QidError, QidResult};
 
 mod domain;
 mod file;
+mod hr;
 mod iga_grants;
+pub use hr::{HrBatch, HrBatchResult, HrReceipt, HrSummary, HrUserChange, hr_order};
 mod ownership;
 mod sql;
 pub mod traits;
@@ -219,6 +221,8 @@ delegate!(DeviceRepository {
 });
 
 delegate!(ScimRepository {
+    get_hr_receipt(&self, realm_id: &str, provider_id: &str) -> QidResult<Option<HrReceipt>>;
+    apply_hr_batch(&self, batch: &HrBatch) -> QidResult<HrBatchResult>;
     create_scim_user(&self, user: &qid_core::models::ScimUser) -> QidResult<()>;
     get_scim_user(&self, id: &str) -> QidResult<Option<qid_core::models::ScimUser>>;
     list_scim_users(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::ScimUser>>;

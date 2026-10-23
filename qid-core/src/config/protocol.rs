@@ -764,8 +764,8 @@ pub struct ClaimMappingConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryConfig {
-    /// Whether directory sync runs in this realm. A disabled realm
-    /// reports every sync as skipped before any provider connection.
+    /// Whether directory lifecycle (pulls and inbound HR) runs in this realm.
+    /// A disabled realm skips pulls and refuses inbound HR batches.
     /// INTEROP §3 requires that directory sync be on by default for
     /// enterprise deployments.
     #[serde(default = "default_directory_enabled")]
@@ -801,6 +801,8 @@ pub struct DirectoryProviderConfig {
     pub sync: DirectorySyncConfig,
     #[serde(default)]
     pub attribute_mapping: DirectoryAttributeMapping,
+    #[serde(default)]
+    pub webhook: Option<DirectoryWebhookConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -867,9 +869,28 @@ pub fn bind_credentials<'a>(
     Ok(Some((dn, password)))
 }
 
-/// The directory provider types the sync can connect. `csv` reads the
+/// Supported directory bindings, including non-pollable webhooks. `csv` reads the
 /// historical HR workforce export from the local file `connection.url` names.
-pub const DIRECTORY_PROVIDER_TYPES: [&str; 3] = ["ldap", "active-directory", "csv"];
+pub const DIRECTORY_PROVIDER_TYPES: [&str; 4] = ["ldap", "active-directory", "csv", "webhook"];
+
+/// Providers eligible for periodic pulls; inbound webhook bindings are never polled.
+pub const DIRECTORY_SYNC_PROVIDER_TYPES: [&str; 3] = ["ldap", "active-directory", "csv"];
+pub const MAX_HR_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DirectoryWebhookConfig {
+    pub max_request_bytes: usize,
+    pub max_records: u32,
+}
+impl Default for DirectoryWebhookConfig {
+    fn default() -> Self {
+        Self {
+            max_request_bytes: MAX_HR_REQUEST_BYTES,
+            max_records: MAX_DIRECTORY_SEARCH_ENTRIES,
+        }
+    }
+}
 
 /// Whether a bind DN carries a character a distinguished name cannot hold.
 pub fn valid_bind_dn(dn: &str) -> QidResult<()> {

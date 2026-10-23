@@ -1,6 +1,6 @@
 use super::*;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, post},
@@ -13,6 +13,7 @@ const ADMIN_SESSION_ID_HEADER: &str = "x-qid-admin-session-id";
 pub fn directory_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
     Router::new()
         .route("/directory/v1/providers", get(list_providers::<R>))
+        .route("/directory/v1/providers/:id/hr", post(receive_hr::<R>))
         .route(
             "/directory/v1/providers/:id",
             get(get_provider::<R>).patch(update_provider_status::<R>),
@@ -52,6 +53,7 @@ async fn list_providers<R: Repository>(
                 "id": p.id,
                 "type": p.provider_type,
                 "enabled": p.enabled,
+                "syncable": qid_core::config::DIRECTORY_SYNC_PROVIDER_TYPES.contains(&p.provider_type.as_str()),
                 "url": p.connection.url,
             })
         })
@@ -88,6 +90,13 @@ async fn get_provider<R: Repository>(
 
     match provider {
         Some(p) => {
+            if p.provider_type == "webhook" {
+                return Json(serde_json::json!({
+                    "id": p.id, "type": p.provider_type, "enabled": p.enabled,
+                    "syncable": false, "webhook": p.webhook.unwrap_or_default(),
+                }))
+                .into_response();
+            }
             let deactivate_missing = p
                 .sync
                 .deactivate_missing
@@ -96,6 +105,7 @@ async fn get_provider<R: Repository>(
                 "id": p.id,
                 "type": p.provider_type,
                 "enabled": p.enabled,
+                "syncable": qid_core::config::DIRECTORY_SYNC_PROVIDER_TYPES.contains(&p.provider_type.as_str()),
                 "url": p.connection.url,
                 "base_dn": p.connection.base_dn,
                 "sync_interval_minutes": p.sync.sync_interval_minutes,
@@ -151,23 +161,29 @@ async fn trigger_sync<R: Repository>(
         Ok(realm) => realm,
         Err(error) => return error.into_response(),
     };
-    let provider = realm
+    let Some(provider) = realm
         .protocols
         .directory
         .providers
         .iter()
-        .find(|p| p.id == id);
-
-    match provider {
-        Some(_) => directory_http_unsupported(
+        .find(|provider| provider.id == id)
+    else {
+        return directory_provider_not_found(&id);
+    };
+    if !qid_core::config::DIRECTORY_SYNC_PROVIDER_TYPES.contains(&provider.provider_type.as_str()) {
+        return directory_http_unsupported(
             &id,
-            format!(
-                "the HTTP API does not schedule directory sync work; run `qid-worker directory-sync --realm {} --provider-id {id}` to execute a sync",
-                realm.id
-            ),
-        ),
-        None => directory_provider_not_found(&id),
+            "inbound webhook providers receive HR batches and do not run periodic directory sync"
+                .to_string(),
+        );
     }
+    directory_http_unsupported(
+        &id,
+        format!(
+            "the HTTP API does not schedule directory sync work; run `qid-worker directory-sync --realm {} --provider-id {id}` to execute a sync",
+            realm.id
+        ),
+    )
 }
 
 async fn get_sync_status<R: Repository>(
@@ -184,14 +200,20 @@ async fn get_sync_status<R: Repository>(
         Ok(realm) => realm,
         Err(error) => return error.into_response(),
     };
-    if realm
+    let Some(provider) = realm
         .protocols
         .directory
         .providers
         .iter()
-        .all(|p| p.id != id)
-    {
+        .find(|provider| provider.id == id)
+    else {
         return directory_provider_not_found(&id);
+    };
+    if !qid_core::config::DIRECTORY_SYNC_PROVIDER_TYPES.contains(&provider.provider_type.as_str()) {
+        return directory_http_unsupported(
+            &id,
+            "inbound webhook providers have no periodic directory sync status".to_string(),
+        );
     }
     directory_http_unsupported(
         &id,
@@ -351,6 +373,111 @@ fn unauthorized_response(error: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({ "error": error })),
+    )
+        .into_response()
+}
+
+async fn receive_hr<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    Query(query): Query<DirectoryRealmQuery>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
+    let admin = match require_directory_admin(request.headers(), &state).await {
+        Ok(admin) => admin,
+        Err(response) => return response,
+    };
+    let realm = match resolve_directory_realm(&state, query.realm.as_deref(), &admin) {
+        Ok(realm) => realm,
+        Err(error) => return error.into_response(),
+    };
+    let Some(provider) = realm
+        .protocols
+        .directory
+        .providers
+        .iter()
+        .find(|p| p.id == id)
+    else {
+        return directory_provider_not_found(&id);
+    };
+    if !realm.protocols.directory.enabled
+        || !provider.enabled
+        || provider.provider_type != "webhook"
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "enabled webhook binding required"})),
+        )
+            .into_response();
+    }
+    let limits = provider.webhook.clone().unwrap_or_default();
+    let is_json = request
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"));
+    if !is_json {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Json(serde_json::json!({"error": "application/json required; no changes applied"})),
+        )
+            .into_response();
+    }
+    // Read the bounded raw body ourselves: no JSON extraction or default 2 MiB
+    // extractor limit, and no caller-supplied authority fields are accepted.
+    let bytes = match axum::body::to_bytes(request.into_body(), limits.max_request_bytes).await {
+        Ok(bytes) => bytes,
+        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, Json(serde_json::json!({"error": "HR body exceeds byte limit or body could not be read; no changes applied"}))).into_response(),
+    };
+    // Derived structs accept positional arrays. Check object shapes without
+    // discarding duplicate-field detection in the typed parse below.
+    let shape: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(shape) => shape,
+        Err(_) => return invalid_hr_envelope(),
+    };
+    if !shape.is_object()
+        || !shape
+            .get("records")
+            .and_then(|v| v.as_array())
+            .is_some_and(|records| records.iter().all(|r| r.is_object()))
+    {
+        return invalid_hr_envelope();
+    }
+    drop(shape);
+    let envelope: HrEnvelope = match serde_json::from_slice(&bytes) {
+        Ok(envelope) => envelope,
+        Err(_) => return invalid_hr_envelope(),
+    };
+    if envelope.records.len() > limits.max_records as usize {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "HR record limit exceeded; no changes applied"})),
+        )
+            .into_response();
+    }
+    if envelope
+        .records
+        .iter()
+        .any(|record| record.external_id.trim().is_empty() || record.user_name.trim().is_empty())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "HR external_id and user_name must be nonempty; no changes applied"})),
+        )
+            .into_response();
+    }
+    match import_hr_webhook(&state, &realm.id, &id, envelope, qid_core::util::sha256_hex(&bytes)).await {
+        Ok(result) => Json(result).into_response(),
+        Err(QidError::Conflict { .. }) => (StatusCode::CONFLICT, Json(serde_json::json!({"error": "HR sequence or target conflict; no changes applied"}))).into_response(),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "HR outcome uncertain; retry identical sequence and body"}))).into_response(),
+    }
+}
+
+fn invalid_hr_envelope() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "invalid HR envelope; no changes applied"})),
     )
         .into_response()
 }

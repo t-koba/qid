@@ -5,6 +5,17 @@ use crate::{ScimMutation, ScimMutator};
 
 #[async_trait]
 impl ScimRepository for FileRepository {
+    async fn get_hr_receipt(
+        &self,
+        realm_id: &str,
+        provider_id: &str,
+    ) -> QidResult<Option<crate::HrReceipt>> {
+        self.read_hr_receipt(realm_id, provider_id).await
+    }
+    async fn apply_hr_batch(&self, batch: &crate::HrBatch) -> QidResult<crate::HrBatchResult> {
+        self.commit_hr_batch(batch).await
+    }
+
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()> {
         let mut store = self.store.write().await;
         super::insert::insert_new(&mut store.scim_users, user)?;

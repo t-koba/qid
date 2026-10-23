@@ -109,7 +109,16 @@ exclude = ["vendor/rustls"]
 # CSV now rejects the LDAP snapshot-only deactivation setting instead of
 # silently ignoring it. Preserving LDAP/AD defaults and the effective admin
 # response adds 16 measured source lines (104911 -> 104927).
-total = 104927
+# Ordered inbound HR webhooks add 766 measured product source lines
+# (104927 -> 105693): strict bounded authenticated route and planning
+# (qid-directory 3559 -> 3778), provider validation and limits
+# (qid-core 10084 -> 10152), and atomic file/SQL user+receipt commits
+# (qid-storage 12469 -> 12948). Worker dispatch changes no source count;
+# all existing per-crate limits still pass; tests remain uncapped.
+# Webhook sync/status refusals avoid directing an inbound-only provider to the
+# periodic worker, adding 12 measured product lines (105693 -> 105705;
+# qid-directory 3778 -> 3790); tests remain uncapped.
+total = 105705
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

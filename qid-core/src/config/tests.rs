@@ -1557,6 +1557,7 @@ fn the_totp_switch_is_read() {
 fn a_directory_provider_needs_usable_bind_credentials() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+        webhook: None,
         id: "ldap-main".to_string(),
         provider_type: "ldap".to_string(),
         enabled: true,
@@ -1584,6 +1585,7 @@ fn a_directory_provider_needs_usable_bind_credentials() {
 fn a_directory_provider_must_be_one_the_sync_can_connect() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+        webhook: None,
         id: "ldap-main".to_string(),
         provider_type: "scim".to_string(),
         enabled: true,
@@ -1639,6 +1641,7 @@ fn the_boolean_or_object_form_names_the_offending_field() {
 fn a_directory_entry_ceiling_must_be_within_the_supported_range() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+        webhook: None,
         id: "ldap-main".to_string(),
         provider_type: "ldap".to_string(),
         enabled: true,
@@ -1675,6 +1678,7 @@ fn a_directory_entry_ceiling_must_be_within_the_supported_range() {
 fn a_directory_page_size_must_be_within_the_supported_range() {
     let mut config = minimal_config();
     config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+        webhook: None,
         id: "ldap-main".to_string(),
         provider_type: "ldap".to_string(),
         enabled: true,
@@ -1981,6 +1985,7 @@ fn the_decision_cache_lifetime_follows_the_class_of_the_decision() {
 
 fn csv_provider(url: &str) -> DirectoryProviderConfig {
     DirectoryProviderConfig {
+        webhook: None,
         id: "hr-csv".to_string(),
         provider_type: "csv".to_string(),
         enabled: true,
@@ -2145,4 +2150,80 @@ fn a_csv_directory_provider_accepts_only_default_or_unset_connect_timeout() {
             assert!(err.message().contains("connect_timeout_seconds"));
         }
     }
+}
+
+#[test]
+fn webhook_configuration_is_bounded_disabled_by_default_and_type_specific() {
+    use super::protocol::*;
+    let mut provider = csv_provider("unused");
+    provider.provider_type = "webhook".into();
+    provider.connection = Default::default();
+    provider.sync = Default::default();
+    provider.enabled = false;
+    assert!(validate_webhook_provider(&provider).is_ok());
+    let limits = DirectoryWebhookConfig::default();
+    assert_eq!(limits.max_request_bytes, MAX_HR_REQUEST_BYTES);
+    assert_eq!(limits.max_records, MAX_DIRECTORY_SEARCH_ENTRIES);
+    for bytes in [0, MAX_HR_REQUEST_BYTES + 1] {
+        provider.webhook = Some(DirectoryWebhookConfig {
+            max_request_bytes: bytes,
+            ..Default::default()
+        });
+        assert!(validate_webhook_provider(&provider).is_err());
+    }
+    for count in [0, MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT + 1] {
+        provider.webhook = Some(DirectoryWebhookConfig {
+            max_records: count,
+            ..Default::default()
+        });
+        assert!(validate_webhook_provider(&provider).is_err());
+    }
+    provider.webhook = Some(DirectoryWebhookConfig {
+        max_request_bytes: 1,
+        max_records: 1,
+    });
+    assert!(validate_webhook_provider(&provider).is_ok());
+    provider.webhook = Some(DirectoryWebhookConfig {
+        max_request_bytes: MAX_HR_REQUEST_BYTES,
+        max_records: MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT,
+    });
+    assert!(validate_webhook_provider(&provider).is_ok());
+    provider.connection.url = "ldap://unused.invalid".into();
+    assert!(validate_webhook_provider(&provider).is_err());
+    provider.connection = Default::default();
+    provider.sync.deactivate_missing = Some(false);
+    assert!(validate_webhook_provider(&provider).is_err());
+    provider.sync = Default::default();
+    provider.attribute_mapping.mail = Some("mailOverride".into());
+    assert!(validate_webhook_provider(&provider).is_err());
+    for kind in ["csv", "ldap", "active-directory"] {
+        provider.provider_type = kind.into();
+        assert!(validate_webhook_provider(&provider).is_err());
+    }
+    let mut config = minimal_config();
+    config.realms[0].tenant_id = Some("tenant".into());
+    config.realms[0].protocols.directory.enabled = true;
+    provider.provider_type = "webhook".into();
+    provider.attribute_mapping = Default::default();
+    provider.enabled = true;
+    config.realms[0].protocols.directory.providers = vec![provider];
+    assert!(config.validate().is_ok());
+    config.realms[0].tenant_id = None;
+    assert!(config.validate().is_err());
+    config.realms[0].tenant_id = Some("tenant".into());
+    let duplicate = config.realms[0].protocols.directory.providers[0].clone();
+    config.realms[0]
+        .protocols
+        .directory
+        .providers
+        .push(duplicate);
+    assert!(config.validate().is_err());
+    // Deserialization does not activate an inbound binding implicitly.
+    let dir = std::env::temp_dir().join(format!("qid-webhook-config-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(&path,"server:\n  listen: 127.0.0.1:0\n  public_base_url: https://id.example.com\nstorage:\n  primary:\n    url: unused.json\nrealms:\n  - id: corp\n    issuer: https://id.example.com/corp\n    protocols:\n      directory:\n        providers:\n          - id: hr\n            type: webhook\n").unwrap();
+    let config = QidConfig::from_file(path.to_str().unwrap()).unwrap();
+    assert!(!config.realms[0].protocols.directory.providers[0].enabled);
+    std::fs::remove_dir_all(dir).unwrap();
 }

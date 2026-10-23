@@ -494,3 +494,37 @@ async fn csv_directory_sync_ignores_the_injected_ldap_connector() {
     assert_eq!(report.created, 1);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn directory_sync_never_polls_an_inbound_webhook() {
+    let (repo, mut config, dir) = sync_fixture().await;
+    let provider = &mut config.realms[0].protocols.directory.providers[0];
+    provider.provider_type = "webhook".into();
+    provider.connection = Default::default();
+    provider.sync = Default::default();
+    let result = crate::sync::run_directory_sync_job_with_connector(
+        repo.clone(),
+        &config,
+        sync_job_config(),
+        Box::new(|| panic!("webhook must never construct an LDAP connector")),
+    )
+    .await;
+    assert!(matches!(result, Err(QidError::Config { .. })));
+    assert!(
+        repo.list_scim_users(&"corp".into())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        repo.get_hr_receipt("corp", "corp-ldap")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let any = Arc::try_unwrap(repo).unwrap_or_else(|_| panic!("repository reference leaked"));
+    if let AnyRepository::Sql(r) = any {
+        r.close().await;
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

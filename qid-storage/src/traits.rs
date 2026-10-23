@@ -367,6 +367,15 @@ pub type ScimMutator<'a, T> = Box<dyn FnOnce(&T) -> QidResult<ScimMutation<T>> +
 
 #[async_trait]
 pub trait ScimRepository: Send + Sync + 'static {
+    async fn get_hr_receipt(
+        &self,
+        realm_id: &str,
+        provider_id: &str,
+    ) -> QidResult<Option<crate::HrReceipt>>;
+    /// Atomically revalidate targets, mutate users and advance the durable receipt.
+    /// Errors on uncertain storage outcomes require retrying identical sequence/body.
+    async fn apply_hr_batch(&self, batch: &crate::HrBatch) -> QidResult<crate::HrBatchResult>;
+
     /// Create a SCIM user.
     ///
     /// Creation is create-only: the record `id` is globally unique and

@@ -55,6 +55,11 @@ impl RealmRepository for SqlRepository {
 
     async fn delete_realm(&self, id: &RealmId) -> QidResult<()> {
         let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        sqlx::query("DELETE FROM hr_receipts WHERE realm_id = ?")
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
         // Walk session/family ownership before cascades remove the parents.
         // Token subjects have no user FK, intentionally: only subjects belonging
         // to removed users (or tokens in this realm/removed families) are deleted.

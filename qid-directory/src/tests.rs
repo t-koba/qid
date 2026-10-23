@@ -2020,6 +2020,7 @@ mod directory_http_truthfulness {
         let mut config = test_helpers::test_config();
         config.realms[0].tenant_id = Some("test".to_string());
         config.realms[0].protocols.directory.providers = vec![DirectoryProviderConfig {
+            webhook: None,
             id: CONFIGURED_PROVIDER_ID.to_string(),
             provider_type: "active-directory".to_string(),
             enabled: true,
@@ -2037,6 +2038,7 @@ mod directory_http_truthfulness {
             .directory
             .providers
             .push(DirectoryProviderConfig {
+                webhook: None,
                 id: CONFIGURED_CSV_PROVIDER_ID.to_string(),
                 provider_type: "csv".to_string(),
                 enabled: true,
@@ -2052,6 +2054,7 @@ mod directory_http_truthfulness {
             .directory
             .providers
             .push(DirectoryProviderConfig {
+                webhook: None,
                 id: DISABLED_PROVIDER_ID.to_string(),
                 provider_type: "ldap".to_string(),
                 enabled: false,
@@ -2211,7 +2214,7 @@ mod directory_http_truthfulness {
     }
 
     #[tokio::test]
-    async fn the_provider_list_advertises_only_the_types_the_sync_connects() {
+    async fn the_provider_list_advertises_supported_pull_and_inbound_types() {
         let (app, _repo, session) = setup_routes().await;
         let (status, body) =
             directory_call(app, Method::GET, "/directory/v1/providers", Some(&session)).await;
@@ -2223,7 +2226,7 @@ mod directory_http_truthfulness {
             .iter()
             .filter_map(|value| value.as_str())
             .collect();
-        assert_eq!(types, vec!["ldap", "active-directory", "csv"]);
+        assert_eq!(types, vec!["ldap", "active-directory", "csv", "webhook"]);
         // The list keeps the disabled providers, so the operator sees them.
         let listed = body["providers"]
             .as_array()

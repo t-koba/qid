@@ -867,8 +867,9 @@ pub fn bind_credentials<'a>(
     Ok(Some((dn, password)))
 }
 
-/// The directory provider types the sync can connect.
-pub const DIRECTORY_PROVIDER_TYPES: [&str; 2] = ["ldap", "active-directory"];
+/// The directory provider types the sync can connect. `csv` reads the
+/// historical HR workforce export from the local file `connection.url` names.
+pub const DIRECTORY_PROVIDER_TYPES: [&str; 3] = ["ldap", "active-directory", "csv"];
 
 /// Whether a bind DN carries a character a distinguished name cannot hold.
 pub fn valid_bind_dn(dn: &str) -> QidResult<()> {

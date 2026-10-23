@@ -21,6 +21,7 @@ pub const LIFECYCLE_SCHEMA: &str = "urn:qid:directory:lifecycle";
 pub const LDAP_SOURCE_SCHEMA: &str = "urn:qid:directory:ldap";
 pub const BREAK_GLASS_SCHEMA: &str = "urn:qid:directory:break_glass";
 
+pub mod csv;
 pub mod ldap_filter;
 
 mod routes;

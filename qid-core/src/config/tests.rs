@@ -1978,3 +1978,145 @@ fn the_decision_cache_lifetime_follows_the_class_of_the_decision() {
     assert_eq!(default.ttl_ms(DecisionCacheClass::Positive), 30_000);
     assert_eq!(default.ttl_ms(DecisionCacheClass::Negative), 5_000);
 }
+
+fn csv_provider(url: &str) -> DirectoryProviderConfig {
+    DirectoryProviderConfig {
+        id: "hr-csv".to_string(),
+        provider_type: "csv".to_string(),
+        enabled: true,
+        connection: DirectoryConnectionConfig {
+            url: url.to_string(),
+            ..DirectoryConnectionConfig::default()
+        },
+        sync: DirectorySyncConfig::default(),
+        attribute_mapping: DirectoryAttributeMapping::default(),
+    }
+}
+
+#[test]
+fn a_csv_directory_provider_reads_a_local_file() {
+    let mut config = minimal_config();
+    config.realms[0].protocols.directory.providers =
+        vec![csv_provider("/var/lib/qid/hr/workforce.csv")];
+    config
+        .validate()
+        .expect("a csv provider with defaults is accepted");
+}
+
+#[test]
+fn a_csv_directory_provider_rejects_unusable_paths() {
+    for url in [
+        "",
+        "   ",
+        "ldap://dir.example.com",
+        "https://hr.example.com/qid/events",
+    ] {
+        let mut config = minimal_config();
+        config.realms[0].protocols.directory.providers = vec![csv_provider(url)];
+        let err = config
+            .validate()
+            .expect_err("an unusable csv path is a configuration fault");
+        assert!(
+            err.message().contains("connection.url"),
+            "the error names connection.url: {}",
+            err.message()
+        );
+    }
+}
+
+#[test]
+fn a_csv_directory_provider_rejects_ldap_only_settings() {
+    let mut ldap_only = csv_provider("/var/lib/qid/hr/workforce.csv");
+    ldap_only.connection.bind_dn = Some("CN=svc".to_string());
+    ldap_only.connection.bind_password = Some("secret".to_string());
+    ldap_only.connection.base_dn = Some("dc=example,dc=com".to_string());
+    ldap_only.connection.page_size = Some(100);
+    ldap_only.connection.tls_insecure_skip_verify = true;
+    ldap_only.sync.user_search_filter = Some("(objectClass=group)".to_string());
+    ldap_only.attribute_mapping.uid = None;
+    let mut config = minimal_config();
+    config.realms[0].protocols.directory.providers = vec![ldap_only];
+    let err = config
+        .validate()
+        .expect_err("ldap-only settings are a configuration fault for csv");
+    // The first rejected key fails the load; each run names the key it hit.
+    assert!(
+        [
+            "bind_dn",
+            "base_dn",
+            "page_size",
+            "tls_insecure_skip_verify",
+            "user_search_filter",
+            "attribute_mapping"
+        ]
+        .iter()
+        .any(|key| err.message().contains(key)),
+        "the error names the ignored key: {}",
+        err.message()
+    );
+
+    // Each LDAP-only connection key is rejected on its own as well.
+    for mutate in [
+        "bind_dn",
+        "bind_password",
+        "base_dn",
+        "page_size",
+        "connect_timeout_seconds",
+        "tls_insecure_skip_verify",
+    ] {
+        let mut provider = csv_provider("/var/lib/qid/hr/workforce.csv");
+        match mutate {
+            "bind_dn" => provider.connection.bind_dn = Some("CN=svc".to_string()),
+            "bind_password" => provider.connection.bind_password = Some("secret".to_string()),
+            "base_dn" => provider.connection.base_dn = Some("dc=example,dc=com".to_string()),
+            "page_size" => provider.connection.page_size = Some(100),
+            "connect_timeout_seconds" => provider.connection.connect_timeout_seconds = Some(20),
+            _ => provider.connection.tls_insecure_skip_verify = true,
+        }
+        let mut config = minimal_config();
+        config.realms[0].protocols.directory.providers = vec![provider];
+        let err = config
+            .validate()
+            .expect_err("an ldap-only connection key is rejected for csv");
+        assert!(
+            err.message().contains(mutate),
+            "the error names {mutate}: {}",
+            err.message()
+        );
+    }
+}
+
+#[test]
+fn a_csv_directory_provider_keeps_a_settable_record_ceiling() {
+    let mut config = minimal_config();
+    let mut provider = csv_provider("/var/lib/qid/hr/workforce.csv");
+    provider.connection.max_entries = Some(10);
+    config.realms[0].protocols.directory.providers = vec![provider];
+    config.validate().expect("a csv record ceiling is accepted");
+
+    let mut config = minimal_config();
+    let mut provider = csv_provider("/var/lib/qid/hr/workforce.csv");
+    provider.connection.max_entries = Some(0);
+    config.realms[0].protocols.directory.providers = vec![provider];
+    let err = config
+        .validate()
+        .expect_err("an unusable csv record ceiling is rejected");
+    assert!(err.message().contains("max_entries"), "{}", err.message());
+}
+
+#[test]
+fn a_csv_directory_provider_accepts_only_default_or_unset_connect_timeout() {
+    for timeout in [None, Some(10), Some(0), Some(1), Some(20)] {
+        let mut provider = csv_provider("  /var/lib/qid/hr/workforce.csv  ");
+        provider.connection.connect_timeout_seconds = timeout;
+        let mut config = minimal_config();
+        config.realms[0].protocols.directory.providers = vec![provider];
+        let result = config.validate();
+        if matches!(timeout, None | Some(10)) {
+            result.expect("default or unset timeout and trimmed local path accepted");
+        } else {
+            let err = result.expect_err("custom LDAP timeout rejected for CSV");
+            assert!(err.message().contains("connect_timeout_seconds"));
+        }
+    }
+}

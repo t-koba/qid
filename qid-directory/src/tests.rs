@@ -2207,7 +2207,7 @@ mod directory_http_truthfulness {
             .iter()
             .filter_map(|value| value.as_str())
             .collect();
-        assert_eq!(types, vec!["ldap", "active-directory"]);
+        assert_eq!(types, vec!["ldap", "active-directory", "csv"]);
         // The list keeps the disabled providers, so the operator sees them.
         let listed = body["providers"]
             .as_array()
@@ -2587,4 +2587,97 @@ fn concurrent_paging_control_parses_leave_the_panic_hook_installed() {
         !silent,
         "the panic hook must be restored after concurrent parses"
     );
+}
+
+#[test]
+fn csv_hr_parses_the_historical_columns() {
+    let records = crate::csv::parse_csv_hr_records(
+        "external_id,email,display_name,department,manager_external_id,event\nhr-1,hr-1@example.com,HR One,Research,hr-0,joiner\n",
+    )
+    .expect("the historical columns parse");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].external_id, "hr-1");
+    assert_eq!(records[0].user_name, "hr-1");
+    assert_eq!(records[0].email.as_deref(), Some("hr-1@example.com"));
+    assert_eq!(records[0].display_name.as_deref(), Some("HR One"));
+    assert_eq!(records[0].department.as_deref(), Some("Research"));
+    assert_eq!(records[0].manager_external_id.as_deref(), Some("hr-0"));
+    assert!(matches!(records[0].event, LifecycleEvent::Joiner));
+}
+
+#[test]
+fn csv_hr_reads_quoted_commas_and_escaped_quotes() {
+    // The old split-on-comma reader cut a quoted display name in two; the
+    // restored parser keeps commas and `""` escapes as data.
+    let records = crate::csv::parse_csv_hr_records(
+        "external_id,email,display_name,department,manager_external_id,event\nhr-1,hr-1@example.com,\"One, \"\"HR\"\"\",Research,,mover\n",
+    )
+    .expect("quoted fields parse");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].display_name.as_deref(), Some("One, \"HR\""));
+    assert_eq!(records[0].manager_external_id, None);
+    assert!(matches!(records[0].event, LifecycleEvent::Mover));
+}
+
+#[test]
+fn csv_hr_uses_the_optional_username_column_without_breaking_the_old_shape() {
+    // Without the column the username stays the external_id, as before.
+    let records = crate::csv::parse_csv_hr_records(
+        "external_id,email,display_name,department,manager_external_id,event\nhr-1,,,Research,,joiner\n",
+    )
+    .expect("the six-column shape still parses");
+    assert_eq!(records[0].user_name, "hr-1");
+    // With the column a non-blank value names the user.
+    let records = crate::csv::parse_csv_hr_records(
+        "external_id,username,email,display_name,department,manager_external_id,event\nhr-1,hr-one,hr-1@example.com,HR One,Research,,joiner\nhr-2,,hr-2@example.com,HR Two,Research,,joiner\n",
+    )
+    .expect("the compatible username column parses");
+    assert_eq!(records[0].user_name, "hr-one");
+    assert_eq!(records[1].user_name, "hr-2");
+}
+
+#[test]
+fn csv_hr_rejects_a_bad_row_anywhere_in_the_batch() {
+    for (content, key) in [
+        (
+            "external_id,email,display_name,department,manager_external_id,event\nhr-1,,,,,not-an-event\n",
+            "event",
+        ),
+        (
+            "external_id,email,display_name,department,manager_external_id,event\n,,,,,joiner\n",
+            "external_id",
+        ),
+        (
+            "external_id,email,display_name,department,event\nhr-1,,,,joiner\n",
+            "manager_external_id",
+        ),
+        (
+            "external_id,email,display_name,department,manager_external_id,event\nhr-1,,,Research\n",
+            "columns",
+        ),
+        ("", "empty"),
+        (
+            "external_id,email,display_name,department,manager_external_id,event\nhr-1,,,,,\"joiner\n",
+            "unterminated",
+        ),
+    ] {
+        let err =
+            crate::csv::parse_csv_hr_records(content).expect_err("a bad row fails the whole batch");
+        assert!(
+            err.message().contains(key),
+            "the failure names {key}: {}",
+            err.message()
+        );
+    }
+}
+
+#[test]
+fn csv_hr_records_leavers_for_the_lifecycle_importer() {
+    let records = crate::csv::parse_csv_hr_records(
+        "EXTERNAL_ID,Email,Display_Name,Department,Manager_External_Id,Event\nhr-9,hr-9@example.com,HR Nine,,,LEAVER\n",
+    )
+    .expect("headers match case-insensitively and events read lowercased");
+    assert_eq!(records.len(), 1);
+    assert!(matches!(records[0].event, LifecycleEvent::Leaver));
+    assert_eq!(records[0].department, None);
 }

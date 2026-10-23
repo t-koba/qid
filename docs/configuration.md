@@ -213,7 +213,7 @@ Validation rules:
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. The `enabled` switch decides whether a realm serves the FedCM routes and appears in the FedCM discovery documents; it is off unless the configuration sets it. |
 | `federation` | Inbound OIDC/SAML/social providers and claim mappings. |
-| `directory` | LDAP and Active Directory providers, sync filters and attribute mapping. |
+| `directory` | LDAP, Active Directory, and CSV HR providers, sync filters and attribute mapping. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
 | `vc` | OID4VCI/OID4VP/HAIP/status/holder binding. |
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |
@@ -223,22 +223,45 @@ An LDAP or Active Directory provider's `connection` holds:
 
 | Field | Purpose |
 | --- | --- |
-| `url` | The directory endpoint. `ldaps://` and `ldap://` are accepted; another scheme is rejected when the configuration loads. |
+| `url` | The LDAP/AD directory endpoint (`ldaps://` or `ldap://`), or a local CSV file path for `type: csv`. |
 | `bind_dn` | The bind DN, used for the directory's simple bind. |
 | `bind_password` | The bind password for that DN. |
 | `base_dn` | The subtree the sync reads. |
 | `connect_timeout_seconds` | The timeout in seconds for the bind, the search and the unbind. Defaults to 10; the connect itself is not bounded by it. |
 | `page_size` | The page size an RFC 2696 paged search requests. Between 1 and 1000; a value outside that range is rejected when the configuration loads. |
-| `max_entries` | The most entries one directory search may collect. Defaults to 1,000,000; between 1 and 10,000,000, and a value outside that range is rejected when the configuration loads. |
+| `max_entries` | The most entries one directory search or CSV batch may collect. Defaults to 1,000,000; between 1 and 10,000,000, and a value outside that range is rejected when the configuration loads. |
 | `tls_insecure_skip_verify` | Skip the TLS certificate verification. This disables the server name check as well as the chain check, so it applies to the whole connection. |
 
 The provider rules apply to a realm whose directory sync is on; a realm whose directory sync is
 off is not checked for them. For such a realm, every provider, enabled or not, needs a unique
-id, a URL and a `type` of `ldap` or `active-directory`. An enabled provider is checked for the
-URL scheme and the credential rules below as well; a disabled provider is not checked for them.
+id, a source in `connection.url` and a `type` of `ldap`, `active-directory`, or `csv`.
+An enabled LDAP/Active Directory provider is checked for the LDAP URL scheme and
+the credential rules below; an enabled CSV provider follows the local-file rules
+below instead. Disabled providers are not checked for these source-specific rules.
 A bind DN that carries a control character is rejected with the credential rules.
+A `csv` provider reads the historical HR workforce export from the local file
+`connection.url` names instead of connecting to a directory: `url` must be a
+local file path (surrounding whitespace is trimmed; a value with a `://` scheme
+is rejected), and the LDAP-only
+`bind_dn`, `bind_password`, `base_dn`, `page_size`, `tls_insecure_skip_verify`,
+`user_search_filter`, and `attribute_mapping` settings are rejected when set to
+anything but their defaults, because a CSV source would silently ignore them.
+The LDAP-only `connect_timeout_seconds` likewise accepts only its default `10`
+or unset for CSV; neither applies a timeout to local file reads.
+`max_entries` stays settable as the CSV record ceiling (default 1,000,000).
+The CSV keeps the historical columns `external_id`, `email`, `display_name`,
+`department`, `manager_external_id`, and `event` (joiner/mover/leaver); an
+optional `username` column names the user when present and non-blank, otherwise
+`external_id` stays the username as before. Quoted fields follow RFC 4180
+(commas and line breaks inside quotes are data, `""` is an escaped quote).
+Quotes may open only at field start, and after a closing quote only a comma,
+record terminator, or EOF is allowed. Input must be valid UTF-8. The source is
+bounded to 8 MiB and the whole file is validated before any write, so a
+rejected row writes nothing; joiner/mover/leaver lifecycle, duplicate-ID
+preflight, and mover-clear semantics stay owned by the HR importer, and
+`deactivate_missing` does not apply to the event batch.
 
-An enabled provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
+An enabled LDAP/Active Directory provider's `bind_dn` and `bind_password` must both be set and non-blank, or the
 bind DN must be absent and the bind password blank. A bind DN without a usable password is
 an unauthenticated bind that RFC 4513 answers with success, and a password without a bind DN
 would leave the search anonymous, so a provider with only one of them is rejected when the

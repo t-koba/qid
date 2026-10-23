@@ -310,3 +310,187 @@ fn a_failed_directory_sync_makes_the_command_exit_nonzero() {
     let other = serde_json::json!({"command": "audit_retention_evaluate"});
     assert!(!crate::sync::sync_failed(&other));
 }
+
+/// A repository and configuration with one enabled CSV HR provider backed by
+/// a real temp file, so a sync job reads the file end to end.
+async fn csv_sync_fixture(
+    initial_csv: &str,
+) -> (
+    Arc<AnyRepository>,
+    qid_core::config::QidConfig,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let dir = std::env::temp_dir().join(format!("qid-csv-fixture-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let db_path = dir.join("sync.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+    let repo = SqlRepository::connect(&db_url).await.expect("connect");
+    repo.migrate().await.expect("migrate");
+    repo.create_realm(
+        &"default".into(),
+        &"corp".into(),
+        "https://id.example.com/realms/corp",
+        None,
+    )
+    .await
+    .expect("create realm");
+    let csv_path = dir.join("workforce.csv");
+    std::fs::write(&csv_path, initial_csv).expect("write csv");
+    let cfg_path = dir.join("qid.yaml");
+    std::fs::write(&cfg_path, format!("server:\n  listen: \"127.0.0.1:0\"\n  public_base_url: \"https://id.example.com\"\nstorage:\n  primary:\n    url: {}\nrealms:\n  - id: corp\n    issuer: \"https://id.example.com/realms/corp\"\n    protocols:\n      directory:\n        enabled: true\n        providers:\n          - id: hr-csv\n            type: csv\n            enabled: true\n            connection:\n              url: {}\n            sync:\n              deactivate_missing: false\n", serde_json::to_string(&db_path.to_string_lossy()).expect("store url"), serde_json::to_string(&format!("  {}  ", csv_path.to_string_lossy())).expect("csv url"))).expect("write config");
+    let config = qid_core::config::QidConfig::from_file(cfg_path.to_str().expect("cfg path"))
+        .expect("config");
+    (Arc::new(AnyRepository::Sql(repo)), config, dir, csv_path)
+}
+
+fn csv_job_config(record_audit_event: bool) -> crate::DirectorySyncJobConfig {
+    crate::DirectorySyncJobConfig {
+        realm_id: "corp".to_string(),
+        provider_id: "hr-csv".to_string(),
+        actor: "qid-worker".to_string(),
+        reason: "csv hr regression".to_string(),
+        now_epoch: 100,
+        record_audit_event,
+        dry_run: false,
+    }
+}
+
+#[tokio::test]
+async fn csv_directory_sync_creates_updates_and_deprovisions_through_the_job() {
+    let (any, config, dir, csv_path) = csv_sync_fixture(
+        "external_id,email,display_name,department,manager_external_id,event\nhr-1,hr-1@example.com,HR One,Research,,joiner\nhr-2,hr-2@example.com,HR Two,Sales,,joiner\n",
+    )
+    .await;
+    let report = crate::sync::run_directory_sync_job(any.clone(), &config, csv_job_config(true))
+        .await
+        .expect("csv sync job");
+    assert_eq!(report.status, crate::DirectorySyncJobStatus::Completed);
+    assert_eq!(report.created, 2);
+    assert_eq!(report.updated, 0);
+    assert_eq!(report.deactivated, 0);
+    assert!(report.audit_event_id.is_some());
+
+    let users = any
+        .list_scim_users(&qid_core::tenant::RealmId::from("corp".to_string()))
+        .await
+        .expect("list users");
+    assert_eq!(users.len(), 2);
+    let hr1 = users
+        .iter()
+        .find(|u| u.user_name == "hr-1")
+        .expect("hr-1 created");
+    assert_eq!(
+        hr1.enterprise_json["department"],
+        serde_json::json!("Research")
+    );
+
+    std::fs::write(
+        &csv_path,
+        "external_id,email,display_name,department,manager_external_id,event\nhr-1,hr-1@example.com,HR One,Platform,,mover\nhr-2,,,,,leaver\n",
+    )
+    .expect("rewrite csv");
+    let report = crate::sync::run_directory_sync_job(any.clone(), &config, csv_job_config(true))
+        .await
+        .expect("csv resync job");
+    assert_eq!(report.status, crate::DirectorySyncJobStatus::Completed);
+    assert_eq!(report.created, 0);
+    assert_eq!(report.updated, 1);
+    assert_eq!(report.deactivated, 1);
+
+    let users = any
+        .list_scim_users(&qid_core::tenant::RealmId::from("corp".to_string()))
+        .await
+        .expect("list users");
+    let hr1 = users
+        .iter()
+        .find(|u| u.user_name == "hr-1")
+        .expect("hr-1 kept");
+    assert_eq!(
+        hr1.enterprise_json["department"],
+        serde_json::json!("Platform")
+    );
+    assert!(hr1.active);
+    let hr2 = users
+        .iter()
+        .find(|u| u.user_name == "hr-2")
+        .expect("hr-2 kept");
+    assert!(!hr2.active, "the leaver is deprovisioned");
+
+    let events = any
+        .list_audit_events(
+            Some(&qid_core::tenant::RealmId::from("corp".to_string())),
+            10,
+        )
+        .await
+        .expect("list audit");
+    assert!(
+        events.iter().all(|e| e.action == "directory.sync"),
+        "csv syncs audit like ldap syncs"
+    );
+    assert_eq!(events.len(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn csv_directory_sync_rejects_a_bad_batch_before_any_write() {
+    let (any, config, dir, csv_path) = csv_sync_fixture(
+        "external_id,email,display_name,department,manager_external_id,event\nhr-1,hr-1@example.com,HR One,Research,,joiner\n",
+    )
+    .await;
+    crate::sync::run_directory_sync_job(any.clone(), &config, csv_job_config(false))
+        .await
+        .expect("seed sync");
+
+    for (row, expected) in [
+        ("hr-3,,,,,not-an-event", "event"),
+        ("hr-3,,un\"quoted,,,joiner", "malformed quoted field"),
+        ("hr-3,,\"closed\"text,,,joiner", "malformed quoted field"),
+    ] {
+        std::fs::write(
+            &csv_path,
+            format!("external_id,email,display_name,department,manager_external_id,event\nhr-2,hr-2@example.com,HR Two,Sales,,joiner\n{row}\n"),
+        )
+        .expect("rewrite csv");
+        let err = crate::sync::run_directory_sync_job(any.clone(), &config, csv_job_config(false))
+            .await
+            .expect_err("a bad row fails the whole batch");
+        assert!(
+            err.message().contains(expected),
+            "the failure names the bad row: {err:?}"
+        );
+    }
+
+    let users = any
+        .list_scim_users(&qid_core::tenant::RealmId::from("corp".to_string()))
+        .await
+        .expect("list users");
+    assert_eq!(users.len(), 1, "no prefix of the rejected batch is written");
+    assert_eq!(users[0].user_name, "hr-1");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn csv_directory_sync_ignores_the_injected_ldap_connector() {
+    // The CSV path parses the configured file and never touches the LDAP
+    // connector factory, so LDAP dispatch keeps its own path.
+    let (any, config, dir, _csv_path) = csv_sync_fixture(
+        "external_id,email,display_name,department,manager_external_id,event\nhr-1,,,,,joiner\n",
+    )
+    .await;
+    let report = crate::sync::run_directory_sync_job_with_connector(
+        any.clone(),
+        &config,
+        csv_job_config(false),
+        Box::new(|| {
+            Box::new(StubDirectoryConnector::failing(QidError::Config {
+                message: "the csv path must not connect".to_string(),
+            })) as Box<dyn DirectoryConnector>
+        }),
+    )
+    .await
+    .expect("csv sync without a usable connector");
+    assert_eq!(report.status, crate::DirectorySyncJobStatus::Completed);
+    assert_eq!(report.created, 1);
+    std::fs::remove_dir_all(&dir).ok();
+}

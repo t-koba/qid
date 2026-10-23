@@ -274,7 +274,6 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
         }
         let providers = &realm.protocols.directory.providers;
         for provider in providers.iter().filter(|p| p.enabled) {
-            let connection = &provider.connection;
             if !DIRECTORY_PROVIDER_TYPES.contains(&provider.provider_type.as_str()) {
                 return Err(QidError::Config {
                     message: format!(
@@ -283,6 +282,11 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
                     ),
                 });
             }
+            if provider.provider_type == "csv" {
+                validate_csv_directory_provider(provider, &realm.id)?;
+                continue;
+            }
+            let connection = &provider.connection;
             let url = connection.url.as_str();
             if !url.starts_with("ldaps://") && !url.starts_with("ldap://") {
                 return Err(QidError::Config {
@@ -323,6 +327,118 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
                 message: format!("provider {} of realm {}: {error}", provider.id, realm.id),
             })?;
         }
+    }
+    Ok(())
+}
+
+/// Validate a CSV HR directory provider: `connection.url` names the local CSV
+/// file, and LDAP-only settings are rejected instead of silently ignored.
+/// `max_entries` stays settable as the CSV record ceiling; omitted mapping and
+/// sync filter defaults are accepted, any LDAP-tuned deviation is not.
+fn validate_csv_directory_provider(
+    provider: &DirectoryProviderConfig,
+    realm_id: &str,
+) -> QidResult<()> {
+    let connection = &provider.connection;
+    let path = connection.url.trim();
+    if path.is_empty() {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} must name a local CSV file path in connection.url",
+                provider.id
+            ),
+        });
+    }
+    if path.contains('\0') || path.contains("://") {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} connection.url must be a local CSV file path, not a URL",
+                provider.id
+            ),
+        });
+    }
+    if connection.bind_dn.is_some() {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} connection.bind_dn is LDAP-only and a CSV source would ignore it",
+                provider.id
+            ),
+        });
+    }
+    if connection.bind_password.is_some() {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} connection.bind_password is LDAP-only and a CSV source would ignore it",
+                provider.id
+            ),
+        });
+    }
+    if connection.base_dn.is_some() {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} connection.base_dn is LDAP-only and a CSV source would ignore it",
+                provider.id
+            ),
+        });
+    }
+    if connection.page_size.is_some() {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} connection.page_size is LDAP-only and a CSV source would ignore it",
+                provider.id
+            ),
+        });
+    }
+    if connection
+        .connect_timeout_seconds
+        .is_some_and(|seconds| seconds != 10)
+    {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} connection.connect_timeout_seconds is LDAP-only; CSV accepts only the default (10) or unset",
+                provider.id
+            ),
+        });
+    }
+    if connection.tls_insecure_skip_verify {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} connection.tls_insecure_skip_verify is LDAP-only and a CSV source would ignore it",
+                provider.id
+            ),
+        });
+    }
+    if connection.max_entries.is_some_and(|entries| {
+        entries == 0 || entries > protocol::MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT
+    }) {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} max_entries must be between 1 and {}",
+                provider.id,
+                protocol::MAX_DIRECTORY_SEARCH_ENTRIES_LIMIT
+            ),
+        });
+    }
+    if provider
+        .sync
+        .user_search_filter
+        .as_deref()
+        .is_some_and(|filter| filter != "(objectClass=user)")
+    {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} sync.user_search_filter is LDAP-only and a CSV source would ignore it",
+                provider.id
+            ),
+        });
+    }
+    if provider.attribute_mapping != DirectoryAttributeMapping::default() {
+        return Err(QidError::Config {
+            message: format!(
+                "provider {} of realm {realm_id} attribute_mapping is LDAP-only and a CSV source would ignore it",
+                provider.id
+            ),
+        });
     }
     Ok(())
 }

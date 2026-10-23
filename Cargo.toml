@@ -98,7 +98,15 @@ exclude = ["vendor/rustls"]
 # The SMTP transport, feature-gated CLI path, and secure provider setup add 268
 # measured source lines after consolidation (104184 -> 104452; qid-worker
 # 5200 -> 5467); tests remain uncapped.
-total = 104452
+# The CSV HR provider slice adds 416 measured product lines after consolidation
+# (104452 -> 104868): the csv source parser with RFC 4180 quoting and bounds
+# (qid-directory 3286 -> 3521), the csv provider validation with LDAP-only
+# rejection (qid-core 9957 -> 10063), and the worker dispatch with a shared
+# directory-sync audit helper (qid-worker 5467 -> 5542); tests remain uncapped.
+# CSV parser hardening adds 43 measured product lines (104868 -> 104911):
+# bounded reads, incremental records, strict quote states and timeout validation;
+# qid-directory 3521 -> 3553, qid-core 10063 -> 10074, qid-worker unchanged.
+total = 104911
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -116,7 +124,7 @@ qid-federation = 5000
 qid-iga = 6300
 qid-resource = 5200
 qid-scim = 4600
-qid-worker = 5467
+qid-worker = 5542
 
 [workspace.package]
 version = "0.1.0"

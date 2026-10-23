@@ -66,6 +66,11 @@ impl From<ScimEventSubscriptionRow> for ScimEventSubscriptionRecord {
 #[async_trait]
 impl ScimRepository for SqlRepository {
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()> {
+        // The table holds the invariant: the record ID is the primary key
+        // and (realm_id, user_name) is unique. Either violation is a
+        // create-only refusal, so the failed insert changes no row. No
+        // pre-read precedes the write; only a unique violation becomes a
+        // conflict, every other storage error is preserved.
         let deprovisioned_at = sqlite_deprovisioned_at(user.deprovisioned_at)?;
         sqlx::query(
             "INSERT INTO scim_users (id, realm_id, external_id, user_name, name_json, emails_json, enterprise_json, directory_provider_id, deprovisioned_at, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -82,7 +87,17 @@ impl ScimRepository for SqlRepository {
         .bind(user.active as i64)
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(|error| match &error {
+            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
+                QidError::Conflict {
+                    message: format!(
+                        "SCIM user id {} or user name {} already exists in realm {}",
+                        user.id, user.user_name, user.realm_id
+                    ),
+                }
+            }
+            _ => storage_to_qid_error(error),
+        })?;
         Ok(())
     }
 

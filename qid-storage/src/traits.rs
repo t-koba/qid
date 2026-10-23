@@ -365,6 +365,14 @@ pub type ScimMutator<'a, T> = Box<dyn FnOnce(&T) -> QidResult<ScimMutation<T>> +
 
 #[async_trait]
 pub trait ScimRepository: Send + Sync + 'static {
+    /// Create a SCIM user.
+    ///
+    /// Creation is create-only: the record `id` is globally unique and
+    /// `user_name` is unique within its realm. A write whose record ID is
+    /// taken, or whose user name the realm already holds, is refused with
+    /// [`qid_core::error::QidError::Conflict`] and leaves every incumbent
+    /// unchanged. The same user name in another realm is allowed. Use
+    /// `update_scim_user` or `mutate_scim_user` to change an existing user.
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()>;
     async fn get_scim_user(&self, id: &str) -> QidResult<Option<ScimUser>>;
     async fn list_scim_users(&self, realm_id: &RealmId) -> QidResult<Vec<ScimUser>> {

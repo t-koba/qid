@@ -6,7 +6,10 @@ use crate::{ScimMutation, ScimMutator};
 #[async_trait]
 impl ScimRepository for FileRepository {
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        self.update_scim_user(user).await
+        let mut store = self.store.write().await;
+        super::insert::insert_new(&mut store.scim_users, user)?;
+        drop(store);
+        self.save().await
     }
 
     async fn get_scim_user(&self, id: &str) -> QidResult<Option<ScimUser>> {

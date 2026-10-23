@@ -67,7 +67,10 @@ exclude = ["vendor/rustls"]
 # (xtask budget: 103863 -> 103932), so the cap rises by exactly 69.
 # Workload-certificate revocation validation and its documented trait contract
 # add 32 measured product lines (103932 -> 103964), so the cap rises exactly.
-total = 103964
+# SCIM user create-only conflict safety (typed file identity, static SQL
+# conflict mapping and trait contract) adds 37 measured product lines
+# (103964 -> 104001), so the cap rises by exactly 37.
+total = 104001
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

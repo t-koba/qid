@@ -312,3 +312,128 @@ async fn cas_group(
         .await?
         .is_some())
 }
+
+fn scim_user(id: &str, realm: &str, user_name: &str) -> ScimUser {
+    ScimUser {
+        id: id.into(),
+        realm_id: realm.into(),
+        external_id: None,
+        user_name: user_name.into(),
+        name_json: serde_json::json!({}),
+        emails_json: serde_json::json!([]),
+        enterprise_json: serde_json::json!({}),
+        directory_provider_id: None,
+        deprovisioned_at: None,
+        active: true,
+    }
+}
+
+fn assert_create_conflict(result: QidResult<()>) {
+    match result {
+        Err(QidError::Conflict { .. }) => {}
+        Err(other) => panic!("expected Conflict, got {other:?}"),
+        Ok(()) => panic!("expected Conflict, got Ok"),
+    }
+}
+
+// Shared create-only contract: a taken record ID or a taken
+// (realm_id, user_name) is a conflict that changes no row, while the same
+// user name in another realm succeeds.
+async fn exercise_create_user_conflict(repo: &AnyRepository) {
+    for realm in ["corp", "other"] {
+        repo.create_realm(
+            &TenantId::from("tenant"),
+            &RealmId::from(realm),
+            &format!("https://id.example.com/{realm}"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let alice = scim_user("alice-id", "corp", "alice");
+    repo.create_scim_user(&alice).await.unwrap();
+
+    // A duplicate record ID with a different user name is refused and the
+    // incumbent is unchanged.
+    let mut id_collision = scim_user("alice-id", "corp", "mallory");
+    id_collision.active = false;
+    assert_create_conflict(repo.create_scim_user(&id_collision).await);
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_user("alice-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&alice)).unwrap()
+    );
+
+    // A duplicate user name in the same realm is refused and the incumbent
+    // is unchanged, including under a fresh record ID.
+    let mut name_collision = scim_user("mallory-id", "corp", "alice");
+    name_collision.active = false;
+    assert_create_conflict(repo.create_scim_user(&name_collision).await);
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_user("alice-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&alice)).unwrap()
+    );
+    assert!(repo.get_scim_user("mallory-id").await.unwrap().is_none());
+    assert_eq!(
+        repo.list_scim_users(&RealmId::from("corp"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A globally colliding ID from another realm is refused and creates
+    // nothing in that realm.
+    let foreign_id = scim_user("alice-id", "other", "alice");
+    assert_create_conflict(repo.create_scim_user(&foreign_id).await);
+    assert_eq!(
+        repo.get_scim_user("alice-id")
+            .await
+            .unwrap()
+            .unwrap()
+            .realm_id,
+        "corp"
+    );
+    assert!(
+        repo.list_scim_users(&RealmId::from("other"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // The same user name in another realm is allowed.
+    let other_alice = scim_user("other-alice-id", "other", "alice");
+    repo.create_scim_user(&other_alice).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_user("other-alice-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&other_alice)).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_user("alice-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&alice)).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn file_scim_create_user_conflict() {
+    let dir = std::env::temp_dir().join(format!("qid-scim-create-{}", ulid::Ulid::new()));
+    let repo = AnyRepository::connect(dir.join("store.json").to_str().unwrap())
+        .await
+        .unwrap();
+    exercise_create_user_conflict(&repo).await;
+    drop(repo);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_scim_create_user_conflict() {
+    let dir = std::env::temp_dir().join(format!("qid-scim-create-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = AnyRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
+        .await
+        .unwrap();
+    exercise_create_user_conflict(&repo).await;
+    if let AnyRepository::Sql(repo) = repo {
+        repo.close().await;
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

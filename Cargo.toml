@@ -77,7 +77,9 @@ exclude = ["vendor/rustls"]
 # measured product lines (104038 -> 104056), so the cap rises by exactly 18.
 # Password-reset token consume outcomes and trait contract add 16 measured
 # product lines (104056 -> 104072), so the cap rises by exactly 16.
-total = 104072
+# ReBAC tuple identity refusal across file and SQL and its trait contract add
+# 17 measured product lines (104072 -> 104089); the shared test is uncapped.
+total = 104089
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

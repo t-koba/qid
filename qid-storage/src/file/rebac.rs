@@ -2,10 +2,28 @@ use async_trait::async_trait;
 
 use super::*;
 
+fn same_relationship_tuple_identity(a: &RelationshipTuple, b: &RelationshipTuple) -> bool {
+    a.namespace == b.namespace
+        && a.object_id == b.object_id
+        && a.relation == b.relation
+        && a.subject_namespace == b.subject_namespace
+        && a.subject_id == b.subject_id
+        && a.subject_relation == b.subject_relation
+}
+
 #[async_trait]
 impl RebacRepository for FileRepository {
     async fn create_relationship_tuple(&self, tuple: &RelationshipTuple) -> QidResult<()> {
         let mut store = self.store.write().await;
+        if store
+            .relationship_tuples
+            .iter()
+            .any(|stored| same_relationship_tuple_identity(stored, tuple))
+        {
+            return Err(qid_core::error::QidError::Conflict {
+                message: "relationship tuple already exists".into(),
+            });
+        }
         store.relationship_tuples.push(tuple.clone());
         drop(store);
         self.save().await
@@ -13,14 +31,9 @@ impl RebacRepository for FileRepository {
 
     async fn delete_relationship_tuple(&self, tuple: &RelationshipTuple) -> QidResult<()> {
         let mut store = self.store.write().await;
-        store.relationship_tuples.retain(|t| {
-            !(t.namespace == tuple.namespace
-                && t.object_id == tuple.object_id
-                && t.relation == tuple.relation
-                && t.subject_namespace == tuple.subject_namespace
-                && t.subject_id == tuple.subject_id
-                && t.subject_relation == tuple.subject_relation)
-        });
+        store
+            .relationship_tuples
+            .retain(|stored| !same_relationship_tuple_identity(stored, tuple));
         drop(store);
         self.save().await
     }

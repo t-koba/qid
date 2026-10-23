@@ -5,8 +5,8 @@ use super::*;
 #[async_trait]
 impl RebacRepository for SqlRepository {
     async fn create_relationship_tuple(&self, tuple: &RelationshipTuple) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO relationship_tuples (namespace, object_id, relation, subject_namespace, subject_id, subject_relation, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT INTO relationship_tuples (namespace, object_id, relation, subject_namespace, subject_id, subject_relation, created_at_epoch_seconds) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (namespace, object_id, relation, subject_namespace, subject_id, subject_relation) DO NOTHING",
         )
         .bind(&tuple.namespace)
         .bind(&tuple.object_id)
@@ -18,7 +18,9 @@ impl RebacRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            "relationship tuple already exists".into()
+        })
     }
 
     async fn delete_relationship_tuple(&self, tuple: &RelationshipTuple) -> QidResult<()> {

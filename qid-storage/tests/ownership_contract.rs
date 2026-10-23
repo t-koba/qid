@@ -240,3 +240,11 @@ async fn client_update_identity_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-client-update").await;
     support::assert_client_update_identity(&file).await;
 }
+
+#[tokio::test]
+async fn rebac_tuple_identity_conflict_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_rebac_tuple_identity_conflict(&sql).await;
+    let file = support::file_repo("ownership-contract-rebac-tuple").await;
+    support::assert_rebac_tuple_identity_conflict(&file).await;
+}

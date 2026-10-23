@@ -5,8 +5,8 @@ use qid_core::models::{
     CiamVerificationChallengeRecord, Client, ClientType, Device, FedCmIdentity,
     IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
     IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
-    IgaJitPrivilegeGrantRecord, PasswordResetToken, PolicyBundle, ServiceAccount, User,
-    WebAuthnCredential, WorkloadIdentity,
+    IgaJitPrivilegeGrantRecord, PasswordResetToken, PolicyBundle, RelationshipTuple,
+    ServiceAccount, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -2752,4 +2752,39 @@ where
             .is_none(),
         "the refused rename created a client under the new ID"
     );
+}
+
+pub async fn assert_rebac_tuple_identity_conflict<R>(repo: &R)
+where
+    R: RebacRepository,
+{
+    let tuple = RelationshipTuple {
+        namespace: "rebac-contract".into(),
+        object_id: "document-1".into(),
+        relation: "viewer".into(),
+        subject_namespace: "user".into(),
+        subject_id: "user-1".into(),
+        subject_relation: String::new(),
+        created_at_epoch_seconds: 1,
+    };
+    repo.create_relationship_tuple(&tuple)
+        .await
+        .expect("create initial relationship tuple");
+
+    let mut duplicate = tuple.clone();
+    duplicate.created_at_epoch_seconds = 2;
+    let error = repo
+        .create_relationship_tuple(&duplicate)
+        .await
+        .expect_err("duplicate tuple identity must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "duplicate tuple identity returned {error:?}"
+    );
+
+    let stored = repo
+        .list_relationship_tuples("rebac-contract", "document-1", Some("viewer"))
+        .await
+        .expect("list relationship tuples");
+    assert_eq!(stored, vec![tuple], "duplicate changed the incumbent tuple");
 }

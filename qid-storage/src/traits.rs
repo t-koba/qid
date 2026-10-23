@@ -787,6 +787,8 @@ pub trait IgaRepository: Send + Sync + 'static {
 
 #[async_trait]
 pub trait RebacRepository: Send + Sync + 'static {
+    /// Create a unique six-field tuple; duplicates return `Conflict` and leave
+    /// the incumbent, including its creation timestamp, unchanged.
     async fn create_relationship_tuple(&self, tuple: &RelationshipTuple) -> QidResult<()>;
     async fn delete_relationship_tuple(&self, tuple: &RelationshipTuple) -> QidResult<()>;
     async fn list_relationship_tuples(

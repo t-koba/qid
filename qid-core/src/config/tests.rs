@@ -1527,20 +1527,21 @@ fn the_removed_passkey_attestation_setting_is_rejected() {
 }
 
 #[test]
-fn the_removed_passkey_preferred_setting_is_rejected() {
-    // The product offers the passkey and the password routes side by side
-    // and never orders one factor over another, so a setting that stated
-    // a preference named a behaviour the product does not have. A
-    // configuration that still sets it is a configuration error naming the
-    // key.
-    let err = serde_json::from_str::<AuthenticationConfig>(
-        r#"{"passkeys":{"enabled":true,"preferred":true}}"#,
-    )
-    .expect_err("the removed setting is rejected");
-    assert!(
-        err.to_string().contains("preferred"),
-        "the error names the removed key: {err}"
-    );
+fn passkey_preference_defaults_to_false_and_requires_enabled_passkeys() {
+    let default: PasskeyConfig = serde_json::from_str("{}").unwrap();
+    assert!(!default.preferred);
+    assert!(!PasskeyConfig::default().preferred);
+    let preferred: AuthenticationConfig =
+        serde_json::from_str(r#"{"passkeys":{"enabled":true,"preferred":true}}"#).unwrap();
+    assert!(preferred.passkeys.preferred);
+    let mut config = minimal_config();
+    config.realms[0].authentication = preferred;
+    config.validate().unwrap();
+    config.realms[0].authentication.passkeys.enabled = false;
+    let err = config.validate().unwrap_err();
+    assert!(err.message().contains("passkeys.preferred"));
+    config.realms[0].authentication.passkeys.preferred = false;
+    config.validate().unwrap();
 }
 
 #[test]

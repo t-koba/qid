@@ -12,6 +12,7 @@ use qid_core::{
     error::{QidError, QidResult},
     jwt::{Audience, JwtClaims},
     models::{AuthorizationCode, Client},
+    plan::RuntimeRealm,
     state::SharedState,
     tenant::RealmId,
 };
@@ -96,6 +97,10 @@ pub async fn authorize_get<R: Repository>(
         .map(str::to_string);
     match resolve_and_validate_authorize_request(&state, &req, false).await {
         Ok((mut resolved, client)) => {
+            let realm = match state.require_realm(&client.realm_id) {
+                Ok(realm) => realm,
+                Err(e) => return qid_http::error_response(e),
+            };
             resolved.dpop_proof = dpop_proof;
             if !prompt_requires_login(resolved.prompt.as_deref()) {
                 match authorize_with_browser_session(&state, &headers, &mut resolved, &client).await
@@ -112,7 +117,7 @@ pub async fn authorize_get<R: Repository>(
                     Err(e) => return qid_http::error_response(e),
                 }
             }
-            login_challenge_response(resolved)
+            login_challenge_response(resolved, realm)
         }
         Err(e) => qid_http::error_response(e),
     }
@@ -189,9 +194,21 @@ async fn authorize_with_browser_session<R: Repository>(
     ))
 }
 
-fn login_challenge_response(resolved: AuthorizeParameters) -> Response {
+fn login_challenge_response(resolved: AuthorizeParameters, realm: &RuntimeRealm) -> Response {
+    // Advisory presentation order only; authentication handlers enforce factor policy.
+    let mut methods = Vec::new();
+    if realm.accepts_password_authentication() {
+        methods.push("password");
+    }
+    if realm.passkeys.enabled {
+        methods.push("webauthn");
+    }
+    if realm.passkeys.preferred {
+        methods.reverse();
+    }
     let mut body = serde_json::json!({
         "challenge": "login_required",
+        "authentication_methods": methods,
         "client_id": resolved.client_id,
         "redirect_uri": resolved.redirect_uri,
     });

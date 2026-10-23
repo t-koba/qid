@@ -129,7 +129,9 @@ exclude = ["vendor/rustls"]
 # separately classified integration tests remain uncapped. The crypto crate
 # reaches 5972 lines, requiring 372 above its old 5600 cap; no other crate
 # cap changes and no credential schema, SQL or dependency changes are needed.
-total = 106454
+# Advisory passkey preference restores a promised capability in the existing
+# OIDC challenge and realm policy: measured net +29, with no parallel service.
+total = 106483
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

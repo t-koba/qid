@@ -27,6 +27,9 @@ pub struct AuthenticationConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PasskeyConfig {
+    /// Advertise WebAuthn before password in OIDC login choices (advisory only).
+    #[serde(default = "default_false")]
+    pub preferred: bool,
     #[serde(default = "default_false")]
     pub enabled: bool,
     #[serde(default)]
@@ -41,6 +44,7 @@ impl Default for PasskeyConfig {
     fn default() -> Self {
         Self {
             enabled: default_false(),
+            preferred: default_false(),
             rp_id: None,
             rp_origin: None,
             rp_name: default_passkey_rp_name(),

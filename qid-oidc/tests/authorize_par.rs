@@ -2139,6 +2139,70 @@ async fn authorize_post_enforces_essential_acr_value() {
 }
 
 #[tokio::test]
+async fn login_challenge_orders_only_enabled_authentication_methods() {
+    for (passkeys, preferred, password, passwordless, expected) in [
+        (false, false, true, false, vec!["password"]),
+        (false, false, false, false, vec![]),
+        (true, false, true, false, vec!["password", "webauthn"]),
+        (true, true, true, false, vec!["webauthn", "password"]),
+        (true, false, false, false, vec!["webauthn"]),
+        (true, true, true, true, vec!["webauthn"]),
+    ] {
+        let mut config = test_helpers::test_config();
+        let auth = &mut config.realms[0].authentication;
+        auth.passkeys.enabled = passkeys;
+        auth.passkeys.preferred = preferred;
+        auth.password.enabled = password;
+        auth.passwordless_only = passwordless;
+        let (app, state) = setup_with_config(config).await;
+        let body = get_json(app, authorize_query(&state, ""), None).await;
+        assert_eq!(body["authentication_methods"], serde_json::json!(expected));
+        assert_eq!(body["challenge"], "login_required");
+        assert_eq!(body["client_id"], "par-client");
+        assert_eq!(body["redirect_uri"], "https://app.example.com/callback");
+        assert_eq!(body["state"], "s");
+    }
+}
+
+#[tokio::test]
+async fn login_challenge_uses_the_validated_clients_realm_not_the_first_realm() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].issuer = "https://id.example.com/realms/test".to_string();
+    let mut other = config.realms[0].clone();
+    other.id = "other".to_string();
+    other.issuer = "https://id.example.com/realms/other".to_string();
+    config.realms[0].authentication.passkeys.enabled = true;
+    config.realms[0].authentication.passkeys.preferred = true;
+    // The first realm offers only password; par-client belongs to the second.
+    config.realms.insert(0, other);
+    let (app, state) = setup_with_config(config).await;
+    let body = get_json(app, authorize_query(&state, ""), None).await;
+    assert_eq!(body["client_id"], "par-client");
+    assert_eq!(
+        body["authentication_methods"],
+        serde_json::json!(["webauthn", "password"])
+    );
+}
+
+#[tokio::test]
+async fn passkey_preference_preserves_session_reuse_and_password_login() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.passkeys.enabled = true;
+    config.realms[0].authentication.passkeys.preferred = true;
+    let (app, state) = setup_with_config(config).await;
+    create_browser_session(&state, "sid-preferred").await;
+    let reused = get_uri(
+        app.clone(),
+        authorize_query(&state, ""),
+        Some("__Host-qid=sid-preferred"),
+    )
+    .await;
+    assert_code_issued(&reused);
+    let password_login = post_form(app, authorize_query(&state, ""), LOGIN_FORM).await;
+    assert_code_issued(&password_login);
+}
+
+#[tokio::test]
 async fn authorize_post_refuses_password_login_for_passwordless_realm() {
     let mut config = test_helpers::test_config();
     // A passwordless realm must have passkeys enabled.
@@ -2364,18 +2428,26 @@ async fn authorize_refuses_a_client_of_a_realm_the_deployment_does_not_configure
         .await
         .unwrap();
 
-    let response = get_uri(
-        app,
-        format!(
-            "{}?client_id=hidden-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256",
-            state.paths.authorize,
-            urlencoding::encode("https://app.example.com/callback"),
-            util::sha256_base64url("verifier")
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // A configured default realm must never supply a challenge for this client,
+    // including when prompt=login bypasses browser-session reuse.
+    for prompt in ["", "&prompt=login"] {
+        let response = get_uri(
+            app.clone(),
+            format!(
+                "{}?client_id=hidden-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256{prompt}",
+                state.paths.authorize,
+                urlencoding::encode("https://app.example.com/callback"),
+                util::sha256_base64url("verifier")
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.headers().get("location").is_none());
+        let body = json_body(response).await;
+        assert!(body.get("authentication_methods").is_none());
+        assert!(body.get("challenge").is_none());
+    }
 }
 
 /// A client id that names a client in two configured realms is ambiguous.

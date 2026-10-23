@@ -1408,6 +1408,14 @@ impl RealmConfig {
         }
         self.sessions.refresh_tokens.validate(&self.id)?;
         self.authentication.password.validate(&self.id)?;
+        if self.authentication.passkeys.preferred && !self.authentication.passkeys.enabled {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {} passkeys.preferred requires passkeys to be enabled",
+                    self.id
+                ),
+            });
+        }
         if self.authentication.passwordless_only {
             if !self.authentication.passkeys.enabled {
                 return Err(QidError::Config {

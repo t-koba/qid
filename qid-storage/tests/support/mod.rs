@@ -603,6 +603,89 @@ where
     );
 }
 
+pub async fn assert_ciam_consent_grant_revoke_idempotent<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CiamRepository,
+{
+    repo.create_realm(
+        &"tenant-consent-revoke".into(),
+        &"realm-consent-revoke".into(),
+        "https://consent-revoke.example.com",
+        Some("Consent revoke realm"),
+    )
+    .await
+    .expect("create consent revoke realm failed");
+    repo.create_user(&User {
+        id: "user-consent-revoke".to_string(),
+        realm_id: "realm-consent-revoke".to_string(),
+        email: Some("user-consent-revoke@example.com".to_string()),
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .expect("create consent revoke user failed");
+
+    repo.revoke_ciam_consent_grant("consent-revoke-missing", 1_800_000_100)
+        .await
+        .expect("unknown consent revoke must succeed");
+    assert!(
+        repo.list_ciam_consent_grants(
+            &RealmId::from("realm-consent-revoke"),
+            "user-consent-revoke",
+            None
+        )
+        .await
+        .expect("list after unknown consent revoke failed")
+        .is_empty(),
+        "unknown consent revoke must create no grant"
+    );
+
+    let grant = CiamConsentGrant {
+        id: "consent-revoke-1".to_string(),
+        realm_id: "realm-consent-revoke".to_string(),
+        user_id: "user-consent-revoke".to_string(),
+        client_id: "client-consent-revoke".to_string(),
+        granted_claims: vec!["email".to_string()],
+        terms_version: Some("2026-06".to_string()),
+        granted_at_epoch_seconds: 1_800_000_000,
+        revoked: false,
+    };
+    repo.store_ciam_consent_grant(&grant)
+        .await
+        .expect("store consent grant failed");
+
+    repo.revoke_ciam_consent_grant("consent-revoke-1", 1_800_000_100)
+        .await
+        .expect("revoke consent grant failed");
+    let grants = repo
+        .list_ciam_consent_grants(
+            &RealmId::from("realm-consent-revoke"),
+            "user-consent-revoke",
+            Some("client-consent-revoke"),
+        )
+        .await
+        .expect("list revoked consent grant failed");
+    assert_eq!(grants.len(), 1, "revocation must keep the incumbent grant");
+    assert!(grants[0].revoked, "revocation must mark the grant revoked");
+
+    repo.revoke_ciam_consent_grant("consent-revoke-1", 1_800_000_200)
+        .await
+        .expect("repeat consent revoke must succeed");
+    let grants = repo
+        .list_ciam_consent_grants(
+            &RealmId::from("realm-consent-revoke"),
+            "user-consent-revoke",
+            Some("client-consent-revoke"),
+        )
+        .await
+        .expect("list repeat-revoked consent grant failed");
+    assert_eq!(grants.len(), 1, "repeat revocation must keep the grant");
+    assert!(grants[0].revoked, "incumbent must stay revoked");
+}
+
 pub async fn assert_client_id_uniqueness<R>(repo: &R)
 where
     R: RealmRepository + ClientRepository,

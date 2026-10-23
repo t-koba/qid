@@ -23,6 +23,14 @@ async fn ciam_consent_grant_owner_conflict_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn ciam_consent_grant_revoke_idempotent_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_ciam_consent_grant_revoke_idempotent(&sql).await;
+    let file = support::file_repo("ownership-contract-ciam-consent-revoke").await;
+    support::assert_ciam_consent_grant_revoke_idempotent(&file).await;
+}
+
+#[tokio::test]
 async fn client_id_uniqueness_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_client_id_uniqueness(&sql).await;

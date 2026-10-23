@@ -47,13 +47,9 @@ impl CiamRepository for FileRepository {
 
     async fn revoke_ciam_consent_grant(&self, id: &str, _revoked_at: u64) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let grant = store
-            .ciam_consent_grants
-            .get_mut(id)
-            .ok_or_else(|| QidError::NotFound {
-                resource: format!("CIAM consent grant {id}"),
-            })?;
-        grant.revoked = true;
+        if let Some(grant) = store.ciam_consent_grants.get_mut(id) {
+            grant.revoked = true;
+        }
         drop(store);
         self.save().await
     }

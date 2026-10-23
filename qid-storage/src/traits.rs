@@ -477,6 +477,10 @@ pub trait CiamRepository: Send + Sync + 'static {
         user_id: &str,
         client_id: Option<&str>,
     ) -> QidResult<Vec<CiamConsentGrant>>;
+    /// Revoke a CIAM consent grant by record ID.
+    ///
+    /// Unknown IDs are a silent `Ok` no-op that creates nothing; an existing
+    /// grant becomes `revoked = true` and stays revoked on repeat.
     async fn revoke_ciam_consent_grant(&self, id: &str, revoked_at: u64) -> QidResult<()>;
     /// Store a single-use verification challenge with an immutable global ID.
     /// Reusing an ID returns `Conflict` and leaves the original challenge, including

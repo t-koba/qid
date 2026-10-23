@@ -43,6 +43,17 @@ impl InsertIdentity for ScimUser {
     }
 }
 
+impl InsertIdentity for ScimGroup {
+    const RECORD: &'static str = "SCIM group";
+    const IDENTITY: &'static str = "display name";
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn identity(&self) -> Option<(&str, &str)> {
+        Some((&self.realm_id, &self.display_name))
+    }
+}
+
 impl InsertIdentity for Client {
     const RECORD: &'static str = "client";
     const IDENTITY: &'static str = "client id";

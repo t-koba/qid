@@ -70,7 +70,10 @@ impl ScimRepository for FileRepository {
     }
 
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
-        self.update_scim_group(group).await
+        let mut store = self.store.write().await;
+        super::insert::insert_new(&mut store.scim_groups, group)?;
+        drop(store);
+        self.save().await
     }
 
     async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {

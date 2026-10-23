@@ -70,7 +70,10 @@ exclude = ["vendor/rustls"]
 # SCIM user create-only conflict safety (typed file identity, static SQL
 # conflict mapping and trait contract) adds 37 measured product lines
 # (103964 -> 104001), so the cap rises by exactly 37.
-total = 104001
+# SCIM group create-only conflict safety (typed file identity, static SQL
+# conflict mapping and trait contract) adds 37 measured product lines
+# (104001 -> 104038), so the cap rises by exactly 37.
+total = 104038
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

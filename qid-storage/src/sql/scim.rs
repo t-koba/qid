@@ -205,6 +205,11 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
+        // The table holds the invariant: the record ID is the primary key
+        // and (realm_id, display_name) is unique. Either violation is a
+        // create-only refusal, so the failed insert changes no row. No
+        // pre-read precedes the write; only a unique violation becomes a
+        // conflict, every other storage error is preserved.
         sqlx::query(
             "INSERT INTO scim_groups (id, realm_id, display_name, members_json) VALUES (?, ?, ?, ?)",
         )
@@ -214,7 +219,17 @@ impl ScimRepository for SqlRepository {
         .bind(group.members_json.to_string())
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(|error| match &error {
+            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
+                QidError::Conflict {
+                    message: format!(
+                        "SCIM group id {} or display name {} already exists in realm {}",
+                        group.id, group.display_name, group.realm_id
+                    ),
+                }
+            }
+            _ => storage_to_qid_error(error),
+        })?;
         Ok(())
     }
 

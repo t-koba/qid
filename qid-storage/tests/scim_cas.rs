@@ -437,3 +437,115 @@ async fn sqlite_scim_create_user_conflict() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+fn scim_group(id: &str, realm: &str, display_name: &str) -> ScimGroup {
+    ScimGroup {
+        id: id.into(),
+        realm_id: realm.into(),
+        display_name: display_name.into(),
+        members_json: serde_json::json!([]),
+    }
+}
+
+// Shared create-only contract: a taken record ID or a taken
+// (realm_id, display_name) is a conflict that changes no row, while the same
+// display name in another realm succeeds.
+async fn exercise_create_group_conflict(repo: &AnyRepository) {
+    for realm in ["corp", "other"] {
+        repo.create_realm(
+            &TenantId::from("tenant"),
+            &RealmId::from(realm),
+            &format!("https://id.example.com/{realm}"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let mut engineers = scim_group("eng-id", "corp", "engineers");
+    engineers.members_json = serde_json::json!(["alice"]);
+    repo.create_scim_group(&engineers).await.unwrap();
+
+    // A duplicate record ID with a different display name is refused and
+    // the incumbent is unchanged.
+    let mut id_collision = scim_group("eng-id", "corp", "executives");
+    id_collision.members_json = serde_json::json!(["mallory"]);
+    assert_create_conflict(repo.create_scim_group(&id_collision).await);
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_group("eng-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&engineers)).unwrap()
+    );
+
+    // A duplicate display name in the same realm is refused and the
+    // incumbent is unchanged, including under a fresh record ID.
+    let mut name_collision = scim_group("exec-id", "corp", "engineers");
+    name_collision.members_json = serde_json::json!(["mallory"]);
+    assert_create_conflict(repo.create_scim_group(&name_collision).await);
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_group("eng-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&engineers)).unwrap()
+    );
+    assert!(repo.get_scim_group("exec-id").await.unwrap().is_none());
+    assert_eq!(
+        repo.list_scim_groups(&RealmId::from("corp"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A globally colliding ID from another realm is refused and creates
+    // nothing in that realm.
+    let foreign_id = scim_group("eng-id", "other", "engineers");
+    assert_create_conflict(repo.create_scim_group(&foreign_id).await);
+    assert_eq!(
+        repo.get_scim_group("eng-id")
+            .await
+            .unwrap()
+            .unwrap()
+            .realm_id,
+        "corp"
+    );
+    assert!(
+        repo.list_scim_groups(&RealmId::from("other"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // The same display name in another realm is allowed.
+    let other_engineers = scim_group("other-eng-id", "other", "engineers");
+    repo.create_scim_group(&other_engineers).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_group("other-eng-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&other_engineers)).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_group("eng-id").await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&engineers)).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn file_scim_create_group_conflict() {
+    let dir = std::env::temp_dir().join(format!("qid-scim-group-create-{}", ulid::Ulid::new()));
+    let repo = AnyRepository::connect(dir.join("store.json").to_str().unwrap())
+        .await
+        .unwrap();
+    exercise_create_group_conflict(&repo).await;
+    drop(repo);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_scim_create_group_conflict() {
+    let dir = std::env::temp_dir().join(format!("qid-scim-group-create-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = AnyRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
+        .await
+        .unwrap();
+    exercise_create_group_conflict(&repo).await;
+    if let AnyRepository::Sql(repo) = repo {
+        repo.close().await;
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

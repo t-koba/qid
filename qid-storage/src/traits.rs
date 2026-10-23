@@ -398,6 +398,14 @@ pub trait ScimRepository: Send + Sync + 'static {
         id: &str,
         mutation: ScimMutator<'_, ScimUser>,
     ) -> QidResult<Option<ScimUser>>;
+    /// Create a SCIM group.
+    ///
+    /// Creation is create-only: the record `id` is globally unique and
+    /// `display_name` is unique within its realm. A write whose record ID is
+    /// taken, or whose display name the realm already holds, is refused with
+    /// [`qid_core::error::QidError::Conflict`] and leaves every incumbent
+    /// unchanged. The same display name in another realm is allowed. Use
+    /// `update_scim_group` or `mutate_scim_group` to change an existing group.
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()>;
     async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {
         self.list_scim_groups_page(realm_id, 0, usize::MAX).await

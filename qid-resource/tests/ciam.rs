@@ -48,8 +48,16 @@ async fn setup_with_realms(
 }
 
 async fn setup_with_config(
+    config: QidConfig,
+    extra_realms: &[&str],
+) -> (axum::Router, Arc<SharedState<SqlRepository>>) {
+    setup_with_transport(config, extra_realms, None).await
+}
+
+async fn setup_with_transport(
     mut config: QidConfig,
     extra_realms: &[&str],
+    transport: Option<Arc<dyn qid_core::notification::NotificationTransport>>,
 ) -> (axum::Router, Arc<SharedState<SqlRepository>>) {
     for realm in extra_realms {
         let mut realm_config = config.realms[0].clone();
@@ -93,6 +101,7 @@ async fn setup_with_config(
     let contexts = qid_crypto::resolve_password_contexts(&config).unwrap();
     let mut state = SharedState::new(config, repo, signer, serde_json::json!({})).unwrap();
     state.password_credentials = contexts;
+    state.notification_transport = transport;
     let state = Arc::new(state);
     let app = qid_resource::resource_routes(&state.paths).with_state(state.clone());
     (app, state)
@@ -591,31 +600,18 @@ async fn ciam_trusted_identity_links_are_listed_lookupable_and_deletions_audited
 }
 
 #[tokio::test]
-async fn ciam_challenge_issue_routes_fail_without_delivery() {
+async fn ciam_password_reset_issue_route_fails_without_delivery() {
     let (app, state) = setup().await;
-    let issue_requests = [
-        (
-            "/api/v1/test/ciam/verification/issue",
-            r#"{
-                "user_id":"user-ciam",
-                "channel":"email",
-                "address":"ciam@example.com",
-                "purpose":"email_verification",
-                "now_epoch_seconds":1800000000,
-                "ttl_seconds":600
-            }"#,
-        ),
-        (
-            "/api/v1/test/ciam/password-reset/issue",
-            r#"{
+    let issue_requests = [(
+        "/api/v1/test/ciam/password-reset/issue",
+        r#"{
                 "user_id":"user-ciam",
                 "device_id":"device-1",
                 "risk":{"score":10},
                 "now_epoch_seconds":1800000100,
                 "ttl_seconds":900
             }"#,
-        ),
-    ];
+    )];
     for (uri, body) in issue_requests {
         let response = app
             .clone()
@@ -808,94 +804,6 @@ async fn assert_atomic_password_reset(config: QidConfig) {
             assert!(token.consumed_at_epoch_seconds.unwrap() >= now);
         }
     }
-}
-
-#[tokio::test]
-async fn ciam_verification_confirmation_fails_closed_without_attempt_protection() {
-    let (app, state) = setup().await;
-    let now = qid_core::util::now_seconds();
-    let issued = qid_resource::ciam::issue_verification_challenge(
-        "test",
-        &qid_resource::ciam::VerificationIssueRequest {
-            user_id: "user-ciam".to_string(),
-            channel: qid_resource::ciam::VerificationChannel::Email,
-            address: "ciam@example.com".to_string(),
-            purpose: "email_verification".to_string(),
-            now_epoch_seconds: now,
-            ttl_seconds: 600,
-        },
-        &state.ciam_verification_pepper,
-    )
-    .expect("issue verification challenge for test failed");
-    let challenge = issued.challenge;
-    state
-        .repo
-        .store_ciam_verification_challenge(&qid_core::models::CiamVerificationChallengeRecord {
-            id: challenge.id.clone(),
-            realm_id: "test".to_string(),
-            user_id: challenge.user_id.clone(),
-            channel: "email".to_string(),
-            address: challenge.address.clone(),
-            purpose: challenge.purpose.clone(),
-            code_hash: issued.code_hash,
-            attempt_count: 0,
-            expires_at_epoch_seconds: challenge.expires_at_epoch_seconds,
-            consumed_at_epoch_seconds: None,
-            created_at_epoch_seconds: now,
-        })
-        .await
-        .expect("seed verification challenge failed");
-    let body = serde_json::json!({
-        "challenge_id": challenge.id,
-        "channel": "email",
-        "address": "ciam@example.com",
-        "purpose": "email_verification",
-        "code": issued.delivery_secret,
-        "code_hash": "ignored-by-route",
-        "expires_at_epoch_seconds": challenge.expires_at_epoch_seconds,
-        "now_epoch_seconds": now,
-    });
-
-    for realm in ["other", "test"] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri(format!("/api/v1/{realm}/ciam/verification/confirm"))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-        let response = json(response).await;
-        assert_eq!(
-            response["error"],
-            "verification delivery and attempt protection are not implemented"
-        );
-        for field in [
-            "challenge_id",
-            "delivery_secret",
-            "code",
-            "verified",
-            "consumed",
-        ] {
-            assert!(
-                response.get(field).is_none(),
-                "unexpected {field} in response"
-            );
-        }
-    }
-
-    let record = state
-        .repo
-        .get_ciam_verification_challenge(&RealmId::from("test"), &challenge.id)
-        .await
-        .unwrap()
-        .expect("verification challenge disappeared");
-    assert_eq!(record.consumed_at_epoch_seconds, None);
 }
 
 #[tokio::test]
@@ -1098,4 +1006,534 @@ async fn ciam_password_reset_creates_the_credential_with_the_realm_argon2id_cost
         "the realm's time cost applies: {}",
         credential.hash
     );
+}
+
+#[derive(Default)]
+struct VerificationDelivery {
+    requests: std::sync::Mutex<Vec<qid_core::notification::NotificationRequest>>,
+    outcome: AtomicU16,
+}
+
+#[async_trait::async_trait]
+impl qid_core::notification::NotificationTransport for VerificationDelivery {
+    async fn send(
+        &self,
+        request: qid_core::notification::NotificationRequest,
+    ) -> Result<qid_core::notification::NotificationResponse, String> {
+        // Even debug logging by a transport must not reveal delivery content.
+        tracing::debug!(?request, "mock delivery");
+        self.requests.lock().unwrap().push(request.clone());
+        let status = self.outcome.load(Ordering::Relaxed);
+        if status == 0 {
+            return Err(format!("untrusted adapter error {}", request.body));
+        }
+        Ok(qid_core::notification::NotificationResponse {
+            status,
+            sent: status != 202,
+            provider_message_id: Some(request.body),
+        })
+    }
+}
+
+fn verification_config() -> QidConfig {
+    let mut config = test_helpers::test_config();
+    config.server.notification = Some(qid_core::config::ServerNotificationConfig {
+        provider: "https://delivery.example.com/private-adapter".into(),
+        timeout_seconds: 10,
+    });
+    config
+}
+
+async fn verification_post(
+    app: &axum::Router,
+    realm: &str,
+    action: &str,
+    cookie: Option<&str>,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/{realm}/ciam/verification/{action}"))
+        .header("Content-Type", "application/json");
+    if let Some(cookie) = cookie {
+        req = req.header("Cookie", cookie);
+    }
+    app.clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn delivered(
+    app: &axum::Router,
+    cookie: &str,
+    delivery: &VerificationDelivery,
+) -> (String, String) {
+    let response =
+        verification_post(app, "test", "issue", Some(cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    assert_eq!(body.as_object().unwrap().len(), 2);
+    let id = body["challenge_id"].as_str().unwrap().to_owned();
+    let requests = delivery.requests.lock().unwrap();
+    let request = requests.last().unwrap();
+    assert_eq!(
+        request.channel,
+        qid_core::notification::NotificationChannel::Email
+    );
+    assert_eq!(request.recipient, "ciam@example.com");
+    assert!(request.body.contains(&id));
+    let code = request
+        .body
+        .lines()
+        .find_map(|line| line.strip_prefix("Code: "))
+        .unwrap()
+        .to_owned();
+    assert_eq!(code.len(), 43);
+    let debug = format!("{request:?}");
+    for secret in [&code, &request.recipient, &request.provider] {
+        assert!(!debug.contains(secret));
+        assert!(!body.to_string().contains(secret));
+    }
+    (id, code)
+}
+
+fn confirmation(id: &str, code: &str) -> serde_json::Value {
+    serde_json::json!({"challenge_id":id,"code":code})
+}
+
+#[tokio::test]
+async fn email_verification_requires_session_configuration_and_accepted_delivery() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    for (config, transport) in [
+        (test_helpers::test_config(), None),
+        (verification_config(), None),
+        (
+            test_helpers::test_config(),
+            Some(delivery.clone() as Arc<dyn qid_core::notification::NotificationTransport>),
+        ),
+    ] {
+        let (app, state) = setup_with_transport(config, &[], transport).await;
+        assert_eq!(
+            verification_post(&app, "test", "issue", None, serde_json::json!({}))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let cookie = add_session(&state, "user-ciam").await;
+        assert_eq!(
+            verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({}))
+                .await
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+    let (app, state) =
+        setup_with_transport(verification_config(), &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    // No request authority other than the session and trusted stored email.
+    for field in [
+        "user_id",
+        "address",
+        "channel",
+        "purpose",
+        "now_epoch_seconds",
+        "ttl_seconds",
+        "code_hash",
+        "expires_at_epoch_seconds",
+    ] {
+        assert_eq!(
+            verification_post(
+                &app,
+                "test",
+                "issue",
+                Some(&cookie),
+                serde_json::json!({field:"forged"})
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mut body = confirmation("unknown", "code");
+        body[field] = "forged".into();
+        assert_eq!(
+            verification_post(&app, "test", "confirm", Some(&cookie), body)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    for status in [0, 202, 400, 500] {
+        delivery.outcome.store(status, Ordering::Relaxed);
+        let response =
+            verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = json(response).await.to_string();
+        let request = delivery.requests.lock().unwrap().last().unwrap().clone();
+        assert!(!body.contains("Code:"));
+        assert!(!body.contains(&request.recipient));
+        let id = request
+            .body
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("Email verification challenge: ")
+            .unwrap();
+        assert!(
+            state
+                .repo
+                .get_ciam_verification_challenge(&"test".into(), id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(
+        state
+            .repo
+            .list_audit_events(Some(&"test".into()), 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn email_verification_survives_state_restart_is_session_bound_and_one_use() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let (app, state) =
+        setup_with_transport(verification_config(), &["other"], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    let (id, code) = delivered(&app, &cookie, &delivery).await;
+    let challenge = state
+        .repo
+        .get_ciam_verification_challenge(&"test".into(), &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        challenge.expires_at_epoch_seconds - challenge.created_at_epoch_seconds,
+        600
+    );
+    assert!(!serde_json::to_string(&challenge).unwrap().contains(&code));
+    let audits = state
+        .repo
+        .list_audit_events(Some(&"test".into()), 100)
+        .await
+        .unwrap();
+    let audit = serde_json::to_string(&audits).unwrap();
+    assert!(audit.contains(&id));
+    assert!(audit.contains("200"));
+    for secret in [
+        &code,
+        "ciam@example.com",
+        "private-adapter",
+        "provider_message_id",
+    ] {
+        assert!(!audit.contains(secret));
+    }
+    assert_eq!(
+        verification_post(&app, "test", "confirm", None, confirmation(&id, &code))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        verification_post(
+            &app,
+            "other",
+            "confirm",
+            Some(&cookie),
+            confirmation(&id, &code)
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let mut user = state
+        .repo
+        .get_user_by_id("user-ciam")
+        .await
+        .unwrap()
+        .unwrap();
+    user.id = "another-user".into();
+    user.email = Some("another@example.com".into());
+    state.repo.create_user(&user).await.unwrap();
+    let other_cookie = add_session(&state, &user.id).await;
+    assert_eq!(
+        verification_post(
+            &app,
+            "test",
+            "confirm",
+            Some(&other_cookie),
+            confirmation(&id, &code)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    user.id = "realm-other-user".into();
+    user.realm_id = "other".into();
+    state.repo.create_user(&user).await.unwrap();
+    let foreign_cookie = add_session_in_realm(&state, "other", &user.id).await;
+    assert_eq!(
+        verification_post(
+            &app,
+            "other",
+            "confirm",
+            Some(&foreign_cookie),
+            confirmation(&id, &code)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        state
+            .repo
+            .get_ciam_verification_challenge(&"test".into(), &id)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt_count,
+        0
+    );
+    // Fresh state has no transport. Confirmation is based only on persisted
+    // authority, so it works after a restart/outage.
+    let fresh = Arc::new(
+        SharedState::new(
+            state.config.clone(),
+            state.repo.clone(),
+            Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests")),
+            serde_json::json!({}),
+        )
+        .unwrap(),
+    );
+    let app = qid_resource::resource_routes(&fresh.paths).with_state(fresh);
+    for (status, verified) in [(StatusCode::OK, true), (StatusCode::BAD_REQUEST, true)] {
+        assert_eq!(
+            verification_post(
+                &app,
+                "test",
+                "confirm",
+                Some(&cookie),
+                confirmation(&id, &code)
+            )
+            .await
+            .status(),
+            status
+        );
+        assert_eq!(
+            state
+                .repo
+                .get_user_by_id("user-ciam")
+                .await
+                .unwrap()
+                .unwrap()
+                .email_verified,
+            verified
+        );
+    }
+    let row = state
+        .repo
+        .get_ciam_verification_challenge(&"test".into(), &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.attempt_count, 1);
+    assert!(row.consumed_at_epoch_seconds.is_some());
+}
+
+#[tokio::test]
+async fn email_verification_bounds_attempts_rejects_stale_email_and_expiry() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(204, Ordering::Relaxed);
+    let mut config = verification_config();
+    config.realms[0]
+        .authentication
+        .email_verification
+        .max_attempts = 2;
+    config.realms[0]
+        .authentication
+        .email_verification
+        .ttl_seconds = 60;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    let (id, code) = delivered(&app, &cookie, &delivery).await;
+    assert_eq!(
+        verification_post(
+            &app,
+            "test",
+            "confirm",
+            Some(&cookie),
+            confirmation(&id, &"x".repeat(129))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    for candidate in ["wrong", "", &code] {
+        assert_eq!(
+            verification_post(
+                &app,
+                "test",
+                "confirm",
+                Some(&cookie),
+                confirmation(&id, candidate)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let row = state
+        .repo
+        .get_ciam_verification_challenge(&"test".into(), &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.expires_at_epoch_seconds - row.created_at_epoch_seconds,
+        60
+    );
+    assert_eq!(row.attempt_count, 2);
+    assert!(row.consumed_at_epoch_seconds.is_none());
+    let (stale, code) = delivered(&app, &cookie, &delivery).await;
+    let mut user = state
+        .repo
+        .get_user_by_id("user-ciam")
+        .await
+        .unwrap()
+        .unwrap();
+    user.email = Some("new@example.com".into());
+    state.repo.update_user(&user).await.unwrap();
+    assert_eq!(
+        verification_post(
+            &app,
+            "test",
+            "confirm",
+            Some(&cookie),
+            confirmation(&stale, &code)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut expired = row;
+    expired.id = "expired-challenge".into();
+    expired.address = "new@example.com".into();
+    expired.attempt_count = 0;
+    expired.expires_at_epoch_seconds = qid_core::util::now_seconds().saturating_sub(1);
+    expired.created_at_epoch_seconds = expired.expires_at_epoch_seconds.saturating_sub(10);
+    state
+        .repo
+        .store_ciam_verification_challenge(&expired)
+        .await
+        .unwrap();
+    for id in [&expired.id, "unknown"] {
+        assert_eq!(
+            verification_post(
+                &app,
+                "test",
+                "confirm",
+                Some(&cookie),
+                confirmation(id, &code)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    for id in [&stale, &expired.id] {
+        let row = state
+            .repo
+            .get_ciam_verification_challenge(&"test".into(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.attempt_count, 0);
+        assert!(row.consumed_at_epoch_seconds.is_none());
+    }
+    assert!(
+        !state
+            .repo
+            .get_user_by_id("user-ciam")
+            .await
+            .unwrap()
+            .unwrap()
+            .email_verified
+    );
+}
+
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn email_verification_logs_are_redacted_even_for_secret_bearing_adapter_errors() {
+    use tracing::instrument::WithSubscriber;
+    let delivery = Arc::new(VerificationDelivery::default());
+    let (app, state) =
+        setup_with_transport(verification_config(), &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    let capture = LogCapture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+    async {
+        delivery.outcome.store(200, Ordering::Relaxed);
+        let (id, code) = delivered(&app, &cookie, &delivery).await;
+        assert_eq!(
+            verification_post(
+                &app,
+                "test",
+                "confirm",
+                Some(&cookie),
+                confirmation(&id, &code)
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        delivery.outcome.store(0, Ordering::Relaxed);
+        assert_eq!(
+            verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({}))
+                .await
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+    .with_subscriber(subscriber)
+    .await;
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("mock delivery"));
+    for request in delivery.requests.lock().unwrap().iter() {
+        let code = request
+            .body
+            .lines()
+            .find_map(|line| line.strip_prefix("Code: "))
+            .unwrap();
+        for secret in [
+            code,
+            &request.recipient,
+            &request.provider,
+            "untrusted adapter error",
+        ] {
+            assert!(!logs.contains(secret), "logs exposed delivery data");
+        }
+    }
 }

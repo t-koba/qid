@@ -518,6 +518,21 @@ pub trait CiamRepository: Send + Sync + 'static {
         attempted_at: u64,
         max_attempts: u32,
     ) -> QidResult<()>;
+    /// Atomically confirm email ownership and consume its challenge. Returns false
+    /// for unavailable/foreign/expired (including equality)/stale-email challenges.
+    /// Active mismatches increment the durable bounded counter and return false.
+    /// Success increments once, consumes once and verifies only the bound current
+    /// email of this realm/user, in the same lock/transaction. Candidate hashes
+    /// are compared in constant time, never using caller-supplied verified flags.
+    async fn confirm_ciam_email_verification(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+        user_id: &str,
+        candidate_hash: &str,
+        attempted_at: u64,
+        max_attempts: u32,
+    ) -> QidResult<bool>;
     /// Trusted federation callers must validate provider proof before storing verified links.
     /// Session-only API callers cannot create or update links, regardless of verified status.
     /// External subjects are unique per realm/provider among verified links only;

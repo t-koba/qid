@@ -13,10 +13,10 @@ use lettre::message::Mailbox;
 use zeroize::Zeroizing;
 
 #[cfg(feature = "smtp-transport")]
-use crate::{NotificationChannel, NotificationRequest};
+use qid_core::notification::{NotificationChannel, NotificationRequest};
 
 #[cfg(feature = "smtp-transport")]
-use crate::{NotificationResponse, NotificationTransport};
+use qid_core::notification::{NotificationResponse, NotificationTransport};
 
 /// How the SMTP session is encrypted. Plaintext delivery is not supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -18,55 +18,6 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::VerificationChannel;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VerificationIssueRequest {
-    pub user_id: String,
-    pub channel: VerificationChannel,
-    pub address: String,
-    pub purpose: String,
-    pub now_epoch_seconds: u64,
-    pub ttl_seconds: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VerificationChallenge {
-    pub id: String,
-    pub user_id: String,
-    pub channel: VerificationChannel,
-    pub address: String,
-    pub purpose: String,
-    pub expires_at_epoch_seconds: u64,
-    pub delivery_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IssuedVerificationChallenge {
-    pub challenge: VerificationChallenge,
-    pub code_hash: String,
-    pub delivery_secret: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VerificationConfirmRequest {
-    pub challenge_id: String,
-    pub channel: VerificationChannel,
-    pub address: String,
-    pub purpose: String,
-    pub code: String,
-    pub code_hash: String,
-    pub expires_at_epoch_seconds: u64,
-    pub now_epoch_seconds: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VerificationConfirmResult {
-    pub verified: bool,
-    pub consumed: bool,
-    pub reason: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PasswordResetIssueRequest {
     pub user_id: String,
@@ -145,22 +96,6 @@ pub struct CiamProtectionDecision {
     pub rate_limit_key: String,
     pub retry_after_seconds: Option<u64>,
     pub max_attempts: u32,
-}
-
-pub async fn verification_issue<R: Repository>(
-    State(_state): State<Arc<SharedState<R>>>,
-    Path(_realm): Path<String>,
-    JsonObject(_req): JsonObject<VerificationIssueRequest>,
-) -> Response {
-    ciam_challenge_unavailable("challenge delivery is not implemented")
-}
-
-pub async fn verification_confirm<R: Repository>(
-    State(_state): State<Arc<SharedState<R>>>,
-    Path(_realm): Path<String>,
-    JsonObject(_req): JsonObject<VerificationConfirmRequest>,
-) -> Response {
-    ciam_challenge_unavailable("verification delivery and attempt protection are not implemented")
 }
 
 pub async fn password_reset_issue<R: Repository>(
@@ -254,69 +189,6 @@ pub async fn protection_evaluate<R: Repository>(
         "audit_event_id": event.id,
     }))
     .into_response()
-}
-
-pub fn issue_verification_challenge(
-    _realm: &str,
-    req: &VerificationIssueRequest,
-    pepper: &[u8],
-) -> QidResult<IssuedVerificationChallenge> {
-    if req.address.trim().is_empty() {
-        return Err(QidError::BadRequest {
-            message: "verification address must not be empty".to_string(),
-        });
-    }
-    if req.user_id.trim().is_empty() {
-        return Err(QidError::BadRequest {
-            message: "verification user_id must not be empty".to_string(),
-        });
-    }
-    if req.purpose.trim().is_empty() {
-        return Err(QidError::BadRequest {
-            message: "verification purpose must not be empty".to_string(),
-        });
-    }
-    if req.ttl_seconds == 0 || req.ttl_seconds > 3600 {
-        return Err(QidError::BadRequest {
-            message: "verification ttl_seconds must be between 1 and 3600".to_string(),
-        });
-    }
-    let code = generate_verification_code();
-    let now = util::now_seconds();
-    let challenge = VerificationChallenge {
-        id: format!("verify_{}", ulid::Ulid::new()),
-        user_id: req.user_id.clone(),
-        channel: req.channel.clone(),
-        address: req.address.clone(),
-        purpose: req.purpose.clone(),
-        expires_at_epoch_seconds: now + req.ttl_seconds,
-        delivery_ref: format!("verify_{}", ulid::Ulid::new()),
-    };
-    Ok(IssuedVerificationChallenge {
-        code_hash: verification_code_hash(pepper, &code, &req.address, &req.purpose),
-        delivery_secret: code,
-        challenge,
-    })
-}
-
-pub fn confirm_verification_challenge(
-    req: &VerificationConfirmRequest,
-    pepper: &[u8],
-) -> VerificationConfirmResult {
-    if util::now_seconds() > req.expires_at_epoch_seconds {
-        return VerificationConfirmResult {
-            verified: false,
-            consumed: false,
-            reason: Some("expired".to_string()),
-        };
-    }
-    let expected = verification_code_hash(pepper, &req.code, &req.address, &req.purpose);
-    let verified = util::constant_time_eq(&expected, &req.code_hash);
-    VerificationConfirmResult {
-        verified,
-        consumed: verified,
-        reason: (!verified).then(|| "code_mismatch".to_string()),
-    }
 }
 
 pub fn issue_password_reset(
@@ -516,18 +388,6 @@ fn ciam_protection_audit_event(
     }
 }
 
-fn generate_verification_code() -> String {
-    let mut bytes = [0u8; 8];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let value = u64::from_be_bytes(bytes) % 1_000_000;
-    format!("{value:06}")
-}
-
-fn verification_code_hash(pepper: &[u8], code: &str, address: &str, purpose: &str) -> String {
-    let digest = util::hmac_sha256_base64url(pepper, format!("{code}:{address}:{purpose}"));
-    format!("hmac-sha256:{digest}")
-}
-
 fn generate_password_reset_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
@@ -582,53 +442,6 @@ mod tests {
         assert_eq!(limited.outcome, CiamProtectionOutcome::RateLimit);
         assert_eq!(limited.retry_after_seconds, Some(120));
         assert!(limited.rate_limit_key.starts_with("ciam_rate_"));
-    }
-
-    #[test]
-    fn verification_challenge_confirms_once_and_rejects_expired_or_wrong_code() {
-        let req = VerificationIssueRequest {
-            user_id: "user-1".to_string(),
-            channel: VerificationChannel::Email,
-            address: "alice@example.com".to_string(),
-            purpose: "email_verification".to_string(),
-            now_epoch_seconds: 1_800_000_000,
-            ttl_seconds: 600,
-        };
-        let pepper = [7u8; 32];
-        let issued = issue_verification_challenge("corp", &req, &pepper).unwrap();
-        let challenge = issued.challenge;
-        let code = issued.delivery_secret;
-
-        let confirmed = confirm_verification_challenge(
-            &VerificationConfirmRequest {
-                challenge_id: challenge.id.clone(),
-                channel: VerificationChannel::Email,
-                address: req.address.clone(),
-                purpose: req.purpose.clone(),
-                code,
-                code_hash: issued.code_hash.clone(),
-                expires_at_epoch_seconds: challenge.expires_at_epoch_seconds,
-                now_epoch_seconds: 1_800_000_010,
-            },
-            &pepper,
-        );
-        assert!(confirmed.verified);
-        assert!(confirmed.consumed);
-
-        let expired = confirm_verification_challenge(
-            &VerificationConfirmRequest {
-                challenge_id: challenge.id,
-                channel: VerificationChannel::Email,
-                address: req.address,
-                purpose: req.purpose,
-                code: "000000".to_string(),
-                code_hash: issued.code_hash,
-                expires_at_epoch_seconds: util::now_seconds().saturating_sub(1),
-                now_epoch_seconds: 1_800_001_000,
-            },
-            &pepper,
-        );
-        assert_eq!(expired.reason.as_deref(), Some("expired"));
     }
 
     #[test]

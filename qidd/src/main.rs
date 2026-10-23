@@ -247,6 +247,11 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
         shared_state =
             shared_state.with_workload_ca(workload_ca.certificate_pem, workload_ca.private_key_pem);
     }
+    if let Some(transport) =
+        compose_notification_transport(&config).context("invalid server.notification")?
+    {
+        shared_state = shared_state.with_notification_transport(transport);
+    }
     let state: AppState = Arc::new(shared_state);
 
     let network_aaa_shutdown = start_network_aaa_listeners(&config, repo.clone())
@@ -1234,6 +1239,34 @@ fn client_matches_static_config(existing: &Client, expected: &Client) -> bool {
         && existing.grant_types == expected.grant_types
 }
 
+/// Compose the optional notification transport at the daemon boundary.
+///
+/// Absent configuration leaves the transport absent. A configured provider
+/// uses the worker HTTPS delivery or SMTP transport; unsupported or malformed
+/// providers and zero timeouts fail instead of creating a dry-run.
+fn compose_notification_transport(
+    config: &QidConfig,
+) -> anyhow::Result<Option<Arc<dyn qid_core::notification::NotificationTransport>>> {
+    let Some(notification) = &config.server.notification else {
+        return Ok(None);
+    };
+    notification.validate()?;
+    if qid_worker::is_smtp_provider(&notification.provider) {
+        let transport = qid_worker::SmtpTransport::from_env(
+            &notification.provider,
+            notification.timeout_seconds,
+        )
+        .map_err(|message| anyhow::anyhow!("{message}"))?;
+        return Ok(Some(Arc::new(transport)));
+    }
+    let transport = qid_worker::DeliveryTransport::https_for_notification(
+        notification.timeout_seconds,
+        notification.provider.clone(),
+    )
+    .map_err(|message| anyhow::anyhow!("{message}"))?;
+    Ok(Some(Arc::new(transport)))
+}
+
 fn state_dir(config_path: &Path) -> PathBuf {
     config_path
         .parent()
@@ -1661,6 +1694,7 @@ mod tests {
                 cors: CorsConfig::default(),
                 paths: ServerPaths::default(),
                 hsts: Default::default(),
+                notification: None,
                 quic: Default::default(),
             },
             admin: AdminConfig::default(),
@@ -1929,6 +1963,58 @@ mod tests {
         assert!(state_dir.join("signing-key.pem.bak").exists());
         assert!(!state_dir.join("signing-key.pem").exists());
         std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[test]
+    fn notification_transport_is_absent_without_configuration() {
+        let config = minimal_config();
+        assert!(
+            compose_notification_transport(&config)
+                .expect("absent notification composes")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn notification_transport_composes_https_and_rejects_bad_provider() {
+        let mut config = minimal_config();
+        config.server.notification = Some(qid_core::config::ServerNotificationConfig {
+            provider: "https://hooks.example.com/notify".to_string(),
+            timeout_seconds: 5,
+        });
+        assert!(
+            compose_notification_transport(&config)
+                .expect("https notification composes")
+                .is_some()
+        );
+
+        config.server.notification = Some(qid_core::config::ServerNotificationConfig {
+            provider: "https://hooks.example.com/notify".to_string(),
+            timeout_seconds: 0,
+        });
+        assert!(compose_notification_transport(&config).is_err());
+
+        config.server.notification = Some(qid_core::config::ServerNotificationConfig {
+            provider: "http://hooks.example.com/notify".to_string(),
+            timeout_seconds: 5,
+        });
+        let err = match compose_notification_transport(&config) {
+            Ok(_) => panic!("http must fail"),
+            Err(err) => err,
+        };
+        assert!(!err.to_string().contains("secret"));
+
+        for provider in [
+            "https://hooks.example.com/notify?access_token=secret",
+            "https://hooks.example.com/notify#fragment",
+            " https://hooks.example.com/notify",
+        ] {
+            config.server.notification = Some(qid_core::config::ServerNotificationConfig {
+                provider: provider.to_string(),
+                timeout_seconds: 5,
+            });
+            assert!(compose_notification_transport(&config).is_err());
+        }
     }
 
     #[test]

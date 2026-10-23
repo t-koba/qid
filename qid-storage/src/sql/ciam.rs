@@ -155,6 +155,57 @@ impl CiamRepository for SqlRepository {
         Ok(())
     }
 
+    async fn confirm_ciam_email_verification(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+        user_id: &str,
+        candidate_hash: &str,
+        attempted_at: u64,
+        max_attempts: u32,
+    ) -> QidResult<bool> {
+        let Ok(attempted_at_i64) = i64::try_from(attempted_at) else {
+            return Ok(false);
+        };
+        let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        // The first statement obtains the challenge write lock; no pre-read
+        // authorization or optimistic consume can race a competing confirmation.
+        let row: Option<CiamVerificationChallengeRow> = sqlx::query_as(
+            "UPDATE ciam_verification_challenges SET attempt_count = attempt_count + 1 WHERE realm_id = ? AND id = ? AND user_id = ? AND channel = 'email' AND purpose = 'email_verification' AND consumed_at_epoch_seconds IS NULL AND expires_at_epoch_seconds >= ? AND attempt_count < ? AND EXISTS (SELECT 1 FROM users WHERE users.id = ciam_verification_challenges.user_id AND users.realm_id = ciam_verification_challenges.realm_id AND users.email = ciam_verification_challenges.address) RETURNING *"
+        ).bind(realm_id.as_str()).bind(id).bind(user_id).bind(attempted_at_i64).bind(i64::from(max_attempts))
+            .fetch_optional(&mut *tx).await.map_err(storage_to_qid_error)?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let challenge: CiamVerificationChallengeRecord = row.into();
+        let verified = qid_core::util::constant_time_eq(
+            challenge.code_hash.as_bytes(),
+            candidate_hash.as_bytes(),
+        );
+        if verified {
+            // Conditional write locks the user too. If its contact changed since
+            // the first statement, rollback the attempt as well as consumption.
+            let result = sqlx::query(
+                "UPDATE users SET email_verified = 1 WHERE id = ? AND realm_id = ? AND email = ?",
+            )
+            .bind(user_id)
+            .bind(realm_id.as_str())
+            .bind(&challenge.address)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+            if result.rows_affected() != 1 {
+                tx.rollback().await.map_err(storage_to_qid_error)?;
+                return Ok(false);
+            }
+            sqlx::query("UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = ? WHERE realm_id = ? AND id = ?")
+                .bind(attempted_at_i64).bind(realm_id.as_str()).bind(id)
+                .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
+        }
+        tx.commit().await.map_err(storage_to_qid_error)?;
+        Ok(verified)
+    }
+
     async fn store_ciam_identity_link(&self, link: &CiamIdentityLink) -> QidResult<()> {
         link.validate()?;
         let existing: Option<CiamIdentityLinkRow> =

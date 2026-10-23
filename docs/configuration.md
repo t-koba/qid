@@ -84,6 +84,38 @@ Important subkeys:
 - `paths`: configurable canonical paths for health, discovery, OAuth, session auth, WebAuthn, PEP, logout, CAPPORT details, and related endpoints.
 - `quic`: opt-in QUIC listener, disabled by default. When `enabled`, `bind` (default `[::]:4433`) must be a valid socket address, `certificate_path` and `private_key_path` must point at readable certificate/key material, and `max_bidi_streams` must be positive. `qidd` only serves QUIC when built with its `quic` cargo feature; otherwise enabling `server.quic` fails startup. This remains a helper-level transport: it accepts and drains bidirectional streams and makes no mdoc/OID4VP interoperability claim.
 
+### Notification delivery
+
+`server.notification` is optional and absent by default: no transport is composed
+and email-verification issuance fails closed. Configure one delivery provider:
+
+```yaml
+server:
+  notification:
+    provider: https://notifications.example.com/deliver
+    timeout_seconds: 10
+realms:
+  - id: example
+    # Other required realm fields omitted.
+    authentication:
+      email_verification:
+        ttl_seconds: 600
+        max_attempts: 5
+```
+
+`provider` must be an absolute HTTPS adapter URL (no user information, query or
+fragment), or an `smtp://` / `smtps://` server URL (no credentials, query, fragment
+or path other than `/`). `timeout_seconds` defaults to `10` and must be positive.
+The daemon composes the existing worker HTTPS/SMTP implementation; resource APIs
+use only the core transport contract, not a separate provider framework. HTTPS
+receives the worker notification JSON envelope (`channel`, `provider`,
+`recipient`, `subject`, `body`, `template_id`, `data_json`). SMTP uses the existing
+worker environment configuration (`QID_SMTP_FROM`, optional paired
+`QID_SMTP_USERNAME` / `QID_SMTP_PASSWORD`); credentials must not be placed in the
+provider URL. Provider configuration and request/response debug output redact
+secret-bearing values. Adapter acceptance is not verification: only a correctly
+confirmed, persisted challenge can verify a stored email address.
+
 Path values must start with `/`, must not be empty, and must be unique. `paths.capport_details` must additionally contain an Axum `:realm` segment and must not reuse the fixed CAPPORT bind, unbind, or lookup path.
 
 OAuth clients using `tls_client_auth` or `self_signed_tls_client_auth` can authenticate directly to `qidd` when `tls.client_ca` is configured. The TLS layer validates the certificate path before the OAuth layer binds the SHA-256 leaf thumbprint. Authenticated PEP-provided mTLS metadata remains available for deployments that terminate client TLS at a registered enforcement point.
@@ -364,6 +396,7 @@ naming the key.
 
 - `passkeys.enabled`, `rp_id`, `rp_origin`, `rp_name`, `preferred`, optional `attestation`
 - `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `max_failed_attempts_per_realm`, `argon2id`, `pepper`
+- `email_verification.ttl_seconds` (default `600`, allowed `1..=3600`) and `email_verification.max_attempts` (default `5`, positive): persisted session-bound email challenge policy.
 - `mfa.totp.enabled`
 - `passwordless_only`
 

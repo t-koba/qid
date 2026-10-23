@@ -29,6 +29,8 @@ rcgen.workspace = true
 time.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+tracing-subscriber.workspace = true
 http-body-util = { workspace = true }
 qid-core = { workspace = true, features = ["test-utils"] }
 qid-storage = { workspace = true }

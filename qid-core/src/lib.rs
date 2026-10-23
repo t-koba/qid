@@ -7,6 +7,7 @@ pub mod error;
 pub mod event;
 pub mod jwt;
 pub mod models;
+pub mod notification;
 pub mod oauth;
 pub mod pkce;
 pub mod plan;

@@ -24,21 +24,9 @@ pub struct NotificationDeliveryConfig {
     pub retry_policy: NotificationRetryPolicy,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationChannel {
-    Email,
-    Push,
-}
-
-impl NotificationChannel {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Email => "email",
-            Self::Push => "push",
-        }
-    }
-}
+pub use qid_core::notification::{
+    NotificationChannel, NotificationRequest, NotificationResponse, NotificationTransport,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NotificationRetryPolicy {
@@ -68,24 +56,6 @@ pub struct NotificationRetryDecision {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NotificationRequest {
-    pub channel: NotificationChannel,
-    pub provider: String,
-    pub recipient: String,
-    pub subject: Option<String>,
-    pub body: String,
-    pub template_id: Option<String>,
-    pub data_json: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NotificationResponse {
-    pub status: u16,
-    pub provider_message_id: Option<String>,
-    pub sent: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NotificationDeliveryReport {
     pub status: NotificationDeliveryStatus,
     pub realm_id: Option<String>,
@@ -105,11 +75,6 @@ pub enum NotificationDeliveryStatus {
     FailedRetryable,
     FailedPermanent,
     SkippedDryRun,
-}
-
-#[async_trait::async_trait]
-pub trait NotificationTransport {
-    async fn send(&self, request: NotificationRequest) -> Result<NotificationResponse, String>;
 }
 
 pub async fn run_notification_delivery_job<R, T>(

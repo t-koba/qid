@@ -13,6 +13,8 @@ pub const PASSWORD_HASH_ALGORITHM: &str = "argon2id";
 #[serde(deny_unknown_fields)]
 pub struct AuthenticationConfig {
     #[serde(default)]
+    pub email_verification: EmailVerificationConfig,
+    #[serde(default)]
     pub passkeys: PasskeyConfig,
     #[serde(default)]
     pub password: PasswordConfig,
@@ -22,6 +24,34 @@ pub struct AuthenticationConfig {
     /// Passkeys must be enabled. Password config is ignored.
     #[serde(default = "default_false")]
     pub passwordless_only: bool,
+}
+
+/// Policy for delivered, session-bound email ownership challenges.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmailVerificationConfig {
+    pub ttl_seconds: u64,
+    pub max_attempts: u32,
+}
+
+impl Default for EmailVerificationConfig {
+    fn default() -> Self {
+        Self {
+            ttl_seconds: 600,
+            max_attempts: 5,
+        }
+    }
+}
+
+impl EmailVerificationConfig {
+    pub(crate) fn validate(&self) -> QidResult<()> {
+        if !(1..=3600).contains(&self.ttl_seconds) || self.max_attempts == 0 {
+            return Err(QidError::Config {
+                message: "authentication.email_verification requires ttl_seconds in 1..=3600 and positive max_attempts".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

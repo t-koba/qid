@@ -60,6 +60,7 @@ fn config() -> QidConfig {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),

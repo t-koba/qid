@@ -1,6 +1,8 @@
 //! CIAM control-plane helpers.
 
 pub mod auth;
+mod verification;
+pub use verification::*;
 pub mod identity_links;
 pub mod profile;
 

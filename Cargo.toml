@@ -139,7 +139,12 @@ exclude = ["vendor/rustls"]
 # Persisted CIAM verification attempts add 25 measured source lines
 # (106940 -> 106965): one serde-compatible counter and one atomic storage
 # operation implemented by the required file and SQL backends.
-total = 106965
+# Notification transport seam adds 191 measured source lines
+# (106965 -> 107156): owner-neutral core contract, optional server
+# notification config, absent-by-default shared-state transport, worker
+# re-export/import, and daemon-only HTTPS/SMTP composition; per-crate
+# limits still pass and new contract tests are uncapped.
+total = 107156
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

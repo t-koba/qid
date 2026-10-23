@@ -316,6 +316,8 @@ pub struct ServerConfig {
     #[serde(default)]
     pub tls: Option<TlsConfig>,
     #[serde(default)]
+    pub notification: Option<ServerNotificationConfig>,
+    #[serde(default)]
     pub http_message_signatures: HttpMessageSignaturesConfig,
     #[serde(default)]
     pub cors: CorsConfig,
@@ -325,6 +327,97 @@ pub struct ServerConfig {
     pub hsts: HstsConfig,
     #[serde(default)]
     pub quic: QuicConfig,
+}
+
+/// Optional server notification transport. Absent means no transport is
+/// composed; a present value must name a supported provider and a positive
+/// timeout. Secrets never appear in errors or serialization.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ServerNotificationConfig {
+    pub provider: String,
+    #[serde(default = "default_notification_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl std::fmt::Debug for ServerNotificationConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerNotificationConfig")
+            .field("provider", &"<redacted>")
+            .field("timeout_seconds", &self.timeout_seconds)
+            .finish()
+    }
+}
+
+fn default_notification_timeout_seconds() -> u64 {
+    10
+}
+
+impl ServerNotificationConfig {
+    pub fn validate(&self) -> QidResult<()> {
+        if self.timeout_seconds == 0 {
+            return Err(QidError::Config {
+                message: "server.notification.timeout_seconds must be greater than zero"
+                    .to_string(),
+            });
+        }
+        if self.provider.trim() != self.provider {
+            return Err(QidError::Config {
+                message: "server.notification.provider must not contain surrounding whitespace"
+                    .to_string(),
+            });
+        }
+        let url = url::Url::parse(&self.provider).map_err(|_| QidError::Config {
+            message: "server.notification.provider must be an absolute https:// or smtp(s):// URL"
+                .to_string(),
+        })?;
+        match url.scheme() {
+            "https" => {
+                if url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                {
+                    return Err(QidError::Config {
+                        message:
+                            "server.notification.provider must be https:// without user information, query or fragment"
+                                .to_string(),
+                    });
+                }
+                Ok(())
+            }
+            "smtp" | "smtps" => {
+                if !url.username().is_empty() || url.password().is_some() {
+                    return Err(QidError::Config {
+                        message: "server.notification.provider must not contain credentials"
+                            .to_string(),
+                    });
+                }
+                if url.query().is_some() || url.fragment().is_some() {
+                    return Err(QidError::Config {
+                        message: "server.notification.provider must not contain query or fragment"
+                            .to_string(),
+                    });
+                }
+                if !url.path().is_empty() && url.path() != "/" {
+                    return Err(QidError::Config {
+                        message: "server.notification.provider must not contain a path".to_string(),
+                    });
+                }
+                if url.host_str().is_none_or(|host| host.trim().is_empty()) {
+                    return Err(QidError::Config {
+                        message: "server.notification.provider must name a server host".to_string(),
+                    });
+                }
+                Ok(())
+            }
+            _ => Err(QidError::Config {
+                message: "server.notification.provider must use https://, smtp:// or smtps://"
+                    .to_string(),
+            }),
+        }
+    }
 }
 
 impl ServerConfig {
@@ -343,6 +436,9 @@ impl ServerConfig {
         self.quic.validate()?;
         if let Some(tls) = &self.tls {
             tls.validate()?;
+        }
+        if let Some(notification) = &self.notification {
+            notification.validate()?;
         }
         Ok(())
     }

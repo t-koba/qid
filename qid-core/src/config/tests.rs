@@ -12,6 +12,7 @@ fn minimal_config() -> QidConfig {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -145,6 +146,7 @@ fn test_minimal_config_validation() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -398,6 +400,7 @@ fn test_duplicate_realm_rejected() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -448,6 +451,7 @@ fn test_config_validation_no_realms() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -474,6 +478,7 @@ fn test_issuer_url_validation() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -541,6 +546,7 @@ fn ops_config_rejects_incomplete_cache_and_multi_region() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -1015,6 +1021,7 @@ fn saml_service_provider_config_validates_trust_material() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -1090,6 +1097,7 @@ fn saml_service_provider_config_rejects_duplicates_and_missing_encryption() {
             cors: CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),
@@ -2302,4 +2310,127 @@ pepper:
             .is_err()
         );
     }
+}
+
+#[test]
+fn server_notification_is_absent_by_default() {
+    let config = minimal_config();
+    assert!(config.server.notification.is_none());
+    config.validate().expect("minimal config validates");
+}
+
+#[test]
+fn server_notification_accepts_supported_providers() {
+    for provider in [
+        "https://hooks.example.com/notify",
+        "smtp://mail.example.com",
+        "smtps://mail.example.com:465",
+    ] {
+        let mut config = minimal_config();
+        config.server.notification = Some(ServerNotificationConfig {
+            provider: provider.to_string(),
+            timeout_seconds: 10,
+        });
+        config.validate().expect("supported provider validates");
+    }
+}
+
+#[test]
+fn server_notification_rejects_invalid_provider_and_timeout() {
+    for provider in [
+        "",
+        "not-a-url",
+        "http://hooks.example.com/notify",
+        "ftp://hooks.example.com/notify",
+        "https://user:secret@hooks.example.com/notify",
+        "https://hooks.example.com/notify?access_token=secret",
+        "https://hooks.example.com/notify#fragment",
+        " https://hooks.example.com/notify",
+        "smtp://user:secret@mail.example.com",
+        "smtp://mail.example.com?tls=required",
+        "smtp://mail.example.com#fragment",
+        "smtp://mail.example.com/ehlo",
+        "smtp://",
+    ] {
+        let mut config = minimal_config();
+        config.server.notification = Some(ServerNotificationConfig {
+            provider: provider.to_string(),
+            timeout_seconds: 10,
+        });
+        let message = config
+            .validate()
+            .expect_err("invalid provider must fail")
+            .to_string();
+        assert!(
+            message.contains("server.notification.provider"),
+            "unexpected message for {provider:?}: {message}"
+        );
+        assert!(
+            !message.contains("secret"),
+            "notification error must not echo credentials: {message}"
+        );
+    }
+    let mut config = minimal_config();
+    config.server.notification = Some(ServerNotificationConfig {
+        provider: "https://hooks.example.com/notify".to_string(),
+        timeout_seconds: 0,
+    });
+    let message = config
+        .validate()
+        .expect_err("zero timeout must fail")
+        .to_string();
+    assert!(message.contains("server.notification.timeout_seconds"));
+}
+
+#[test]
+fn server_notification_debug_redacts_provider_url() {
+    let notification = ServerNotificationConfig {
+        provider: "https://hooks.example.com/path-secret".to_string(),
+        timeout_seconds: 10,
+    };
+    let debug = format!("{notification:?}");
+    assert!(!debug.contains("path-secret"));
+    assert!(debug.contains("<redacted>"));
+}
+
+#[test]
+fn email_verification_policy_defaults_and_bounds() {
+    let mut config = minimal_config();
+    let policy = &config.realms[0].authentication.email_verification;
+    assert_eq!((policy.ttl_seconds, policy.max_attempts), (600, 5));
+    for (ttl, attempts) in [(1, 1), (3600, 10)] {
+        config.realms[0].authentication.email_verification = EmailVerificationConfig {
+            ttl_seconds: ttl,
+            max_attempts: attempts,
+        };
+        config.validate().unwrap();
+    }
+    for (ttl, attempts) in [(0, 5), (3601, 5), (600, 0)] {
+        config.realms[0].authentication.email_verification = EmailVerificationConfig {
+            ttl_seconds: ttl,
+            max_attempts: attempts,
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("email_verification")
+        );
+    }
+    assert!(
+        serde_json::from_value::<EmailVerificationConfig>(serde_json::json!({"unexpected":1}))
+            .is_err()
+    );
+    let parsed: AuthenticationConfig = serde_json::from_value(serde_json::json!({
+        "email_verification":{"ttl_seconds":120,"max_attempts":2}
+    }))
+    .unwrap();
+    assert_eq!(
+        (
+            parsed.email_verification.ttl_seconds,
+            parsed.email_verification.max_attempts
+        ),
+        (120, 2)
+    );
 }

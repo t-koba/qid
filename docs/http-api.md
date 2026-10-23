@@ -263,11 +263,50 @@ realms return HTTP 404.
 | `GET` | `/api/v1/:realm/ciam/users/:user_id/identity-links` | List identity links. |
 | `DELETE` | `/api/v1/:realm/ciam/identity-links/:link_id` | Delete identity link. |
 | `GET` | `/api/v1/:realm/ciam/privacy/:user_id` | Privacy dashboard. |
-| `POST` | `/api/v1/:realm/ciam/verification/issue` | Returns `501 Not Implemented` until a delivery mechanism is implemented; no challenge is stored. |
-| `POST` | `/api/v1/:realm/ciam/verification/confirm` | Returns `501 Not Implemented` until delivery and finite per-challenge attempt protection are implemented; no challenge is read or consumed. |
+| `POST` | `/api/v1/:realm/ciam/verification/issue` | Issue an email ownership challenge to the authenticated session owner’s stored email; configured delivery required. |
+| `POST` | `/api/v1/:realm/ciam/verification/confirm` | Confirm a persisted email challenge for the authenticated same-realm session owner; bounded attempts and atomic one-use verification. |
 | `POST` | `/api/v1/:realm/ciam/password-reset/issue` | Returns `501 Not Implemented` until a delivery mechanism is implemented; no reset token is stored. |
 | `POST` | `/api/v1/:realm/ciam/password-reset/consume` | Consume password reset. |
 | `POST` | `/api/v1/:realm/ciam/protection/evaluate` | Protection/risk evaluation. |
+
+### Email verification
+
+There is no public signup route. User creation at `/admin/api/v1/:realm/users`
+requires admin authority and starts with `email_verified=false`; an unverified
+account can authenticate with its password. Both verification routes require an
+active browser session in the path realm. Issuance accepts only `{}` and resolves
+the user and recipient from that session and the repository. It always sends an
+email with purpose `email_verification`; callers cannot select identity, address,
+channel, purpose, time or policy. Unknown request fields are rejected.
+
+Configure `server.notification` and the realm's
+`authentication.email_verification` policy (see [configuration](configuration.md)).
+Without both configuration and a composed transport, issuance returns `503`.
+Only adapter acceptance (`sent=true` and HTTP-equivalent status `200..299`)
+persists a challenge and appends a redacted delivery-acceptance audit event; this
+is not proof of address ownership. Transport failure or non-acceptance returns
+`503` without storing a challenge or logging adapter error details. The success
+response is only `{"challenge_id":"verify_…","expires_at_epoch_seconds":…}`.
+Neither the secret, hash, recipient nor user ID is returned. Delivery contains
+both the challenge ID and a random 32-byte base64url secret (the `code`).
+
+Confirmation accepts only `{"challenge_id":"verify_…","code":"…"}` (each string
+at most 128 bytes), with no client-supplied hash, expiry or time. It loads the
+persisted realm/owner/address/purpose binding and uses server time. Only a
+versioned, domain-separated SHA-256 hash of the high-entropy secret and binding
+is stored; confirmation survives process restarts and does not require a live
+notification adapter. A valid attempt atomically verifies the user's still-exact
+stored email and consumes the challenge. Active mismatches spend the configured
+attempt budget; unknown, foreign, wrong-owner, stale-email, consumed, exhausted
+and expired challenges are refused with `400`. Expiry is inclusive (`now <=
+expires_at`). Success returns `{"verified":true}`; replay cannot succeed.
+
+Delivery happens before persistence, so a storage failure can leave an unusable
+message; retry issuance in that case. If persistence succeeds but the audit or
+HTTP response fails, the ID included in the message permits confirmation from
+the owning session without needing the issue response. Password-reset routes
+retain their separate behavior below; this is not public registration or
+password-reset initiation.
 
 Identity links are written only by trusted federation callbacks after validating provider
 assertions. The session-only POST surface rejects both `verified: true` and

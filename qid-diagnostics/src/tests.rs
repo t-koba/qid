@@ -22,6 +22,7 @@ fn minimal_config() -> QidConfig {
             cors: qid_core::config::CorsConfig::default(),
             paths: ServerPaths::default(),
             hsts: Default::default(),
+            notification: None,
             quic: Default::default(),
         },
         admin: AdminConfig::default(),

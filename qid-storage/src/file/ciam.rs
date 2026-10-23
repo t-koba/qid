@@ -59,23 +59,37 @@ impl CiamRepository for FileRepository {
         challenge: &CiamVerificationChallengeRecord,
     ) -> QidResult<()> {
         challenge.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(
+        let repo = self.clone();
+        let challenge = challenge.clone();
+        // Complete durability/rollback even if the HTTP caller disconnects.
+        tokio::spawn(async move {
+            let save_guard = repo.save_lock.lock().await;
+            let mut store = repo.store.write().await;
+            reject_duplicate_id(
+                store
+                    .ciam_verification_challenges
+                    .contains_key(&challenge.id),
+                || "CIAM verification challenge ID already exists".into(),
+            )?;
             store
                 .ciam_verification_challenges
-                .contains_key(&challenge.id),
-            || {
-                format!(
-                    "CIAM verification challenge ID {} already exists",
-                    challenge.id
-                )
-            },
-        )?;
-        store
-            .ciam_verification_challenges
-            .insert(challenge.id.clone(), challenge.clone());
-        drop(store);
-        self.save().await
+                .insert(challenge.id.clone(), challenge.clone());
+            let result = async {
+                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
+                    message: "challenge serialization failed".into(),
+                })?;
+                repo.write_store_content_locked(&save_guard, &content).await
+            }
+            .await;
+            if result.is_err() {
+                store.ciam_verification_challenges.remove(&challenge.id);
+            }
+            result
+        })
+        .await
+        .map_err(|_| QidError::Internal {
+            message: "challenge persistence task failed".into(),
+        })?
     }
 
     async fn get_ciam_verification_challenge(
@@ -125,6 +139,101 @@ impl CiamRepository for FileRepository {
         }
         drop(store);
         self.save().await
+    }
+
+    async fn confirm_ciam_email_verification(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+        user_id: &str,
+        candidate_hash: &str,
+        attempted_at: u64,
+        max_attempts: u32,
+    ) -> QidResult<bool> {
+        let repo = self.clone();
+        let (realm_id, id, user_id, candidate_hash) = (
+            realm_id.clone(),
+            id.to_owned(),
+            user_id.to_owned(),
+            candidate_hash.to_owned(),
+        );
+        tokio::spawn(async move {
+            // Persist both mutations together, even with interval-flush config.
+            let save_guard = repo.save_lock.lock().await;
+            let mut store = repo.store.write().await;
+            let Some(challenge) = store
+                .ciam_verification_challenges
+                .get(&id)
+                .filter(|c| {
+                    c.realm_id == realm_id.0
+                        && c.user_id == user_id
+                        && c.channel == "email"
+                        && c.purpose == "email_verification"
+                        && c.consumed_at_epoch_seconds.is_none()
+                        && attempted_at <= c.expires_at_epoch_seconds
+                        && c.attempt_count < max_attempts
+                })
+                .cloned()
+            else {
+                return Ok(false);
+            };
+            let Some(user) = store
+                .users
+                .get(&user_id)
+                .filter(|u| {
+                    u.realm_id == realm_id.0
+                        && u.email.as_deref() == Some(challenge.address.as_str())
+                })
+                .cloned()
+            else {
+                return Ok(false);
+            };
+            let verified = qid_core::util::constant_time_eq(
+                challenge.code_hash.as_bytes(),
+                candidate_hash.as_bytes(),
+            );
+            {
+                let Some(current) = store.ciam_verification_challenges.get_mut(&id) else {
+                    return Err(QidError::Internal {
+                        message: "CIAM verification challenge disappeared during confirmation"
+                            .into(),
+                    });
+                };
+                current.attempt_count += 1;
+                if verified {
+                    current.consumed_at_epoch_seconds = Some(attempted_at);
+                }
+            }
+            if verified {
+                let Some(current_user) = store.users.get_mut(&user_id) else {
+                    store
+                        .ciam_verification_challenges
+                        .insert(id.clone(), challenge.clone());
+                    store.users.insert(user_id.clone(), user.clone());
+                    return Err(QidError::Internal {
+                        message: "CIAM verification owner disappeared during confirmation".into(),
+                    });
+                };
+                current_user.email_verified = true;
+            }
+            let result = async {
+                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
+                    message: "challenge serialization failed".into(),
+                })?;
+                repo.write_store_content_locked(&save_guard, &content).await
+            }
+            .await;
+            if let Err(error) = result {
+                store.ciam_verification_challenges.insert(id, challenge);
+                store.users.insert(user_id, user);
+                return Err(error);
+            }
+            Ok(verified)
+        })
+        .await
+        .map_err(|_| QidError::Internal {
+            message: "email verification task failed".into(),
+        })?
     }
 
     async fn store_ciam_identity_link(&self, link: &CiamIdentityLink) -> QidResult<()> {

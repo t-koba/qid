@@ -54,12 +54,13 @@ pub struct SharedState<Repository> {
     /// of failed password logins here.
     pub failure_budget: Arc<FailureBudget>,
     native_mtls_metadata_key: Vec<u8>,
-    /// Process-local pepper for short-lived CIAM verification challenges.
-    pub ciam_verification_pepper: Vec<u8>,
     /// PEM-encoded workload CA certificate used to issue X.509-SVIDs.
     pub workload_ca_certificate_pem: Option<String>,
     /// PEM-encoded workload CA private key used to issue X.509-SVIDs.
     pub workload_ca_private_key_pem: Option<String>,
+    /// Optional configured notification transport. Absent by default.
+    pub notification_transport:
+        Option<std::sync::Arc<dyn crate::notification::NotificationTransport>>,
 }
 
 impl<Repository> SharedState<Repository> {
@@ -97,9 +98,9 @@ impl<Repository> SharedState<Repository> {
             shared_cache,
             failure_budget: Arc::new(FailureBudget::new()),
             native_mtls_metadata_key: random_pepper(),
-            ciam_verification_pepper: random_pepper(),
             workload_ca_certificate_pem: None,
             workload_ca_private_key_pem: None,
+            notification_transport: None,
             jwks,
             paths,
         })
@@ -122,6 +123,14 @@ impl<Repository> SharedState<Repository> {
     pub fn with_workload_ca(mut self, certificate_pem: String, private_key_pem: String) -> Self {
         self.workload_ca_certificate_pem = Some(certificate_pem);
         self.workload_ca_private_key_pem = Some(private_key_pem);
+        self
+    }
+
+    pub fn with_notification_transport(
+        mut self,
+        transport: std::sync::Arc<dyn crate::notification::NotificationTransport>,
+    ) -> Self {
+        self.notification_transport = Some(transport);
         self
     }
 
@@ -296,6 +305,7 @@ mod tests {
                 cors: CorsConfig::default(),
                 paths: ServerPaths::default(),
                 hsts: Default::default(),
+                notification: None,
                 quic: Default::default(),
             },
             admin: AdminConfig::default(),

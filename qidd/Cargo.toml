@@ -46,6 +46,7 @@ qid-scim = { workspace = true }
 qid-session = { workspace = true }
 qid-storage = { workspace = true }
 qid-vc = { workspace = true }
+qid-worker = { workspace = true, features = ["smtp-transport"] }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }

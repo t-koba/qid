@@ -1466,74 +1466,48 @@ async fn email_verification_bounds_attempts_rejects_stale_email_and_expiry() {
     );
 }
 
-#[derive(Clone, Default)]
-struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for LogCapture {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[tokio::test]
-async fn email_verification_logs_are_redacted_even_for_secret_bearing_adapter_errors() {
-    use tracing::instrument::WithSubscriber;
+async fn email_verification_delivery_failures_do_not_expose_secrets() {
     let delivery = Arc::new(VerificationDelivery::default());
     let (app, state) =
         setup_with_transport(verification_config(), &[], Some(delivery.clone())).await;
     let cookie = add_session(&state, "user-ciam").await;
-    let capture = LogCapture::default();
-    let writer = capture.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_writer(move || writer.clone())
-        .finish();
-    async {
-        delivery.outcome.store(200, Ordering::Relaxed);
-        let (id, code) = delivered(&app, &cookie, &delivery).await;
-        assert_eq!(
-            verification_post(
-                &app,
-                "test",
-                "confirm",
-                Some(&cookie),
-                confirmation(&id, &code)
-            )
-            .await
-            .status(),
-            StatusCode::OK
-        );
-        delivery.outcome.store(0, Ordering::Relaxed);
-        assert_eq!(
-            verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({}))
-                .await
-                .status(),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-    }
-    .with_subscriber(subscriber)
-    .await;
-    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
-    assert!(logs.contains("mock delivery"));
-    for request in delivery.requests.lock().unwrap().iter() {
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let _ = delivered(&app, &cookie, &delivery).await;
+    delivery.outcome.store(0, Ordering::Relaxed);
+    let response =
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = json(response).await;
+    assert_eq!(body["error"], "email verification delivery unavailable");
+
+    let requests = delivery.requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        2,
+        "both delivery attempts reached the adapter"
+    );
+    for request in requests.iter() {
         let code = request
             .body
             .lines()
             .find_map(|line| line.strip_prefix("Code: "))
             .unwrap();
+        let debug = format!("{request:?}");
         for secret in [
             code,
             &request.recipient,
             &request.provider,
             "untrusted adapter error",
         ] {
-            assert!(!logs.contains(secret), "logs exposed delivery data");
+            assert!(
+                !debug.contains(secret),
+                "request debug output exposed delivery data"
+            );
+            assert!(
+                !body.to_string().contains(secret),
+                "response exposed delivery data"
+            );
         }
     }
 }

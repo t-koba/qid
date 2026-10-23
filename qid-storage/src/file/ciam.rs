@@ -105,9 +105,11 @@ impl CiamRepository for FileRepository {
             .ok_or_else(|| QidError::NotFound {
                 resource: format!("CIAM verification challenge {id}"),
             })?;
-        if challenge.consumed_at_epoch_seconds.is_some() {
+        if challenge.consumed_at_epoch_seconds.is_some()
+            || consumed_at > challenge.expires_at_epoch_seconds
+        {
             return Err(QidError::Conflict {
-                message: "CIAM verification challenge already consumed".to_string(),
+                message: "CIAM verification challenge already consumed or expired".to_string(),
             });
         }
         challenge.consumed_at_epoch_seconds = Some(consumed_at);

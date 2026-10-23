@@ -1611,12 +1611,24 @@ where
             Some(challenge.clone())
         );
     }
-    repo.consume_ciam_verification_challenge(&realm, &challenge.id, 1_700_000_050)
+    let err = repo
+        .consume_ciam_verification_challenge(&realm, &challenge.id, 1_700_000_101)
         .await
-        .expect("consume incumbent CIAM verification challenge failed");
+        .expect_err("an expired challenge must not be consumed");
+    assert!(matches!(err, qid_core::error::QidError::Conflict { .. }));
+    assert_eq!(
+        repo.get_ciam_verification_challenge(&realm, &challenge.id)
+            .await
+            .expect("get challenge after expired consumption failed"),
+        Some(challenge.clone()),
+        "expired consumption must leave the challenge unchanged"
+    );
+    repo.consume_ciam_verification_challenge(&realm, &challenge.id, 1_700_000_100)
+        .await
+        .expect("a challenge is valid at the inclusive expiry second");
     for (attempt_realm, is_owner) in [(&realm, true), (&other_realm, false)] {
         let err = repo
-            .consume_ciam_verification_challenge(attempt_realm, &challenge.id, 1_700_000_060)
+            .consume_ciam_verification_challenge(attempt_realm, &challenge.id, 1_700_000_101)
             .await
             .expect_err("consumed challenge must not be consumed again");
         assert!(
@@ -1671,7 +1683,7 @@ where
     assert_eq!(
         stored,
         CiamVerificationChallengeRecord {
-            consumed_at_epoch_seconds: Some(1_700_000_050),
+            consumed_at_epoch_seconds: Some(1_700_000_100),
             ..challenge
         }
     );

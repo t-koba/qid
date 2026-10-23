@@ -119,11 +119,11 @@ impl CiamRepository for SqlRepository {
         consumed_at: u64,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = ? WHERE realm_id = ? AND id = ? AND consumed_at_epoch_seconds IS NULL",
+            "UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = ? WHERE realm_id = ? AND id = ? AND consumed_at_epoch_seconds IS NULL AND expires_at_epoch_seconds >= ?",
         )
         .bind(consumed_at as i64)
         .bind(realm_id.as_str())
-        .bind(id)
+        .bind(id).bind(consumed_at as i64)
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
@@ -140,9 +140,9 @@ impl CiamRepository for SqlRepository {
                     resource: format!("CIAM verification challenge {id}"),
                 });
             }
-            // A consumed incumbent conflicts; fail closed if it is still unconsumed.
+            // A consumed or expired incumbent conflicts.
             return Err(QidError::Conflict {
-                message: "CIAM verification challenge already consumed".to_string(),
+                message: "CIAM verification challenge already consumed or expired".to_string(),
             });
         }
         Ok(())

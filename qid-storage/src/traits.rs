@@ -575,6 +575,8 @@ pub trait WorkloadRepository: Send + Sync + 'static {
         realm_id: &RealmId,
         workload_id: Option<&str>,
     ) -> QidResult<Vec<WorkloadCertificate>>;
+    /// Set or replace `revoked_at` only when it is not earlier than `issued_at`.
+    /// Invalid timestamps do not mutate the record; unknown or foreign-realm IDs are `NotFound`.
     async fn revoke_workload_certificate(
         &self,
         realm_id: &RealmId,

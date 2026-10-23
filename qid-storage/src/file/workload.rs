@@ -141,15 +141,17 @@ impl WorkloadRepository for FileRepository {
         revoked_at: u64,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let certificate = store
+        let mut updated = store
             .workload_certificates
-            .get_mut(id)
+            .get(id)
             .filter(|certificate| certificate.realm_id == realm_id.0)
+            .cloned()
             .ok_or_else(|| QidError::NotFound {
                 resource: format!("workload certificate {id}"),
             })?;
-        certificate.revoked_at = Some(revoked_at);
-        certificate.validate()?;
+        updated.revoked_at = Some(revoked_at);
+        updated.validate()?;
+        store.workload_certificates.insert(id.to_string(), updated);
         drop(store);
         self.save().await
     }

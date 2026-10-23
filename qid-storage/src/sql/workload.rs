@@ -169,18 +169,46 @@ impl WorkloadRepository for SqlRepository {
         id: &str,
         revoked_at: u64,
     ) -> QidResult<()> {
+        // Store u64 timestamps in the signed SQL integer column by their bit
+        // pattern. This predicate compares those values as unsigned: signed
+        // order is preserved within each half, and the negative half sorts last.
+        let revoked_at_sql = revoked_at as i64;
         let result = sqlx::query(
-            "UPDATE workload_certificates SET revoked_at = ? WHERE realm_id = ? AND id = ?",
+            "UPDATE workload_certificates SET revoked_at = ? WHERE realm_id = ? AND id = ? AND (((? < 0) = (issued_at < 0) AND ? >= issued_at) OR (? < 0 AND issued_at >= 0))",
         )
-        .bind(revoked_at as i64)
+        .bind(revoked_at_sql)
         .bind(realm_id.as_str())
         .bind(id)
+        .bind(revoked_at_sql)
+        .bind(revoked_at_sql)
+        .bind(revoked_at_sql)
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        crate::ownership::ensure_row_present(result.rows_affected(), || {
-            format!("workload certificate {id}")
-        })?;
+        if result.rows_affected() == 0 {
+            // Classify only after the guarded write: an invalid timestamp
+            // is BadRequest, while a present valid row may be an identical
+            // no-op update. The failed guard never changes the incumbent.
+            let issued_at: Option<i64> = sqlx::query_scalar(
+                "SELECT issued_at FROM workload_certificates WHERE realm_id = ? AND id = ?",
+            )
+            .bind(realm_id.as_str())
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
+            let Some(issued_at) = issued_at else {
+                return Err(QidError::NotFound {
+                    resource: format!("workload certificate {id}"),
+                });
+            };
+            if revoked_at < issued_at as u64 {
+                return Err(QidError::BadRequest {
+                    message: "workload certificate revoked_at must not be before issued_at"
+                        .to_string(),
+                });
+            }
+        }
         Ok(())
     }
 }

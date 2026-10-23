@@ -65,7 +65,9 @@ exclude = ["vendor/rustls"]
 # baseline (xtask budget: 103812 -> 103863), so the cap rises by exactly 51.
 # The stable client-update binding guard and static SQL contract add 69 lines
 # (xtask budget: 103863 -> 103932), so the cap rises by exactly 69.
-total = 103932
+# Workload-certificate revocation validation and its documented trait contract
+# add 32 measured product lines (103932 -> 103964), so the cap rises exactly.
+total = 103964
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

@@ -221,15 +221,131 @@ where
         );
     }
 
-    repo.revoke_workload_certificate(&realm, &certificate.id, 1_800_000_100)
+    let invalid_revoked_at = certificate.issued_at - 1;
+    let err = repo
+        .revoke_workload_certificate(&realm, &certificate.id, invalid_revoked_at)
         .await
-        .expect("revoke workload certificate failed");
-    let revoked = repo
-        .list_workload_certificates(&realm, Some(&workload.id))
+        .expect_err("revocation before issuance must fail");
+    assert!(
+        matches!(
+            &err,
+            qid_core::error::QidError::BadRequest { message }
+                if message == "workload certificate revoked_at must not be before issued_at"
+        ),
+        "invalid revocation time returned the wrong error: {}",
+        err.message()
+    );
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&workload.id))
+            .await
+            .expect("list certificate after invalid revoke failed"),
+        vec![certificate.clone()],
+        "invalid revocation changed the incumbent certificate"
+    );
+
+    for (revoke_realm, revoke_id) in [
+        (&other_realm, certificate.id.as_str()),
+        (&realm, "missing-cert"),
+    ] {
+        let err = repo
+            .revoke_workload_certificate(revoke_realm, revoke_id, 1_800_000_100)
+            .await
+            .expect_err("unknown or foreign-realm certificate must fail");
+        assert!(
+            matches!(err, qid_core::error::QidError::NotFound { .. }),
+            "unknown or foreign-realm certificate must be NotFound, got: {}",
+            err.message()
+        );
+        assert_eq!(
+            repo.list_workload_certificates(&realm, Some(&workload.id))
+                .await
+                .expect("list certificate after failed revoke failed"),
+            vec![certificate.clone()],
+            "failed revoke changed the incumbent certificate"
+        );
+    }
+
+    // Equal retries remain successful and valid replacement timestamps keep
+    // the existing setter semantics. The high value also exercises the u64
+    // ordering preserved by SQL's signed integer representation.
+    for revoked_at in [1_800_000_100, 1_800_000_100, 1_800_000_101, u64::MAX] {
+        repo.revoke_workload_certificate(&realm, &certificate.id, revoked_at)
+            .await
+            .expect("valid workload certificate revoke failed");
+        let mut expected = certificate.clone();
+        expected.revoked_at = Some(revoked_at);
+        assert_eq!(
+            repo.list_workload_certificates(&realm, Some(&workload.id))
+                .await
+                .expect("list revoked workload certificates failed"),
+            vec![expected]
+        );
+    }
+    let mut previously_revoked = certificate.clone();
+    previously_revoked.revoked_at = Some(u64::MAX);
+    let err = repo
+        .revoke_workload_certificate(&realm, &certificate.id, invalid_revoked_at)
         .await
-        .expect("list revoked workload certificates failed");
-    assert_eq!(revoked.len(), 1);
-    assert_eq!(revoked[0].revoked_at, Some(1_800_000_100));
+        .expect_err("invalid replacement revocation timestamp must fail");
+    assert!(
+        matches!(&err, qid_core::error::QidError::BadRequest { .. }),
+        "invalid replacement timestamp must be BadRequest, got: {}",
+        err.message()
+    );
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&workload.id))
+            .await
+            .expect("list certificate after invalid replacement failed"),
+        vec![previously_revoked],
+        "invalid replacement changed the incumbent revocation"
+    );
+
+    let upper_half_certificate = WorkloadCertificate {
+        id: "cert-high-timestamp".to_string(),
+        workload_id: same_realm_workload.id.clone(),
+        spiffe_id: same_realm_workload.spiffe_id.clone(),
+        x5t_s256: "f".repeat(64),
+        issued_at: u64::MAX - 100,
+        not_before: u64::MAX - 100,
+        not_after: u64::MAX,
+        ..certificate.clone()
+    };
+    repo.store_workload_certificate(&upper_half_certificate)
+        .await
+        .expect("store upper-half timestamp certificate failed");
+    let invalid_high_revoked_at = upper_half_certificate.issued_at - 1;
+    let err = repo
+        .revoke_workload_certificate(&realm, &upper_half_certificate.id, invalid_high_revoked_at)
+        .await
+        .expect_err("upper-half revocation before issuance must fail");
+    assert!(
+        matches!(
+            &err,
+            qid_core::error::QidError::BadRequest { message }
+                if message == "workload certificate revoked_at must not be before issued_at"
+        ),
+        "upper-half invalid revocation returned the wrong error: {}",
+        err.message()
+    );
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&same_realm_workload.id))
+            .await
+            .expect("list upper-half certificate after invalid revoke failed"),
+        vec![upper_half_certificate.clone()],
+        "invalid upper-half revocation changed the incumbent"
+    );
+    let valid_high_revoked_at = upper_half_certificate.issued_at + 1;
+    repo.revoke_workload_certificate(&realm, &upper_half_certificate.id, valid_high_revoked_at)
+        .await
+        .expect("valid upper-half workload certificate revoke failed");
+    let mut expected_upper_half_certificate = upper_half_certificate;
+    expected_upper_half_certificate.revoked_at = Some(valid_high_revoked_at);
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&same_realm_workload.id))
+            .await
+            .expect("list upper-half revoked certificate failed"),
+        vec![expected_upper_half_certificate]
+    );
 }
 #[tokio::test]
 async fn test_connect_and_migrate() {

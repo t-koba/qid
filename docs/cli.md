@@ -107,7 +107,7 @@ A realm the configuration declares belongs to the configuration: the daemon serv
 | --- | --- |
 | `enroll` | `--user-id` |
 
-`enroll` writes a TOTP credential for an existing user of a realm that offers the TOTP factor (`authentication.mfa.totp.enabled`). A realm that does not enable TOTP refuses the enrolment, and so does an unknown user.
+`enroll` writes a TOTP credential for an existing user whose realm is declared in the loaded configuration and offers the TOTP factor (`authentication.mfa.totp.enabled`). An unknown user, a realm absent from the configuration, or a realm that does not enable TOTP refuses the enrolment. A repository realm record alone does not configure the realm or its authentication policy; declare it in the configuration selected by `--config` before enrolling.
 
 ### qidc explain
 

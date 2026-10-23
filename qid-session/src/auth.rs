@@ -4,12 +4,10 @@ use async_trait::async_trait;
 use qid_core::config::PasswordConfig;
 use qid_core::error::{QidError, QidResult};
 use qid_core::models::{PasswordCredential, User};
+use qid_core::state::PasswordCredentials;
 use qid_core::tenant::RealmId;
 use qid_core::throttle::FailureBudget;
-use qid_crypto::{
-    ARGON2ID_ALGORITHM, Argon2idParams, BreachedPasswordSet, hash_password_with_params,
-    verify_password_credential,
-};
+use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, BreachedPasswordSet, CredentialContext};
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
@@ -33,6 +31,7 @@ pub struct PasswordPolicy {
     pub max_failed_attempts_per_realm: u32,
     pub lockout_duration_seconds: u64,
     pub argon2id: Argon2idParams,
+    requires_resolved_credentials: bool,
 }
 
 impl PasswordPolicy {
@@ -43,6 +42,7 @@ impl PasswordPolicy {
             max_failed_attempts_per_realm: config.max_failed_attempts_per_realm,
             lockout_duration_seconds: config.lockout_duration_seconds,
             argon2id: Argon2idParams::from_cost(&config.argon2id),
+            requires_resolved_credentials: config.pepper.is_some(),
         }
     }
 }
@@ -54,6 +54,7 @@ pub struct Authenticator<R: Repository> {
     hibp_client: Option<HibpClient>,
     policy: PasswordPolicy,
     failure_budget: Arc<FailureBudget>,
+    credentials: Option<Arc<dyn PasswordCredentials>>,
 }
 
 impl<R: Repository> Authenticator<R> {
@@ -62,6 +63,10 @@ impl<R: Repository> Authenticator<R> {
             repo,
             breached_passwords: BreachedPasswordSet::default(),
             hibp_client: None,
+            credentials: (!policy.requires_resolved_credentials).then(|| {
+                Arc::new(CredentialContext::unpeppered(policy.argon2id))
+                    as Arc<dyn PasswordCredentials>
+            }),
             policy,
             failure_budget,
         }
@@ -73,13 +78,15 @@ impl<R: Repository> Authenticator<R> {
         policy: PasswordPolicy,
         failure_budget: Arc<FailureBudget>,
     ) -> Self {
-        Self {
-            repo,
-            breached_passwords,
-            hibp_client: None,
-            policy,
-            failure_budget,
-        }
+        let mut authenticator = Self::new(repo, policy, failure_budget);
+        authenticator.breached_passwords = breached_passwords;
+        authenticator
+    }
+
+    /// Use the deployment's resolved realm owner for every credential operation.
+    pub fn with_credentials(mut self, credentials: Arc<dyn PasswordCredentials>) -> Self {
+        self.credentials = Some(credentials);
+        self
     }
 
     pub fn with_hibp_client(mut self, client: HibpClient) -> Self {
@@ -94,6 +101,9 @@ impl<R: Repository> Authenticator<R> {
         email: &str,
         password: &str,
     ) -> QidResult<AuthResult> {
+        let credentials = self.credentials.as_ref().ok_or_else(|| QidError::Config {
+            message: "configured password pepper requires a resolved credential context".into(),
+        })?;
         // The realm spends a bounded number of failed password logins per
         // window. A realm that has spent its budget refuses password
         // logins before any credential is verified, so neither a password
@@ -157,33 +167,20 @@ impl<R: Repository> Authenticator<R> {
             }
         };
 
-        let verification = verify_password_credential(
-            password,
-            &cred,
-            if self.breached_passwords.is_empty() {
-                None
-            } else {
-                Some(&self.breached_passwords)
-            },
-            // The realm's cost is the cost every credential of the realm
-            // carries, so a credential hashed at another one is rehashed
-            // with the realm's cost here.
-            Some(&self.policy.argon2id),
-        );
-
-        if !verification.valid {
+        let (valid, rehash_required) = if self.breached_passwords.contains_password(password) {
+            (false, false)
+        } else {
+            credentials.verify(password, &cred)
+        };
+        if !valid {
             self.record_failed_attempt(realm_id, &mut user, now).await?;
             return Err(QidError::Unauthorized {
                 message: "invalid credentials".to_string(),
             });
         }
 
-        if verification.rehash_required {
-            let hash = hash_password_with_params(password, &self.policy.argon2id).map_err(|e| {
-                QidError::Internal {
-                    message: format!("password rehash error: {e}"),
-                }
-            })?;
+        if rehash_required {
+            let hash = credentials.hash(password)?;
             self.repo
                 .store_password_credential(&PasswordCredential {
                     user_id: user.id.clone(),

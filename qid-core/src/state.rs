@@ -16,12 +16,24 @@ const DECISION_CACHE_NAMESPACE: &str = "pep:decision";
 const SESSION_CACHE_NAMESPACE: &str = "session";
 const SESSION_L1_TTL_SECONDS: u64 = 30;
 
+/// Realm credential operations, implemented by the cryptographic service.
+/// The returned pair is (valid, rehash required).
+pub trait PasswordCredentials: Send + Sync {
+    fn hash(&self, plaintext: &str) -> QidResult<String>;
+    fn verify(
+        &self,
+        plaintext: &str,
+        credential: &crate::models::PasswordCredential,
+    ) -> (bool, bool);
+}
+
 /// Shared state passed to axum handlers.
 ///
 /// This type intentionally stays in `qid-core` so that protocol crates
 /// (oidc, oauth, PEP adapters) can depend on it without circular dependencies.
 pub struct SharedState<Repository> {
     pub config: QidConfig,
+    pub password_credentials: BTreeMap<String, Arc<dyn PasswordCredentials>>,
     pub plan: RuntimePlan,
     pub repo: Arc<Repository>,
     pub signer: Arc<dyn crate::jwt::Signer>,
@@ -71,6 +83,7 @@ impl<Repository> SharedState<Repository> {
         let paths = config.server.paths.clone();
         let shared_cache: Arc<dyn SharedCache> = Arc::new(MemoryCache::new());
         Ok(Self {
+            password_credentials: BTreeMap::new(),
             config,
             plan,
             repo,

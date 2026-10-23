@@ -1,11 +1,14 @@
 use anyhow::{Context, bail, ensure};
 use clap::{Parser, Subcommand};
+use qid_core::state::PasswordCredentials;
 use qid_core::{
     config::QidConfig,
     models::{PasswordCredential, User},
     tenant::{RealmId, TenantId},
 };
-use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, password};
+#[cfg(test)]
+use qid_crypto::password;
+use qid_crypto::{ARGON2ID_ALGORITHM, CredentialContext};
 use qid_storage::{AnyRepository, prelude::*};
 use serde::Deserialize;
 use std::{
@@ -457,7 +460,7 @@ async fn seed_users(
             .first()
             .context("config must contain at least one realm")?,
     };
-    let argon2id = Argon2idParams::from_cost(&realm_config.authentication.password.argon2id);
+    let credentials = CredentialContext::resolve(&realm_config.authentication.password)?;
     let users: Vec<SeedUser> = read_json(input)?;
     ensure!(
         !users.is_empty(),
@@ -482,7 +485,7 @@ async fn seed_users(
         if let Some(user) = repo.get_user_by_email(&realm_id, &seed.email).await? {
             existing.push(seed.email.clone());
             if replace_password {
-                store_password(&repo, &user.id, &seed.password, &argon2id).await?;
+                store_password(&repo, &user.id, &seed.password, &credentials).await?;
                 updated_password.push(seed.email);
             }
             continue;
@@ -500,7 +503,7 @@ async fn seed_users(
             org: None,
         })
         .await?;
-        store_password(&repo, &id, &seed.password, &argon2id).await?;
+        store_password(&repo, &id, &seed.password, &credentials).await?;
         created.push(seed.email);
     }
 
@@ -535,11 +538,11 @@ async fn store_password(
     repo: &Arc<AnyRepository>,
     user_id: &str,
     plaintext: &str,
-    argon2id: &Argon2idParams,
+    credentials: &CredentialContext,
 ) -> anyhow::Result<()> {
     // The realm's own Argon2id cost, so a seeded credential carries the
     // deployment's calibration rather than the library defaults.
-    let hash = password::hash_password_with_params(plaintext, argon2id)?;
+    let hash = credentials.hash(plaintext)?;
     repo.store_password_credential(&PasswordCredential {
         user_id: user_id.to_string(),
         hash,
@@ -718,6 +721,62 @@ mod tests {
         assert!(cred.hash.starts_with("$argon2id$"));
         assert!(password::verify_password("qid-dev-alice-password", &cred.hash).expect("verify"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn seed_users_requires_and_uses_configured_pepper() {
+        let dir = temp_dir("pepper-seed");
+        run(Args {
+            command: Command::DevInit {
+                output: dir.clone(),
+                realm: "dev".into(),
+                listen: "127.0.0.1:0".into(),
+                issuer: None,
+                public_base_url: "https://id.example.com".into(),
+                force: false,
+            },
+        })
+        .await
+        .unwrap();
+        let config_path = dir.join("qid.yaml");
+        let mut yaml = std::fs::read_to_string(&config_path).unwrap();
+        yaml = yaml.replace("      password:\n", &format!("      password:\n        argon2id: {{memory_kib: 8, time_cost: 1, parallelism: 1}}\n        pepper:\n          active: key1\n          keys:\n            key1: {{file: {}}}\n", serde_json::to_string(&dir.join("key1")).unwrap()));
+        std::fs::write(&config_path, yaml).unwrap();
+        let users = dir.join("users.seed.json");
+        assert!(seed_users(&config_path, &users, None, false).await.is_err());
+        assert!(
+            !dir.join("qid-dev-store.json").exists(),
+            "unresolved key must precede storage writes"
+        );
+        std::fs::write(dir.join("key1"), b"test-only-dev-pepper").unwrap();
+        seed_users(&config_path, &users, None, false).await.unwrap();
+        // Replacement uses the same owner, not a separate hashing function.
+        seed_users(&config_path, &users, None, true).await.unwrap();
+        let config = QidConfig::from_file(config_path.to_str().unwrap()).unwrap();
+        let repo = open_repo(&config).await.unwrap();
+        let user = repo
+            .get_user_by_email(&"dev".into(), "alice@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let credential = repo
+            .get_password_credential(&user.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(credential.hash.contains("keyid=a2V5MQ"));
+        let owner = CredentialContext::resolve(&config.realms[0].authentication.password).unwrap();
+        assert_eq!(
+            owner.verify("qid-dev-alice-password", &credential),
+            (true, false)
+        );
+        assert!(
+            !std::fs::read_to_string(dir.join("qid-dev-store.json"))
+                .unwrap()
+                .contains("test-only-dev-pepper")
+        );
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

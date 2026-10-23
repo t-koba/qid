@@ -3,12 +3,13 @@ use clap::{Args, Parser, Subcommand};
 use qid_core::{
     config::QidConfig,
     models::{Client, ClientType, PasswordCredential, Session, TotpCredential, User},
+    state::PasswordCredentials,
     tenant::{RealmId, TenantId},
 };
 use qid_crypto::{
-    ARGON2ID_ALGORITHM, KeyProtector, PassphraseProtector,
+    ARGON2ID_ALGORITHM, CredentialContext, KeyProtector, PassphraseProtector,
     jwk::{GeneratedKeyPair, generate_eddsa, generate_es256},
-    parse_encrypted_key, password, serialize_encrypted_key,
+    parse_encrypted_key, serialize_encrypted_key,
     totp::TotpVerifier,
 };
 use qid_diagnostics::{build_check_report, check_storage_saas};
@@ -722,12 +723,12 @@ async fn main() -> anyhow::Result<()> {
                     // product creates carries the deployment's calibration.
                     // The realm is resolved before the user is written so a
                     // rejected realm leaves no half-created account behind.
-                    let params = realm_password_params(&config, &args.realm)?;
+                    let context = realm_password_context(&config, &args.realm)?;
                     // The realm the user belongs to must be in the
                     // repository, so the write names the realm that
                     // holds the user.
                     ensure_realm_row(&repo, &config, &args.realm).await?;
-                    let hash = password::hash_password_with_params(&args.password, &params)?;
+                    let hash = context.hash(&args.password)?;
                     let id = new_id();
                     repo.create_user(&User {
                         id: id.clone(),
@@ -965,10 +966,7 @@ fn new_id() -> String {
 /// no cost the product may apply, and the product does not choose one on the
 /// operator's behalf, so the realm is named as missing rather than the
 /// credential being hashed with a fallback cost.
-fn realm_password_params(
-    config: &QidConfig,
-    realm_id: &str,
-) -> anyhow::Result<qid_crypto::Argon2idParams> {
+fn realm_password_context(config: &QidConfig, realm_id: &str) -> anyhow::Result<CredentialContext> {
     let realm = config
         .realms
         .iter()
@@ -980,9 +978,7 @@ fn realm_password_params(
                  configuration file"
             )
         })?;
-    Ok(qid_crypto::Argon2idParams::from_cost(
-        &realm.authentication.password.argon2id,
-    ))
+    Ok(CredentialContext::resolve(&realm.authentication.password)?)
 }
 
 /// The realm the configuration declares, if it declares one.

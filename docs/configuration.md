@@ -363,7 +363,7 @@ naming the key.
 `authentication` includes:
 
 - `passkeys.enabled`, `rp_id`, `rp_origin`, `rp_name`
-- `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `max_failed_attempts_per_realm`, `argon2id`
+- `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `max_failed_attempts_per_realm`, `argon2id`, `pepper`
 - `mfa.totp.enabled`
 - `passwordless_only`
 
@@ -380,7 +380,60 @@ Validation rules:
 
 `passkeys` names the realm's WebAuthn relying party. `enabled` states whether the realm offers the factor, `rp_id` and `rp_origin` override the relying-party ID and origin the ceremony uses, and `rp_name` names the relying party to the authenticator. The ceremony always requests attestation `none` and the product verifies no attestation statement, so there is no attestation setting: `passkeys.attestation` was removed, and a configuration that still sets it is a configuration error naming the key. There is no preference setting either: the product serves the passkey and the password routes side by side and never orders one factor over another, so `passkeys.preferred` was removed, and a configuration that still sets it is a configuration error naming the key.
 
-`password` is the realm's password policy, and every setting in it has an effect. `hash` names the algorithm the product creates credentials with, so any other value is a configuration error naming the key. `max_failed_attempts` and `lockout_duration_seconds` are the limits the realm's password logins enforce: the session API and the OIDC authorization endpoint both lock the account after that many failed attempts and refuse even the correct password until the lockout expires. `max_failed_attempts_per_realm` bounds the failures the realm accepts as a whole: within the lockout window the realm accepts that many failed password logins and refuses further password logins with `429 Too Many Requests` until the window passes, so a spray that tests one guess per account cannot run without bound, and one burst cannot lock every account of a realm. The budget counts failures only, so a successful login never spends it, and a refused login is refused before any credential is verified, so it costs no Argon2id work. The budget is kept in the process that enforces it, so a deployment with several instances applies the limit to each of them. Both password login paths share the budget of the realm, so they enforce the same numbers. Before the credential work, a password login is admitted by an admission count: the submitted email's admission count follows `max_failed_attempts` within `lockout_duration_seconds`, and the realm's admission count follows `max_failed_attempts_per_realm` within the same window. The admission cap counts the logins that reach the credential work, while the budget counts only the logins that failed, so the two answer different questions: the cap bounds the work a spray of guesses can cause, and the budget bounds the failures a realm accepts. A login the cap refuses answers `429 Too Many Requests` before any credential is verified, so it costs no Argon2id work, and the session API and the authorization endpoint share the cap, so both paths refuse the same logins. A successful login gives back the admission it spent on the submitted address and on the realm, so both counts follow the logins that failed and the ones still in flight: a realm whose logins succeed keeps its room, and one success never spends the room of the realm it belongs to. The admission limiter is process-local, so each qidd instance enforces its own counts and restarts clear them. `argon2id` is the cost the product hashes with whenever it creates a credential - a user the CLI creates, a user a seed writes, a password a reset consumes - and the cost every credential of the realm ends up carrying: a credential whose stored parameters differ from the realm's is rehashed with the realm's cost at the next successful login, so an imported credential and a credential created at an older cost both reach it; verification always honours the parameters stored in the hash. A `pepper_ref` was removed: the product has no pepper resolver, so a realm pepper could never resolve, and a configuration that still sets it is a configuration error naming the key.
+`password` is the realm's password policy, and every setting in it has an effect. `hash` names the algorithm the product creates credentials with, so any other value is a configuration error naming the key. `max_failed_attempts` and `lockout_duration_seconds` are the limits the realm's password logins enforce: the session API and the OIDC authorization endpoint both lock the account after that many failed attempts and refuse even the correct password until the lockout expires. `max_failed_attempts_per_realm` bounds the failures the realm accepts as a whole: within the lockout window the realm accepts that many failed password logins and refuses further password logins with `429 Too Many Requests` until the window passes, so a spray that tests one guess per account cannot run without bound, and one burst cannot lock every account of a realm. The budget counts failures only, so a successful login never spends it, and a refused login is refused before any credential is verified, so it costs no Argon2id work. The budget is kept in the process that enforces it, so a deployment with several instances applies the limit to each of them. Both password login paths share the budget of the realm, so they enforce the same numbers. Before the credential work, a password login is admitted by an admission count: the submitted email's admission count follows `max_failed_attempts` within `lockout_duration_seconds`, and the realm's admission count follows `max_failed_attempts_per_realm` within the same window. The admission cap counts the logins that reach the credential work, while the budget counts only the logins that failed, so the two answer different questions: the cap bounds the work a spray of guesses can cause, and the budget bounds the failures a realm accepts. A login the cap refuses answers `429 Too Many Requests` before any credential is verified, so it costs no Argon2id work, and the session API and the authorization endpoint share the cap, so both paths refuse the same logins. A successful login gives back the admission it spent on the submitted address and on the realm, so both counts follow the logins that failed and the ones still in flight: a realm whose logins succeed keeps its room, and one success never spends the room of the realm it belongs to. The admission limiter is process-local, so each qidd instance enforces its own counts and restarts clear them. `argon2id` is the cost the product hashes with whenever it creates a credential - a user the CLI creates, a user a seed writes, a password a reset consumes - and the cost every credential of the realm ends up carrying: a credential whose stored parameters differ from the realm's is rehashed with the realm's cost at the next successful login, so an imported credential and a credential created at an older cost both reach it; verification always honours the parameters stored in the hash. The obsolete `pepper_ref` is rejected; use the explicit versioned `pepper` key configuration below.
+
+### Realm password pepper
+
+Peppering is disabled by omission. To enable it, configure an active key ID and
+all keys still needed to verify existing credentials under `authentication.password`:
+
+```yaml
+pepper:
+  active: key2
+  keys:
+    key1: { env: PASSWORD_PEPPER_OLD }
+    key2: { file: /run/secrets/password-pepper-key2 }
+```
+
+Each source is exactly one `env` name or `file` path, never an inline secret.
+`QID_` is reserved for configuration overrides; use other environment names for
+secret references. Relative file paths are relative to the process working
+directory. Files are read as bytes **verbatim**, including trailing newlines;
+environment values must be UTF-8. Provision a nonempty, independently generated
+secret for each realm and key, restrict file/environment access, and distribute the
+same keys to every instance that serves that realm. There is no vault adapter.
+IDs must be nonempty and fit in **8 UTF-8 bytes**,
+the native Argon2 `keyid` limit. The active ID must exist in `keys`.
+
+qidd resolves **all** configured keys before storage seeding or serving and keeps
+one zeroizing credential context per realm for its process lifetime. Missing,
+unreadable, empty or invalid sources fail startup, including retained keys. CLI
+user creation and dev seeding resolve before account writes; login rehashes and
+atomic password reset use the same owner as ordinary creation. Embedded HTTP
+servers must install `resolve_password_contexts` on `SharedState.password_credentials`
+before serving; configured realms without an installed context fail closed. No
+secret bytes are included in credential hashes, persisted configuration, audit
+records or resolver errors. Treat the referenced files/environment and their
+backups as secret storage independent of the identity database.
+
+New credentials use Argon2id's native secret input and a standard PHC `keyid`
+selector (base64-encoded ID), preserving the configured Argon2 costs. A tagged hash
+uses **only** its selected key: unknown, missing or wrong keys fail authentication;
+there is no unpeppered fallback or search through other keys. Untagged supported
+Argon2id/PBKDF2 imports still verify normally and migrate on successful login to
+the active key and current realm cost. A retained older key likewise migrates to
+the active key. Unconfigured deployments retain ordinary unpeppered behavior.
+
+To rotate, provision a **new ID and new bytes**, retain old keys, set the active ID
+to the new one, and restart all instances together. Sources are snapshotted, **not
+hot-reloaded**; changing a file or environment value does not rotate a running
+process. Keep old keys until their credentials have migrated or been reset.
+Never change bytes under an existing ID: old credentials then fail. Removing a
+required key, or removing the entire pepper configuration, makes its tagged
+credentials unusable; it never downgrades them to unpeppered verification. Restore
+the required key or perform an authorized password reset to recover. Existing
+backups may still need old keys even after live credentials have migrated.
+
 
 `mfa.totp.enabled` states whether the realm offers the TOTP factor, and every path that performs the factor honours it: a realm that does not enable TOTP refuses enrolment, confirmation and challenges on the routes and refuses the `qidc totp enroll` command, while a realm that enables it performs them. The switch is off by default, so a realm offers TOTP only when it says so. The preflight check requires TOTP or passkeys for high-risk audiences and reports the factors the realm can actually use. `mfa.sms.enabled` was removed: the product has no SMS factor, no SMS delivery adapter and no SMS route, so a configuration that still sets it is a configuration error naming the key. The factors the product can perform are TOTP and passkeys (WebAuthn). Push MFA and email magic link were removed: the product has no delivery adapter for either channel, so a challenge it created could never be completed, and their endpoints and path settings are gone - a configuration that still sets `server.paths.auth_email_magic_link_send` is a configuration error naming the key. A TOTP credential carries its own digits and period from the moment it is enrolled. A client certificate is a client authentication method (`tls_client_auth`) and a TLS trust decision (`server.tls.client_ca`); it is not a realm MFA factor, so the realm configuration has no client-certificate switch.
 

@@ -41,3 +41,6 @@ pub use password::{
 };
 pub use qid_core::jwt::{Audience, JwtClaims, Signer, TokenData};
 pub use totp::TotpVerifier;
+
+mod credentials;
+pub use credentials::{CredentialContext, realm_password_context, resolve_password_contexts};

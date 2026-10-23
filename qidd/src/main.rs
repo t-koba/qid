@@ -196,6 +196,8 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
     let diagnostics = build_check_report(&config, &plan, primary_config_path);
     log_and_reject_diagnostic_checks(&diagnostics.checks, "preflight")?;
 
+    let password_contexts = qid_crypto::resolve_password_contexts(&config)?;
+
     // Start Prometheus metrics exporter if configured.
     if let Err(e) = qid_observability::metrics::init_metrics(&config.observability.metrics.listen) {
         tracing::warn!(error = %e, "failed to start metrics exporter");
@@ -235,6 +237,7 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
         signing_material.pep_assertion_signers,
         signing_material.jwks,
     )?;
+    shared_state.password_credentials = password_contexts;
     shared_state = shared_state.with_shared_cache(
         build_shared_cache(&config).context("failed to initialize shared cache")?,
     );

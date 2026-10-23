@@ -52,6 +52,16 @@ realms:
   - id: corp
     issuer: "https://id.example.com/realms/corp"
     display_name: "Corp Identity"
+    # Optional password pepper (disabled by omission). Provision sources first;
+    # secrets are snapshotted at startup. Keep old keys during rotation.
+    # authentication:
+    #   password:
+    #     pepper:
+    #       active: key2
+    #       keys:
+    #         key1: { env: PASSWORD_PEPPER_OLD }
+    #         key2: { file: /run/secrets/password-pepper-key2 }
+
     clients:
       - client_id: "corp-web"
         id: "client-corp-web"

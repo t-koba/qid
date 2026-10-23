@@ -82,6 +82,49 @@ pub struct PasswordConfig {
     /// next successful login.
     #[serde(default)]
     pub argon2id: Argon2idCostConfig,
+    /// Optional external secret keys; omitted means unpeppered creation.
+    #[serde(default)]
+    pub pepper: Option<PasswordPepperConfig>,
+}
+
+/// Key IDs are 1–8 UTF-8 bytes (the native Argon2 keyid limit).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordPepperConfig {
+    pub active: String,
+    pub keys: std::collections::BTreeMap<String, PasswordSecretSource>,
+}
+
+/// Exactly one source, never inline secret bytes. File contents are read verbatim.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum PasswordSecretSource {
+    Env { env: String },
+    File { file: String },
+}
+
+impl PasswordPepperConfig {
+    pub fn validate(&self) -> QidResult<()> {
+        let valid = self.keys.contains_key(&self.active)
+            && self.keys.iter().all(|(id, source)| {
+                !id.is_empty()
+                    && id.len() <= 8
+                    && match source {
+                        PasswordSecretSource::Env { env: name } => {
+                            !name.is_empty() && !name.contains(['=', '\0'])
+                        }
+                        PasswordSecretSource::File { file: path } => {
+                            !path.is_empty() && !path.contains('\0')
+                        }
+                    }
+            });
+        if !valid {
+            return Err(QidError::Config {
+                message: "invalid password pepper key IDs, active key or secret source".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Default for PasswordConfig {
@@ -93,6 +136,7 @@ impl Default for PasswordConfig {
             lockout_duration_seconds: default_lockout_duration_seconds(),
             max_failed_attempts_per_realm: default_max_failed_attempts_per_realm(),
             argon2id: Argon2idCostConfig::default(),
+            pepper: None,
         }
     }
 }
@@ -103,6 +147,9 @@ impl PasswordConfig {
     /// the lockout limits are the ones the realm's password logins
     /// enforce.
     pub fn validate(&self, realm_id: &str) -> QidResult<()> {
+        if let Some(pepper) = &self.pepper {
+            pepper.validate()?;
+        }
         if self.hash != PASSWORD_HASH_ALGORITHM {
             return Err(QidError::Config {
                 message: format!(

@@ -273,8 +273,13 @@ pub async fn authorize_post<R: Repository>(
             "too many password attempts, try again later",
         );
     }
+    let credentials = match qid_crypto::realm_password_context(&state, &client.realm_id) {
+        Ok(credentials) => credentials,
+        Err(error) => return qid_http::error_response(error),
+    };
     let authenticator =
-        Authenticator::new(state.repo.clone(), policy, state.failure_budget.clone());
+        Authenticator::new(state.repo.clone(), policy, state.failure_budget.clone())
+            .with_credentials(credentials);
     let auth_result = match authenticator
         .authenticate_password(
             &RealmId::from(client.realm_id.clone()),

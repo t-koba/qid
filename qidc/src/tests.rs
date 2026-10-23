@@ -792,15 +792,17 @@ fn the_user_credential_calibration_comes_from_the_declared_realm() {
     let mut config = minimal_config();
     config.realms[0].authentication.password.argon2id.memory_kib = 32_768;
     config.realms[0].authentication.password.argon2id.time_cost = 3;
-    let params = realm_password_params(&config, "corp").expect("the declared realm");
-    assert_eq!(params.memory_kib, 32_768);
-    assert_eq!(params.time_cost, 3);
+    let context = realm_password_context(&config, "corp").expect("the declared realm");
+    let hash = context.hash("test password").unwrap();
+    assert!(hash.contains("m=32768,t=3,p=1"));
 }
 
 #[test]
 fn a_realm_the_configuration_does_not_declare_names_the_requirement() {
     let config = minimal_config();
-    let error = realm_password_params(&config, "other").expect_err("an undeclared realm");
+    let error = realm_password_context(&config, "other")
+        .err()
+        .expect("an undeclared realm");
     let message = error.to_string();
     assert!(
         message.contains("not declared in the configuration"),

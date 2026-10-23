@@ -90,7 +90,10 @@ async fn setup_with_config(
         .unwrap();
     }
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
-    let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
+    let contexts = qid_crypto::resolve_password_contexts(&config).unwrap();
+    let mut state = SharedState::new(config, repo, signer, serde_json::json!({})).unwrap();
+    state.password_credentials = contexts;
+    let state = Arc::new(state);
     let app = qid_resource::resource_routes(&state.paths).with_state(state.clone());
     (app, state)
 }
@@ -663,7 +666,37 @@ async fn ciam_challenge_issue_routes_fail_without_delivery() {
 
 #[tokio::test]
 async fn ciam_password_reset_validates_and_atomically_replaces_credentials() {
-    let (app, state) = setup_with_realms(&["other"]).await;
+    assert_atomic_password_reset(test_helpers::test_config()).await;
+}
+
+#[tokio::test]
+async fn ciam_password_reset_uses_resolved_pepper_and_preserves_atomic_replacement() {
+    let path = std::env::temp_dir().join(format!("qid-reset-pepper-{}", ulid::Ulid::new()));
+    std::fs::write(&path, b"test-only-reset-pepper").unwrap();
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.password.argon2id = Argon2idCostConfig {
+        memory_kib: 8,
+        time_cost: 1,
+        parallelism: 1,
+    };
+    config.realms[0].authentication.password.pepper =
+        Some(qid_core::config::PasswordPepperConfig {
+            active: "key1".into(),
+            keys: [(
+                "key1".into(),
+                qid_core::config::PasswordSecretSource::File {
+                    file: path.to_str().unwrap().into(),
+                },
+            )]
+            .into(),
+        });
+    assert_atomic_password_reset(config).await;
+    std::fs::remove_file(path).unwrap();
+}
+
+async fn assert_atomic_password_reset(config: QidConfig) {
+    let peppered = config.realms[0].authentication.password.pepper.is_some();
+    let (app, state) = setup_with_config(config, &["other"]).await;
     let now = qid_core::util::now_seconds();
     let expected_token = "known-valid-reset-token";
     let token = qid_core::models::PasswordResetToken {
@@ -764,7 +797,13 @@ async fn ciam_password_reset_validates_and_atomically_replaces_credentials() {
             assert!(token.consumed_at_epoch_seconds.is_none());
         } else {
             let credential = credential.unwrap();
-            assert!(qid_crypto::verify_password("new-secure-password", &credential.hash).unwrap());
+            let owner = qid_crypto::realm_password_context(&state, "test").unwrap();
+            assert_eq!(
+                owner.verify("new-secure-password", &credential),
+                (true, false)
+            );
+            assert_eq!(credential.hash.contains("keyid=a2V5MQ"), peppered);
+            assert!(!credential.hash.contains("test-only-reset-pepper"));
             assert_eq!(credential.algorithm, qid_crypto::ARGON2ID_ALGORITHM);
             assert!(token.consumed_at_epoch_seconds.unwrap() >= now);
         }

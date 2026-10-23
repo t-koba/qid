@@ -12,7 +12,7 @@ use qid_core::{
     state::SharedState,
     util,
 };
-use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, hash_password_with_params};
+use qid_crypto::ARGON2ID_ALGORITHM;
 use qid_storage::prelude::*;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -197,23 +197,11 @@ pub async fn password_reset_consume<R: Repository>(
     };
     match consume_password_reset(&record, &req) {
         Ok(()) => {
-            // The realm's own Argon2id cost, so the credential the reset
-            // creates carries the deployment's calibration. A realm the
-            // configuration does not state has no cost the product may
-            // apply, so the reset fails rather than hashing with a cost
-            // the realm never asked for.
-            let realm_config = match state.config.realms.iter().find(|r| r.id == realm) {
-                Some(realm_config) => realm_config,
-                None => {
-                    return qid_http::error_response(QidError::NotFound {
-                        resource: format!("realm {realm}"),
-                    });
-                }
+            let credentials = match qid_crypto::realm_password_context(&state, &realm) {
+                Ok(credentials) => credentials,
+                Err(error) => return qid_http::error_response(error),
             };
-            let hash = match hash_password_with_params(
-                &req.new_password,
-                &Argon2idParams::from_cost(&realm_config.authentication.password.argon2id),
-            ) {
+            let hash = match credentials.hash(&req.new_password) {
                 Ok(hash) => hash,
                 Err(err) => {
                     return qid_http::error_response(qid_core::error::QidError::Internal {

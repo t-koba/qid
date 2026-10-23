@@ -122,7 +122,14 @@ exclude = ["vendor/rustls"]
 # product lines (105705 -> 105929): validated opt-in configuration, one
 # composed subscriber, SDK/exporter setup and explicit async shutdown.
 # All per-crate limits still pass; collector and configuration tests are uncapped.
-total = 105929
+# Realm password pepper restoration adds 525 counted source lines
+# (105929 -> 106454): validated secret references, one resolved native
+# Argon2 credential owner, startup wiring and all creation/reset/login paths.
+# This includes inline unit tests under the existing budget classifier;
+# separately classified integration tests remain uncapped. The crypto crate
+# reaches 5972 lines, requiring 372 above its old 5600 cap; no other crate
+# cap changes and no credential schema, SQL or dependency changes are needed.
+total = 106454
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -130,7 +137,7 @@ default_per_crate = 4000
 qid-network = 4500
 qid-admin = 6000
 qid-core = 14000
-qid-crypto = 5600
+qid-crypto = 5972
 qid-storage = 13000
 qid-oidc = 6000
 qid-oauth = 12000

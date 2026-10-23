@@ -166,7 +166,7 @@ pub fn verify_password(plaintext: &str, encoded_hash: &str) -> anyhow::Result<bo
 ///
 /// The parameters are read from the hash itself, so a credential that was
 /// hashed at another cost is recognised as such.
-fn stored_argon2id_cost(encoded_hash: &str) -> Option<(u32, u32, u32)> {
+pub(crate) fn stored_argon2id_cost(encoded_hash: &str) -> Option<(u32, u32, u32)> {
     let parsed = PasswordHash::new(encoded_hash).ok()?;
     let mut memory_kib = None;
     let mut time_cost = None;
@@ -190,11 +190,9 @@ fn stored_argon2id_cost(encoded_hash: &str) -> Option<(u32, u32, u32)> {
 
 /// Verify a plaintext password against a stored credential.
 ///
-/// The product has no external pepper: a credential is the hash alone, so a
-/// stored credential is verified with the parameters the hash carries. A
-/// credential the product cannot verify - an algorithm it does not implement,
-/// or a hash it cannot parse - is not valid. It never authenticates a caller
-/// and never surfaces as a server fault.
+/// This unconfigured utility never verifies tagged hashes. Use the resolved
+/// realm credential context for external peppers. Unsupported/malformed hashes
+/// are invalid credentials, not server faults.
 ///
 /// `expected_cost` is the cost the realm states. A credential that carries
 /// another cost is reported as needing a rehash, so the realm's cost reaches
@@ -206,6 +204,14 @@ pub fn verify_password_credential(
     expected_cost: Option<&Argon2idParams>,
 ) -> PasswordVerification {
     if breached_passwords.is_some_and(|breached| breached.contains_password(plaintext)) {
+        return PasswordVerification {
+            valid: false,
+            rehash_required: false,
+            algorithm: credential.algorithm.clone(),
+        };
+    }
+    if PasswordHash::new(&credential.hash).is_ok_and(|parsed| parsed.params.get("keyid").is_some())
+    {
         return PasswordVerification {
             valid: false,
             rehash_required: false,
@@ -343,6 +349,9 @@ fn encode_pbkdf2_sha256_material(
 fn verify_argon2id_material(material: &[u8], encoded_hash: &str) -> anyhow::Result<bool> {
     let parsed_hash = PasswordHash::new(encoded_hash)
         .map_err(|e| anyhow::anyhow!("invalid password hash: {e}"))?;
+    if parsed_hash.params.get("keyid").is_some() {
+        return Ok(false);
+    }
     let argon2 = Argon2::default();
     Ok(argon2.verify_password(material, &parsed_hash).is_ok())
 }

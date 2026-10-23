@@ -1836,12 +1836,8 @@ fn the_removed_pep_credential_keys_are_rejected() {
 }
 
 #[test]
-fn the_removed_password_pepper_key_is_rejected() {
-    // The product has no pepper resolver, so a realm pepper could never
-    // resolve: the key named a capability the product does not have. It
-    // was removed, and a configuration that still sets it is a
-    // configuration error naming the key rather than a silently ignored
-    // setting.
+fn the_obsolete_password_pepper_reference_is_rejected() {
+    // The obsolete unversioned reference is still unsupported.
     let err = serde_json::from_str::<PasswordConfig>(
         r#"{"pepper_ref":"secret://qid/retail/password-pepper"}"#,
     )
@@ -2268,4 +2264,43 @@ fn tracing_config_is_explicit_and_validated() {
     tracing.scheduled_delay_ms = 1;
     tracing.service_name.clear();
     assert!(tracing.validate().is_err());
+}
+
+#[test]
+fn realm_password_pepper_sources_are_explicit_and_validated() {
+    let config: PasswordConfig = Figment::new()
+        .merge(Yaml::string(
+            r#"
+pepper:
+  active: key2
+  keys:
+    key1: { env: QID_TEST_PASSWORD_KEY_ONE }
+    key2: { file: ./test-pepper.key }
+"#,
+        ))
+        .extract()
+        .unwrap();
+    config.validate("test").unwrap();
+    for value in [
+        serde_json::json!({"active":"unknown", "keys":{"key1":{"env":"TEST"}}}),
+        serde_json::json!({"active":"123456789", "keys":{"123456789":{"env":"TEST"}}}),
+        serde_json::json!({"active":"key1", "keys":{"key1":{"env":""}}}),
+        serde_json::json!({"active":"key1", "keys":{"key1":{"file":""}}}),
+    ] {
+        let invalid: PasswordConfig =
+            serde_json::from_value(serde_json::json!({"pepper":value})).unwrap();
+        assert!(invalid.validate("test").is_err());
+    }
+    for source in [
+        serde_json::json!("inline secret"),
+        serde_json::json!({"env":"TEST", "file":"test"}),
+        serde_json::json!({"value":"secret"}),
+    ] {
+        assert!(
+            serde_json::from_value::<PasswordConfig>(
+                serde_json::json!({"pepper":{"active":"key1", "keys":{"key1":source}}})
+            )
+            .is_err()
+        );
+    }
 }

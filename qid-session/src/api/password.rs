@@ -49,8 +49,13 @@ pub async fn password_auth<R: Repository>(
             message: "too many login attempts, please wait and try again".to_string(),
         });
     }
+    let credentials = match qid_crypto::realm_password_context(&state, &realm) {
+        Ok(credentials) => credentials,
+        Err(error) => return qid_http::error_response(error),
+    };
     let authenticator =
-        Authenticator::new(state.repo.clone(), policy, state.failure_budget.clone());
+        Authenticator::new(state.repo.clone(), policy, state.failure_budget.clone())
+            .with_credentials(credentials);
     metrics::counter!("qid_authn_attempts_total", "method" => "password").increment(1);
     let auth_result = match authenticator
         .authenticate_password(&RealmId(realm.clone()), &req.email, &req.password)

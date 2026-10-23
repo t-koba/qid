@@ -268,7 +268,13 @@ where
     // Equal retries remain successful and valid replacement timestamps keep
     // the existing setter semantics. The high value also exercises the u64
     // ordering preserved by SQL's signed integer representation.
-    for revoked_at in [1_800_000_100, 1_800_000_100, 1_800_000_101, u64::MAX] {
+    for revoked_at in [
+        certificate.issued_at,
+        1_800_000_100,
+        1_800_000_100,
+        1_800_000_101,
+        u64::MAX,
+    ] {
         repo.revoke_workload_certificate(&realm, &certificate.id, revoked_at)
             .await
             .expect("valid workload certificate revoke failed");
@@ -334,18 +340,22 @@ where
         vec![upper_half_certificate.clone()],
         "invalid upper-half revocation changed the incumbent"
     );
-    let valid_high_revoked_at = upper_half_certificate.issued_at + 1;
-    repo.revoke_workload_certificate(&realm, &upper_half_certificate.id, valid_high_revoked_at)
-        .await
-        .expect("valid upper-half workload certificate revoke failed");
-    let mut expected_upper_half_certificate = upper_half_certificate;
-    expected_upper_half_certificate.revoked_at = Some(valid_high_revoked_at);
-    assert_eq!(
-        repo.list_workload_certificates(&realm, Some(&same_realm_workload.id))
+    for valid_high_revoked_at in [
+        upper_half_certificate.issued_at,
+        upper_half_certificate.issued_at + 1,
+    ] {
+        repo.revoke_workload_certificate(&realm, &upper_half_certificate.id, valid_high_revoked_at)
             .await
-            .expect("list upper-half revoked certificate failed"),
-        vec![expected_upper_half_certificate]
-    );
+            .expect("valid upper-half workload certificate revoke failed");
+        let mut expected_upper_half_certificate = upper_half_certificate.clone();
+        expected_upper_half_certificate.revoked_at = Some(valid_high_revoked_at);
+        assert_eq!(
+            repo.list_workload_certificates(&realm, Some(&same_realm_workload.id))
+                .await
+                .expect("list upper-half revoked certificate failed"),
+            vec![expected_upper_half_certificate]
+        );
+    }
 }
 #[tokio::test]
 async fn test_connect_and_migrate() {

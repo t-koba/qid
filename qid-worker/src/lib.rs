@@ -5,6 +5,7 @@ pub mod audit;
 pub mod delivery;
 pub mod key_rotation;
 pub mod notification;
+pub mod smtp;
 pub mod sync;
 #[cfg(test)]
 mod sync_audit_test;
@@ -13,6 +14,9 @@ pub use audit::*;
 pub use delivery::*;
 pub use key_rotation::*;
 pub use notification::*;
+#[cfg(feature = "smtp-transport")]
+pub use smtp::SmtpTransport;
+pub use smtp::{SmtpEndpoint, SmtpTlsMode, is_smtp_provider, parse_smtp_endpoint};
 pub use sync::*;
 
 pub(crate) use qid_core::util::sha256_hex as hex_sha256;

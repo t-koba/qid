@@ -164,7 +164,7 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 60000)]
         max_delay_ms: u64,
     },
-    /// Send an email or push notification to an HTTPS provider; --dry-run records without sending.
+    /// Send an email or push notification; HTTPS providers receive JSON, smtp(s) providers send email.
     #[command(name = "notification-deliver")]
     NotificationDeliver {
         #[arg(long)]
@@ -443,41 +443,39 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             base_delay_ms,
             max_delay_ms,
         } => {
-            let data_json = serde_json::from_str(&data_json).context("invalid data_json")?;
-            let transport = if dry_run {
-                DeliveryTransport::dry_run(request_output)
-            } else {
-                DeliveryTransport::https(timeout_seconds, request_output)
-                    .map_err(anyhow::Error::msg)?
-            };
-            let report = run_notification_delivery_job(
-                repo.as_ref(),
-                &transport,
-                NotificationDeliveryConfig {
-                    realm_id: realm,
-                    channel: parse_notification_channel(&channel)?,
-                    provider,
-                    recipient,
-                    subject,
-                    body,
-                    template_id,
-                    data_json,
-                    now_epoch: now.unwrap_or_else(now_seconds),
-                    actor,
-                    reason,
-                    record_audit_event,
-                    completed_attempts,
-                    retry_policy: NotificationRetryPolicy {
-                        max_attempts,
-                        base_delay_ms,
-                        max_delay_ms,
-                    },
+            let config = NotificationDeliveryConfig {
+                realm_id: realm,
+                channel: parse_notification_channel(&channel)?,
+                provider,
+                recipient,
+                subject,
+                body,
+                template_id,
+                data_json: serde_json::from_str(&data_json).context("invalid data_json")?,
+                now_epoch: now.unwrap_or_else(now_seconds),
+                actor,
+                reason,
+                record_audit_event,
+                completed_attempts,
+                retry_policy: NotificationRetryPolicy {
+                    max_attempts,
+                    base_delay_ms,
+                    max_delay_ms,
                 },
-            )
-            .await?;
+            };
+            let report = if dry_run {
+                let transport = DeliveryTransport::dry_run(request_output.clone());
+                run_notification_delivery_job(repo.as_ref(), &transport, config).await?
+            } else if qid_worker::is_smtp_provider(config.provider.as_str()) {
+                deliver_notification_via_smtp(repo.as_ref(), config, timeout_seconds).await?
+            } else {
+                let transport = DeliveryTransport::https(timeout_seconds, request_output.clone())
+                    .map_err(anyhow::Error::msg)?;
+                run_notification_delivery_job(repo.as_ref(), &transport, config).await?
+            };
             Ok(serde_json::json!({
                 "command": "notification_deliver",
-                "request_output": transport.output_path(),
+                "request_output": request_output,
                 "report": report,
             }))
         }
@@ -685,6 +683,27 @@ async fn open_repo(config_path: &Path) -> anyhow::Result<Arc<AnyRepository>> {
             .await
             .context("failed to connect to storage")?,
     ))
+}
+
+async fn deliver_notification_via_smtp(
+    repo: &AnyRepository,
+    config: NotificationDeliveryConfig,
+    timeout_seconds: u64,
+) -> anyhow::Result<qid_worker::NotificationDeliveryReport> {
+    #[cfg(feature = "smtp-transport")]
+    {
+        let transport =
+            qid_worker::SmtpTransport::from_env(config.provider.as_str(), timeout_seconds)
+                .map_err(anyhow::Error::msg)?;
+        Ok(run_notification_delivery_job(repo, &transport, config).await?)
+    }
+    #[cfg(not(feature = "smtp-transport"))]
+    {
+        let _ = (repo, config, timeout_seconds);
+        anyhow::bail!(
+            "SMTP notification provider requires qid-worker built with --features smtp-transport"
+        )
+    }
 }
 
 fn parse_notification_channel(raw: &str) -> anyhow::Result<NotificationChannel> {

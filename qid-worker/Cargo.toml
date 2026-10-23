@@ -14,6 +14,10 @@ rust-version.workspace = true
 name = "qid-worker"
 path = "src/main.rs"
 
+[features]
+default = []
+smtp-transport = ["dep:lettre"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -25,6 +29,7 @@ qid-observability = { workspace = true }
 qid-ops = { workspace = true }
 qid-scim = { workspace = true }
 qid-storage = { workspace = true }
+lettre = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -38,5 +43,8 @@ rustls-pki-types = { workspace = true }
 
 [dev-dependencies]
 base64 = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }

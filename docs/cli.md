@@ -205,7 +205,7 @@ cargo run --bin qid-dev -- qpx-smoke
 
 `qid-worker` runs operational jobs and emits JSON.
 
-SIEM and notification delivery send HTTPS requests by default. Add `--dry-run` to record a prepared request without sending; dry runs report `skipped_dry_run`, and SIEM entries remain pending. `--request-output` writes a local copy of the request; protect that file because notification payloads may contain personal data. The default network timeout is 10 seconds (`--timeout-seconds`), and redirects are not followed. For `notification-deliver`, `--provider` is the HTTPS endpoint URL accepting the JSON request.
+SIEM and notification delivery send HTTPS requests by default. Add `--dry-run` to record a prepared request without sending; dry runs report `skipped_dry_run`, and SIEM entries remain pending. `--request-output` writes a local copy of the request; protect that file because notification payloads may contain personal data. The default network timeout is 10 seconds (`--timeout-seconds`), and redirects are not followed. For `notification-deliver`, `--provider` is the HTTPS endpoint URL accepting the JSON request, unless it selects SMTP delivery (see below).
 
 | Command | Purpose |
 | --- | --- |
@@ -214,10 +214,21 @@ SIEM and notification delivery send HTTPS requests by default. Add `--dry-run` t
 | `audit-worm-archive` | Export recent audit events to a local append-only archive directory; optionally attach a verified RFC 3161 timestamp. |
 | `audit-siem-deliver` | Send a SIEM webhook to an HTTPS endpoint; `--dry-run` records without sending. |
 | `audit-siem-redrive` | Redrive a persistent SIEM delivery queue entry. |
-| `notification-deliver` | Send email or push notification to an HTTPS endpoint; `--dry-run` records without sending. |
+| `notification-deliver` | Send email or push notification to an HTTPS endpoint, or send email via SMTP when `--provider` is `smtp(s)://`; `--dry-run` records without sending. |
 | `directory-sync` | Synchronize a configured directory provider. |
 | `key-rotation-plan` | Plan key rotation and optionally record an audit event. |
 | `key-rotation-execute` | Execute supported key rotation actions from a plan JSON file. |
+
+`notification-deliver` sends email through SMTP when `--provider` is an `smtp://host[:port]`
+(STARTTLS, default port 587) or `smtps://host[:port]` (implicit TLS, default port 465)
+URL. Only `email` notifications are accepted over SMTP, and TLS is always required:
+there is no plaintext mode, and credentials, query strings, fragments and paths are
+rejected in the provider URL. The sender and credentials come only from the runtime
+environment: `QID_SMTP_FROM` (required sender address) and `QID_SMTP_USERNAME` plus
+`QID_SMTP_PASSWORD` (both set for authenticated relay, or both unset). SMTP delivery
+requires the `smtp-transport` build (`cargo run --features smtp-transport ...`); without
+it, an `smtp(s)://` provider fails with a clear error instead of attempting HTTPS.
+`--request-output` is echoed but no request body is written for SMTP sends.
 
 Example:
 

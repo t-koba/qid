@@ -95,7 +95,10 @@ exclude = ["vendor/rustls"]
 # endpoint tests are uncapped. DCR also rejects the metadata on create/update
 # when its realm has PAR disabled using RFC invalid_client_metadata (18 lines,
 # measured 104166 -> 104184); tests remain uncapped.
-total = 104184
+# The SMTP transport, feature-gated CLI path, and secure provider setup add 268
+# measured source lines after consolidation (104184 -> 104452; qid-worker
+# 5200 -> 5467); tests remain uncapped.
+total = 104452
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -113,7 +116,7 @@ qid-federation = 5000
 qid-iga = 6300
 qid-resource = 5200
 qid-scim = 4600
-qid-worker = 5200
+qid-worker = 5467
 
 [workspace.package]
 version = "0.1.0"
@@ -179,6 +182,7 @@ x25519-dalek = { version = "2", features = ["reusable_secrets", "static_secrets"
 subtle = "2"
 zeroize = { version = "1", features = ["derive"] }
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-rustls", "rustls", "ring", "webpki-roots"] }
 lru = "0.18.2"
 proptest = "1.6"
 quinn = "0.11"

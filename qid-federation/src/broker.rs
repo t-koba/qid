@@ -91,6 +91,11 @@ pub struct InboundIdentityProvider {
     pub jwks: Option<serde_json::Value>,
     #[serde(default)]
     pub saml_signing_certificates: Vec<String>,
+    /// Additional inbound OIDC ID-token audiences trusted for this provider.
+    /// The `expected_audience` (configured `client_id` at the OIDC/social
+    /// callbacks) is always trusted; an omitted or empty list trusts only it.
+    #[serde(default)]
+    pub trusted_audiences: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -287,6 +292,7 @@ pub fn azure_ad_provider(
         )),
         jwks: None,
         saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
         claim_mappings: vec![
             ClaimMapping {
                 source: "oid".to_owned(),
@@ -345,6 +351,7 @@ pub fn google_workspace_provider(client_id: &str, client_secret: &str) -> Inboun
         jwks_uri: Some("https://www.googleapis.com/oauth2/v3/certs".to_owned()),
         jwks: None,
         saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
         claim_mappings: vec![
             ClaimMapping {
                 source: "sub".to_owned(),
@@ -415,6 +422,7 @@ pub fn okta_provider(
         jwks_uri: Some(format!("{issuer}/v1/keys")),
         jwks: None,
         saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
         claim_mappings: vec![
             ClaimMapping {
                 source: "sub".to_owned(),
@@ -1146,7 +1154,8 @@ pub fn normalize_enterprise_claims(
 /// `HS256/HS384/HS512` and any other `alg` are rejected fail-closed per
 /// RFC 8725 §3.1: the header `alg` never selects an HMAC path and
 /// `client_secret` (code-exchange credential) is never used as an HMAC key.
-/// Validates `iss`, `aud`, and `exp` claims.
+/// Validates `iss`, `aud`, and `exp` claims, then enforces the provider's
+/// explicit audience trust policy (`expected_audience` plus `trusted_audiences`).
 /// Returns the decoded JWT payload as a `serde_json::Value`.
 pub fn verify_inbound_idp_token(
     token: &str,
@@ -1255,7 +1264,69 @@ pub fn verify_inbound_idp_token(
         return Err(broker_error("missing_exp", "ID token is missing exp claim"));
     }
 
+    // Explicit per-provider audience trust: `expected_audience` (the
+    // configured `client_id` at the OIDC/social callbacks) is always trusted.
+    // Every `aud` member must equal it or match this provider's
+    // `trusted_audiences`. The jsonwebtoken audience membership check above is
+    // kept unchanged; this rejects tokens that smuggle an untrusted extra
+    // audience alongside the expected one. Malformed `aud` values fail closed.
+    // `azp` is not required.
+    enforce_inbound_audience_trust(&claims, provider, expected_audience)?;
+
     Ok(claims)
+}
+
+/// Enforce the inbound OIDC audience trust policy on already-decoded claims.
+fn enforce_inbound_audience_trust(
+    claims: &serde_json::Value,
+    provider: &InboundIdentityProvider,
+    expected_audience: &str,
+) -> Result<(), QidError> {
+    let audiences: Vec<&str> = match claims.get("aud") {
+        Some(serde_json::Value::String(single)) => vec![single.as_str()],
+        Some(serde_json::Value::Array(members)) => {
+            let mut collected = Vec::with_capacity(members.len());
+            for member in members {
+                match member.as_str() {
+                    Some(value) => collected.push(value),
+                    None => {
+                        return Err(broker_error(
+                            "invalid_audience",
+                            "ID token has a malformed aud member",
+                        ));
+                    }
+                }
+            }
+            collected
+        }
+        _ => {
+            return Err(broker_error(
+                "invalid_audience",
+                "ID token has a malformed aud claim",
+            ));
+        }
+    };
+    if audiences.iter().any(|value| value.trim().is_empty()) {
+        return Err(broker_error(
+            "invalid_audience",
+            "ID token has an empty aud member",
+        ));
+    }
+    if !audiences.contains(&expected_audience) {
+        return Err(broker_error(
+            "audience_mismatch",
+            "ID token audience does not include the expected audience",
+        ));
+    }
+    if audiences.iter().any(|value| {
+        *value != expected_audience && !provider.trusted_audiences.iter().any(|t| t == *value)
+    }) {
+        return Err(broker_error(
+            "untrusted_audience",
+            "ID token carries an audience that is not explicitly trusted for this provider",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_inbound_providers(providers: &[InboundIdentityProvider]) -> Result<(), QidError> {
@@ -1288,6 +1359,38 @@ fn validate_inbound_providers(providers: &[InboundIdentityProvider]) -> Result<(
                 "invalid_social_provider",
                 "Social provider routing requires social_provider",
             ));
+        }
+        if !provider.trusted_audiences.is_empty()
+            && !matches!(
+                &provider.kind,
+                InboundProviderKind::Oidc
+                    | InboundProviderKind::EntraId
+                    | InboundProviderKind::GoogleWorkspace
+                    | InboundProviderKind::Okta
+                    | InboundProviderKind::Social
+            )
+        {
+            return Err(broker_error(
+                "unsupported_trusted_audiences",
+                "Provider trusted_audiences is supported only for OIDC ID-token providers",
+            ));
+        }
+        {
+            let mut seen = HashSet::new();
+            for audience in &provider.trusted_audiences {
+                if audience.trim().is_empty() {
+                    return Err(broker_error(
+                        "invalid_trusted_audience",
+                        "Provider trusted_audiences must not contain empty entries",
+                    ));
+                }
+                if !seen.insert(audience) {
+                    return Err(broker_error(
+                        "duplicate_trusted_audience",
+                        "Provider trusted_audiences must not contain duplicates",
+                    ));
+                }
+            }
         }
         for domain in &provider.domains {
             let Some(normalized) = normalized_domain(domain) else {

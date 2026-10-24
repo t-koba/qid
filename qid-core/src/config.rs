@@ -1351,6 +1351,47 @@ impl RealmConfig {
                     }
                 }
             }
+            if !provider.trusted_audiences.is_empty()
+                && !matches!(
+                    provider.kind.as_str(),
+                    "oidc"
+                        | "social"
+                        | "entra_id"
+                        | "entra"
+                        | "azure_ad"
+                        | "google_workspace"
+                        | "google"
+                        | "okta"
+                )
+            {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} inbound provider {} supports trusted_audiences only for OIDC ID-token providers",
+                        self.id, provider.id
+                    ),
+                });
+            }
+            {
+                let mut seen = std::collections::HashSet::new();
+                for audience in &provider.trusted_audiences {
+                    if audience.trim().is_empty() {
+                        return Err(QidError::Config {
+                            message: format!(
+                                "realm {} inbound provider {} has an empty trusted_audiences entry",
+                                self.id, provider.id
+                            ),
+                        });
+                    }
+                    if !seen.insert(audience) {
+                        return Err(QidError::Config {
+                            message: format!(
+                                "realm {} inbound provider {} has duplicate trusted_audiences entry {audience}",
+                                self.id, provider.id
+                            ),
+                        });
+                    }
+                }
+            }
         }
         if !self.protocols.scim.custom_schemas.is_empty() {
             return Err(QidError::Config {

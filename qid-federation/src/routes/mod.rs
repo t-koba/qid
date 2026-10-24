@@ -57,6 +57,7 @@ pub fn providers_from_config(
                 jwks_uri: cfg.jwks_uri.clone(),
                 jwks: cfg.jwks.clone(),
                 saml_signing_certificates: cfg.saml_signing_certificates.clone(),
+                trusted_audiences: cfg.trusted_audiences.clone(),
             })
         })
         .collect()

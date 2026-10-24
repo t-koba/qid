@@ -45,6 +45,10 @@ realms:
             domains:
               - partner.example.com
             client_id: "qid-partner-broker"
+            # Extra ID-token audiences trusted for this provider besides client_id.
+            # Omitted or empty trusts only the client_id.
+            # trusted_audiences:
+            #   - "partner-legacy-audience"
             client_secret: "secret://qid/federation/partner-oidc-client-secret"
             token_url: "https://login.partner.example.com/oauth2/token"
             userinfo_url: "https://login.partner.example.com/oidc/userinfo"

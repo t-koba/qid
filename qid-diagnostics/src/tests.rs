@@ -350,6 +350,7 @@ fn ciam_profile_diagnostics_follow_shared_inbound_provider_requirement() {
             jwks_uri: None,
             jwks: None,
             saml_signing_certificates: Vec::new(),
+            trusted_audiences: Vec::new(),
         });
     let federation_status = |config: &QidConfig| {
         check_profile_obligations(config)

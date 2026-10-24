@@ -948,6 +948,7 @@ fn deployment_profiles_enforce_required_capabilities() {
         jwks_uri: None,
         jwks: None,
         saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
     }];
     assert!(ciam_config.realms[0].has_ciam_compatible_inbound_provider());
     let mut incomplete_ciam_realm = ciam_config.realms[0].clone();
@@ -2591,4 +2592,57 @@ fn email_magic_link_defaults_validation_and_runtime_policy() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn inbound_oidc_trusted_audiences_are_defaulted_and_validated() {
+    let mut config = minimal_config();
+    config.realms[0].protocols.federation.enabled = true;
+    let defaults: InboundProviderConfig = serde_json::from_value(serde_json::json!({
+        "id": "default-oidc",
+        "kind": "oidc",
+        "issuer": "https://login.partner.example"
+    }))
+    .unwrap();
+    assert!(defaults.trusted_audiences.is_empty());
+
+    let provider: InboundProviderConfig = serde_json::from_value(serde_json::json!({
+        "id": "partner-oidc",
+        "kind": "oidc",
+        "issuer": "https://login.partner.example",
+        "enabled": true,
+        "client_id": "qid-partner-broker",
+        "trusted_audiences": ["partner-legacy-audience"]
+    }))
+    .unwrap();
+    assert_eq!(
+        provider.trusted_audiences,
+        vec!["partner-legacy-audience".to_string()]
+    );
+    config.realms[0]
+        .protocols
+        .federation
+        .inbound_providers
+        .push(provider);
+    config.validate().unwrap();
+
+    let mut omitted = config.clone();
+    omitted.realms[0].protocols.federation.inbound_providers[0]
+        .trusted_audiences
+        .clear();
+    assert!(omitted.validate().is_ok());
+
+    let mut empty = config.clone();
+    empty.realms[0].protocols.federation.inbound_providers[0].trusted_audiences = vec!["  ".into()];
+    assert!(empty.validate().is_err());
+
+    let mut duplicate = config.clone();
+    duplicate.realms[0].protocols.federation.inbound_providers[0].trusted_audiences =
+        vec!["legacy".into(), "legacy".into()];
+    assert!(duplicate.validate().is_err());
+
+    let mut unsupported = config;
+    unsupported.realms[0].protocols.federation.inbound_providers[0].kind = "saml".into();
+    unsupported.realms[0].protocols.federation.inbound_providers[0].enabled = false;
+    assert!(unsupported.validate().is_err());
 }

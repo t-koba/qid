@@ -392,6 +392,7 @@ fn saml_inbound_provider(issuer: &str, certificate: &str) -> InboundProviderConf
         jwks_uri: None,
         jwks: None,
         saml_signing_certificates: vec![certificate.to_string()],
+        trusted_audiences: Vec::new(),
     }
 }
 

@@ -164,7 +164,11 @@ exclude = ["vendor/rustls"]
 # redemption in both storage backends. qid-storage grows 13265 -> 13603; all
 # other crates remain within their existing per-crate caps. Focused storage,
 # session and OIDC tests complete in about 3.1 seconds after compilation.
-total = 108696
+# Inbound OIDC audience trust adds 153 measured counted source lines (108696 ->
+# 108849): per-provider audience policy, validation and callback wiring; all
+# existing per-crate caps still hold. Signed verifier regressions cover the
+# local audience, an untrusted extra, and explicitly trusted multi-audience.
+total = 108849
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

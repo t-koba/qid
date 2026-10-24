@@ -97,6 +97,7 @@ fn inbound_providers() -> Vec<InboundIdentityProvider> {
             jwks_uri: None,
             jwks: None,
             saml_signing_certificates: Vec::new(),
+            trusted_audiences: Vec::new(),
             claim_mappings: vec![
                 ClaimMapping {
                     source: "email".to_string(),
@@ -126,6 +127,7 @@ fn inbound_providers() -> Vec<InboundIdentityProvider> {
             jwks_uri: None,
             jwks: None,
             saml_signing_certificates: Vec::new(),
+            trusted_audiences: Vec::new(),
             claim_mappings: vec![ClaimMapping {
                 source: "NameID".to_string(),
                 target: "name_id".to_string(),
@@ -148,6 +150,7 @@ fn inbound_providers() -> Vec<InboundIdentityProvider> {
             jwks_uri: None,
             jwks: None,
             saml_signing_certificates: Vec::new(),
+            trusted_audiences: Vec::new(),
             claim_mappings: vec![ClaimMapping {
                 source: "email".to_string(),
                 target: "email".to_string(),
@@ -405,6 +408,7 @@ fn inbound_broker_rejects_ambiguous_domains_and_unknown_routes() {
         jwks_uri: None,
         jwks: None,
         saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
         claim_mappings: Vec::new(),
     });
 
@@ -743,6 +747,7 @@ fn inbound_jwks_ignores_unknown_kty_and_still_verifies_classical_key() {
         jwks_uri: None,
         jwks: Some(mixed),
         saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
         claim_mappings: Vec::new(),
     };
     let verified = verify_inbound_idp_token(
@@ -802,6 +807,7 @@ fn inbound_idp_token_rejects_hmac_alg_fail_closed() {
         jwks_uri: None,
         jwks: Some(serde_json::json!({"keys": []})),
         saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
         claim_mappings: Vec::new(),
     };
     let err = verify_inbound_idp_token(
@@ -812,4 +818,175 @@ fn inbound_idp_token_rejects_hmac_alg_fail_closed() {
     )
     .unwrap_err();
     assert_eq!(federation_error_code(&err), "symmetric_alg_not_allowed");
+}
+
+#[test]
+fn inbound_idp_token_enforces_explicit_audience_trust() {
+    use qid_crypto::jwk::generate_es256;
+
+    let pair = generate_es256("aud-trust").expect("generate ES256");
+    let mut public = serde_json::to_value(&pair.public_jwk).expect("jwk json");
+    public["alg"] = serde_json::json!("ES256");
+    let jwks = serde_json::json!({ "keys": [public] });
+    let encoding =
+        jsonwebtoken::EncodingKey::from_ec_pem(pair.private_pem.as_bytes()).expect("ec pem");
+
+    fn provider_with_trust(
+        jwks: serde_json::Value,
+        trusted: Vec<String>,
+    ) -> InboundIdentityProvider {
+        InboundIdentityProvider {
+            id: "corp-oidc".to_string(),
+            kind: InboundProviderKind::Oidc,
+            issuer: "https://login.corp.example".to_string(),
+            enabled: true,
+            domains: vec!["corp.example".to_string()],
+            social_provider: None,
+            jit_provisioning: true,
+            account_linking: true,
+            client_id: Some("corp-client".to_string()),
+            client_secret: None,
+            token_url: None,
+            userinfo_url: None,
+            jwks_uri: None,
+            jwks: Some(jwks),
+            saml_signing_certificates: Vec::new(),
+            trusted_audiences: trusted,
+            claim_mappings: Vec::new(),
+        }
+    }
+
+    fn sign(aud: serde_json::Value, key: &jsonwebtoken::EncodingKey) -> String {
+        let now = qid_core::util::now_seconds() as usize;
+        let claims = serde_json::json!({
+            "iss": "https://login.corp.example",
+            "aud": aud,
+            "exp": now + 600,
+            "sub": "user-1",
+        });
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some("aud-trust".to_string());
+        jsonwebtoken::encode(&header, &claims, key).expect("sign token")
+    }
+
+    // String `aud` equal to the configured client_id verifies.
+    let strict = provider_with_trust(jwks.clone(), Vec::new());
+    let verified = verify_inbound_idp_token(
+        &sign(serde_json::json!("corp-client"), &encoding),
+        &strict,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .expect("string client_id audience verifies");
+    assert_eq!(verified.get("sub").and_then(|v| v.as_str()), Some("user-1"));
+
+    // One-element array holding only the client_id verifies.
+    let verified = verify_inbound_idp_token(
+        &sign(serde_json::json!(["corp-client"]), &encoding),
+        &strict,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .expect("single-element client_id array verifies");
+    assert_eq!(verified.get("sub").and_then(|v| v.as_str()), Some("user-1"));
+
+    // Array without the client_id is rejected even though every entry is a string.
+    let err = verify_inbound_idp_token(
+        &sign(serde_json::json!(["other-app"]), &encoding),
+        &strict,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            federation_error_code(&err),
+            "token_verification_failed" | "audience_mismatch"
+        ),
+        "array missing client_id must be rejected, got {}",
+        federation_error_code(&err)
+    );
+
+    // Array pairing the client_id with an untrusted extra audience is rejected:
+    // the expected audience is present, so only the explicit trust policy fails it.
+    let err = verify_inbound_idp_token(
+        &sign(
+            serde_json::json!(["corp-client", "untrusted-extra"]),
+            &encoding,
+        ),
+        &strict,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .unwrap_err();
+    assert_eq!(federation_error_code(&err), "untrusted_audience");
+
+    // The same array verifies once the extra audience is explicitly trusted.
+    let trusting = provider_with_trust(jwks.clone(), vec!["untrusted-extra".to_string()]);
+    let verified = verify_inbound_idp_token(
+        &sign(
+            serde_json::json!(["corp-client", "untrusted-extra"]),
+            &encoding,
+        ),
+        &trusting,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .expect("explicitly trusted extra audience verifies");
+    assert_eq!(verified.get("sub").and_then(|v| v.as_str()), Some("user-1"));
+
+    // Malformed non-string `aud` members fail closed: jsonwebtoken rejects
+    // the token during decoding, or the explicit trust check does.
+    let err = verify_inbound_idp_token(
+        &sign(serde_json::json!(["corp-client", 42]), &encoding),
+        &trusting,
+        "https://login.corp.example",
+        "corp-client",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            federation_error_code(&err),
+            "token_verification_failed" | "invalid_audience"
+        ),
+        "malformed aud must fail closed, got {}",
+        federation_error_code(&err)
+    );
+}
+
+#[test]
+fn inbound_oidc_provider_conversion_carries_trusted_audiences() {
+    let config: qid_core::config::InboundProviderConfig =
+        serde_json::from_value(serde_json::json!({
+            "id": "partner-oidc",
+            "kind": "oidc",
+            "issuer": "https://login.partner.example",
+            "client_id": "qid-partner-broker",
+            "trusted_audiences": ["partner-legacy-audience"]
+        }))
+        .unwrap();
+
+    // Both OIDC and social callbacks build the verifier's provider through this
+    // conversion before passing it to verify_inbound_idp_token.
+    let providers = providers_from_config(&[config]);
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0].trusted_audiences, ["partner-legacy-audience"]);
+}
+
+#[test]
+fn inbound_provider_runtime_rejects_audience_trust_for_non_oidc_provider() {
+    let mut provider = inbound_providers()
+        .into_iter()
+        .find(|provider| provider.kind == InboundProviderKind::Saml)
+        .expect("test providers include a SAML provider");
+    provider.trusted_audiences = vec!["unconsumed-audience".into()];
+    let request = HomeRealmDiscoveryRequest {
+        idp_hint: Some(provider.id.clone()),
+        ..Default::default()
+    };
+    let error = route_inbound_provider(&[provider], &request).unwrap_err();
+    assert_eq!(
+        federation_error_code(&error),
+        "unsupported_trusted_audiences"
+    );
 }

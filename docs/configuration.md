@@ -273,12 +273,24 @@ Validation rules:
 | `saml` | SAML IdP routes, metadata signing, assertion signing/encryption, SP registration, clock skew. SP signing certificates accept PEM or bare standard base64 DER; encryption certificates require a compact bare standard base64 DER value. |
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. The `enabled` switch decides whether a realm serves the FedCM routes and appears in the FedCM discovery documents; it is off unless the configuration sets it. |
-| `federation` | Inbound OIDC/SAML/social providers and claim mappings. |
+| `federation` | Inbound OIDC/SAML/social providers, claim mappings, and per-provider `trusted_audiences`. |
 | `directory` | LDAP, Active Directory, CSV HR pulls, and inbound HR webhook bindings; sync filters and attribute mapping apply only to pulls. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
 | `vc` | OID4VCI/OID4VP/HAIP/status/holder binding. |
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |
 | `network_aaa` | RADIUS/TLS/EAP/CAPPORT/CoA/accounting/directory authority. |
+
+An inbound OIDC/social provider's `trusted_audiences` lists extra ID-token
+`aud` values trusted for that provider besides its `client_id`. The
+`client_id` used as the expected audience at the OIDC/social callbacks is
+always trusted; omitting `trusted_audiences` (or leaving it empty) trusts
+only the `client_id`. After signature/issuer/expiry validation every `aud`
+member must equal the expected audience or a `trusted_audiences` entry, so a
+token that pairs the `client_id` with an unlisted audience is rejected.
+Entries must be nonempty and unique, and malformed `aud` values fail closed.
+Setting this option on SAML, LDAP/AD, or Kerberos providers is a configuration
+error because those providers do not verify OIDC ID tokens.
+
 
 An LDAP or Active Directory provider's `connection` holds:
 

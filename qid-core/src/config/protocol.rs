@@ -750,6 +750,13 @@ pub struct InboundProviderConfig {
     /// No certificate supplied inside an assertion is trusted as a substitute.
     #[serde(default)]
     pub saml_signing_certificates: Vec<String>,
+    /// Additional inbound OIDC ID-token audiences trusted for this provider.
+    /// The configured `client_id` (the `expected_audience` at the OIDC/social
+    /// callbacks) is always trusted; an omitted or empty list trusts only it.
+    /// Every `aud` member of a verified token must equal `client_id` or one of
+    /// these entries.
+    #[serde(default)]
+    pub trusted_audiences: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

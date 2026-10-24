@@ -2258,6 +2258,7 @@ mod directory_http_truthfulness {
         assert_eq!(body["id"], CONFIGURED_PROVIDER_ID);
         assert_eq!(body["type"], "active-directory");
         assert_eq!(body["url"], "ldap://ad.example.com");
+        assert_eq!(body["sync_interval_minutes"], 60);
         assert_eq!(body["deactivate_missing"], true);
 
         let (app, _, session) = setup_routes().await;

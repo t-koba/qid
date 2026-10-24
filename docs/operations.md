@@ -300,7 +300,32 @@ ops:
 
 ## Directory Synchronization
 
-For scheduled directory jobs, prefer `qid-worker directory-sync` when operating from configured providers. A non-mutating directory sync plan is not yet supported; `--dry-run` is refused before provider lookup or storage writes rather than risking a mutating preview:
+`sync_interval_minutes` is a requested per-provider cadence for an operator-owned
+scheduler, not a QID timer. List providers with the authenticated
+`GET /directory/v1/providers?realm=<realm>` route and read each enabled,
+syncable pull provider's cadence from
+`GET /directory/v1/providers/<id>?realm=<realm>`. The scheduler must
+periodically re-read provider details and reconcile timers after configuration
+changes; schedule each provider at its returned interval, and do not schedule
+a provider whose interval is `null`. A hard-coded cron interval cannot honor
+per-provider changes. QID does not enqueue, track, or lock periodic jobs; HTTP
+`/sync` and `/sync/status` remain unsupported. The external scheduler must
+enforce single-flight per `(realm, provider_id)`, including across scheduler
+instances.
+
+For LDAP/Active Directory, sequential replay of the same provider snapshot
+updates matching provider-owned users and reports unchanged rows; this does not
+make overlapping runs safe. A CSV provider rereads the whole configured HR
+file on every invocation and has no persisted file cursor or cross-run receipt.
+The scheduler/operator must supply fresh, unconsumed lifecycle rows or rotate
+its input; replayed CSV rows can apply lifecycle actions again. Duplicate
+`external_id` values within one CSV batch are rejected before any write.
+
+For a one-shot sync, use `qid-worker directory-sync` with the configured
+provider. The worker reads provider settings from its `--config` file, so use
+the current QID configuration for the same realm. A non-mutating directory
+sync plan is not supported; `--dry-run` is refused before provider lookup or
+storage writes rather than risking a mutating preview:
 
 ```sh
 cargo run --bin qid-worker -- --config /etc/qid/qid.yaml directory-sync \
@@ -308,10 +333,13 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml directory-sync \
   --provider-id ad-main
 ```
 
-A directory sync that fails - an unknown realm or provider - reports `failed` and the
-command exits nonzero; a sync that is skipped because the provider or the realm's directory
-sync is disabled reports `skipped_disabled` and exits zero. A configuration the loader
-rejects never reaches the command, so it fails before the report exists.
+A normal JSON report has status `completed`, `skipped_disabled`, or `failed`;
+`failed` exits nonzero, while a disabled provider or directory reports
+`skipped_disabled` and exits zero. Configuration, connector, or storage errors
+can abort with a nonzero exit before a JSON report exists. Audit append errors
+are included in `report.errors` even when the sync itself completed, so capture
+the report and inspect both exit status and errors. The HTTP status route does
+not provide job state; the external scheduler owns its run history.
 
 For JSON-based lifecycle testing or one-off sync, `--provider-id` must remain stable for the directory provider. LDAP rows retain the raw DN as SCIM `externalId` and record ownership in the internal server-owned `directory_provider_id` (never in `enterprise_json`, which SCIM clients can forge). Existing rows without an owner need explicit internal migration; ownership is never inferred from `enterprise_json`, even with a single provider. SCIM clients cannot change or remove `externalId` on provider-owned users. An unowned row whose `externalId` collides with an incoming DN fails the sync with a conflict before any write; unrelated ownerless rows do not block sync.
 

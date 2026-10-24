@@ -443,10 +443,10 @@ or no trust domain is refused wherever it is named.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/directory/v1/providers` | List directory providers, including disabled bindings, their `enabled`/`syncable` flags, and supported pull/inbound types. |
-| `GET` | `/directory/v1/providers/:id` | Read provider configuration (`404` for unknown IDs); connection and sync settings are managed through QID configuration. |
+| `GET` | `/directory/v1/providers` | List directory providers, including disabled bindings, `enabled`/`syncable` flags, and supported types; read per-provider cadence from the detail route. |
+| `GET` | `/directory/v1/providers/:id` | Read provider configuration (`404` for unknown IDs), including requested `sync_interval_minutes` for pull providers; QID does not enforce the cadence. |
 | `PATCH` | `/directory/v1/providers/:id` | Unsupported (`501` for configured providers, `404` for unknown IDs); no provider status is asserted or changed. |
-| `POST` | `/directory/v1/providers/:id/sync` | Unsupported over HTTP (`501` for configured providers, `404` for unknown IDs); no job is scheduled. Use `qid-worker directory-sync --realm <realm> --provider-id <id>` for LDAP/AD/CSV only. |
+| `POST` | `/directory/v1/providers/:id/sync` | Unsupported over HTTP (`501` for configured providers, `404` for unknown IDs); no job is scheduled. Use the one-shot `qid-worker directory-sync --realm <realm> --provider-id <id>` for LDAP/AD/CSV; periodic scheduling is external. |
 | `GET` | `/directory/v1/providers/:id/sync/status` | Unsupported (`501` for configured providers, `404` for unknown IDs); the HTTP API does not track sync-job state. |
 | `POST` | `/directory/v1/providers/:id/hr` | Synchronous ordered HR batch for an enabled configured webhook binding; see below. |
 | `POST` | `/risk/v1/evaluate` | Evaluate risk. |

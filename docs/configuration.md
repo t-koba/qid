@@ -323,6 +323,17 @@ is rejected), and the LDAP-only
 anything but their defaults, because a CSV source would silently ignore them.
 The LDAP-only `connect_timeout_seconds` likewise accepts only its default `10`
 or unset for CSV; neither applies a timeout to local file reads.
+
+`sync.sync_interval_minutes` is a requested cadence for an operator-owned
+scheduler, not a QID timer. If the whole `sync` section is omitted, the
+provider default is 60 minutes. If a `sync` section is present but this field
+is omitted or explicitly `null`, no cadence is requested. A numeric value must
+be positive for enabled pull providers in an enabled directory. The provider list supplies the `enabled` and `syncable` flags; the
+per-provider detail response returns this value. Inbound webhooks are not
+polled. QID does not schedule or track these jobs; see
+[Directory Synchronization](operations.md#directory-synchronization) for the
+worker and scheduler contract.
+
 `sync.deactivate_missing` defaults to true for LDAP/AD snapshots; CSV accepts
 only false or unset and never deactivates users missing from its HR event batch.
 `max_entries` stays settable as the CSV record ceiling (default 1,000,000).

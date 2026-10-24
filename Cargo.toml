@@ -181,7 +181,9 @@ exclude = ["vendor/rustls"]
 # Per-registration PEP failure policy adds 60 measured product-source lines
 # (109192 -> 109252): only post-auth internal/storage fallback with audit,
 # noncacheable response, and strict configuration validation; tests are uncapped.
-total = 109252
+# The directory-sync cadence contract adds 9 measured product-source lines
+# (109252 -> 109261) for the field policy and positive-interval validation.
+total = 109261
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

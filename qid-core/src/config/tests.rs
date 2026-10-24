@@ -233,6 +233,9 @@ fn rust_defaults_match_serde_defaults_for_nested_config() {
     let decision: PepDecisionConfig =
         serde_json::from_value(serde_json::json!({ "fail_policy": "deny" })).unwrap();
     assert_eq!(decision.fail_policy, "deny");
+    let decision: PepDecisionConfig =
+        serde_json::from_value(serde_json::json!({ "fail_policy": "allow" })).unwrap();
+    assert_eq!(decision.fail_policy, "allow");
     assert_eq!(
         serde_json::from_value::<PepDecisionCacheConfig>(serde_json::json!({})).unwrap(),
         PepDecisionCacheConfig::default()
@@ -887,6 +890,16 @@ fn deployment_profiles_enforce_required_capabilities() {
         auth: PepRegistrationAuthConfig::default(),
     }];
     pep_config.validate().unwrap();
+
+    pep_config.realms[0].pep_registrations.registrations[0]
+        .decision
+        .fail_policy = "allow".to_string();
+    let err = pep_config.validate().unwrap_err();
+    assert!(
+        err.message().contains("requires fail_policy=deny"),
+        "edge-pep stays deny-only: {}",
+        err.message()
+    );
 
     let mut fapi_config = minimal_config();
     fapi_config.profile = DeploymentProfile::Fapi;
@@ -2690,4 +2703,42 @@ fn inbound_oidc_trusted_audiences_are_defaulted_and_validated() {
     unsupported.realms[0].protocols.federation.inbound_providers[0].kind = "saml".into();
     unsupported.realms[0].protocols.federation.inbound_providers[0].enabled = false;
     assert!(unsupported.validate().is_err());
+}
+
+#[test]
+fn pep_decision_fail_policy_defaults_to_deny_and_accepts_only_deny_or_allow() {
+    let mut config = minimal_config();
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations = vec![PepRegistrationConfig {
+        name: "egress-main".to_string(),
+        audience: Some("urn:qid:pep:corp/egress-main".to_string()),
+        capabilities: vec![pep_capability("local_response")],
+        assertion: ProxyAssertionConfig::default(),
+        decision: PepDecisionConfig::default(),
+        auth: PepRegistrationAuthConfig::default(),
+    }];
+    assert_eq!(
+        config.realms[0].pep_registrations.registrations[0]
+            .decision
+            .fail_policy,
+        "deny"
+    );
+    config.validate().unwrap();
+
+    config.realms[0].pep_registrations.registrations[0]
+        .decision
+        .fail_policy = "allow".to_string();
+    config.validate().unwrap();
+
+    for rejected in ["sometimes", "", "ALLOW", "deny,allow"] {
+        config.realms[0].pep_registrations.registrations[0]
+            .decision
+            .fail_policy = rejected.to_string();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.message().contains("must be deny or allow"),
+            "fail_policy={rejected:?} must be rejected: {}",
+            err.message()
+        );
+    }
 }

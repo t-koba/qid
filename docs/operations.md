@@ -99,7 +99,7 @@ PEP integration is a control-plane contract, not a proxy runtime embedded inside
 
 Operational rules:
 
-- Keep `decision.fail_policy: deny`.
+- Keep `decision.fail_policy: deny` unless a registration explicitly owns fail-open for post-auth internal/storage errors; `edge-pep` always keeps `deny`.
 - Keep assertion TTL short.
 - Register each PEP audience explicitly.
 - Enable replay protection for PEP credentials and assertions.
@@ -204,6 +204,7 @@ Hot-path control-plane metrics include:
 | `qid_audit_append_failures_total` | none | Admin audit append failures. |
 | `qid_proxy_pep_decision_cache_hits_total` | none | PEP decision cache hits. |
 | `qid_proxy_pep_decision_cache_misses_total` | none | PEP decision cache misses. |
+| `qid_proxy_pep_decision_fail_open_total` | none | PEP decisions answered fail-open (`fail-open` allow, post-auth system error only). |
 
 Metrics bind addresses must not be unspecified addresses such as `0.0.0.0:9464`. Metrics labels should remain low-cardinality and should not contain user IDs, email addresses, tokens, selected header values, or raw unbounded paths.
 

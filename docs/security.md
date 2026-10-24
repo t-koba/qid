@@ -28,7 +28,7 @@ Important validation rules:
 - Redirect URIs must use HTTPS except localhost HTTP.
 - SCIM cursor secrets must be at least 32 bytes when SCIM is enabled.
 - SCIM event callback allowlists must be hostnames and reject unsafe local/non-routable hosts.
-- PEP decisions must fail closed with `fail_policy=deny`.
+- PEP decisions fail closed by default (`decision.fail_policy: deny`); opt-in `allow` opens only internal/storage evaluation errors after successful PEP authentication, never auth, binding, config, capability, or policy outcomes.
 - PEP assertion TTL cannot exceed 300 seconds.
 
 ## Authentication
@@ -128,7 +128,7 @@ PEP registration is security-sensitive because it can influence traffic forwardi
 
 Keep these settings:
 
-- `decision.fail_policy: deny`
+- `decision.fail_policy: deny` by default; `allow` is a narrow post-auth system-error opt-in, and `edge-pep` always requires `deny`
 - low assertion TTL
 - unique PEP audience
 - explicit capabilities

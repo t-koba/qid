@@ -598,7 +598,7 @@ fn pep_adapter_token(state: &SharedState<qid_storage::FileRepository>) -> String
             exp: Some((now + 60) as usize),
             nbf: Some((now - 5) as usize),
             iat: Some(now as usize),
-            jti: Some(format!("pep-adapter-{now}")),
+            jti: Some(format!("pep-adapter-{}", ulid::Ulid::new())),
             extra,
         })
         .expect("adapter token")
@@ -785,5 +785,383 @@ async fn a_registration_without_a_lifetime_keeps_the_product_defaults() {
     let response = do_check(&state, &req).await.expect("decision");
     assert_eq!(response.decision, "deny");
     assert_eq!(response.ttl_ms, 5_000);
+    std::fs::remove_file(path).ok();
+}
+
+fn fail_open_test_config(fail_policy: &str) -> QidConfig {
+    let mut config = pep_adapter_config(true);
+    for registration in &mut config.realms[0].pep_registrations.registrations {
+        registration.decision.fail_policy = fail_policy.to_string();
+        registration.capabilities = request()
+            .adapter_capabilities
+            .into_iter()
+            .map(|effect| qid_core::config::PepCapabilityConfig { effect })
+            .collect();
+    }
+    config
+}
+
+fn fail_open_state(
+    config: QidConfig,
+    default_decision: &str,
+) -> (SharedState<qid_storage::FileRepository>, std::path::PathBuf) {
+    // Reuse the cache TTL fixture shape: one stored bundle, file repository.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    rt.block_on(cache_ttl_state(config, default_decision))
+}
+
+#[test]
+fn fail_open_eligible_covers_only_internal_and_storage_errors() {
+    let (state, path) = fail_open_state(fail_open_test_config("allow"), "deny");
+    let req = request();
+    for err in [
+        QidError::Internal {
+            message: "boom".to_string(),
+        },
+        QidError::Storage {
+            message: "boom".to_string(),
+        },
+    ] {
+        assert!(
+            pep_decision_fail_open(&state, &req, "test", &err).is_some(),
+            "system error must be fail-open eligible: {err:?}"
+        );
+    }
+    for err in [
+        QidError::Config {
+            message: "boom".to_string(),
+        },
+        QidError::Crypto {
+            message: "boom".to_string(),
+        },
+        QidError::Unauthorized {
+            message: "boom".to_string(),
+        },
+        QidError::BadRequest {
+            message: "boom".to_string(),
+        },
+        QidError::NotFound {
+            resource: "boom".to_string(),
+        },
+        QidError::TooManyRequests {
+            message: "boom".to_string(),
+        },
+        QidError::AttemptBudgetSpent {
+            message: "boom".to_string(),
+        },
+        QidError::Conflict {
+            message: "boom".to_string(),
+        },
+        QidError::DpopNonce {
+            message: "boom".to_string(),
+        },
+    ] {
+        assert!(
+            pep_decision_fail_open(&state, &req, "test", &err).is_none(),
+            "non-system error must stay fail-closed: {err:?}"
+        );
+    }
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn fail_open_defaults_to_deny_for_system_errors() {
+    let (state, path) = fail_open_state(fail_open_test_config("deny"), "deny");
+    let req = request();
+    for err in [
+        QidError::Internal {
+            message: "boom".to_string(),
+        },
+        QidError::Storage {
+            message: "boom".to_string(),
+        },
+    ] {
+        assert!(
+            pep_decision_fail_open(&state, &req, "test", &err).is_none(),
+            "the default deny registration must stay fail-closed: {err:?}"
+        );
+    }
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn fail_open_allow_answers_only_internal_or_storage_errors() {
+    let (state, path) = fail_open_state(fail_open_test_config("allow"), "deny");
+    let req = request();
+    for err in [
+        QidError::Internal {
+            message: "boom".to_string(),
+        },
+        QidError::Storage {
+            message: "boom".to_string(),
+        },
+    ] {
+        let resp = pep_decision_fail_open(&state, &req, "test", &err)
+            .expect("allow plus a system error must fail open");
+        assert_eq!(resp.decision, "allow");
+        assert_eq!(resp.decision_id, "fail-open");
+        assert_eq!(resp.policy_id, "fail-open");
+        assert_ne!(resp.decision_id, "fail-closed");
+        assert_eq!(resp.ttl_ms, 0);
+        assert!(!resp.cacheable);
+        assert!(resp.obligations.is_empty());
+        assert_eq!(resp.schema_id, PEP_DECISION_RESPONSE_SCHEMA_ID);
+        assert_eq!(resp.audit.policy_id, "fail-open");
+        let body = serde_json::to_value(&resp).expect("fail-open serializes");
+        assert!(body.get("error").is_none());
+        assert!(body.get("message").is_none());
+    }
+    for err in [
+        QidError::Config {
+            message: "boom".to_string(),
+        },
+        QidError::Unauthorized {
+            message: "boom".to_string(),
+        },
+        QidError::BadRequest {
+            message: "boom".to_string(),
+        },
+        QidError::Crypto {
+            message: "boom".to_string(),
+        },
+        QidError::NotFound {
+            resource: "boom".to_string(),
+        },
+    ] {
+        assert!(
+            pep_decision_fail_open(&state, &req, "test", &err).is_none(),
+            "non-system errors must stay fail-closed even with allow: {err:?}"
+        );
+    }
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn fail_open_needs_the_authenticated_registration() {
+    let (state, path) = fail_open_state(fail_open_test_config("allow"), "deny");
+    let err = QidError::Internal {
+        message: "boom".to_string(),
+    };
+    let mut unknown_registration = request();
+    unknown_registration.proxy.proxy_name = "unknown-pep".to_string();
+    assert!(
+        pep_decision_fail_open(&state, &unknown_registration, "test", &err).is_none(),
+        "an unknown registration must stay fail-closed"
+    );
+    let req = request();
+    assert!(
+        pep_decision_fail_open(&state, &req, "other-realm", &err).is_none(),
+        "another realm must stay fail-closed"
+    );
+    std::fs::remove_file(path).ok();
+}
+
+#[tokio::test]
+async fn check_routes_only_authenticated_opt_in_system_failures_to_fail_open() {
+    for (fail_policy, expected_status) in
+        [("deny", StatusCode::FORBIDDEN), ("allow", StatusCode::OK)]
+    {
+        let mut config = fail_open_test_config(fail_policy);
+        if fail_policy == "deny" {
+            // Exercise the omitted decision configuration's default, not an opt-in.
+            config.realms[0].pep_registrations.registrations[0].decision = Default::default();
+            assert_eq!(
+                config.realms[0].pep_registrations.registrations[0]
+                    .decision
+                    .fail_policy,
+                "deny"
+            );
+        }
+        let (state, path) = cache_ttl_state(config, "deny").await;
+        let state = Arc::new(state);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", pep_adapter_token(&state))
+                .parse()
+                .unwrap(),
+        );
+        // A successful handler call loads the policy revision. Explicit policy
+        // deny remains an ordinary decision even for an opted-in registration.
+        let first = check(State(state.clone()), headers.clone(), JsonObject(request()))
+            .await
+            .into_response();
+        assert_eq!(first.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(first.into_body(), 16_384)
+            .await
+            .unwrap();
+        let first: PepDecisionResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(first.decision, "deny");
+        assert_ne!(first.decision_id, "fail-open");
+
+        // Match the realm, tenant and capabilities check assigns after auth,
+        // including the configured tenant rather than request()'s fixture tenant.
+        let mut req = request();
+        let realm = &state.config.realms[0];
+        req.adapter_capabilities =
+            normalize_capabilities(&realm.pep_registrations.registrations[0].capabilities);
+        req.adapter_realm_id = Some(realm.id.clone());
+        req.adapter_tenant_id = realm.tenant_id.clone();
+        let digest = pep_decision_cache_key(&req, &state.policy_revision())
+            .unwrap()
+            .digest;
+        state.decision_cache_put(digest, serde_json::json!({"bogus": true}), 60);
+        assert!(matches!(
+            do_check(&state, &req).await,
+            Err(QidError::Internal { .. })
+        ));
+
+        if fail_policy == "allow" {
+            // Even with a poisoned cache waiting behind authentication, missing
+            // and invalid bearer tokens retain the existing HTTP auth response.
+            for (authorization, message) in [
+                (None, "PEP registration authentication token is required"),
+                (
+                    Some("Bearer invalid"),
+                    "invalid PEP registration authentication token",
+                ),
+            ] {
+                let mut unauthenticated = HeaderMap::new();
+                if let Some(value) = authorization {
+                    unauthenticated
+                        .insert(axum::http::header::AUTHORIZATION, value.parse().unwrap());
+                }
+                let response = check(State(state.clone()), unauthenticated, JsonObject(request()))
+                    .await
+                    .into_response();
+                let expected = qid_http::error_response(QidError::Unauthorized {
+                    message: message.into(),
+                });
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+                assert_eq!(
+                    response.headers().get("www-authenticate"),
+                    expected.headers().get("www-authenticate")
+                );
+                let body = axum::body::to_bytes(response.into_body(), 16_384)
+                    .await
+                    .unwrap();
+                let expected = axum::body::to_bytes(expected.into_body(), 16_384)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    body, expected,
+                    "auth failures must never become fallback decisions"
+                );
+            }
+        }
+        // Authentication replay protection stays enabled: use a fresh token.
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", pep_adapter_token(&state))
+                .parse()
+                .unwrap(),
+        );
+        let response = check(State(state.clone()), headers, JsonObject(request()))
+            .await
+            .into_response();
+        assert_eq!(
+            response.status(),
+            expected_status,
+            "fail_policy={fail_policy}"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 16_384)
+            .await
+            .unwrap();
+        let response: PepDecisionResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response.schema_id, PEP_DECISION_RESPONSE_SCHEMA_ID);
+        assert_eq!(response.ttl_ms, 0);
+        assert!(!response.cacheable);
+        if fail_policy == "allow" {
+            assert_eq!(response.decision, "allow");
+            assert_eq!(response.decision_id, "fail-open");
+            assert_eq!(response.policy_id, "fail-open");
+            assert_eq!(response.audit.policy_id, "fail-open");
+            assert!(response.obligations.is_empty());
+        } else {
+            assert_eq!(response.decision, "deny");
+            assert_eq!(response.decision_id, "fail-closed");
+        }
+        drop(state);
+        std::fs::remove_file(path).expect("remove test repository");
+    }
+}
+
+#[tokio::test]
+async fn invalid_policy_bundle_stays_fail_closed_with_opt_in_allow() {
+    let (state, path) = cache_ttl_state(fail_open_test_config("allow"), "deny").await;
+    // Replace the stored bundle with one that cannot deserialize: a genuine
+    // configuration error out of the existing bundle load path.
+    state
+        .repo
+        .delete_policy_bundle("bundle-test")
+        .await
+        .expect("previous bundle removed");
+    state
+        .repo
+        .create_policy_bundle(&qid_core::models::PolicyBundle {
+            id: "bundle-broken".to_string(),
+            realm_id: "test".to_string(),
+            name: "bundle-broken".to_string(),
+            source_hash: "sha256:broken".to_string(),
+            compiled_json: serde_json::json!({"bogus": true}),
+            version: 2,
+            active: true,
+        })
+        .await
+        .expect("broken bundle stored");
+    // Drop the warm bundle cache so the broken row is actually loaded.
+    *state
+        .policy_bundle_cache
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    let req = request();
+    let err = do_check(&state, &req).await.expect_err("broken bundle");
+    assert!(
+        matches!(err, QidError::Config { .. }),
+        "a broken bundle must surface a config error: {err:?}"
+    );
+    let state = Arc::new(state);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {}", pep_adapter_token(&state))
+            .parse()
+            .unwrap(),
+    );
+    let response = check(State(state.clone()), headers, JsonObject(req))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(response.into_body(), 16_384)
+        .await
+        .unwrap();
+    let response: PepDecisionResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response.decision, "deny");
+    assert_eq!(response.decision_id, "fail-closed");
+    drop(state);
+    std::fs::remove_file(path).expect("remove test repository");
+}
+
+#[tokio::test]
+async fn missing_mandatory_capability_stays_fail_closed_with_opt_in_allow() {
+    let (state, path) = cache_ttl_state(fail_open_test_config("allow"), "deny").await;
+    // The deny decision needs the `local_response` capability; without any
+    // adapter capability the existing obligation path refuses fail-closed.
+    let mut req = request();
+    req.adapter_capabilities = HashSet::new();
+    let err = do_check(&state, &req)
+        .await
+        .expect_err("capability refusal");
+    assert!(
+        matches!(err, QidError::Unauthorized { .. }),
+        "a missing mandatory capability must refuse: {err:?}"
+    );
+    assert!(
+        pep_decision_fail_open(&state, &req, "test", &err).is_none(),
+        "capability refusals must stay fail-closed even with allow"
+    );
     std::fs::remove_file(path).ok();
 }

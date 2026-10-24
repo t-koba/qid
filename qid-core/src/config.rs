@@ -1432,10 +1432,10 @@ impl RealmConfig {
                     ),
                 });
             }
-            if registration.decision.fail_policy != "deny" {
+            if !matches!(registration.decision.fail_policy.as_str(), "deny" | "allow") {
                 return Err(QidError::Config {
                     message: format!(
-                        "realm {} PEP registration {} must fail closed with fail_policy=deny",
+                        "realm {} PEP registration {} decision.fail_policy must be deny or allow",
                         self.id, registration.name
                     ),
                 });

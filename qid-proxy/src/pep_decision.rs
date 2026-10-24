@@ -373,15 +373,75 @@ async fn check<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
     req.adapter_capabilities = auth.capabilities;
-    req.adapter_realm_id = Some(auth.realm_id);
+    req.adapter_realm_id = Some(auth.realm_id.clone());
     req.adapter_tenant_id = auth.tenant_id;
     match do_check(&state, &req).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => {
+            // Only authenticated, opted-in system failures may fail open.
+            if let Some(resp) = pep_decision_fail_open(&state, &req, &auth.realm_id, &e) {
+                metrics::counter!("qid_proxy_pep_decision_fail_open_total").increment(1);
+                return Json(resp).into_response();
+            }
             metrics::counter!("qid_proxy_pep_decision_fail_closed_total").increment(1);
             deny_response(&e)
         }
     }
+}
+
+/// Return a noncacheable fallback only for an authenticated registration's
+/// opt-in system failure. All other errors keep the existing fail-closed path.
+fn pep_decision_fail_open<R: Repository>(
+    state: &SharedState<R>,
+    req: &PepDecisionRequest,
+    realm_id: &str,
+    err: &QidError,
+) -> Option<PepDecisionResponse> {
+    if !matches!(err, QidError::Internal { .. } | QidError::Storage { .. }) {
+        return None;
+    }
+    let allow = state
+        .config
+        .realms
+        .iter()
+        .find(|realm| realm.id == realm_id)?
+        .pep_registrations
+        .registrations
+        .iter()
+        .find(|registration| registration.name == req.proxy.proxy_name)
+        .is_some_and(|registration| registration.decision.fail_policy == "allow");
+    if !allow {
+        return None;
+    }
+    let event = AuditEvent {
+        r#type: "pep_decision.check".to_string(),
+        time: qid_core::util::now_seconds().to_string(),
+        tenant: req.adapter_tenant_id.clone(),
+        realm: Some(realm_id.to_string()),
+        subject: None,
+        decision: Some("fail_open".to_string()),
+        decision_id: Some("fail-open".to_string()),
+        extra: HashMap::new(),
+    };
+    tracing::info!(target: "audit", "{:?}", event);
+    Some(PepDecisionResponse {
+        schema_id: PEP_DECISION_RESPONSE_SCHEMA_ID.to_string(),
+        decision: "allow".to_string(),
+        decision_id: "fail-open".to_string(),
+        policy_id: "fail-open".to_string(),
+        policy_revision: String::new(),
+        ttl_ms: 0,
+        cacheable: false,
+        decision_scope: "request".to_string(),
+        obligations: Vec::new(),
+        audit: PepDecisionAuditInfo {
+            severity: "high".to_string(),
+            policy_id: "fail-open".to_string(),
+            policy_tags: Vec::new(),
+            risk_score: None,
+        },
+        extensions: HashMap::new(),
+    })
 }
 
 #[derive(Debug)]

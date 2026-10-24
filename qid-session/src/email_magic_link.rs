@@ -54,24 +54,31 @@ fn binding(headers: &HeaderMap) -> Option<String> {
     extract_cookie(headers, BINDING_COOKIE).filter(|v| well_formed(v))
 }
 
-// Every component is length-prefixed; no concatenation ambiguity or cross-purpose reuse.
+// Versioned, separately domain-separated proofs; every component is length-prefixed.
+// Storage checks the browser proof before spending any token attempt.
 fn challenge_hash(c: &CiamVerificationChallengeRecord, token: &str, binding: &str) -> String {
-    let mut hash = Sha256::new();
-    for part in [
-        "qid:email-magic-link:v1",
-        &c.id,
-        &c.realm_id,
-        &c.user_id,
-        &c.address,
-        &c.channel,
-        &c.purpose,
-        token,
-        binding,
-    ] {
-        hash.update((part.len() as u64).to_be_bytes());
-        hash.update(part.as_bytes());
-    }
-    qid_core::util::hex_encode_lower(&hash.finalize())
+    let digest = |domain: &str, secret: &str| {
+        let mut hash = Sha256::new();
+        for part in [
+            domain,
+            &c.id,
+            &c.realm_id,
+            &c.user_id,
+            &c.address,
+            &c.channel,
+            &c.purpose,
+            secret,
+        ] {
+            hash.update((part.len() as u64).to_be_bytes());
+            hash.update(part.as_bytes());
+        }
+        qid_core::util::hex_encode_lower(&hash.finalize())
+    };
+    format!(
+        "ml2:{}:{}",
+        digest("qid:email-magic-link:v2:binding", binding),
+        digest("qid:email-magic-link:v2:token", token)
+    )
 }
 
 fn protected(mut response: Response) -> Response {
@@ -305,10 +312,12 @@ pub(crate) async fn verify<R: Repository>(
     if state.config.server.notification.is_none()
         || state.notification_transport.is_none()
         || !well_formed(&req.challenge_id)
-        || !well_formed(&req.token)
     {
         return invalid();
     }
+    let Some(binding) = binding(&headers) else {
+        return invalid();
+    };
     let realm_id = realm.clone().into();
     let record = match state
         .repo
@@ -318,7 +327,14 @@ pub(crate) async fn verify<R: Repository>(
         Ok(Some(record)) => record,
         _ => return invalid(),
     };
-    let hash = challenge_hash(&record, &req.token, &binding(&headers).unwrap_or_default());
+    // Malformed tokens still spend an attempt from the correct browser, but do not
+    // hash an attacker-controlled unbounded string. Valid tokens are fixed-width.
+    let candidate_token = if well_formed(&req.token) {
+        req.token.as_str()
+    } else {
+        "invalid-token"
+    };
+    let hash = challenge_hash(&record, candidate_token, &binding);
     let user = match state
         .repo
         .redeem_email_magic_link_challenge(

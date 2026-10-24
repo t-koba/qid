@@ -343,10 +343,12 @@ impl CiamRepository for FileRepository {
             else {
                 return Ok(None);
             };
-            let verified = qid_core::util::constant_time_eq(
-                challenge.code_hash.as_bytes(),
-                candidate_hash.as_bytes(),
-            );
+            let Some(verified) = crate::domain::email_magic_link_token_matches(
+                &challenge.code_hash,
+                &candidate_hash,
+            ) else {
+                return Ok(None);
+            };
             let current = store
                 .ciam_verification_challenges
                 .get_mut(&id)

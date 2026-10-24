@@ -728,6 +728,134 @@ async fn authorize_get_uses_browser_session_cookie_to_issue_code() {
 }
 
 #[tokio::test]
+async fn magic_link_session_resumes_oidc_authorization() {
+    use qid_core::notification::{
+        NotificationRequest, NotificationResponse, NotificationTransport,
+    };
+
+    struct Delivery(tokio::sync::mpsc::Sender<String>);
+    #[async_trait::async_trait]
+    impl NotificationTransport for Delivery {
+        async fn send(&self, request: NotificationRequest) -> Result<NotificationResponse, String> {
+            self.0
+                .send(request.body)
+                .await
+                .map_err(|_| "capture closed")?;
+            Ok(NotificationResponse {
+                status: 200,
+                sent: true,
+                provider_message_id: None,
+            })
+        }
+    }
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.email_magic_link.enabled = true;
+    config.server.notification = Some(qid_core::config::ServerNotificationConfig {
+        provider: "https://delivery.example.com".into(),
+        timeout_seconds: 10,
+        max_concurrent_deliveries: 1,
+    });
+    let (app, state) = setup_with_config(config).await;
+    drop(app);
+    let (sent, mut received) = tokio::sync::mpsc::channel(1);
+    let state = Arc::new(
+        Arc::try_unwrap(state)
+            .ok()
+            .unwrap()
+            .with_notification_transport(Arc::new(Delivery(sent))),
+    );
+    let app = qid_oidc::routes(&state.paths)
+        .merge(qid_session::auth_routes(&state.paths))
+        .with_state(state.clone());
+    let authorize = authorize_query(&state, "");
+    assert_login_challenge(get_uri(app.clone(), &authorize, None).await).await;
+
+    let send = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(
+                    state
+                        .paths
+                        .auth_email_magic_link_send
+                        .replace(":realm", "test"),
+                )
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"email":"par@example.com"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(send.status(), StatusCode::ACCEPTED);
+    let binding = send.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let delivery = tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, fragment) = delivery.rsplit_once('#').unwrap();
+    let (id, token) = fragment.trim().split_once('.').unwrap();
+    let verified = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(
+                    state
+                        .paths
+                        .auth_email_magic_link_verify
+                        .replace(":realm", "test"),
+                )
+                .header("Content-Type", "application/json")
+                .header("Cookie", binding)
+                .body(Body::from(
+                    serde_json::json!({"challenge_id":id,"token":token}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verified.status(), StatusCode::OK);
+    let session_cookie = verified.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let response = get_uri(app.clone(), &authorize, Some(session_cookie)).await;
+    assert_code_issued(&response);
+    let code = extract_query_param(&redirect_location(&response), "code").unwrap();
+    let stored = state
+        .repo
+        .get_authorization_code(&util::sha256_base64url(&code))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.user_id, "par-user");
+    assert_eq!(stored.realm_id, "test");
+    assert_eq!(stored.client_id, "par-client");
+    assert_eq!(stored.acr.as_deref(), Some("urn:qid:acr:email_magic_link"));
+    assert_eq!(stored.amr, vec!["email".to_string()]);
+    assert_eq!(stored.nonce.as_deref(), Some("n"));
+    assert!(redirect_location(&response).contains("state=s"));
+    // A magic-link session is not silently upgraded to satisfy a stronger ACR.
+    assert_login_challenge(
+        get_uri(
+            app,
+            essential_acr_query(&state, "\"value\":\"urn:qid:acr:phishing-resistant\""),
+            Some(session_cookie),
+        )
+        .await,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn authorize_get_prompt_login_ignores_browser_session_cookie() {
     let (app, state) = setup().await;
     create_browser_session(&state, "sid-prompt-login").await;

@@ -643,8 +643,9 @@ name is reserved when enabling this feature. Realm IDs `.` and `..` are refused
 for this feature because browsers normalize URL dot segments. Outstanding links share the existing
 well-formed binding; clearing/losing the cookie invalidates them. The email tells
 the user to open the link in **the same browser**, then explicitly confirm. An
-invalid browser binding does not consume the token; reopen the email link in the
-initiating browser or restart sign-in there. Links use only the configured HTTPS
+invalid, missing or malformed browser binding does not spend token attempts or
+consume the token; reopen the email link in the initiating browser or restart
+sign-in there. Links use only the configured HTTPS
 `server.public_base_url` (including any path
 prefix) and configured verify route (absolute path, substituting the realm), never
 request Host or forwarding headers. ID and
@@ -654,8 +655,12 @@ uses a per-response nonce CSP with no third-party assets, no-store/no-referrer,
 and sends a same-origin POST only on button click. GET never logs in, including
 email scanner GETs. JavaScript is required for this confirmation page.
 
-Only the domain-separated, length-prefixed digest of immutable challenge
-identity, token and browser binding is stored. Redemption requires the current
+Only a versioned pair of domain-separated, length-prefixed SHA-256 digests is
+stored in the existing challenge hash field (`ml2:<binding digest>:<token digest>`).
+Each proof binds the immutable challenge identity. Storage checks binding first;
+only the correct binding spends a persisted attempt on a wrong token (including a
+malformed token) or on successful one-use redemption. Legacy combined hashes fail
+closed; request a new link after an upgrade. Redemption requires the current
 exact verified email, realm, purpose/channel, binding, server-time expiry and
 remaining attempt budget. Invalid/replayed credentials fail uniformly. Only
 successful atomic redemption regenerates the browser session and sets its

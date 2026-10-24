@@ -168,7 +168,12 @@ exclude = ["vendor/rustls"]
 # 108849): per-provider audience policy, validation and callback wiring; all
 # existing per-crate caps still hold. Signed verifier regressions cover the
 # local audience, an untrusted extra, and explicitly trusted multi-audience.
-total = 108849
+# Separating magic-link browser binding from token attempts adds 54 measured
+# source lines (108849 -> 108903), including 38 in qid-storage (13603 -> 13641)
+# for versioned proof digests and atomic no-attempt-on-binding-mismatch across
+# file and SQL. Cross-backend and delivered-link OIDC resume regressions cover
+# wrong-browser exhaustion, one-use redemption, and preserved authorization.
+total = 108903
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -177,7 +182,7 @@ qid-network = 4500
 qid-admin = 6000
 qid-core = 14000
 qid-crypto = 5972
-qid-storage = 13603
+qid-storage = 13641
 qid-oidc = 6000
 qid-oauth = 12000
 qid-saml = 7200

@@ -6,6 +6,10 @@ use qid_core::{
 use qid_storage::{FileFlushMode, FileRepository, SqlRepository, prelude::*};
 use std::time::Duration;
 
+fn proof(binding: &str, token: &str) -> String {
+    format!("ml2:{}:{}", binding.repeat(64), token.repeat(64))
+}
+
 async fn seed(repo: &impl Repository) -> CiamVerificationChallengeRecord {
     for realm in ["test", "other"] {
         repo.create_realm(
@@ -38,7 +42,7 @@ async fn seed(repo: &impl Repository) -> CiamVerificationChallengeRecord {
         channel: "email".into(),
         address: "owner@example.com".into(),
         purpose: "email_magic_link".into(),
-        code_hash: "token-and-browser-digest".into(),
+        code_hash: proof("a", "b"),
         attempt_count: 0,
         expires_at_epoch_seconds: 200,
         consumed_at_epoch_seconds: None,
@@ -174,7 +178,7 @@ async fn contract(repo: &impl Repository) {
     );
     let mut duplicate = suppressed.clone();
     duplicate.id = next.id.clone();
-    duplicate.code_hash = "replacement".into();
+    duplicate.code_hash = proof("d", "e");
     assert!(matches!(
         repo.try_issue_email_magic_link_challenge(&duplicate, 1, 10)
             .await,
@@ -239,6 +243,7 @@ async fn contract(repo: &impl Repository) {
         "consumed",
         "timestamp",
         "empty-hash",
+        "legacy-hash",
     ] {
         let mut invalid = base.clone();
         invalid.id = format!("invalid-{kind}");
@@ -248,6 +253,7 @@ async fn contract(repo: &impl Repository) {
             "attempts" => invalid.attempt_count = 1,
             "consumed" => invalid.consumed_at_epoch_seconds = Some(101),
             "timestamp" => invalid.expires_at_epoch_seconds = u64::MAX,
+            "legacy-hash" => invalid.code_hash = "legacy-digest".into(),
             _ => invalid.code_hash.clear(),
         }
         assert!(matches!(
@@ -393,13 +399,50 @@ async fn contract(repo: &impl Repository) {
     }
     owner.email_verified = true;
     repo.update_user(&owner).await.unwrap();
-    // Wrong token and wrong browser proofs are both opaque candidate mismatches.
-    for (index, hash) in ["wrong-token-digest", "wrong-browser-digest"]
-        .into_iter()
-        .enumerate()
-    {
-        assert!(redeem(repo, &base, hash, 150, 2).await.is_none());
-        assert_eq!(row(repo, &base.id).await.attempt_count, index as u32 + 1);
+    // Wrong/missing/malformed binding proofs never spend attempts, even beyond the cap.
+    for _ in 0..4 {
+        for candidate in [
+            proof("c", "b"),
+            String::new(),
+            "ml2:bad:bad".into(),
+            "legacy-combined-digest".into(),
+            format!("{}:extra", base.code_hash),
+        ] {
+            assert!(redeem(repo, &base, &candidate, 150, 2).await.is_none());
+            assert_eq!(row(repo, &base.id).await, base);
+        }
+    }
+    // The same valid challenge still works from its original browser.
+    let mut browser = base.clone();
+    browser.id = "browser-binding".into();
+    repo.store_ciam_verification_challenge(&browser)
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        assert!(
+            redeem(repo, &browser, &proof("c", "b"), 150, 2)
+                .await
+                .is_none()
+        );
+    }
+    assert!(
+        redeem(repo, &browser, &browser.code_hash, 150, 2)
+            .await
+            .is_some()
+    );
+    assert_eq!(row(repo, &browser.id).await.attempt_count, 1);
+    assert_eq!(
+        row(repo, &browser.id).await.consumed_at_epoch_seconds,
+        Some(150)
+    );
+    // Correct binding with a wrong token exhausts exactly the durable ceiling.
+    for index in 0..2 {
+        assert!(
+            redeem(repo, &base, &proof("a", "c"), 150, 2)
+                .await
+                .is_none()
+        );
+        assert_eq!(row(repo, &base.id).await.attempt_count, index + 1);
     }
     assert!(redeem(repo, &base, &base.code_hash, 150, 2).await.is_none());
     assert_eq!(row(repo, &base.id).await.attempt_count, 2);
@@ -410,13 +453,28 @@ async fn contract(repo: &impl Repository) {
             .is_none()
     );
 
+    for stored in ["legacy-combined-digest", "ml2:bad:bad"] {
+        let mut legacy = base.clone();
+        legacy.id = format!("invalid-proof-{stored}");
+        legacy.code_hash = stored.into();
+        repo.store_ciam_verification_challenge(&legacy)
+            .await
+            .unwrap();
+        assert!(redeem(repo, &legacy, stored, 150, 2).await.is_none());
+        assert_eq!(row(repo, &legacy.id).await, legacy);
+    }
+
     // Correct final permitted attempt, at inclusive expiry, returns the bound User.
     let mut success = base.clone();
     success.id = "success".into();
     repo.store_ciam_verification_challenge(&success)
         .await
         .unwrap();
-    assert!(redeem(repo, &success, "wrong", 150, 2).await.is_none());
+    assert!(
+        redeem(repo, &success, &proof("a", "c"), 150, 2)
+            .await
+            .is_none()
+    );
     assert_eq!(
         serde_json::to_value(
             redeem(repo, &success, &success.code_hash, 200, 2)
@@ -453,10 +511,27 @@ async fn contract(repo: &impl Repository) {
         row(repo, &race.id).await.consumed_at_epoch_seconds,
         Some(100)
     );
+    // An unauthorized browser racing redemption cannot steal the final attempt.
+    race.id = "wrong-binding-race".into();
+    repo.store_ciam_verification_challenge(&race).await.unwrap();
+    let wrong_binding = proof("c", "b");
+    let (bad, good) = tokio::join!(
+        redeem(repo, &race, &wrong_binding, 150, 1),
+        redeem(repo, &race, &race.code_hash, 150, 1),
+    );
+    assert!(bad.is_none());
+    assert!(good.is_some());
+    assert_eq!(row(repo, &race.id).await.attempt_count, 1);
+    assert_eq!(
+        row(repo, &race.id).await.consumed_at_epoch_seconds,
+        Some(150)
+    );
+
     race.id = "last-attempt-race".into();
     repo.store_ciam_verification_challenge(&race).await.unwrap();
+    let wrong_token = proof("a", "c");
     let (bad, good) = tokio::join!(
-        redeem(repo, &race, "wrong", 150, 1),
+        redeem(repo, &race, &wrong_token, 150, 1),
         redeem(repo, &race, &race.code_hash, 150, 1),
     );
     assert!(bad.is_none());
@@ -546,7 +621,7 @@ fn file_magic_link_interval_mode_persists_and_rolls_back_errors() {
         );
         let issued = std::fs::read(&path).unwrap();
         std::fs::create_dir(&tmp).unwrap();
-        for hash in ["wrong", &c.code_hash] {
+        for hash in [&proof("a", "c"), &c.code_hash] {
             assert!(
                 repo.redeem_email_magic_link_challenge(&"test".into(), &c.id, hash, 150, 3)
                     .await
@@ -556,7 +631,7 @@ fn file_magic_link_interval_mode_persists_and_rolls_back_errors() {
             assert_eq!(std::fs::read(&path).unwrap(), issued);
         }
         std::fs::remove_dir(&tmp).unwrap();
-        assert!(redeem(&repo, &c, "wrong", 150, 3).await.is_none());
+        assert!(redeem(&repo, &c, &proof("a", "c"), 150, 3).await.is_none());
         let disk: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
@@ -621,7 +696,7 @@ async fn sql_magic_link_storage_errors_roll_back_admission_and_redemption() {
     sqlx::query("CREATE TRIGGER fail_attempt BEFORE UPDATE OF attempt_count ON ciam_verification_challenges BEGIN SELECT RAISE(ABORT, 'injected storage error'); END")
         .execute(&pool).await.unwrap();
     assert!(matches!(
-        repo.redeem_email_magic_link_challenge(&"test".into(), &c.id, "wrong", 150, 2)
+        repo.redeem_email_magic_link_challenge(&"test".into(), &c.id, &proof("a", "c"), 150, 2)
             .await,
         Err(QidError::Storage { .. })
     ));

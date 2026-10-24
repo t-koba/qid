@@ -35,6 +35,7 @@ urlencoding = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 http-body-util = { workspace = true }
 qid-core = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true }

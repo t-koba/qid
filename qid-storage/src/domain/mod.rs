@@ -177,6 +177,7 @@ pub(crate) fn email_magic_link_window_start(
     challenge.validate()?;
     if challenge.channel != "email"
         || challenge.purpose != "email_magic_link"
+        || email_magic_link_proof(&challenge.code_hash).is_none()
         || challenge.attempt_count != 0
         || challenge.consumed_at_epoch_seconds.is_some()
         || max_issuances == 0
@@ -191,4 +192,29 @@ pub(crate) fn email_magic_link_window_start(
     Ok(challenge
         .created_at_epoch_seconds
         .saturating_sub(window_seconds - 1))
+}
+
+/// Strict versioned magic-link proof encoding, held in the existing code_hash column.
+/// Old combined digests and malformed proofs fail closed without spending attempts.
+fn email_magic_link_proof(value: &str) -> Option<(&str, &str)> {
+    let (binding, token) = value.strip_prefix("ml2:")?.split_once(':')?;
+    let digest = |v: &str| {
+        v.len() == 64
+            && v.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    (digest(binding) && digest(token)).then_some((binding, token))
+}
+
+/// None means no binding authority (no attempt); Some is the token comparison.
+pub(crate) fn email_magic_link_token_matches(stored: &str, candidate: &str) -> Option<bool> {
+    let (binding, token) = email_magic_link_proof(stored)?;
+    let (candidate_binding, candidate_token) = email_magic_link_proof(candidate)?;
+    if !qid_core::util::constant_time_eq(binding.as_bytes(), candidate_binding.as_bytes()) {
+        return None;
+    }
+    Some(qid_core::util::constant_time_eq(
+        token.as_bytes(),
+        candidate_token.as_bytes(),
+    ))
 }

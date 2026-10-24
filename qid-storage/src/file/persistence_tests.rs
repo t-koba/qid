@@ -658,7 +658,7 @@ async fn cancelled_magic_link_operations_finish_persistence_or_rollback() {
                 channel: "email".into(),
                 address: "user@example.com".into(),
                 purpose: "email_magic_link".into(),
-                code_hash: "digest".into(),
+                code_hash: format!("ml2:{}:{}", "a".repeat(64), "b".repeat(64)),
                 attempt_count: 0,
                 expires_at_epoch_seconds: 200,
                 consumed_at_epoch_seconds: None,
@@ -678,14 +678,14 @@ async fn cancelled_magic_link_operations_finish_persistence_or_rollback() {
                         .map(|_| ())
                 } else {
                     let candidate = if operation == "redeem" {
-                        "digest"
+                        challenge.code_hash.clone()
                     } else {
-                        "wrong"
+                        format!("ml2:{}:{}", "a".repeat(64), "c".repeat(64))
                     };
                     repo.redeem_email_magic_link_challenge(
                         &"test".into(),
                         "magic",
-                        candidate,
+                        &candidate,
                         150,
                         2,
                     )

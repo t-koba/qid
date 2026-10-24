@@ -296,10 +296,10 @@ impl CiamRepository for SqlRepository {
             return Ok(None);
         };
         let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
-        // Write-lock the challenge before comparing any candidate, so every
-        // active mismatch and success shares one durable attempt ceiling.
+        // Write-lock without spending an attempt. Compare binding under this lock
+        // before atomically counting a token failure or consuming a success.
         let row: Option<CiamVerificationChallengeRow> = sqlx::query_as(
-            "UPDATE ciam_verification_challenges SET attempt_count = attempt_count + 1 WHERE realm_id = $1 AND id = $2 AND channel = 'email' AND purpose = 'email_magic_link' AND consumed_at_epoch_seconds IS NULL AND created_at_epoch_seconds <= $3 AND expires_at_epoch_seconds >= $3 AND attempt_count < $4 AND EXISTS (SELECT 1 FROM users WHERE users.id = ciam_verification_challenges.user_id AND users.realm_id = ciam_verification_challenges.realm_id AND users.email = ciam_verification_challenges.address AND users.email_verified = 1) RETURNING *"
+            "UPDATE ciam_verification_challenges SET attempt_count = attempt_count WHERE realm_id = $1 AND id = $2 AND channel = 'email' AND purpose = 'email_magic_link' AND consumed_at_epoch_seconds IS NULL AND created_at_epoch_seconds <= $3 AND expires_at_epoch_seconds >= $3 AND attempt_count < $4 AND EXISTS (SELECT 1 FROM users WHERE users.id = ciam_verification_challenges.user_id AND users.realm_id = ciam_verification_challenges.realm_id AND users.email = ciam_verification_challenges.address AND users.email_verified = 1) RETURNING *"
         ).bind(realm_id.as_str()).bind(id).bind(attempted_at).bind(i64::from(max_attempts))
             .fetch_optional(&mut *tx).await.map_err(storage_to_qid_error)?;
         let Some(row) = row else {
@@ -326,10 +326,15 @@ impl CiamRepository for SqlRepository {
             tx.rollback().await.map_err(storage_to_qid_error)?;
             return Ok(None);
         };
-        let verified = qid_core::util::constant_time_eq(
-            challenge.code_hash.as_bytes(),
-            candidate_hash.as_bytes(),
-        );
+        let Some(verified) =
+            crate::domain::email_magic_link_token_matches(&challenge.code_hash, candidate_hash)
+        else {
+            tx.rollback().await.map_err(storage_to_qid_error)?;
+            return Ok(None);
+        };
+        sqlx::query("UPDATE ciam_verification_challenges SET attempt_count = attempt_count + 1 WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id.as_str()).bind(id)
+            .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
         if verified {
             let result = sqlx::query("UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = $1 WHERE realm_id = $2 AND id = $3 AND consumed_at_epoch_seconds IS NULL")
                 .bind(attempted_at).bind(realm_id.as_str()).bind(id)

@@ -4183,6 +4183,7 @@ dependencies = [
 name = "qid-oidc"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "anyhow",
  "async-trait",
  "axum",

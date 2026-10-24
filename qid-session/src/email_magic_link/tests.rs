@@ -476,6 +476,42 @@ async fn malformed_selector_or_extra_destination_is_not_accepted() {
 }
 
 #[tokio::test]
+async fn wrong_browser_cannot_exhaust_a_valid_link() {
+    let f = Fixture::new(|_| {}, true).await;
+    let (cookie, credential, _) = f.issue(None).await;
+    let original = row(&*f.state.repo, &credential).await;
+    let wrong_cookie = format!("{BINDING_COOKIE}={}", random_secret());
+    let malformed_cookie = format!("{BINDING_COOKIE}=malformed");
+    for _ in 0..=f.state.plan.realms[0].email_magic_link.max_attempts {
+        for binding in [
+            None,
+            Some(wrong_cookie.as_str()),
+            Some(malformed_cookie.as_str()),
+        ] {
+            reject(&f.app, "test", binding, credential.clone()).await;
+            assert_eq!(row(&*f.state.repo, &credential).await, original);
+        }
+    }
+    let response = post(
+        &f.app,
+        &f.state
+            .paths
+            .auth_email_magic_link_verify
+            .replace(":realm", "test"),
+        Some(&cookie),
+        credential.clone(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key(header::SET_COOKIE));
+    let consumed = row(&*f.state.repo, &credential).await;
+    assert_eq!(consumed.attempt_count, 1);
+    assert!(consumed.consumed_at_epoch_seconds.is_some());
+    reject(&f.app, "test", Some(&cookie), credential.clone()).await;
+    assert_eq!(row(&*f.state.repo, &credential).await, consumed);
+}
+
+#[tokio::test]
 async fn bindings_invalid_tokens_and_attempt_cap_fail_uniformly_without_sessions() {
     let f = Fixture::new(
         |c| {
@@ -510,8 +546,13 @@ async fn bindings_invalid_tokens_and_attempt_cap_fail_uniformly_without_sessions
     )
     .await;
     reject(&f.app, "other", Some(&cookie), credential.clone()).await;
-    assert_eq!(row(&*f.state.repo, &credential).await.attempt_count, 3);
-    for _ in 0..2 {
+    assert_eq!(row(&*f.state.repo, &credential).await.attempt_count, 1);
+    // Malformed tokens with the correct binding also spend a persisted attempt.
+    let mut malformed_token = credential.clone();
+    malformed_token["token"] = json!("malformed");
+    reject(&f.app, "test", Some(&cookie), malformed_token).await;
+    assert_eq!(row(&*f.state.repo, &credential).await.attempt_count, 2);
+    for _ in 0..3 {
         reject(&f.app, "test", Some(&cookie), wrong_token.clone()).await;
     }
     reject(&f.app, "test", Some(&cookie), credential.clone()).await;

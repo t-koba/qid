@@ -539,6 +539,7 @@ pub trait CiamRepository: Send + Sync + 'static {
     /// consumed, expired, failed-delivery and newer records (clock rollback).
     /// Server-authored creation/expiry must fit i64; max_issuances must be positive
     /// and window_seconds must be 1..=86400, as for password-reset admission.
+    /// code_hash must use the versioned digest-pair encoding documented below.
     /// Admission also requires the user to remain in the realm with this exact
     /// currently verified stored email. Returns false without writing on
     /// ineligibility or budget suppression; duplicate global IDs are
@@ -552,8 +553,12 @@ pub trait CiamRepository: Send + Sync + 'static {
     ) -> QidResult<bool>;
     /// Redeem only an email/email_magic_link challenge bound to its current
     /// realm/user's exact stored email and email_verified=true. The candidate
-    /// hash must bind both token and browser authority; every active mismatch
-    /// increments the durable counter, irrespective of which proof was wrong.
+    /// hash is `ml2:<binding digest>:<token digest>` (two lowercase SHA-256 hex
+    /// digests, separately domain-separated and bound to challenge identity by
+    /// the caller). Compare binding first under the same lock/transaction:
+    /// missing, malformed, legacy or wrong binding proofs never write or spend
+    /// attempts. Only a matching binding permits a token comparison and durable
+    /// increment, whether the token matches or not.
     /// Active means unconsumed, created_at <= attempted_at <= expires_at
     /// (inclusive expiry, matching email verification), and attempts < max_attempts.
     /// The caller supplies server time/policy, never a verified flag. Hashes are

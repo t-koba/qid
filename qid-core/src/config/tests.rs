@@ -2330,6 +2330,7 @@ fn server_notification_accepts_supported_providers() {
         config.server.notification = Some(ServerNotificationConfig {
             provider: provider.to_string(),
             timeout_seconds: 10,
+            max_concurrent_deliveries: 16,
         });
         config.validate().expect("supported provider validates");
     }
@@ -2356,6 +2357,7 @@ fn server_notification_rejects_invalid_provider_and_timeout() {
         config.server.notification = Some(ServerNotificationConfig {
             provider: provider.to_string(),
             timeout_seconds: 10,
+            max_concurrent_deliveries: 16,
         });
         let message = config
             .validate()
@@ -2374,6 +2376,7 @@ fn server_notification_rejects_invalid_provider_and_timeout() {
     config.server.notification = Some(ServerNotificationConfig {
         provider: "https://hooks.example.com/notify".to_string(),
         timeout_seconds: 0,
+        max_concurrent_deliveries: 16,
     });
     let message = config
         .validate()
@@ -2387,6 +2390,7 @@ fn server_notification_debug_redacts_provider_url() {
     let notification = ServerNotificationConfig {
         provider: "https://hooks.example.com/path-secret".to_string(),
         timeout_seconds: 10,
+        max_concurrent_deliveries: 16,
     };
     let debug = format!("{notification:?}");
     assert!(!debug.contains("path-secret"));
@@ -2432,5 +2436,56 @@ fn email_verification_policy_defaults_and_bounds() {
             parsed.email_verification.max_attempts
         ),
         (120, 2)
+    );
+}
+
+#[test]
+fn password_reset_policy_and_notification_capacity_defaults_and_bounds() {
+    let mut config = minimal_config();
+    assert_eq!(
+        config.realms[0].authentication.password_reset,
+        PasswordResetConfig::default()
+    );
+    let notification: ServerNotificationConfig = serde_json::from_value(serde_json::json!({
+        "provider":"https://delivery.example.com"
+    }))
+    .unwrap();
+    assert_eq!(notification.max_concurrent_deliveries, 16);
+    config.server.notification = Some(notification);
+    for (ttl, max, window, valid) in [
+        (900, 5, 3600, true),
+        (1, 1, 1, true),
+        (1800, u32::MAX, 86400, true),
+        (0, 5, 3600, false),
+        (1801, 5, 3600, false),
+        (900, 0, 3600, false),
+        (900, 5, 0, false),
+        (900, 5, 86401, false),
+    ] {
+        config.realms[0].authentication.password_reset = PasswordResetConfig {
+            ttl_seconds: ttl,
+            max_issuances_per_window: max,
+            issuance_window_seconds: window,
+        };
+        assert_eq!(config.validate().is_ok(), valid, "{ttl}/{max}/{window}");
+    }
+    config.realms[0].authentication.password_reset = PasswordResetConfig::default();
+    for (limit, valid) in [
+        (0, false),
+        (1, true),
+        (16, true),
+        (1024, true),
+        (1025, false),
+    ] {
+        config
+            .server
+            .notification
+            .as_mut()
+            .unwrap()
+            .max_concurrent_deliveries = limit;
+        assert_eq!(config.validate().is_ok(), valid, "{limit}");
+    }
+    assert!(
+        serde_json::from_value::<PasswordResetConfig>(serde_json::json!({"unknown":1})).is_err()
     );
 }

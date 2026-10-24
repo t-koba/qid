@@ -110,9 +110,7 @@ async fn setup_with_transport(
 fn password_reset_issue_body(user_id: &str) -> serde_json::Value {
     serde_json::json!({
         "user_id": user_id,
-        "device_id": "device-1",
-        "risk": {"score": 10},
-        "ttl_seconds": 900
+        "device_id": "device-1"
     })
 }
 
@@ -631,8 +629,10 @@ async fn ciam_password_reset_issue_is_generic_and_delivery_is_nonblocking() {
     let delivery = Arc::new(VerificationDelivery::default());
     delivery.outcome.store(200, Ordering::Relaxed);
     delivery.block.store(true, Ordering::Relaxed);
-    let (app, state) =
-        setup_with_transport(verification_config(), &[], Some(delivery.clone())).await;
+    let mut config = verification_config();
+    config.realms[0].authentication.password_reset.ttl_seconds = 73;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let before = qid_core::util::now_seconds();
 
     let started = delivery.started.notified();
     let response = post_password_reset_issue(&app, "test", "user-ciam").await;
@@ -685,12 +685,13 @@ async fn ciam_password_reset_issue_is_generic_and_delivery_is_nonblocking() {
     assert_eq!(record.realm_id, "test");
     assert_eq!(record.user_id, "user-ciam");
     assert_eq!(record.device_id.as_deref(), Some("device-1"));
-    assert_eq!(record.risk_json, serde_json::json!({"score": 10}));
+    assert_eq!(record.risk_json, serde_json::json!({}));
     assert_eq!(record.token_hash, qid_core::util::sha256_base64url(secret));
     assert_eq!(
         record.expires_at_epoch_seconds - record.created_at_epoch_seconds,
-        900
+        73
     );
+    assert!((before..=qid_core::util::now_seconds()).contains(&record.created_at_epoch_seconds));
     assert_eq!(record.consumed_at_epoch_seconds, None);
 
     let debug = format!("{request:?}");
@@ -789,21 +790,30 @@ async fn ciam_password_reset_issue_is_generic_for_unknown_ineligible_and_unconfi
             .is_empty()
     );
 
-    let mut forged_clock = password_reset_issue_body("user-ciam");
-    forged_clock["now_epoch_seconds"] = serde_json::json!(1);
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/test/ciam/password-reset/issue")
-                .header("Content-Type", "application/json")
-                .body(Body::from(forged_clock.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    for (field, value) in [
+        ("now_epoch_seconds", serde_json::json!(1)),
+        ("ttl_seconds", serde_json::json!(1800)),
+        ("risk", serde_json::json!({"score": 0})),
+        ("created_at_epoch_seconds", serde_json::json!(1)),
+        ("expires_at_epoch_seconds", serde_json::json!(u64::MAX)),
+        ("max_issuances_per_window", serde_json::json!(100)),
+    ] {
+        let mut body = password_reset_issue_body("user-ciam");
+        body[field] = value;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/test/ciam/password-reset/issue")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{field}");
+    }
 }
 
 #[tokio::test]
@@ -1254,6 +1264,7 @@ fn verification_config() -> QidConfig {
     config.server.notification = Some(qid_core::config::ServerNotificationConfig {
         provider: "https://delivery.example.com/private-adapter".into(),
         timeout_seconds: 10,
+        max_concurrent_deliveries: 16,
     });
     config
 }
@@ -1724,4 +1735,144 @@ async fn email_verification_delivery_failures_do_not_expose_secrets() {
             );
         }
     }
+}
+
+// Acquiring all slots proves every previously accepted background task has
+// completed persistence, transport and audit, without sleep/poll timing guesses.
+async fn drain_reset_deliveries(state: &SharedState<SqlRepository>, limit: u32) {
+    drop(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            state
+                .notification_delivery_slots
+                .clone()
+                .acquire_many_owned(limit),
+        )
+        .await
+        .expect("reset tasks did not release capacity")
+        .unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn ciam_password_reset_concurrent_budget_suppression_is_generic() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let mut config = verification_config();
+    config.realms[0]
+        .authentication
+        .password_reset
+        .max_issuances_per_window = 2;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let unknown = post_password_reset_issue(&app, "test", "unknown").await;
+    assert_eq!(unknown.status(), StatusCode::ACCEPTED);
+    let expected = json(unknown).await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        let barrier = barrier.clone();
+        let expected = expected.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert_eq!(json(response).await, expected);
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+    drain_reset_deliveries(&state, 16).await;
+    assert_eq!(delivery.requests.lock().unwrap().len(), 2);
+    assert_eq!(
+        state
+            .repo
+            .list_audit_events(Some(&"test".into()), 100)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    // Releasing task capacity does not release the persisted issuance budget.
+    let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(response).await, expected);
+    drain_reset_deliveries(&state, 16).await;
+    assert_eq!(delivery.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn ciam_password_reset_failed_delivery_spends_budget_and_releases_capacity() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(0, Ordering::Relaxed);
+    let mut config = verification_config();
+    config.realms[0]
+        .authentication
+        .password_reset
+        .max_issuances_per_window = 1;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let expected = json(response).await;
+    drain_reset_deliveries(&state, 16).await;
+    assert_eq!(delivery.requests.lock().unwrap().len(), 1);
+    let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(response).await, expected);
+    drain_reset_deliveries(&state, 16).await;
+    assert_eq!(delivery.requests.lock().unwrap().len(), 1);
+    assert!(
+        state
+            .repo
+            .list_audit_events(Some(&"test".into()), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn ciam_password_reset_capacity_suppression_is_generic_and_does_not_spend_budget() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    delivery.block.store(true, Ordering::Relaxed);
+    let mut config = verification_config();
+    config
+        .server
+        .notification
+        .as_mut()
+        .unwrap()
+        .max_concurrent_deliveries = 1;
+    config.realms[0]
+        .authentication
+        .password_reset
+        .max_issuances_per_window = 2;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let expected = json(response).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        delivery.started.notified(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state.notification_delivery_slots.available_permits(), 0);
+    for _ in 0..8 {
+        let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(json(response).await, expected);
+    }
+    assert_eq!(delivery.requests.lock().unwrap().len(), 1);
+    delivery.block.store(false, Ordering::Relaxed);
+    delivery.release.notify_one();
+    drain_reset_deliveries(&state, 1).await;
+    // A second token can still be issued: capacity-suppressed requests made no
+    // persisted token, consumed no issuance budget, and were never queued.
+    let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(response).await, expected);
+    drain_reset_deliveries(&state, 1).await;
+    assert_eq!(delivery.requests.lock().unwrap().len(), 2);
 }

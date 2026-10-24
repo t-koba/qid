@@ -564,6 +564,18 @@ pub trait CiamRepository: Send + Sync + 'static {
     /// Reusing an ID returns `Conflict` and leaves the original token, including
     /// its consumption state, unchanged.
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()>;
+    /// Atomically insert under a rolling per-(realm,user) issuance budget.
+    /// `true` means inserted; `false` means suppressed with no write. Duplicate
+    /// IDs and storage errors are errors, never suppression. Count every record
+    /// (including consumed/expired/failed delivery) created at or after created-window+1. Newer records also count if
+    /// requests arrive out of order or server time moves backwards.
+    /// The caller must supply server-authored creation time and policy.
+    async fn try_issue_password_reset_token(
+        &self,
+        token: &PasswordResetToken,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool>;
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>>;
     /// Atomically consume a single-use token.
     /// Unknown IDs return `NotFound`; repeated consumption returns `Conflict`.

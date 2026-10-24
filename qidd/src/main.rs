@@ -1981,6 +1981,7 @@ mod tests {
         config.server.notification = Some(qid_core::config::ServerNotificationConfig {
             provider: "https://hooks.example.com/notify".to_string(),
             timeout_seconds: 5,
+            max_concurrent_deliveries: 16,
         });
         assert!(
             compose_notification_transport(&config)
@@ -1991,12 +1992,14 @@ mod tests {
         config.server.notification = Some(qid_core::config::ServerNotificationConfig {
             provider: "https://hooks.example.com/notify".to_string(),
             timeout_seconds: 0,
+            max_concurrent_deliveries: 16,
         });
         assert!(compose_notification_transport(&config).is_err());
 
         config.server.notification = Some(qid_core::config::ServerNotificationConfig {
             provider: "http://hooks.example.com/notify".to_string(),
             timeout_seconds: 5,
+            max_concurrent_deliveries: 16,
         });
         let err = match compose_notification_transport(&config) {
             Ok(_) => panic!("http must fail"),
@@ -2012,6 +2015,7 @@ mod tests {
             config.server.notification = Some(qid_core::config::ServerNotificationConfig {
                 provider: provider.to_string(),
                 timeout_seconds: 5,
+                max_concurrent_deliveries: 16,
             });
             assert!(compose_notification_transport(&config).is_err());
         }

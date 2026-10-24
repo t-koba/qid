@@ -1409,6 +1409,7 @@ impl RealmConfig {
         self.sessions.refresh_tokens.validate(&self.id)?;
         self.authentication.password.validate(&self.id)?;
         self.authentication.email_verification.validate()?;
+        self.authentication.password_reset.validate()?;
         if let Some(policy) = &self.authentication.passkeys.attestation {
             policy.validate(self.authentication.passkeys.enabled)?;
         }

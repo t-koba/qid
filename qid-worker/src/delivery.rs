@@ -26,6 +26,7 @@ impl DeliveryTransport {
         let config = qid_core::config::ServerNotificationConfig {
             provider: provider.clone(),
             timeout_seconds,
+            max_concurrent_deliveries: 16,
         };
         config
             .validate()

@@ -33,6 +33,7 @@ rsa = { workspace = true, features = ["sha2"] }
 rand = { workspace = true }
 thiserror = "1"
 tracing = { workspace = true }
+tokio = { workspace = true }
 ulid = { workspace = true }
 url = { workspace = true }
 
@@ -43,7 +44,6 @@ test-utils = []
 [dev-dependencies]
 insta = { workspace = true }
 proptest = { workspace = true }
-tokio = { workspace = true }
 
 [lints]
 workspace = true

@@ -24,9 +24,6 @@ use std::sync::Arc;
 pub struct PasswordResetIssueRequest {
     pub user_id: String,
     pub device_id: Option<String>,
-    #[serde(default = "default_password_reset_risk")]
-    pub risk: serde_json::Value,
-    pub ttl_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,10 +102,11 @@ pub async fn password_reset_issue<R: Repository + 'static>(
     Path(realm): Path<String>,
     JsonObject(req): JsonObject<PasswordResetIssueRequest>,
 ) -> Response {
-    let issued = match issue_password_reset(&realm, &req) {
-        Ok(issued) => issued,
-        Err(error) => return qid_http::error_response(error),
-    };
+    if realm.trim().is_empty() || req.user_id.trim().is_empty() {
+        return qid_http::error_response(QidError::BadRequest {
+            message: "password reset realm and user_id must not be empty".into(),
+        });
+    }
     let Some(realm_config) = state.config.realms.iter().find(|config| config.id == realm) else {
         return password_reset_accepted();
     };
@@ -140,13 +138,25 @@ pub async fn password_reset_issue<R: Repository + 'static>(
     let Some(address) = user.email.filter(|value| !value.trim().is_empty()) else {
         return password_reset_accepted();
     };
+    let Ok(permit) = state
+        .notification_delivery_slots
+        .clone()
+        .try_acquire_owned()
+    else {
+        return password_reset_accepted();
+    };
+    let policy = realm_config.authentication.password_reset.clone();
+    let issued = match issue_password_reset(&realm, &req, policy.ttl_seconds) {
+        Ok(issued) => issued,
+        Err(error) => return qid_http::error_response(error),
+    };
     let record = PasswordResetToken {
         id: issued.challenge.id.clone(),
         realm_id: realm.clone(),
         user_id: user.id,
         token_hash: issued.token_hash,
         device_id: req.device_id.clone(),
-        risk_json: req.risk,
+        risk_json: serde_json::json!({}),
         expires_at_epoch_seconds: issued.challenge.expires_at_epoch_seconds,
         consumed_at_epoch_seconds: None,
         created_at_epoch_seconds: issued.created_at_epoch_seconds,
@@ -173,7 +183,8 @@ pub async fn password_reset_issue<R: Repository + 'static>(
     };
     let state_for_delivery = state.clone();
     tokio::spawn(async move {
-        deliver_password_reset(state_for_delivery, transport, record, request).await;
+        let _permit = permit;
+        deliver_password_reset(state_for_delivery, transport, record, request, policy).await;
     });
     password_reset_accepted()
 }
@@ -193,15 +204,23 @@ async fn deliver_password_reset<R: Repository>(
     transport: Arc<dyn qid_core::notification::NotificationTransport>,
     record: PasswordResetToken,
     request: NotificationRequest,
+    policy: qid_core::config::PasswordResetConfig,
 ) {
-    if state
+    match state
         .repo
-        .store_password_reset_token(&record)
+        .try_issue_password_reset_token(
+            &record,
+            policy.max_issuances_per_window,
+            policy.issuance_window_seconds,
+        )
         .await
-        .is_err()
     {
-        tracing::warn!("password reset challenge persistence failed");
-        return;
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(_) => {
+            tracing::warn!("password reset challenge persistence failed");
+            return;
+        }
     }
     let response = transport.send(request).await;
     let status = match response {
@@ -307,34 +326,26 @@ pub async fn protection_evaluate<R: Repository>(
     .into_response()
 }
 
-fn default_password_reset_risk() -> serde_json::Value {
-    serde_json::json!({})
-}
-
 pub fn issue_password_reset(
     realm: &str,
     req: &PasswordResetIssueRequest,
+    ttl_seconds: u64,
 ) -> QidResult<IssuedPasswordResetChallenge> {
     if realm.trim().is_empty() || req.user_id.trim().is_empty() {
         return Err(QidError::BadRequest {
             message: "password reset realm and user_id must not be empty".to_string(),
         });
     }
-    if req.ttl_seconds == 0 || req.ttl_seconds > 1800 {
+    if ttl_seconds == 0 || ttl_seconds > 1800 {
         return Err(QidError::BadRequest {
             message: "password reset ttl_seconds must be between 1 and 1800".to_string(),
-        });
-    }
-    if !req.risk.is_object() {
-        return Err(QidError::BadRequest {
-            message: "password reset risk must be an object".to_string(),
         });
     }
     let id = format!("pwdreset_{}", ulid::Ulid::new());
     let token = generate_password_reset_token();
     let now = util::now_seconds();
     let expires_at_epoch_seconds =
-        now.checked_add(req.ttl_seconds)
+        now.checked_add(ttl_seconds)
             .ok_or_else(|| QidError::BadRequest {
                 message: "password reset expiry is out of range".to_string(),
             })?;
@@ -575,10 +586,8 @@ mod tests {
         let req = PasswordResetIssueRequest {
             user_id: "user-1".to_string(),
             device_id: Some("device-1".to_string()),
-            risk: serde_json::json!({"score": 10}),
-            ttl_seconds: 900,
         };
-        let issued = issue_password_reset("corp", &req).unwrap();
+        let issued = issue_password_reset("corp", &req, 900).unwrap();
         let challenge = issued.challenge;
         let material = issued.delivery_secret;
         let record = PasswordResetToken {

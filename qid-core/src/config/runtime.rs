@@ -338,6 +338,8 @@ pub struct ServerNotificationConfig {
     pub provider: String,
     #[serde(default = "default_notification_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default = "default_max_concurrent_deliveries")]
+    pub max_concurrent_deliveries: usize,
 }
 
 impl std::fmt::Debug for ServerNotificationConfig {
@@ -345,8 +347,13 @@ impl std::fmt::Debug for ServerNotificationConfig {
         f.debug_struct("ServerNotificationConfig")
             .field("provider", &"<redacted>")
             .field("timeout_seconds", &self.timeout_seconds)
+            .field("max_concurrent_deliveries", &self.max_concurrent_deliveries)
             .finish()
     }
+}
+
+fn default_max_concurrent_deliveries() -> usize {
+    16
 }
 
 fn default_notification_timeout_seconds() -> u64 {
@@ -355,6 +362,11 @@ fn default_notification_timeout_seconds() -> u64 {
 
 impl ServerNotificationConfig {
     pub fn validate(&self) -> QidResult<()> {
+        if !(1..=1024).contains(&self.max_concurrent_deliveries) {
+            return Err(QidError::Config {
+                message: "server.notification.max_concurrent_deliveries must be in 1..=1024".into(),
+            });
+        }
         if self.timeout_seconds == 0 {
             return Err(QidError::Config {
                 message: "server.notification.timeout_seconds must be greater than zero"

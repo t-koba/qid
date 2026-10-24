@@ -58,6 +58,8 @@ pub struct SharedState<Repository> {
     pub workload_ca_certificate_pem: Option<String>,
     /// PEM-encoded workload CA private key used to issue X.509-SVIDs.
     pub workload_ca_private_key_pem: Option<String>,
+    /// Process-local bound for background reset persistence, delivery and audit.
+    pub notification_delivery_slots: Arc<tokio::sync::Semaphore>,
     /// Optional configured notification transport. Absent by default.
     pub notification_transport:
         Option<std::sync::Arc<dyn crate::notification::NotificationTransport>>,
@@ -82,6 +84,12 @@ impl<Repository> SharedState<Repository> {
     ) -> QidResult<Self> {
         let plan = RuntimePlan::from_config(&config)?;
         let paths = config.server.paths.clone();
+        let delivery_limit = if let Some(notification) = &config.server.notification {
+            notification.validate()?;
+            notification.max_concurrent_deliveries
+        } else {
+            16
+        };
         let shared_cache: Arc<dyn SharedCache> = Arc::new(MemoryCache::new());
         Ok(Self {
             password_credentials: BTreeMap::new(),
@@ -101,6 +109,7 @@ impl<Repository> SharedState<Repository> {
             workload_ca_certificate_pem: None,
             workload_ca_private_key_pem: None,
             notification_transport: None,
+            notification_delivery_slots: Arc::new(tokio::sync::Semaphore::new(delivery_limit)),
             jwks,
             paths,
         })

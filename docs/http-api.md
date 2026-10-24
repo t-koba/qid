@@ -309,29 +309,53 @@ registration or password-reset initiation.
 
 ### Password reset
 
-`POST /api/v1/:realm/ciam/password-reset/issue` is public and takes
-`{"user_id":"…","device_id":"…","risk":{},"ttl_seconds":900}`. The user ID
+`POST /api/v1/:realm/ciam/password-reset/issue` is public and takes exactly
+`{"user_id":"…","device_id":"…"}`. `user_id` is required and nonempty;
+`device_id` is optional (omitted or null means no device binding). The user ID
 is only a lookup selector inside the path realm; qid resolves the destination
-from that account's stored email and ignores caller-supplied time (the issue
-request has no time field). The TTL must be 1–1800 seconds and the expiry is
-calculated from server time. A stored email and both `server.notification` and
+from that account's stored email. Unknown fields, including `risk`, `ttl_seconds`
+and caller-selected time/expiry/accounting, are rejected with `400`.
+The realm's `authentication.password_reset` policy sets `ttl_seconds` (default
+900, valid 1–1800), `max_issuances_per_window` (default 5, positive u32), and
+`issuance_window_seconds` (default 3600, valid 1–86400). Creation and expiry are
+server-derived. No trusted risk signal exists in this flow, so the persisted
+`risk_json` is always `{}`. A stored email and both `server.notification` and
 a composed transport are required. The reset mail contains the one-time token;
-only its SHA-256 hash and realm/user/device/risk/expiry context are persisted.
+only its SHA-256 hash and realm/user/device/empty-risk/expiry context are persisted.
 
 For every well-formed request the route returns the same `202` response:
 `{"message":"If the account is eligible, password reset instructions may be sent."}`
 This response is not proof that a user exists or that a message was sent. Unknown
-users, accounts without a stored email, unconfigured delivery, and adapter or
-persistence failures do not disclose their outcome. Account lookup uses the
-path realm, destination is never caller-selected, and no session or public
-registration is added. The lookup is performed on the request path; challenge
-persistence, adapter delivery and the redacted delivery-acceptance audit run in
-a background task so provider latency does not become an account-existence
-oracle. A stopped process may cancel an in-flight delivery; retrying the generic
-request can create another independent, short-lived token; existing tokens
-retain their own expiry and one-use semantics. Adapter errors and message bodies
-are never logged, and the response contains no user ID, challenge ID, address,
-token, expiry or delivery reference.
+users, accounts without a stored email, unconfigured delivery, over-budget or
+capacity-suppressed requests, and adapter or persistence failures do not disclose
+their outcome. Account lookup uses the path realm, destination is never
+caller-selected, and no session or public registration is added. The lookup is
+performed on the request path; challenge persistence, adapter delivery and the
+redacted delivery-acceptance audit run in a background task so provider latency
+does not become an account-existence oracle.
+
+Token insertion atomically enforces the rolling budget per `(realm, user)`.
+At server creation time `t`, all token records created at or after
+`t - issuance_window_seconds + 1` count, including expired, consumed and
+failed-delivery tokens. A token at exactly `t - issuance_window_seconds` no longer
+counts. Newer records also count if tasks arrive out of order or the server clock
+moves backwards. An eligible issuance that persists a token spends one unit even
+if delivery fails; retries do not refund it. Over budget, neither a token nor a
+mail is created. These counters persist with the token records, across restart
+(and across instances using the same SQL repository).
+
+`server.notification.max_concurrent_deliveries` bounds background reset tasks
+across realms in one process (default 16, valid 1–1024). Slots are acquired
+without waiting before spawning and held through persistence, send and audit.
+With no slot, the request is suppressed without a task, token or budget charge;
+it is not queued for later delivery. This is a process-local resource bound,
+not a distributed ingress limiter. qpx owns ingress/IP enforcement; qid does not
+trust `X-Forwarded-For` or implement caller-IP throttling here.
+A stopped process may cancel an in-flight delivery; retrying can create another
+independent token only within the configured budget. Existing tokens retain their
+own expiry and one-use semantics. Adapter errors and message bodies are never
+logged, and the response contains no user ID, challenge ID, address, token,
+expiry or delivery reference.
 
 `POST /api/v1/:realm/ciam/password-reset/consume` retains its existing
 single-use, device-bound behavior: the server resolves the token record, uses

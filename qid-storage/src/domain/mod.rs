@@ -140,3 +140,30 @@ pub(crate) fn validate_password_reset(
         None => Ok(()),
     }
 }
+
+/// Shared bounds keep file and SQL accounting identical, without integer wrapping.
+pub(crate) fn password_reset_window_start(
+    token: &qid_core::models::PasswordResetToken,
+    max_issuances: u32,
+    window_seconds: u64,
+) -> QidResult<u64> {
+    token.validate()?;
+    if max_issuances == 0
+        || !(1..=86400).contains(&window_seconds)
+        || [
+            Some(token.created_at_epoch_seconds),
+            Some(token.expires_at_epoch_seconds),
+            token.consumed_at_epoch_seconds,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| i64::try_from(value).is_err())
+    {
+        return Err(QidError::BadRequest {
+            message: "invalid password reset issuance budget or timestamp".into(),
+        });
+    }
+    Ok(token
+        .created_at_epoch_seconds
+        .saturating_sub(window_seconds - 1))
+}

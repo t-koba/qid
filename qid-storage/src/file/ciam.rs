@@ -348,6 +348,38 @@ impl CiamRepository for FileRepository {
         self.save().await
     }
 
+    async fn try_issue_password_reset_token(
+        &self,
+        token: &PasswordResetToken,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool> {
+        let start =
+            crate::domain::password_reset_window_start(token, max_issuances, window_seconds)?;
+        let mut store = self.store.write().await;
+        reject_duplicate_id(store.password_reset_tokens.contains_key(&token.id), || {
+            format!("Password reset token ID {} already exists", token.id)
+        })?;
+        let count = store
+            .password_reset_tokens
+            .values()
+            .filter(|existing| {
+                existing.realm_id == token.realm_id
+                    && existing.user_id == token.user_id
+                    && existing.created_at_epoch_seconds >= start
+            })
+            .count();
+        if count as u128 >= u128::from(max_issuances) {
+            return Ok(false);
+        }
+        store
+            .password_reset_tokens
+            .insert(token.id.clone(), token.clone());
+        drop(store);
+        self.save().await?;
+        Ok(true)
+    }
+
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>> {
         Ok(self
             .map_get(|store| store.password_reset_tokens.get(id))

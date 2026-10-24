@@ -269,6 +269,7 @@ delegate!(CiamRepository {
     get_ciam_identity_link_by_external_subject(&self, realm_id: &qid_core::tenant::RealmId, provider: &str, external_subject: &str) -> QidResult<Option<qid_core::models::CiamIdentityLink>>;
     delete_ciam_identity_link(&self, realm_id: &qid_core::tenant::RealmId, id: &str) -> QidResult<()>;
     store_password_reset_token(&self, token: &qid_core::models::PasswordResetToken) -> QidResult<()>;
+    try_issue_password_reset_token(&self, token: &qid_core::models::PasswordResetToken, max_issuances: u32, window_seconds: u64) -> QidResult<bool>;
     get_password_reset_token(&self, id: &str) -> QidResult<Option<qid_core::models::PasswordResetToken>>;
     consume_password_reset_token(&self, id: &str, consumed_at: u64) -> QidResult<()>;
     replace_password_with_reset_token(&self, id: &str, realm_id: &qid_core::tenant::RealmId, token_hash: &str, device_id: Option<&str>, credential: &qid_core::models::PasswordCredential, consumed_at: u64) -> QidResult<()>;

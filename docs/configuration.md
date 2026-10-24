@@ -94,10 +94,15 @@ server:
   notification:
     provider: https://notifications.example.com/deliver
     timeout_seconds: 10
+    max_concurrent_deliveries: 16
 realms:
   - id: example
     # Other required realm fields omitted.
     authentication:
+      password_reset:
+        ttl_seconds: 900
+        max_issuances_per_window: 5
+        issuance_window_seconds: 3600
       email_verification:
         ttl_seconds: 600
         max_attempts: 5
@@ -115,6 +120,30 @@ worker environment configuration (`QID_SMTP_FROM`, optional paired
 provider URL. Provider configuration and request/response debug output redact
 secret-bearing values. Adapter acceptance is not verification: only a correctly
 confirmed, persisted challenge can verify a stored email address.
+
+Password-reset issuance uses the realm's `authentication.password_reset` policy:
+`ttl_seconds` defaults to 900 (1–1800), `max_issuances_per_window` to 5
+(1–4294967295), and `issuance_window_seconds` to 3600 (1–86400). All three
+may be omitted independently. Expiry is server time plus the configured TTL;
+public requests accept only `user_id` and optional `device_id`, never risk, time,
+TTL or budget selectors. The persisted risk context is `{}` (no trusted signal).
+The budget is enforced atomically per realm/account with token insertion. All
+records at or after `server_creation_time - issuance_window_seconds + 1` count,
+including consumed, expired and delivery-failure records. At the exact window
+boundary the old record stops counting. Newer records count conservatively for
+out-of-order tasks or clock rollback. Suppression creates no token or mail.
+
+`server.notification.max_concurrent_deliveries` defaults to 16 and must be in
+1–1024. One shared, process-local semaphore bounds background password-reset
+persistence, delivery and audit across all realms. A request tries to reserve a
+slot before spawning; no slot means suppression, not a queued task or a budget
+charge. Slots are released on every completion/error/cancellation path. This
+setting does not change the synchronous email-verification flow or worker job
+scheduling. Unknown/ineligible/unconfigured, over-budget, capacity-suppressed and
+failed delivery cases all retain the same generic `202` password-reset response.
+The per-account rolling budget is repository-backed; the task bound is per
+process. Traffic/IP controls belong at qpx ingress, not in qid, and forwarded IP
+headers are not trusted for these controls. See [the API contract](http-api.md#password-reset).
 
 Path values must start with `/`, must not be empty, and must be unique. `paths.capport_details` must additionally contain an Axum `:realm` segment and must not reuse the fixed CAPPORT bind, unbind, or lookup path.
 

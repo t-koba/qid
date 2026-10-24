@@ -342,3 +342,228 @@ async fn sql_password_reset_credential_failure_rolls_back_both_writes() {
     pool.close().await;
     std::fs::remove_file(path).unwrap();
 }
+
+fn issuance_token(id: &str, realm: &str, user: &str, now: u64) -> PasswordResetToken {
+    PasswordResetToken {
+        id: id.into(),
+        realm_id: realm.into(),
+        user_id: user.into(),
+        token_hash: "digest".into(),
+        device_id: None,
+        risk_json: serde_json::json!({}),
+        created_at_epoch_seconds: now,
+        expires_at_epoch_seconds: now + 50,
+        consumed_at_epoch_seconds: None,
+    }
+}
+
+async fn issuance_boundaries(repo: &impl Repository) {
+    seed(repo).await;
+    repo.create_realm(
+        &"tenant".into(),
+        &"elsewhere".into(),
+        "https://elsewhere.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    // Consumed, expired and failed-delivery records retain their accounting.
+    repo.consume_password_reset_token("reset", 105)
+        .await
+        .unwrap();
+    let mut token = issuance_token("boundary", "realm", "owner", 299);
+    assert!(
+        !repo
+            .try_issue_password_reset_token(&token, 1, 200)
+            .await
+            .unwrap()
+    );
+    assert!(
+        repo.get_password_reset_token("boundary")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    token.created_at_epoch_seconds = 300;
+    token.expires_at_epoch_seconds = 350;
+    assert!(
+        repo.try_issue_password_reset_token(&token, 1, 200)
+            .await
+            .unwrap()
+    );
+    // Duplicate IDs are errors even when the account has spent its budget.
+    assert!(
+        repo.try_issue_password_reset_token(&token, 1, 200)
+            .await
+            .is_err()
+    );
+    let mut collision = token.clone();
+    collision.user_id = "other".into();
+    assert!(
+        repo.try_issue_password_reset_token(&collision, 1, 200)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        repo.get_password_reset_token("boundary")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id,
+        "owner"
+    );
+    // Realm and user are both accounting keys.
+    for (id, realm, user) in [
+        ("other-user", "realm", "other"),
+        ("other-realm", "elsewhere", "owner"),
+    ] {
+        assert!(
+            repo.try_issue_password_reset_token(&issuance_token(id, realm, user, 300), 1, 200)
+                .await
+                .unwrap()
+        );
+    }
+    // An older task cannot ignore newer records already inserted by another task.
+    assert!(
+        !repo
+            .try_issue_password_reset_token(
+                &issuance_token("delayed", "realm", "owner", 298),
+                2,
+                200
+            )
+            .await
+            .unwrap()
+    );
+    for (max, window) in [(0, 200), (1, 0), (1, 86401)] {
+        assert!(
+            repo.try_issue_password_reset_token(
+                &issuance_token("invalid", "realm", "owner", 500),
+                max,
+                window
+            )
+            .await
+            .is_err()
+        );
+    }
+    let mut overflow = issuance_token("overflow", "realm", "owner", i64::MAX as u64);
+    assert!(
+        repo.try_issue_password_reset_token(&overflow, 1, 1)
+            .await
+            .is_err()
+    );
+    overflow = issuance_token("overflow", "realm", "owner", 500);
+    overflow.consumed_at_epoch_seconds = Some(u64::MAX);
+    assert!(
+        repo.try_issue_password_reset_token(&overflow, 1, 1)
+            .await
+            .is_err()
+    );
+    // u32::MAX is a valid budget, and a one-second window counts the current second.
+    let token = issuance_token("wide-budget", "realm", "owner", 500);
+    assert!(
+        repo.try_issue_password_reset_token(&token, u32::MAX, 1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !repo
+            .try_issue_password_reset_token(
+                &issuance_token("same-second", "realm", "owner", 500),
+                1,
+                1
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        repo.try_issue_password_reset_token(
+            &issuance_token("next-second", "realm", "owner", 501),
+            1,
+            1
+        )
+        .await
+        .unwrap()
+    );
+}
+
+async fn issuance_concurrency<R: Repository + 'static>(repo: std::sync::Arc<R>) {
+    repo.create_user(&User {
+        id: "parallel".into(),
+        realm_id: "realm".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    let barrier = std::sync::Arc::new(Barrier::new(8));
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..8 {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        tasks.spawn(async move {
+            let token = issuance_token(&format!("parallel-{index}"), "realm", "parallel", 600);
+            barrier.wait().await;
+            let issued = repo
+                .try_issue_password_reset_token(&token, 3, 3600)
+                .await
+                .unwrap();
+            assert_eq!(
+                repo.get_password_reset_token(&token.id)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                issued
+            );
+            issued
+        });
+    }
+    let mut issued = 0;
+    while let Some(result) = tasks.join_next().await {
+        issued += usize::from(result.unwrap());
+    }
+    assert_eq!(issued, 3);
+}
+
+#[tokio::test]
+async fn file_password_reset_issuance_budget_boundaries_and_concurrency() {
+    let dir = std::env::temp_dir().join(format!("qid-reset-budget-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    let repo = std::sync::Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
+    issuance_boundaries(repo.as_ref()).await;
+    issuance_concurrency(repo.clone()).await;
+    drop(repo);
+    // Budget history survives restart, including consumed rows.
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    assert!(
+        !repo
+            .try_issue_password_reset_token(
+                &issuance_token("after-restart", "realm", "parallel", 600),
+                3,
+                3600
+            )
+            .await
+            .unwrap()
+    );
+    drop(repo);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_password_reset_issuance_budget_boundaries_and_concurrency() {
+    let path = std::env::temp_dir().join(format!("qid-reset-budget-{}.db", ulid::Ulid::new()));
+    let repo = std::sync::Arc::new(
+        SqlRepository::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap(),
+    );
+    repo.migrate().await.unwrap();
+    issuance_boundaries(repo.as_ref()).await;
+    issuance_concurrency(repo.clone()).await;
+    std::sync::Arc::try_unwrap(repo).unwrap().close().await;
+    std::fs::remove_file(path).unwrap();
+}

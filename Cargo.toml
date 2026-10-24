@@ -151,7 +151,14 @@ exclude = ["vendor/rustls"]
 # The blocking-transport integration test demonstrates the generic response is
 # independent of provider latency; qid-resource rises 3734 -> 3859 within its
 # existing limit. Tests remain uncapped.
-total = 107627
+# Public reset abuse controls add 189 measured source lines (107627 -> 107816):
+# server-owned realm TTL/budget and validated process delivery capacity, atomic
+# rolling issuance accounting in both backends (no migration), and generic
+# suppression before background send. qid-core 10689 -> 10746, qid-storage
+# 13147 -> 13265, qid-resource 3859 -> 3868, qid-worker 5571 -> 5572 and
+# qidd 2839 -> 2843 (existing inline test constructors). Integration/config
+# regressions add 431 uncapped test lines; lint/test gates are unchanged.
+total = 107816
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -160,7 +167,7 @@ qid-network = 4500
 qid-admin = 6000
 qid-core = 14000
 qid-crypto = 5972
-qid-storage = 13147
+qid-storage = 13265
 qid-oidc = 6000
 qid-oauth = 12000
 qid-saml = 7200
@@ -169,7 +176,7 @@ qid-federation = 5000
 qid-iga = 6300
 qid-resource = 5200
 qid-scim = 4600
-qid-worker = 5571
+qid-worker = 5572
 
 [workspace.package]
 version = "0.1.0"

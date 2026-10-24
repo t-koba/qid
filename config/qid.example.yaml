@@ -1,6 +1,11 @@
 server:
   listen: "0.0.0.0:8443"
   public_base_url: "https://id.example.com"
+  # Optional delivery; absent means generic reset responses without delivery.
+  # notification:
+  #   provider: https://notifications.example.com/deliver
+  #   timeout_seconds: 10
+  #   max_concurrent_deliveries: 16 # Process-local reset tasks, range 1..1024.
   paths:
     health: /health
     ready: /ready
@@ -54,7 +59,11 @@ realms:
     display_name: "Corp Identity"
     # Optional password pepper (disabled by omission). Provision sources first;
     # secrets are snapshotted at startup. Keep old keys during rotation.
-    # authentication:
+    authentication:
+      password_reset:
+        ttl_seconds: 900 # Server-derived expiry; range 1..1800.
+        max_issuances_per_window: 5 # Per realm/user, includes failed deliveries.
+        issuance_window_seconds: 3600 # Rolling window, range 1..86400.
     #   password:
     #     pepper:
     #       active: key2

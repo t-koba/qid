@@ -353,6 +353,52 @@ impl CiamRepository for SqlRepository {
         Ok(())
     }
 
+    async fn try_issue_password_reset_token(
+        &self,
+        token: &PasswordResetToken,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool> {
+        let start =
+            crate::domain::password_reset_window_start(token, max_issuances, window_seconds)?;
+        let mut tx = self
+            .pool
+            .begin_with(match self.database_kind {
+                SqlDatabaseKind::Sqlite => "BEGIN IMMEDIATE",
+                SqlDatabaseKind::Postgres => "BEGIN",
+            })
+            .await
+            .map_err(storage_to_qid_error)?;
+        if self.database_kind == SqlDatabaseKind::Postgres {
+            // Transaction-scoped per-account serialization across connections/processes.
+            // Hash collisions only serialize unrelated accounts; they cannot bypass a budget.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(serde_json::json!([token.realm_id, token.user_id]).to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+        }
+        // Shared validation above proves every u64 timestamp fits i64. Deliberately
+        // attempt duplicate IDs even over budget, so collisions remain storage errors.
+        let result = sqlx::query(
+            "INSERT INTO password_reset_tokens (id, realm_id, user_id, token_hash, device_id, risk_json, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 WHERE EXISTS (SELECT 1 FROM password_reset_tokens WHERE id = $1) OR (SELECT COUNT(*) FROM password_reset_tokens WHERE realm_id = $2 AND user_id = $3 AND created_at_epoch_seconds >= $10) < $11",
+        )
+        .bind(&token.id)
+        .bind(&token.realm_id)
+        .bind(&token.user_id)
+        .bind(&token.token_hash)
+        .bind(&token.device_id)
+        .bind(token.risk_json.to_string())
+        .bind(token.expires_at_epoch_seconds as i64)
+        .bind(token.consumed_at_epoch_seconds.map(|value| value as i64))
+        .bind(token.created_at_epoch_seconds as i64)
+        .bind(start as i64)
+        .bind(i64::from(max_issuances))
+        .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
+        tx.commit().await.map_err(storage_to_qid_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>> {
         let row: Option<PasswordResetTokenRow> =
             sqlx::query_as("SELECT * FROM password_reset_tokens WHERE id = ?")

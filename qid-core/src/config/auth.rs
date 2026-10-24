@@ -15,6 +15,8 @@ pub struct AuthenticationConfig {
     #[serde(default)]
     pub email_verification: EmailVerificationConfig,
     #[serde(default)]
+    pub password_reset: PasswordResetConfig,
+    #[serde(default)]
     pub passkeys: PasskeyConfig,
     #[serde(default)]
     pub password: PasswordConfig,
@@ -24,6 +26,39 @@ pub struct AuthenticationConfig {
     /// Passkeys must be enabled. Password config is ignored.
     #[serde(default = "default_false")]
     pub passwordless_only: bool,
+}
+
+/// Server-authored expiry and rolling per-account issuance policy.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PasswordResetConfig {
+    pub ttl_seconds: u64,
+    pub max_issuances_per_window: u32,
+    pub issuance_window_seconds: u64,
+}
+
+impl Default for PasswordResetConfig {
+    fn default() -> Self {
+        Self {
+            ttl_seconds: 900,
+            max_issuances_per_window: 5,
+            issuance_window_seconds: 3600,
+        }
+    }
+}
+
+impl PasswordResetConfig {
+    pub(crate) fn validate(&self) -> QidResult<()> {
+        if !(1..=1800).contains(&self.ttl_seconds)
+            || self.max_issuances_per_window == 0
+            || !(1..=86400).contains(&self.issuance_window_seconds)
+        {
+            return Err(QidError::Config {
+                message: "authentication.password_reset requires ttl_seconds in 1..=1800, positive max_issuances_per_window and issuance_window_seconds in 1..=86400".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Policy for delivered, session-bound email ownership challenges.

@@ -176,7 +176,9 @@ exclude = ["vendor/rustls"]
 # The RUSTSEC-2026-0387 fix upgrades P-256 to 0.14 and needs 9 additional
 # qid-crypto source lines for the shared fallible ES256 key-generation path
 # (5972 -> 5981; workspace total 108903 -> 108912).
-total = 108912
+# The shared realm/account TOTP attempt limiter and route wiring add 280
+# measured product source lines (workspace total 108912 -> 109192).
+total = 109192
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

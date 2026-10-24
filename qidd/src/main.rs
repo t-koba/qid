@@ -28,7 +28,9 @@ use qid_policy::NativePolicyEngine;
 use qid_proxy::{
     capport_routes_enabled, captive_portal_routes, issue_assertion, pep_decision_routes,
 };
-use qid_session::{PasswordAttemptLimiter, auth_routes_with_password_attempt_limiter};
+use qid_session::{
+    PasswordAttemptLimiter, TotpAttemptLimiter, auth_routes_with_password_attempt_limiter,
+};
 use qid_storage::prelude::*;
 use qid_storage::{AnyRepository, FileFlushMode};
 use serde_json::json;
@@ -301,6 +303,9 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
     // the session API and the OIDC authorization endpoint enforce the same
     // admission numbers.
     let password_limiter = Arc::new(PasswordAttemptLimiter::new());
+    // One TOTP admission limiter serves both TOTP proof paths, so enrolment
+    // confirmation and primary authentication enforce the same budget.
+    let totp_limiter = Arc::new(TotpAttemptLimiter::new());
 
     let mut app = Router::<AppState>::new()
         .route(&paths.health, get(health_handler))
@@ -316,7 +321,9 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
             paths,
             password_limiter.clone(),
         ))
-        .merge(qid_session::totp_api::totp_routes::<AnyRepository>(paths))
+        .merge(qid_session::totp_api::totp_routes_with_attempt_limiter::<
+            AnyRepository,
+        >(paths, totp_limiter))
         .merge(qid_directory::directory_routes::<AnyRepository>())
         .merge(qid_risk::risk_routes::<AnyRepository>())
         .merge(qid_iga::iga_routes::<AnyRepository>());

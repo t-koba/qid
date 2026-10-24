@@ -385,13 +385,66 @@ pub struct MfaConfig {
     pub totp: TotpConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TotpConfig {
     /// Whether the realm offers the TOTP factor. A realm that leaves it
     /// disabled refuses TOTP enrolment and challenges.
     #[serde(default = "default_false")]
     pub enabled: bool,
+    /// How many failed TOTP proof attempts one account may spend before
+    /// the realm refuses further proofs for the window below. Every
+    /// proof for a known account spends one admission, whether the code
+    /// is wrong, malformed or a replay; only a proof that verifies and
+    /// wins the step claim gives its admission back.
+    #[serde(default = "default_totp_max_failed_attempts")]
+    pub max_failed_attempts: u32,
+    /// How long, in seconds, one account's failed TOTP proof attempts
+    /// count against the limit above. The window is fixed: attempts do
+    /// not extend it, and a code step rolling over does not reset it.
+    #[serde(default = "default_totp_failed_attempt_window_seconds")]
+    pub failed_attempt_window_seconds: u64,
+}
+
+impl Default for TotpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_false(),
+            max_failed_attempts: default_totp_max_failed_attempts(),
+            failed_attempt_window_seconds: default_totp_failed_attempt_window_seconds(),
+        }
+    }
+}
+
+impl TotpConfig {
+    /// The TOTP proof policy a realm states. The limit must admit at
+    /// least one proof and stay within the in-memory counter's bound,
+    /// and the window must be a usable positive duration.
+    pub(crate) fn validate(&self, realm_id: &str) -> QidResult<()> {
+        if !(1..=100).contains(&self.max_failed_attempts) {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.mfa.totp.max_failed_attempts must be in 1..=100"
+                ),
+            });
+        }
+        if !(1..=86400).contains(&self.failed_attempt_window_seconds) {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} authentication.mfa.totp.failed_attempt_window_seconds must be in 1..=86400"
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn default_totp_max_failed_attempts() -> u32 {
+    5
+}
+
+fn default_totp_failed_attempt_window_seconds() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]

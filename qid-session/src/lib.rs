@@ -11,6 +11,7 @@ pub mod hibp;
 mod password_limit;
 pub mod refresh;
 pub mod totp_api;
+mod totp_limit;
 pub mod webauthn;
 
 pub use api::{auth_routes, auth_routes_with_password_attempt_limiter};
@@ -20,6 +21,7 @@ pub use browser::{
 };
 pub use hibp::HibpClient;
 pub use password_limit::PasswordAttemptLimiter;
+pub use totp_limit::TotpAttemptLimiter;
 pub use webauthn::WebAuthnService;
 
 #[cfg(test)]

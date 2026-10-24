@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -18,8 +18,25 @@ use std::sync::Arc;
 
 use crate::api::{BrowserSessionContext, extract_cookie, load_browser_session};
 use crate::browser::SessionManager;
+use crate::totp_limit::TotpAttemptLimiter;
 
-pub fn totp_routes<R: Repository>(_paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
+/// The TOTP routes with a TOTP admission limiter of their own.
+///
+/// The limiter is fresh for every router, so a test that builds a router
+/// does not share its counts with another test.
+pub fn totp_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
+    totp_routes_with_attempt_limiter(paths, Arc::new(TotpAttemptLimiter::new()))
+}
+
+/// The TOTP routes with the TOTP admission limiter the caller owns.
+///
+/// A deployment that serves the confirmation and authentication paths from
+/// one process passes one limiter to both, so enrolment confirmation and
+/// primary authentication enforce the same admission numbers.
+pub fn totp_routes_with_attempt_limiter<R: Repository>(
+    _paths: &ServerPaths,
+    limiter: Arc<TotpAttemptLimiter>,
+) -> Router<Arc<SharedState<R>>> {
     Router::new()
         .route("/api/v1/:realm/auth/totp/enroll", post(totp_enroll::<R>))
         .route("/api/v1/:realm/auth/totp/verify", post(totp_verify::<R>))
@@ -27,6 +44,7 @@ pub fn totp_routes<R: Repository>(_paths: &ServerPaths) -> Router<Arc<SharedStat
             "/api/v1/:realm/auth/totp/authenticate",
             post(totp_authenticate::<R>),
         )
+        .layer(Extension(limiter))
 }
 
 #[derive(Debug, Serialize)]
@@ -134,6 +152,7 @@ async fn totp_enroll<R: Repository>(
 
 async fn totp_verify<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    Extension(limiter): Extension<Arc<TotpAttemptLimiter>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
     JsonObject(req): JsonObject<TotpVerifyRequest>,
@@ -159,6 +178,16 @@ async fn totp_verify<R: Repository>(
         }
         Err(e) => return qid_http::error_response(e),
     };
+
+    // The user and the credential are known, so the proof spends an
+    // admission before any code verification. A refused proof never reaches
+    // verification, the step claim or enrolment activation.
+    if !limiter.admit(&realm, &session.user_id, &realm_config.mfa.totp) {
+        metrics::counter!("qid_authn_rate_limited_total", "method" => "totp").increment(1);
+        return qid_http::error_response(QidError::TooManyRequests {
+            message: "too many TOTP attempts, please wait and try again".to_string(),
+        });
+    }
 
     // Enrollment confirmation validates against a transiently enabled copy:
     // the stored credential stays disabled until a valid proof arrives.
@@ -187,6 +216,9 @@ async fn totp_verify<R: Repository>(
         }
         Err(e) => return qid_http::error_response(e),
     }
+    // The proof verified and won the step, so it gives its admission back.
+    // Wrong codes, malformed codes and step-claim losers keep theirs.
+    limiter.succeeded(&realm, &session.user_id);
 
     cred.enabled = true;
     cred.last_used_step = Some(current_step);
@@ -202,6 +234,7 @@ async fn totp_verify<R: Repository>(
 
 async fn totp_authenticate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
+    Extension(limiter): Extension<Arc<TotpAttemptLimiter>>,
     Path(realm): Path<String>,
     headers: HeaderMap,
     JsonObject(req): JsonObject<TotpAuthenticateRequest>,
@@ -245,6 +278,16 @@ async fn totp_authenticate<R: Repository>(
         });
     }
 
+    // The user and the credential are known, so the proof spends an
+    // admission before any code verification. A refused proof never reaches
+    // verification, the step claim or session creation.
+    if !limiter.admit(&realm, &user.id, &realm_config.mfa.totp) {
+        metrics::counter!("qid_authn_rate_limited_total", "method" => "totp").increment(1);
+        return qid_http::error_response(QidError::TooManyRequests {
+            message: "too many TOTP attempts, please wait and try again".to_string(),
+        });
+    }
+
     // Validation runs against the stored snapshot; the repository decides the
     // winner. Only the caller that claims the step reaches session creation.
     let now = qid_core::util::now_seconds();
@@ -267,6 +310,9 @@ async fn totp_authenticate<R: Repository>(
         }
         Err(e) => return qid_http::error_response(e),
     }
+    // The proof verified and won the step, so it gives its admission back.
+    // Wrong codes, malformed codes and step-claim losers keep theirs.
+    limiter.succeeded(&realm, &user.id);
 
     metrics::counter!("qid_mfa_challenges_total", "method" => "totp").increment(1);
 

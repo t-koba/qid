@@ -1560,10 +1560,55 @@ fn passkey_preference_defaults_to_false_and_requires_enabled_passkeys() {
 }
 
 #[test]
+fn the_totp_attempt_policy_defaults_are_conservative() {
+    let config = TotpConfig::default();
+    assert!(!config.enabled);
+    assert_eq!(config.max_failed_attempts, 5);
+    assert_eq!(config.failed_attempt_window_seconds, 300);
+}
+
+#[test]
+fn a_realm_totp_attempt_policy_outside_its_bounds_is_rejected() {
+    // A realm that admits no TOTP proof at all would refuse every proof, and
+    // an unbounded budget or window is not a policy the product can keep, so
+    // both numbers must stay inside their documented ranges.
+    for (attempts, window) in [(0, 300), (101, 300), (5, 0), (5, 86_401)] {
+        let mut config = minimal_config();
+        config.realms[0].authentication.mfa.totp.enabled = true;
+        config.realms[0].authentication.mfa.totp.max_failed_attempts = attempts;
+        config.realms[0]
+            .authentication
+            .mfa
+            .totp
+            .failed_attempt_window_seconds = window;
+        let err = config
+            .validate()
+            .expect_err("an out-of-bounds TOTP policy is rejected");
+        let message = err.message();
+        assert!(
+            message.contains("mfa.totp"),
+            "the error names the key: {message}"
+        );
+    }
+
+    let mut config = minimal_config();
+    config.realms[0].authentication.mfa.totp.enabled = true;
+    config.realms[0].authentication.mfa.totp.max_failed_attempts = 5;
+    config.realms[0]
+        .authentication
+        .mfa
+        .totp
+        .failed_attempt_window_seconds = 300;
+    config.validate().expect("a bounded TOTP policy loads");
+}
+
+#[test]
 fn the_totp_switch_is_read() {
     let enabled: AuthenticationConfig =
         serde_json::from_str(r#"{"mfa":{"totp":{"enabled":true}}}"#).expect("the switch parses");
     assert!(enabled.mfa.totp.enabled);
+    assert_eq!(enabled.mfa.totp.max_failed_attempts, 5);
+    assert_eq!(enabled.mfa.totp.failed_attempt_window_seconds, 300);
     let disabled: AuthenticationConfig =
         serde_json::from_str(r#"{"mfa":{"totp":{"enabled":false}}}"#).expect("the switch parses");
     assert!(!disabled.mfa.totp.enabled);

@@ -1478,6 +1478,7 @@ impl RealmConfig {
         }
         self.sessions.refresh_tokens.validate(&self.id)?;
         self.authentication.password.validate(&self.id)?;
+        self.authentication.mfa.totp.validate(&self.id)?;
         self.authentication.email_magic_link.validate()?;
         self.authentication.email_verification.validate()?;
         self.authentication.password_reset.validate()?;

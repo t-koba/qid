@@ -440,7 +440,7 @@ Validation rules:
 - `password.max_failed_attempts`, `password.max_failed_attempts_per_realm` and `password.lockout_duration_seconds` must be at least 1.
 - `password.argon2id` must be a usable cost: `time_cost` and `parallelism` at least 1, and `memory_kib` at least 8 KiB per lane.
 
-`passkeys` names the realm's WebAuthn relying party. `enabled` states whether the realm offers the factor, `rp_id` and `rp_origin` override the relying-party ID and origin the ceremony uses, and `rp_name` names the relying party to the authenticator. Without `passkeys.attestation`, registration requests `none` and adds no attestation trust requirement. The optional typed policy below requests `direct` and requires trusted packed evidence; legacy string values such as `attestation: enterprise` remain configuration errors. `passkeys.preferred` defaults to `false` and requires `passkeys.enabled: true` when set to `true`. The OIDC GET authorization endpoint's `login_required` JSON challenge includes an `authentication_methods` string array for the validated client's realm: `password` then `webauthn` by default, or `webauthn` then `password` when preferred. Only enabled factors are listed, and `passwordless_only` suppresses password even if its configuration enables it. This order is advisory for API clients, not an authentication requirement or automatic browser UI; qid does not host a login UI.
+`passkeys` names the realm's WebAuthn relying party. `enabled` states whether the realm offers the factor, `rp_id` and `rp_origin` override the relying-party ID and origin the ceremony uses, and `rp_name` names the relying party to the authenticator. Without `passkeys.attestation`, registration requests `none` and adds no attestation trust requirement. The optional typed policy below requests `direct` and requires trusted packed evidence; legacy string values such as `attestation: enterprise` remain configuration errors. `passkeys.preferred` defaults to `false` and requires `passkeys.enabled: true` when set to `true`. The OIDC GET authorization endpoint's `login_required` JSON challenge includes an `authentication_methods` string array for the validated client's realm: `password` then `webauthn` by default, or `webauthn` then `password` when preferred; `email_magic_link` is appended when enabled. Only enabled methods are listed, and `passwordless_only` suppresses password even if its configuration enables it. This order is advisory for API clients, not an authentication requirement or automatic browser UI; qid provides only the explicit email-link confirmation page, not a general login UI.
 
 
 To execute a login choice (default paths shown; deployments may customize them):
@@ -594,7 +594,74 @@ the required key or perform an authorized password reset to recover. Existing
 backups may still need old keys even after live credentials have migrated.
 
 
-`mfa.totp.enabled` states whether the realm offers the TOTP factor, and every path that performs the factor honours it: a realm that does not enable TOTP refuses enrolment, confirmation and challenges on the routes and refuses the `qidc totp enroll` command, while a realm that enables it performs them. The switch is off by default, so a realm offers TOTP only when it says so. The preflight check requires TOTP or passkeys for high-risk audiences and reports the factors the realm can actually use. `mfa.sms.enabled` was removed: the product has no SMS factor, no SMS delivery adapter and no SMS route, so a configuration that still sets it is a configuration error naming the key. The factors the product can perform are TOTP and passkeys (WebAuthn). Push MFA and email magic link were removed: the product has no delivery adapter for either channel, so a challenge it created could never be completed, and their endpoints and path settings are gone - a configuration that still sets `server.paths.auth_email_magic_link_send` is a configuration error naming the key. A TOTP credential carries its own digits and period from the moment it is enrolled. A client certificate is a client authentication method (`tls_client_auth`) and a TLS trust decision (`server.tls.client_ca`); it is not a realm MFA factor, so the realm configuration has no client-certificate switch.
+### Delivered email magic-link login
+
+`realms[].authentication.email_magic_link` enables standalone passwordless primary
+email authentication. It is **disabled by default** and uses the shared
+`server.notification` transport (HTTPS delivery adapter or configured SMTP). An
+enabled realm is rejected at configuration validation without that provider or
+without an HTTPS `server.public_base_url` with a host and no credentials, query or
+fragment. Missing runtime transport still fails closed. OIDC's real login-method
+listing advertises `email_magic_link` only in enabled realms. The send and verify
+POSTs remain under qid's CSRF protection; browser initiation must be same-origin
+with qid, or use a same-origin proxy. No cross-device or client redirect flow is
+provided. This does not enable
+or replace MFA, satisfy high-assurance requirements, or change password, passkey
+or TOTP policy. Sessions carry ACR `urn:qid:acr:email_magic_link` and AMR `email`.
+
+| Setting | Default | Inclusive range |
+| --- | --- | --- |
+| `enabled` | `false` | Boolean |
+| `ttl_seconds` | `600` | 1..3600 |
+| `max_attempts` | `5` | 1..20 |
+| `max_issuances_per_window` | `5` | 1..100 |
+| `issuance_window_seconds` | `3600` | 1..86400 |
+
+Send accepts only an email selector; delivery uses the resolved account's exact
+stored nonempty, verified email. Every eligible, unknown, disabled, suppressed or
+failed-delivery send returns the same generic `202` body. Rolling issuance is
+atomic per realm/account/purpose, includes failed deliveries and persists across
+restarts; attempts and one-use redemption are atomic too. Notification capacity
+is shared and bounded by `server.notification.max_concurrent_deliveries`. No
+in-process challenge map or additional rate limiter is used.
+
+Send sets/reuses `__Host-qid_email_magic_binding`, a random 32-byte browser cookie
+with HttpOnly, Secure, SameSite=Lax, Path=/ and a renewed one-hour Max-Age. That
+name is reserved when enabling this feature. Realm IDs `.` and `..` are refused
+for this feature because browsers normalize URL dot segments. Outstanding links share the existing
+well-formed binding; clearing/losing the cookie invalidates them. The email tells
+the user to open the link in **the same browser**, then explicitly confirm. An
+invalid browser binding does not consume the token; reopen the email link in the
+initiating browser or restart sign-in there. Links use only the configured HTTPS
+`server.public_base_url` (including any path
+prefix) and configured verify route (absolute path, substituting the realm), never
+request Host or forwarding headers. ID and
+32-byte secret are placed in `#challenge_id.token`, not a query string. The
+self-contained GET landing page immediately clears the fragment from history,
+uses a per-response nonce CSP with no third-party assets, no-store/no-referrer,
+and sends a same-origin POST only on button click. GET never logs in, including
+email scanner GETs. JavaScript is required for this confirmation page.
+
+Only the domain-separated, length-prefixed digest of immutable challenge
+identity, token and browser binding is stored. Redemption requires the current
+exact verified email, realm, purpose/channel, binding, server-time expiry and
+remaining attempt budget. Invalid/replayed credentials fail uniformly. Only
+successful atomic redemption regenerates the browser session and sets its
+configured session cookie; subsequent session/cookie failure does not restore
+the consumed challenge. Adapter acceptance is never authentication, and provider
+errors/content and delivery secrets are not logged by these routes. Successful
+delivery acceptance is audited separately from authentication; acceptance is not
+verification or login. Protect mail and configure adapters not to disclose
+delivery content.
+
+`server.paths.auth_email_magic_link_send` and
+`server.paths.auth_email_magic_link_verify` customize the routes. Each requires
+exactly one `:realm` segment and otherwise literal URL-safe, nonempty path
+segments (no wildcards, other parameters, dot segments, query or fragment); route
+values must remain unique.
+
+
+`mfa.totp.enabled` states whether the realm offers the TOTP factor, and every path that performs the factor honours it: a realm that does not enable TOTP refuses enrolment, confirmation and challenges on the routes and refuses the `qidc totp enroll` command, while a realm that enables it performs them. The switch is off by default, so a realm offers TOTP only when it says so. The preflight check requires TOTP or passkeys for high-risk audiences and reports the factors the realm can actually use. `mfa.sms.enabled` was removed: the product has no SMS factor, no SMS delivery adapter and no SMS route, so a configuration that still sets it is a configuration error naming the key. The MFA options are TOTP and passkeys (WebAuthn). Push MFA is not available. Email magic-link login is a separate passwordless primary authentication method, not MFA (see above). A TOTP credential carries its own digits and period from the moment it is enrolled. A client certificate is a client authentication method (`tls_client_auth`) and a TLS trust decision (`server.tls.client_ca`); it is not a realm MFA factor, so the realm configuration has no client-certificate switch.
 
 `sessions` includes browser cookie name, SameSite, idle/absolute timeout, refresh token rotation, and reuse detection. The refresh path always rotates the refresh token on every use, and a superseded or concurrently redeemed token always revokes the whole token family. `refresh_tokens.rotation` states that behaviour and cannot be turned off: a configuration that disables it is an error, because the product has no mode without rotation. `refresh_tokens.reuse_detection` names the mode the product enforces and accepts only `revoke_family`; any other mode is a configuration error.
 

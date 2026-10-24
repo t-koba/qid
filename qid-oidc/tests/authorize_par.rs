@@ -2165,6 +2165,23 @@ async fn login_challenge_orders_only_enabled_authentication_methods() {
 }
 
 #[tokio::test]
+async fn login_challenge_offers_enabled_email_magic_link_as_primary_authentication() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.email_magic_link.enabled = true;
+    config.server.notification = Some(qid_core::config::ServerNotificationConfig {
+        provider: "https://delivery.example.com".into(),
+        timeout_seconds: 10,
+        max_concurrent_deliveries: 1,
+    });
+    let (app, state) = setup_with_config(config).await;
+    let body = get_json(app, authorize_query(&state, ""), None).await;
+    assert_eq!(
+        body["authentication_methods"],
+        serde_json::json!(["password", "email_magic_link"])
+    );
+}
+
+#[tokio::test]
 async fn login_challenge_uses_the_validated_clients_realm_not_the_first_realm() {
     let mut config = test_helpers::test_config();
     config.realms[0].issuer = "https://id.example.com/realms/test".to_string();

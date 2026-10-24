@@ -234,14 +234,13 @@ fn header_to_str(value: &HeaderValue) -> Option<&str> {
     value.to_str().ok().filter(|value| !value.is_empty())
 }
 
-/// Set Content-Security-Policy headers on every response.
+/// Supply a strict default CSP, preserving a handler's explicit policy.
 ///
-/// Phase 0: strict policy allowing only same-origin resources, no scripts,
-/// no objects, no base URI manipulation, and no framing.
+/// Self-contained confirmation pages own their per-response script nonce and
+/// framing restrictions; overwriting that policy would disable their scripts.
 pub async fn csp_headers_layer(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
-    response.headers_mut().insert(
-        CONTENT_SECURITY_POLICY,
+    response.headers_mut().entry(CONTENT_SECURITY_POLICY).or_insert(
         HeaderValue::from_static(
             "default-src 'self'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
         ),
@@ -756,6 +755,46 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn csp_headers_preserve_explicit_handler_policy() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::{HeaderValue, Request, StatusCode};
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route(
+                "/confirm",
+                get(|| async {
+                    let mut response = StatusCode::OK.into_response();
+                    response.headers_mut().insert(
+                        "content-security-policy",
+                        HeaderValue::from_static(
+                            "default-src 'none'; script-src 'nonce-test'; frame-ancestors 'none'",
+                        ),
+                    );
+                    response
+                }),
+            )
+            .layer(axum::middleware::from_fn(csp_headers_layer));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/confirm")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            "default-src 'none'; script-src 'nonce-test'; frame-ancestors 'none'"
+        );
+    }
+
     async fn hsts_get(config: HstsConfig, uri: &str) -> axum::http::Response<axum::body::Body> {
         use tower::ServiceExt;
         let app = axum::Router::new()
@@ -1035,6 +1074,14 @@ mod tests {
 
         assert!(!is_csrf_exempt_path(&paths.auth_session_refresh, &paths));
         assert!(!is_csrf_exempt_path(&paths.auth_password, &paths));
+        assert!(!is_csrf_exempt_path(
+            &paths.auth_email_magic_link_send,
+            &paths
+        ));
+        assert!(!is_csrf_exempt_path(
+            &paths.auth_email_magic_link_verify,
+            &paths
+        ));
         assert!(!is_csrf_exempt_path(&paths.authorize, &paths));
         assert!(!is_csrf_exempt_path(&paths.logout, &paths));
 

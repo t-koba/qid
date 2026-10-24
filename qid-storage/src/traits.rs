@@ -533,6 +533,42 @@ pub trait CiamRepository: Send + Sync + 'static {
         attempted_at: u64,
         max_attempts: u32,
     ) -> QidResult<bool>;
+    /// Atomically admit a fresh email/email_magic_link challenge under a rolling
+    /// per-(realm,user,purpose) budget. Count all records of that purpose created
+    /// at or after `created_at.saturating_sub(window_seconds - 1)`, including
+    /// consumed, expired, failed-delivery and newer records (clock rollback).
+    /// Server-authored creation/expiry must fit i64; max_issuances must be positive
+    /// and window_seconds must be 1..=86400, as for password-reset admission.
+    /// Admission also requires the user to remain in the realm with this exact
+    /// currently verified stored email. Returns false without writing on
+    /// ineligibility or budget suppression; duplicate global IDs are
+    /// Conflict, and persistence errors are errors, never suppression. Identity
+    /// is immutable; fresh challenges have zero attempts and no consumption.
+    async fn try_issue_email_magic_link_challenge(
+        &self,
+        challenge: &CiamVerificationChallengeRecord,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool>;
+    /// Redeem only an email/email_magic_link challenge bound to its current
+    /// realm/user's exact stored email and email_verified=true. The candidate
+    /// hash must bind both token and browser authority; every active mismatch
+    /// increments the durable counter, irrespective of which proof was wrong.
+    /// Active means unconsumed, created_at <= attempted_at <= expires_at
+    /// (inclusive expiry, matching email verification), and attempts < max_attempts.
+    /// The caller supplies server time/policy, never a verified flag. Hashes are
+    /// compared in constant time. Success increments once and consumes once;
+    /// return the bound User only after durable commit. Unavailable, foreign,
+    /// stale-email, unverified, expired or exhausted challenges return None
+    /// without writing. Storage errors never authenticate.
+    async fn redeem_email_magic_link_challenge(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+        candidate_hash: &str,
+        attempted_at: u64,
+        max_attempts: u32,
+    ) -> QidResult<Option<User>>;
     /// Trusted federation callers must validate provider proof before storing verified links.
     /// Session-only API callers cannot create or update links, regardless of verified status.
     /// External subjects are unique per realm/provider among verified links only;

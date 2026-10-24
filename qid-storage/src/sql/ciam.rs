@@ -206,6 +206,142 @@ impl CiamRepository for SqlRepository {
         Ok(verified)
     }
 
+    async fn try_issue_email_magic_link_challenge(
+        &self,
+        challenge: &CiamVerificationChallengeRecord,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool> {
+        let start =
+            crate::domain::email_magic_link_window_start(challenge, max_issuances, window_seconds)?;
+        // Serialize admission before checking the budget, as for password resets.
+        let mut tx = self
+            .pool
+            .begin_with(match self.database_kind {
+                SqlDatabaseKind::Sqlite => "BEGIN IMMEDIATE",
+                SqlDatabaseKind::Postgres => "BEGIN",
+            })
+            .await
+            .map_err(storage_to_qid_error)?;
+        if self.database_kind == SqlDatabaseKind::Postgres {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(
+                    serde_json::json!([challenge.realm_id, challenge.user_id, challenge.purpose])
+                        .to_string(),
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+        }
+        let duplicate: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM ciam_verification_challenges WHERE id = $1")
+                .bind(&challenge.id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+        if duplicate.is_some() {
+            tx.rollback().await.map_err(storage_to_qid_error)?;
+            return Err(QidError::Conflict {
+                message: "CIAM verification challenge ID already exists".into(),
+            });
+        }
+        let current_owner: Option<String> = sqlx::query_scalar(match self.database_kind {
+            SqlDatabaseKind::Sqlite => {
+                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = 1"
+            }
+            SqlDatabaseKind::Postgres => {
+                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = 1 FOR UPDATE"
+            }
+        })
+        .bind(&challenge.user_id)
+        .bind(&challenge.realm_id)
+        .bind(&challenge.address)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage_to_qid_error)?;
+        if current_owner.is_none() {
+            tx.rollback().await.map_err(storage_to_qid_error)?;
+            return Ok(false);
+        }
+        // No upsert can overwrite identity or reset attempts/consumption.
+        // All lifecycle states count, including consumed and expired records.
+        let result = sqlx::query(
+            "INSERT INTO ciam_verification_challenges (id, realm_id, user_id, channel, address, purpose, code_hash, attempt_count, expires_at_epoch_seconds, consumed_at_epoch_seconds, created_at_epoch_seconds) SELECT $1, $2, $3, $4, $5, $6, $7, 0, $8, NULL, $9 WHERE EXISTS (SELECT 1 FROM ciam_verification_challenges WHERE id = $1) OR (SELECT COUNT(*) FROM ciam_verification_challenges WHERE realm_id = $2 AND user_id = $3 AND purpose = $6 AND created_at_epoch_seconds >= $10) < $11"
+        )
+        .bind(&challenge.id).bind(&challenge.realm_id).bind(&challenge.user_id)
+        .bind(&challenge.channel).bind(&challenge.address).bind(&challenge.purpose)
+        .bind(&challenge.code_hash).bind(challenge.expires_at_epoch_seconds as i64)
+        .bind(challenge.created_at_epoch_seconds as i64).bind(start as i64)
+        .bind(i64::from(max_issuances))
+        .execute(&mut *tx).await.map_err(|err| {
+            if err.as_database_error().is_some_and(|db| db.is_unique_violation()) {
+                QidError::Conflict { message: "CIAM verification challenge ID already exists".into() }
+            } else {
+                storage_to_qid_error(err)
+            }
+        })?;
+        tx.commit().await.map_err(storage_to_qid_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn redeem_email_magic_link_challenge(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+        candidate_hash: &str,
+        attempted_at: u64,
+        max_attempts: u32,
+    ) -> QidResult<Option<User>> {
+        let Ok(attempted_at) = i64::try_from(attempted_at) else {
+            return Ok(None);
+        };
+        let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        // Write-lock the challenge before comparing any candidate, so every
+        // active mismatch and success shares one durable attempt ceiling.
+        let row: Option<CiamVerificationChallengeRow> = sqlx::query_as(
+            "UPDATE ciam_verification_challenges SET attempt_count = attempt_count + 1 WHERE realm_id = $1 AND id = $2 AND channel = 'email' AND purpose = 'email_magic_link' AND consumed_at_epoch_seconds IS NULL AND created_at_epoch_seconds <= $3 AND expires_at_epoch_seconds >= $3 AND attempt_count < $4 AND EXISTS (SELECT 1 FROM users WHERE users.id = ciam_verification_challenges.user_id AND users.realm_id = ciam_verification_challenges.realm_id AND users.email = ciam_verification_challenges.address AND users.email_verified = 1) RETURNING *"
+        ).bind(realm_id.as_str()).bind(id).bind(attempted_at).bind(i64::from(max_attempts))
+            .fetch_optional(&mut *tx).await.map_err(storage_to_qid_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let challenge: CiamVerificationChallengeRecord = row.into();
+        // Lock the current owner through commit, not merely the snapshot in the
+        // EXISTS above. SQLite's first write already locks competing writers.
+        let user: Option<UserRow> = sqlx::query_as(match self.database_kind {
+            SqlDatabaseKind::Sqlite => "SELECT * FROM users WHERE id = $1 AND realm_id = $2",
+            SqlDatabaseKind::Postgres => {
+                "SELECT * FROM users WHERE id = $1 AND realm_id = $2 FOR UPDATE"
+            }
+        })
+        .bind(&challenge.user_id)
+        .bind(realm_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage_to_qid_error)?;
+        let user: Option<User> = user.map(Into::into);
+        let Some(user) = user
+            .filter(|u| u.email_verified && u.email.as_deref() == Some(challenge.address.as_str()))
+        else {
+            tx.rollback().await.map_err(storage_to_qid_error)?;
+            return Ok(None);
+        };
+        let verified = qid_core::util::constant_time_eq(
+            challenge.code_hash.as_bytes(),
+            candidate_hash.as_bytes(),
+        );
+        if verified {
+            let result = sqlx::query("UPDATE ciam_verification_challenges SET consumed_at_epoch_seconds = $1 WHERE realm_id = $2 AND id = $3 AND consumed_at_epoch_seconds IS NULL")
+                .bind(attempted_at).bind(realm_id.as_str()).bind(id)
+                .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
+            crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+                "magic-link challenge could not be consumed".into()
+            })?;
+        }
+        tx.commit().await.map_err(storage_to_qid_error)?;
+        Ok(verified.then_some(user))
+    }
+
     async fn store_ciam_identity_link(&self, link: &CiamIdentityLink) -> QidResult<()> {
         link.validate()?;
         let existing: Option<CiamIdentityLinkRow> =

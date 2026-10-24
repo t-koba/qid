@@ -6,6 +6,7 @@
 pub mod api;
 pub mod auth;
 pub mod browser;
+mod email_magic_link;
 pub mod hibp;
 mod password_limit;
 pub mod refresh;

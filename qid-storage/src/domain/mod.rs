@@ -167,3 +167,28 @@ pub(crate) fn password_reset_window_start(
         .created_at_epoch_seconds
         .saturating_sub(window_seconds - 1))
 }
+
+/// The same rolling-window convention and supported bounds as password resets.
+pub(crate) fn email_magic_link_window_start(
+    challenge: &qid_core::models::CiamVerificationChallengeRecord,
+    max_issuances: u32,
+    window_seconds: u64,
+) -> QidResult<u64> {
+    challenge.validate()?;
+    if challenge.channel != "email"
+        || challenge.purpose != "email_magic_link"
+        || challenge.attempt_count != 0
+        || challenge.consumed_at_epoch_seconds.is_some()
+        || max_issuances == 0
+        || !(1..=86400).contains(&window_seconds)
+        || i64::try_from(challenge.created_at_epoch_seconds).is_err()
+        || i64::try_from(challenge.expires_at_epoch_seconds).is_err()
+    {
+        return Err(QidError::BadRequest {
+            message: "invalid email magic-link challenge, issuance budget or timestamp".into(),
+        });
+    }
+    Ok(challenge
+        .created_at_epoch_seconds
+        .saturating_sub(window_seconds - 1))
+}

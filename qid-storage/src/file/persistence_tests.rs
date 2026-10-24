@@ -631,3 +631,112 @@ async fn cancelled_immediate_password_reset_finishes_persistence_or_rollback() {
         assert_reset(&reopened, "new", Some(150)).await;
     }
 }
+
+#[tokio::test]
+async fn cancelled_magic_link_operations_finish_persistence_or_rollback() {
+    for fail in [false, true] {
+        for operation in ["issue", "bad-candidate", "redeem"] {
+            let (file, mut repo) = TestFile::new().await;
+            repo.create_user(&User {
+                id: "user".into(),
+                realm_id: "test".into(),
+                email: Some("user@example.com".into()),
+                email_verified: true,
+                display_name: None,
+                failed_login_attempts: 0,
+                locked_until: None,
+                org: None,
+            })
+            .await
+            .unwrap();
+            // These operations must bypass interval flushing as well.
+            repo.flush_mode = FileFlushMode::Interval(Duration::from_secs(3600));
+            let challenge = CiamVerificationChallengeRecord {
+                id: "magic".into(),
+                realm_id: "test".into(),
+                user_id: "user".into(),
+                channel: "email".into(),
+                address: "user@example.com".into(),
+                purpose: "email_magic_link".into(),
+                code_hash: "digest".into(),
+                attempt_count: 0,
+                expires_at_epoch_seconds: 200,
+                consumed_at_epoch_seconds: None,
+                created_at_epoch_seconds: 100,
+            };
+            if operation != "issue" {
+                repo.try_issue_email_magic_link_challenge(&challenge, 1, 10)
+                    .await
+                    .unwrap();
+            }
+            let before = tokio::fs::read(&file.0).await.unwrap();
+            let (reached, resume) = pause_next_write(&repo, fail);
+            let mut request = Box::pin(async {
+                if operation == "issue" {
+                    repo.try_issue_email_magic_link_challenge(&challenge, 1, 10)
+                        .await
+                        .map(|_| ())
+                } else {
+                    let candidate = if operation == "redeem" {
+                        "digest"
+                    } else {
+                        "wrong"
+                    };
+                    repo.redeem_email_magic_link_challenge(
+                        &"test".into(),
+                        "magic",
+                        candidate,
+                        150,
+                        2,
+                    )
+                    .await
+                    .map(|_| ())
+                }
+            });
+            assert_pending(request.as_mut()).await;
+            complete(reached).await.unwrap();
+            // Cancellation happens after temp-file write but before rename.
+            drop(request);
+            assert!(repo.store.try_read().is_err());
+            assert!(repo.save_lock.try_lock().is_err());
+            resume.send(()).unwrap();
+            drop(complete(repo.save_lock.lock()).await);
+            let expected = if operation == "issue" && fail {
+                None
+            } else {
+                let mut c = challenge.clone();
+                if operation != "issue" && !fail {
+                    c.attempt_count = 1;
+                    if operation == "redeem" {
+                        c.consumed_at_epoch_seconds = Some(150);
+                    }
+                }
+                Some(c)
+            };
+            assert_eq!(
+                repo.get_ciam_verification_challenge(&"test".into(), "magic")
+                    .await
+                    .unwrap(),
+                expected
+            );
+            let after = tokio::fs::read(&file.0).await.unwrap();
+            if fail {
+                assert_eq!(after, before);
+            }
+            let disk: Store = serde_json::from_slice(&after).unwrap();
+            assert_eq!(
+                disk.ciam_verification_challenges.get("magic"),
+                expected.as_ref()
+            );
+            drop(repo);
+            let reopened = file.reopen().await;
+            assert_eq!(
+                reopened
+                    .get_ciam_verification_challenge(&"test".into(), "magic")
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+}

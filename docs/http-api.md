@@ -63,11 +63,14 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | `/oauth2/challenge` | OAuth challenge helper. |
 | `POST` | configurable `par`, default `/oauth2/par` | Pushed Authorization Request, installed when PAR is enabled. |
 
-## Session, WebAuthn, TOTP
+## Session, email magic link, WebAuthn, TOTP
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. A login is admitted before any credential is verified: the submitted email's admission count follows the realm's `password.max_failed_attempts` within `password.lockout_duration_seconds`, and the realm's admission count follows the realm's `password.max_failed_attempts_per_realm` within the same window; a successful login gives back the admission it spent on the address and on the realm. A refused admission, a locked account, and a realm that has spent its budget of failed password logins answer `429 Too Many Requests`. |
+| `POST` | configurable `auth_email_magic_link_send`, default `/api/v1/:realm/auth/email-magic-link/send` | Email selector only: `{"email":"alice@example.com"}`; unknown fields/redirects are rejected. Always generic `202` for valid requests, with the browser-binding cookie, independent of eligibility/delivery. No recipient, ID, expiry or secret is returned. |
+| `GET` | configurable `auth_email_magic_link_verify`, default `/api/v1/:realm/auth/email-magic-link/verify` | Confirmation page only, never session creation or challenge consumption. Reads `#challenge_id.token`, clears fragment history and POSTs only on explicit button click. Open in the requesting browser. |
+| `POST` | same configurable `auth_email_magic_link_verify` | `{"challenge_id":"...","token":"..."}` plus the binding cookie; no extra fields. Success sets the configured session cookie and returns only `{"status":"authenticated"}`. Invalid/expired/replayed/foreign credentials return uniform `401 {"status":"authentication_failed"}` without a session cookie. |
 | `POST` | configurable `auth_session_refresh`, default `/api/v1/:realm/auth/session/refresh` | Refresh browser session. |
 | `POST` | configurable `auth_session_revoke`, default `/api/v1/:realm/auth/session/revoke` | Revoke browser session. |
 | `POST` | configurable `auth_webauthn_start`, default `/api/v1/:realm/auth/webauthn/start` | WebAuthn registration start. |
@@ -79,6 +82,10 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | `/api/v1/:realm/auth/totp/enroll` | Enroll TOTP. |
 | `POST` | `/api/v1/:realm/auth/totp/verify` | Verify enrolled TOTP. |
 | `POST` | `/api/v1/:realm/auth/totp/authenticate` | TOTP authentication. |
+
+The magic-link send and verify POSTs are not CSRF-exempt. Browser initiation must
+be same-origin with qid so the binding cookie is set; an external application
+needs a same-origin proxy until qid defines a registered-client flow.
 
 WebAuthn ceremonies are single-use and live for five minutes, the timeout the
 ceremony options advertise. A realm holds at most 4096 live ceremonies per

@@ -236,6 +236,145 @@ impl CiamRepository for FileRepository {
         })?
     }
 
+    async fn try_issue_email_magic_link_challenge(
+        &self,
+        challenge: &CiamVerificationChallengeRecord,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool> {
+        let start =
+            crate::domain::email_magic_link_window_start(challenge, max_issuances, window_seconds)?;
+        let repo = self.clone();
+        let challenge = challenge.clone();
+        // As for email verification, cancellation must not interrupt persistence
+        // or rollback, even when the repository uses interval flushing.
+        tokio::spawn(async move {
+            let save_guard = repo.save_lock.lock().await;
+            let mut store = repo.store.write().await;
+            reject_duplicate_id(
+                store
+                    .ciam_verification_challenges
+                    .contains_key(&challenge.id),
+                || "CIAM verification challenge ID already exists".into(),
+            )?;
+            if !store.users.get(&challenge.user_id).is_some_and(|user| {
+                user.realm_id == challenge.realm_id
+                    && user.email.as_deref() == Some(challenge.address.as_str())
+                    && user.email_verified
+            }) {
+                return Ok(false);
+            }
+            let count = store
+                .ciam_verification_challenges
+                .values()
+                .filter(|existing| {
+                    existing.realm_id == challenge.realm_id
+                        && existing.user_id == challenge.user_id
+                        && existing.purpose == challenge.purpose
+                        && existing.created_at_epoch_seconds >= start
+                })
+                .count();
+            if count as u128 >= u128::from(max_issuances) {
+                return Ok(false);
+            }
+            store
+                .ciam_verification_challenges
+                .insert(challenge.id.clone(), challenge.clone());
+            let result = async {
+                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
+                    message: "challenge serialization failed".into(),
+                })?;
+                repo.write_store_content_locked(&save_guard, &content).await
+            }
+            .await;
+            if result.is_err() {
+                store.ciam_verification_challenges.remove(&challenge.id);
+            }
+            result.map(|()| true)
+        })
+        .await
+        .map_err(|_| QidError::Internal {
+            message: "magic-link issuance persistence task failed".into(),
+        })?
+    }
+
+    async fn redeem_email_magic_link_challenge(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+        candidate_hash: &str,
+        attempted_at: u64,
+        max_attempts: u32,
+    ) -> QidResult<Option<User>> {
+        if i64::try_from(attempted_at).is_err() {
+            return Ok(None);
+        }
+        let repo = self.clone();
+        let (realm_id, id, candidate_hash) =
+            (realm_id.clone(), id.to_owned(), candidate_hash.to_owned());
+        tokio::spawn(async move {
+            let save_guard = repo.save_lock.lock().await;
+            let mut store = repo.store.write().await;
+            let Some(challenge) = store
+                .ciam_verification_challenges
+                .get(&id)
+                .filter(|c| {
+                    c.realm_id == realm_id.0
+                        && c.channel == "email"
+                        && c.purpose == "email_magic_link"
+                        && c.consumed_at_epoch_seconds.is_none()
+                        && c.created_at_epoch_seconds <= attempted_at
+                        && attempted_at <= c.expires_at_epoch_seconds
+                        && c.attempt_count < max_attempts
+                })
+                .cloned()
+            else {
+                return Ok(None);
+            };
+            let Some(user) = store
+                .users
+                .get(&challenge.user_id)
+                .filter(|u| {
+                    u.realm_id == realm_id.0
+                        && u.email.as_deref() == Some(challenge.address.as_str())
+                        && u.email_verified
+                })
+                .cloned()
+            else {
+                return Ok(None);
+            };
+            let verified = qid_core::util::constant_time_eq(
+                challenge.code_hash.as_bytes(),
+                candidate_hash.as_bytes(),
+            );
+            let current = store
+                .ciam_verification_challenges
+                .get_mut(&id)
+                .ok_or_else(|| QidError::Internal {
+                    message: "magic-link challenge disappeared during redemption".into(),
+                })?;
+            current.attempt_count += 1;
+            if verified {
+                current.consumed_at_epoch_seconds = Some(attempted_at);
+            }
+            let result = async {
+                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
+                    message: "challenge serialization failed".into(),
+                })?;
+                repo.write_store_content_locked(&save_guard, &content).await
+            }
+            .await;
+            if result.is_err() {
+                store.ciam_verification_challenges.insert(id, challenge);
+            }
+            result.map(|()| verified.then_some(user))
+        })
+        .await
+        .map_err(|_| QidError::Internal {
+            message: "magic-link redemption persistence task failed".into(),
+        })?
+    }
+
     async fn store_ciam_identity_link(&self, link: &CiamIdentityLink) -> QidResult<()> {
         link.validate()?;
         let mut store = self.store.write().await;

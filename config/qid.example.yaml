@@ -1,11 +1,11 @@
 server:
   listen: "0.0.0.0:8443"
   public_base_url: "https://id.example.com"
-  # Optional delivery; absent means generic reset responses without delivery.
+  # Optional shared delivery; required to enable email magic-link login.
   # notification:
   #   provider: https://notifications.example.com/deliver
   #   timeout_seconds: 10
-  #   max_concurrent_deliveries: 16 # Process-local reset tasks, range 1..1024.
+  #   max_concurrent_deliveries: 16 # Process-local delivery tasks, range 1..1024.
   paths:
     health: /health
     ready: /ready
@@ -21,6 +21,8 @@ server:
     assertion: /pep/:realm/assertion
     well_known_openid_configuration: /.well-known/openid-configuration
     auth_password: /api/v1/:realm/auth/password
+    auth_email_magic_link_send: /api/v1/:realm/auth/email-magic-link/send
+    auth_email_magic_link_verify: /api/v1/:realm/auth/email-magic-link/verify
     auth_webauthn_start: /api/v1/:realm/auth/webauthn/start
     auth_webauthn_finish: /api/v1/:realm/auth/webauthn/finish
     auth_webauthn_auth_start: /api/v1/:realm/auth/webauthn/auth/start
@@ -57,19 +59,6 @@ realms:
   - id: corp
     issuer: "https://id.example.com/realms/corp"
     display_name: "Corp Identity"
-    # Optional password pepper (disabled by omission). Provision sources first;
-    # secrets are snapshotted at startup. Keep old keys during rotation.
-    authentication:
-      password_reset:
-        ttl_seconds: 900 # Server-derived expiry; range 1..1800.
-        max_issuances_per_window: 5 # Per realm/user, includes failed deliveries.
-        issuance_window_seconds: 3600 # Rolling window, range 1..86400.
-    #   password:
-    #     pepper:
-    #       active: key2
-    #       keys:
-    #         key1: { env: PASSWORD_PEPPER_OLD }
-    #         key2: { file: /run/secrets/password-pepper-key2 }
 
     clients:
       - client_id: "corp-web"
@@ -132,11 +121,30 @@ realms:
       federation:
         enabled: true
     authentication:
+      email_magic_link:
+        enabled: false # Standalone primary auth, not MFA. Requires notification + HTTPS.
+        ttl_seconds: 600 # Range 1..3600; use the same browser and explicitly confirm.
+        max_attempts: 5 # Range 1..20.
+        max_issuances_per_window: 5 # Range 1..100; includes failed deliveries.
+        issuance_window_seconds: 3600 # Range 1..86400.
+      password_reset:
+        ttl_seconds: 900 # Server-derived expiry; range 1..1800.
+        max_issuances_per_window: 5 # Per realm/user, includes failed deliveries.
+        issuance_window_seconds: 3600 # Rolling window, range 1..86400.
       passkeys:
         enabled: true
         rp_id: "id.example.com"
         rp_origin: "https://id.example.com"
         rp_name: "qid"
+    # Optional authentication.password.pepper (disabled by omission). Provision
+    # sources first; secrets are snapshotted at startup. Keep old keys in rotation.
+    #   password:
+    #     pepper:
+    #       active: key2
+    #       keys:
+    #         key1: { env: PASSWORD_PEPPER_OLD }
+    #         key2: { file: /run/secrets/password-pepper-key2 }
+
       password:
         enabled: true
         hash: argon2id

@@ -626,6 +626,14 @@ fn server_paths_default_values() {
     assert_eq!(p.assertion, "/pep/:realm/assertion");
     assert_eq!(p.auth_password, "/api/v1/:realm/auth/password");
     assert_eq!(
+        p.auth_email_magic_link_send,
+        "/api/v1/:realm/auth/email-magic-link/send"
+    );
+    assert_eq!(
+        p.auth_email_magic_link_verify,
+        "/api/v1/:realm/auth/email-magic-link/verify"
+    );
+    assert_eq!(
         p.auth_session_refresh,
         "/api/v1/:realm/auth/session/refresh"
     );
@@ -2487,5 +2495,100 @@ fn password_reset_policy_and_notification_capacity_defaults_and_bounds() {
     }
     assert!(
         serde_json::from_value::<PasswordResetConfig>(serde_json::json!({"unknown":1})).is_err()
+    );
+}
+
+#[test]
+fn email_magic_link_defaults_validation_and_runtime_policy() {
+    let mut config = minimal_config();
+    let policy = &config.realms[0].authentication.email_magic_link;
+    assert!(!policy.enabled);
+    assert_eq!(
+        (
+            policy.ttl_seconds,
+            policy.max_attempts,
+            policy.max_issuances_per_window,
+            policy.issuance_window_seconds
+        ),
+        (600, 5, 5, 3600)
+    );
+    config.realms[0].authentication.email_magic_link.enabled = true;
+    assert!(config.validate().is_err());
+    config.server.notification = Some(ServerNotificationConfig {
+        provider: "https://delivery.example.com".into(),
+        timeout_seconds: 10,
+        max_concurrent_deliveries: 1,
+    });
+    config.validate().unwrap();
+    let mut collision = config.clone();
+    let mut other = collision.realms[0].clone();
+    other.id = "other".into();
+    other.issuer = "https://id.example.com/realms/other".into();
+    other.sessions.browser.cookie_name = EMAIL_MAGIC_LINK_BINDING_COOKIE_NAME.into();
+    collision.realms.push(other);
+    assert!(collision.validate().is_err());
+    let plan = crate::plan::RuntimePlan::from_config(&config).unwrap();
+    assert!(plan.realms[0].email_magic_link.enabled);
+    for id in [".", ".."] {
+        let mut bad = config.clone();
+        bad.realms[0].id = id.into();
+        assert!(bad.validate().is_err());
+    }
+    for base in [
+        "http://id.example.com",
+        "https://user@id.example.com",
+        "https://id.example.com/?query",
+        "https://id.example.com/#fragment",
+    ] {
+        let mut bad = config.clone();
+        bad.server.public_base_url = base.into();
+        assert!(bad.validate().is_err(), "{base}");
+    }
+    for (ttl, attempts, issuances, window) in [
+        (0, 5, 5, 3600),
+        (3601, 5, 5, 3600),
+        (600, 0, 5, 3600),
+        (600, 21, 5, 3600),
+        (600, 5, 0, 3600),
+        (600, 5, 101, 3600),
+        (600, 5, 5, 0),
+        (600, 5, 5, 86401),
+    ] {
+        let policy = EmailMagicLinkConfig {
+            enabled: false,
+            ttl_seconds: ttl,
+            max_attempts: attempts,
+            max_issuances_per_window: issuances,
+            issuance_window_seconds: window,
+        };
+        assert!(policy.validate().is_err());
+    }
+    for path in [
+        "/verify",
+        "//:realm/verify",
+        "/:realm/../verify",
+        "/:realm/verify?redirect=x",
+        "/:realm/:realm",
+        "/:realm/:other",
+        "/:realm/%2fverify",
+        "/:realm/*tail",
+    ] {
+        let mut bad = config.clone();
+        bad.server.paths.auth_email_magic_link_verify = path.into();
+        assert!(bad.validate().is_err(), "{path}");
+    }
+    let paths: ServerPaths = serde_json::from_value(serde_json::json!({
+        "auth_email_magic_link_send": "/mail/:realm/send", "auth_email_magic_link_verify": "/mail/:realm/verify"
+    })).unwrap();
+    config.server.paths = paths;
+    config.validate().unwrap();
+    let auth: AuthenticationConfig =
+        serde_json::from_value(serde_json::json!({"email_magic_link": {"enabled": true}})).unwrap();
+    assert_eq!(auth.email_magic_link.ttl_seconds, 600);
+    assert!(
+        serde_json::from_value::<AuthenticationConfig>(
+            serde_json::json!({"email_magic_link": {"redirect_url": "https://evil.example"}})
+        )
+        .is_err()
     );
 }

@@ -1,6 +1,6 @@
 use crate::config::{
-    BrowserSessionConfig, DeploymentProfile, MfaConfig, PasskeyConfig, PasswordConfig,
-    PepRegistrationsConfig, PolicyConfig, QidConfig, TokenTtlConfig,
+    BrowserSessionConfig, DeploymentProfile, EmailMagicLinkConfig, MfaConfig, PasskeyConfig,
+    PasswordConfig, PepRegistrationsConfig, PolicyConfig, QidConfig, TokenTtlConfig,
 };
 use crate::error::{QidError, QidResult};
 
@@ -59,6 +59,7 @@ pub struct RuntimeRealm {
     pub pkce_required: bool,
     pub browser_session: BrowserSessionConfig,
     pub passkeys: PasskeyConfig,
+    pub email_magic_link: EmailMagicLinkConfig,
     pub pep_registrations: PepRegistrationsConfig,
     pub policy: PolicyConfig,
     pub passwordless_only: bool,
@@ -101,6 +102,7 @@ impl RuntimeRealm {
             pkce_required: config.protocols.oidc.authorization_code.pkce_required,
             browser_session: config.sessions.browser.clone(),
             passkeys: config.authentication.passkeys.clone(),
+            email_magic_link: config.authentication.email_magic_link.clone(),
             pep_registrations: config.pep_registrations.clone(),
             policy: config.policy.clone(),
             passwordless_only: config.authentication.passwordless_only,

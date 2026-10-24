@@ -206,6 +206,9 @@ fn login_challenge_response(resolved: AuthorizeParameters, realm: &RuntimeRealm)
     if realm.passkeys.preferred {
         methods.reverse();
     }
+    if realm.email_magic_link.enabled {
+        methods.push("email_magic_link");
+    }
     let mut body = serde_json::json!({
         "challenge": "login_required",
         "authentication_methods": methods,

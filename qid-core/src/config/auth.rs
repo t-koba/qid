@@ -13,6 +13,8 @@ pub const PASSWORD_HASH_ALGORITHM: &str = "argon2id";
 #[serde(deny_unknown_fields)]
 pub struct AuthenticationConfig {
     #[serde(default)]
+    pub email_magic_link: EmailMagicLinkConfig,
+    #[serde(default)]
     pub email_verification: EmailVerificationConfig,
     #[serde(default)]
     pub password_reset: PasswordResetConfig,
@@ -26,6 +28,47 @@ pub struct AuthenticationConfig {
     /// Passkeys must be enabled. Password config is ignored.
     #[serde(default = "default_false")]
     pub passwordless_only: bool,
+}
+
+/// Reserved HttpOnly cookie used to bind email magic-link redemption to its initiating browser.
+pub const EMAIL_MAGIC_LINK_BINDING_COOKIE_NAME: &str = "__Host-qid_email_magic_binding";
+
+/// Standalone passwordless email authentication, not an MFA factor.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmailMagicLinkConfig {
+    pub enabled: bool,
+    pub ttl_seconds: u64,
+    pub max_attempts: u32,
+    pub max_issuances_per_window: u32,
+    pub issuance_window_seconds: u64,
+}
+
+impl Default for EmailMagicLinkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ttl_seconds: 600,
+            max_attempts: 5,
+            max_issuances_per_window: 5,
+            issuance_window_seconds: 3600,
+        }
+    }
+}
+
+impl EmailMagicLinkConfig {
+    pub(crate) fn validate(&self) -> QidResult<()> {
+        if !(1..=3600).contains(&self.ttl_seconds)
+            || !(1..=20).contains(&self.max_attempts)
+            || !(1..=100).contains(&self.max_issuances_per_window)
+            || !(1..=86400).contains(&self.issuance_window_seconds)
+        {
+            return Err(QidError::Config {
+                message: "authentication.email_magic_link requires ttl_seconds in 1..=3600, max_attempts in 1..=20, max_issuances_per_window in 1..=100 and issuance_window_seconds in 1..=86400".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Server-authored expiry and rolling per-account issuance policy.

@@ -118,6 +118,35 @@ impl QidConfig {
                 });
             }
             realm.validate()?;
+            if realm.authentication.email_magic_link.enabled {
+                let secure_base = url::Url::parse(&self.server.public_base_url)
+                    .ok()
+                    .is_some_and(|url| {
+                        url.scheme() == "https"
+                            && url.host_str().is_some()
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                            && url.query().is_none()
+                            && url.fragment().is_none()
+                    });
+                if matches!(realm.id.as_str(), "." | "..") {
+                    return Err(QidError::Config {
+                        message: "email magic link realm id must not be a URL dot segment".into(),
+                    });
+                }
+                if self.server.notification.is_none() || !secure_base {
+                    return Err(QidError::Config { message: "authentication.email_magic_link.enabled requires server.notification and an HTTPS server.public_base_url without credentials, query or fragment".into() });
+                }
+                if self.realms.iter().any(|candidate| {
+                    candidate.sessions.browser.cookie_name == EMAIL_MAGIC_LINK_BINDING_COOKIE_NAME
+                }) {
+                    return Err(QidError::Config {
+                        message:
+                            "browser session cookie name is reserved for email magic link binding"
+                                .into(),
+                    });
+                }
+            }
             for registration in &realm.pep_registrations.registrations {
                 let Some(audience) = registration.audience.as_ref() else {
                     return Err(QidError::Config {
@@ -1408,6 +1437,7 @@ impl RealmConfig {
         }
         self.sessions.refresh_tokens.validate(&self.id)?;
         self.authentication.password.validate(&self.id)?;
+        self.authentication.email_magic_link.validate()?;
         self.authentication.email_verification.validate()?;
         self.authentication.password_reset.validate()?;
         if let Some(policy) = &self.authentication.passkeys.attestation {

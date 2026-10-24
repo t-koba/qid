@@ -766,6 +766,10 @@ pub struct ServerPaths {
     pub assertion: String,
     #[serde(default = "default_auth_password_path")]
     pub auth_password: String,
+    #[serde(default = "default_auth_email_magic_link_send_path")]
+    pub auth_email_magic_link_send: String,
+    #[serde(default = "default_auth_email_magic_link_verify_path")]
+    pub auth_email_magic_link_verify: String,
     #[serde(default = "default_auth_session_refresh_path")]
     pub auth_session_refresh: String,
     #[serde(default = "default_auth_session_revoke_path")]
@@ -817,6 +821,8 @@ impl Default for ServerPaths {
             authzen_evaluation: default_authzen_evaluation_path(),
             assertion: default_assertion_path(),
             auth_password: default_auth_password_path(),
+            auth_email_magic_link_send: default_auth_email_magic_link_send_path(),
+            auth_email_magic_link_verify: default_auth_email_magic_link_verify_path(),
             auth_session_refresh: default_auth_session_refresh_path(),
             auth_session_revoke: default_auth_session_revoke_path(),
             logout: default_logout_path(),
@@ -858,6 +864,8 @@ impl ServerPaths {
             &self.authzen_evaluation,
             &self.assertion,
             &self.auth_password,
+            &self.auth_email_magic_link_send,
+            &self.auth_email_magic_link_verify,
             &self.auth_session_refresh,
             &self.auth_session_revoke,
             &self.logout,
@@ -886,6 +894,25 @@ impl ServerPaths {
                 return Err(QidError::Config {
                     message: format!("server.paths contains duplicate value: {p}"),
                 });
+            }
+        }
+        for path in [
+            &self.auth_email_magic_link_send,
+            &self.auth_email_magic_link_verify,
+        ] {
+            let segments: Vec<_> = path[1..].split('/').collect();
+            if segments.iter().filter(|s| **s == ":realm").count() != 1
+                || segments.iter().any(|s| {
+                    *s != ":realm"
+                        && (s.is_empty()
+                            || *s == "."
+                            || *s == ".."
+                            || !s
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"-_~.".contains(&b)))
+                })
+            {
+                return Err(QidError::Config { message: "email magic link paths require one :realm segment and literal URL-safe path segments".into() });
             }
         }
         if !self
@@ -1150,4 +1177,11 @@ impl TlsConfig {
         }
         Ok(())
     }
+}
+
+fn default_auth_email_magic_link_send_path() -> String {
+    "/api/v1/:realm/auth/email-magic-link/send".into()
+}
+fn default_auth_email_magic_link_verify_path() -> String {
+    "/api/v1/:realm/auth/email-magic-link/verify".into()
 }

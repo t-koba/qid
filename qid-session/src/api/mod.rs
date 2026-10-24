@@ -56,6 +56,15 @@ pub fn auth_routes_with_password_attempt_limiter<R: Repository>(
     limiter: Arc<PasswordAttemptLimiter>,
 ) -> Router<Arc<SharedState<R>>> {
     Router::new()
+        .route(
+            &paths.auth_email_magic_link_send,
+            post(crate::email_magic_link::send::<R>),
+        )
+        .route(
+            &paths.auth_email_magic_link_verify,
+            axum::routing::get(crate::email_magic_link::landing)
+                .post(crate::email_magic_link::verify::<R>),
+        )
         .route(&paths.auth_password, post(password_auth::<R>))
         .route(&paths.auth_session_refresh, post(session_refresh::<R>))
         .route(&paths.auth_session_revoke, post(session_revoke::<R>))

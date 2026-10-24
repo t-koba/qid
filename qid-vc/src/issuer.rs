@@ -1,12 +1,11 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{OriginalUri, State},
     http::{HeaderMap, Method},
     response::{IntoResponse, Response},
 };
 use qid_core::web::JsonObject;
 use qid_core::{
-    config::VcProtocolConfig,
     error::{QidError, QidResult},
     jwt::JwtClaims,
     models::{User, VcCredentialStatusRecord},
@@ -158,22 +157,31 @@ pub async fn issue_credential_from_bearer<R: Repository>(
         .ok_or_else(|| QidError::BadRequest {
             message: "credential issuance requires nonce".to_string(),
         })?;
-    verify_credential_issuance_proof(
-        proof,
-        holder_jwk,
-        &holder_binding,
-        state.plan.public_base_url.trim_end_matches('/'),
-        nonce,
-        qid_core::util::now_seconds(),
-    )?;
-
     let user = state
         .repo
         .get_user_by_id(&decoded.user_id)
         .await?
-        .ok_or_else(|| QidError::NotFound {
-            resource: "credential subject".to_string(),
+        .filter(|user| user.realm_id == decoded.realm_id)
+        .ok_or_else(|| QidError::Unauthorized {
+            message: "credential subject does not belong to access token realm".to_string(),
         })?;
+    let realm = state
+        .plan
+        .realm(&user.realm_id)
+        .ok_or_else(|| bad_request("unknown VC realm"))?;
+    let signer = state
+        .vc_issuer_signers
+        .get(&realm.id)
+        .ok_or_else(|| bad_request("VC issuer key is not configured for this realm"))?;
+    verify_credential_issuance_proof(
+        proof,
+        holder_jwk,
+        &holder_binding,
+        &realm.issuer,
+        nonce,
+        qid_core::util::now_seconds(),
+    )?;
+
     let claim_names = if request.claims.is_empty() {
         configuration.claim_names
     } else {
@@ -185,16 +193,9 @@ pub async fn issue_credential_from_bearer<R: Repository>(
         .status_list_uri
         .unwrap_or_else(|| state.plan.public_base_url.trim_end_matches('/').to_string());
     let lifetime_seconds = request.lifetime_seconds.unwrap_or(3600);
-    // Policy ceiling from the issuing realm; unknown realms fail closed to
-    // the compiled-in default. Checked before issuance so rejected requests
-    // persist no status and sign nothing.
-    let max_lifetime_seconds = state
-        .plan
-        .realm(&user.realm_id)
-        .map(|realm| realm.vc_max_credential_lifetime_seconds)
-        .unwrap_or(VcProtocolConfig::default().max_credential_lifetime_seconds);
+    let max_lifetime_seconds = realm.vc_max_credential_lifetime_seconds;
     let (mut credential, holder_disclosures) = issue_sd_jwt_credential(
-        &state.plan.public_base_url,
+        &realm.issuer,
         &decoded.user_id,
         claims,
         &request.selectively_disclosed_claims,
@@ -227,8 +228,7 @@ pub async fn issue_credential_from_bearer<R: Repository>(
         jti: None,
         extra,
     };
-    let jwt = state
-        .signer
+    let jwt = signer
         .sign(&claims)
         .map_err(|e| internal_error(format!("credential JWT signing: {e}")))?;
 
@@ -382,7 +382,7 @@ pub fn issue_sd_jwt_credential(
     rand::rngs::OsRng.fill_bytes(&mut id_bytes);
     let credential_id = qid_core::util::base64_url_encode(&id_bytes);
     let credential = SdJwtCredential {
-        issuer: issuer.trim_end_matches('/').to_string(),
+        issuer: issuer.to_string(),
         subject: subject.to_string(),
         issued_at,
         expires_at,
@@ -566,18 +566,54 @@ pub(crate) fn required_jwk_member(value: Option<&str>, name: &str) -> QidResult<
 
 pub(crate) async fn credential_issuer_metadata<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
-) -> impl IntoResponse {
+    OriginalUri(uri): OriginalUri,
+) -> Response {
+    issuer_metadata(&state, uri.path())
+}
+
+fn issuer_metadata<R>(state: &SharedState<R>, request_path: &str) -> Response {
+    let mut realms = state.plan.realms.iter().filter(|realm| {
+        state.vc_issuer_signers.contains_key(&realm.id)
+            && issuer_metadata_path(&realm.issuer).as_deref() == Some(request_path)
+    });
+    let Some(realm) = realms.next() else {
+        return error_response(bad_request("VC issuer metadata path is not configured"));
+    };
+    if realms.next().is_some() {
+        return error_response(bad_request(
+            "VC issuer metadata path is ambiguous; configure distinct issuer paths",
+        ));
+    }
     let base = state.plan.public_base_url.trim_end_matches('/');
     let credential_configurations_supported = default_credential_configurations()
         .into_iter()
         .map(|configuration| (configuration.id.clone(), configuration))
         .collect::<BTreeMap<_, _>>();
+    let display_name = if realm.display_name.trim().is_empty() {
+        &realm.id
+    } else {
+        &realm.display_name
+    };
     Json(serde_json::json!({
-        "credential_issuer": base,
+        "credential_issuer": realm.issuer,
         "credential_endpoint": format!("{base}/vc/v1/credential"),
+        "jwks_uri": format!("{base}{}", state.paths.jwks),
         "credential_configurations_supported": credential_configurations_supported,
-        "display": [{ "name": "qid" }]
+        "display": [{ "name": display_name }]
     }))
+    .into_response()
+}
+
+fn issuer_metadata_path(issuer: &str) -> Option<String> {
+    if issuer.contains('?') || issuer.contains('#') {
+        return None;
+    }
+    let (_, authority_and_path) = issuer.split_once("://")?;
+    let path = authority_and_path
+        .find('/')
+        .map(|path_start| &authority_and_path[path_start..])
+        .unwrap_or("");
+    Some(format!("/.well-known/openid-credential-issuer{path}"))
 }
 
 pub(crate) async fn credential_endpoint<R: Repository>(

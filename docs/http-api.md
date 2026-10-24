@@ -458,13 +458,25 @@ or no trust domain is refused wherever it is named.
 | `GET, DELETE` | `/realms/:realm/ssf/stream/:stream_id` | Realm get/delete SSF stream. |
 | `POST` | `/ssf/events` | Receive SSF event. |
 | `POST` | `/realms/:realm/ssf/events` | Realm SSF event. |
-| `GET` | `/.well-known/openid-credential-issuer` | OID4VCI metadata. |
+| `GET` | `/.well-known/openid-credential-issuer` | Metadata when the sole configured VC issuer has no path; `400` if absent, ambiguous, or path-scoped. |
+| `GET` | `/.well-known/openid-credential-issuer/` | Metadata when the sole issuer identifier has the root slash path. |
+| `GET` | `/.well-known/openid-credential-issuer/*path` | Metadata for the VC realm whose exact issuer-derived path matches; `400` if absent or ambiguous. |
 | `POST` | `/vc/v1/credential` | Credential endpoint. |
 | `GET` | `/vc/v1/status/:credential_id` | Public credential status: revocation and expiry only, no subject or revocation details. |
 | `POST` | `/vc/v1/status/:credential_id/revoke` | Revoke credential status. |
 | `POST` | `/vc/v1/presentation/verify` | Verify presentation. |
 
-VC routes are only merged in the `vc` profile.
+VC routes are only merged in the `vc` profile. Metadata identifies the selected
+realm's exact configured `issuer`, the shared credential endpoint, and the
+existing public `jwks_uri` (a qid metadata extension; the JWKS includes the
+selected VC key). The metadata handler selects a realm by the exact OID4VCI
+1.0 path-inserted well-known URL derived from its configured issuer, preserving
+all path segments and trailing slashes. The deployment must route each issuer
+origin to qid without rewriting or normalizing the metadata path; qid does not
+fetch external issuer URLs or discover unconfigured keys. Credential issuance
+uses the access token's realm and rejects a subject from another realm. Holder
+proofs use the realm issuer as their audience, not the shared credential
+endpoint's base URL.
 
 ### Inbound HR lifecycle batches
 

@@ -62,6 +62,14 @@ pub fn vc_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
             "/.well-known/openid-credential-issuer",
             get(issuer::credential_issuer_metadata::<R>),
         )
+        .route(
+            "/.well-known/openid-credential-issuer/",
+            get(issuer::credential_issuer_metadata::<R>),
+        )
+        .route(
+            "/.well-known/openid-credential-issuer/*path",
+            get(issuer::credential_issuer_metadata::<R>),
+        )
         .route("/vc/v1/credential", post(issuer::credential_endpoint::<R>))
         .route(
             "/vc/v1/status/:credential_id",

@@ -18,6 +18,12 @@ server:
 crypto:
   default_alg: ES256
   keyrings:
+    # Keep OIDC and other deployment tokens on a separate primary key.
+    - name: oidc-primary
+      purposes:
+        - oidc_token
+      signer:
+        type: local
     - name: vc-issuer
       realm_id: wallet
       purposes:

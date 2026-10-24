@@ -37,6 +37,8 @@ pub struct SharedState<Repository> {
     pub plan: RuntimePlan,
     pub repo: Arc<Repository>,
     pub signer: Arc<dyn crate::jwt::Signer>,
+    /// Dedicated VC issuer signers, keyed by configured realm id; never fall back to the primary.
+    pub vc_issuer_signers: BTreeMap<String, Arc<dyn crate::jwt::Signer>>,
     pub pep_assertion_signers: BTreeMap<String, Arc<dyn crate::jwt::Signer>>,
     pub dpop_state: DpopState,
     pub assertion_replay_cache: DpopState,
@@ -82,6 +84,7 @@ impl<Repository> SharedState<Repository> {
         pep_assertion_signers: BTreeMap<String, Arc<dyn crate::jwt::Signer>>,
         jwks: Value,
     ) -> QidResult<Self> {
+        config.validate_vc_issuer_keys()?;
         let plan = RuntimePlan::from_config(&config)?;
         let paths = config.server.paths.clone();
         let delivery_limit = if let Some(notification) = &config.server.notification {
@@ -98,6 +101,7 @@ impl<Repository> SharedState<Repository> {
             repo,
             signer,
             pep_assertion_signers,
+            vc_issuer_signers: BTreeMap::new(),
             dpop_state: DpopState::with_cache(Arc::clone(&shared_cache)),
             assertion_replay_cache: DpopState::assertion_replay(Arc::clone(&shared_cache)),
             policy_bundle_cache: RwLock::new(None),

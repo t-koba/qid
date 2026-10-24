@@ -183,7 +183,10 @@ exclude = ["vendor/rustls"]
 # noncacheable response, and strict configuration validation; tests are uncapped.
 # The directory-sync cadence contract adds 9 measured product-source lines
 # (109252 -> 109261) for the field policy and positive-interval validation.
-total = 109261
+# Realm VC key isolation, HTTPS issuer binding, OID4VCI path-correct metadata,
+# and separate deployment signing add 266 measured source lines (109261 ->
+# 109527); the additions preserve issuer trust and deployment token keys.
+total = 109527
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

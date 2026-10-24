@@ -348,6 +348,42 @@ bounded to 8 MiB and the whole file is validated before any write, so a
 rejected row writes nothing; joiner/mover/leaver lifecycle, duplicate-ID
 preflight, and mover-clear semantics stay owned by the HR importer.
 
+### VC issuer keys
+
+`realms[].protocols.vc.issuer_key_ref` is the exact `crypto.keyrings[].name`
+(no whitespace trimming or implicit default). The selected keyring must have
+that realm's `realm_id` and only the `other:vc_issuer` purpose. Missing,
+ambiguous, wrong-purpose and wrong-realm references are configuration errors
+in every profile. Enabling `oid4vci` or `oid4vp` requires a reference; without
+one, runtime issuance and verification refuse the realm rather than using the
+deployment primary signer. A configured VC issuer must uniquely identify its
+realm across the deployment. Issuer identifiers are exact HTTPS strings,
+including any trailing slash; the metadata URL inserts the well-known path
+between the host and configured path, preserving every path segment and
+trailing slash. The deployment must forward that path without rewriting or
+normalizing it.
+
+Configure a separate deployment-level `oidc_token` keyring for the primary,
+as in the VC samples. VC configurations require the selected first `oidc_token`
+keyring to be deployment-level, so primary signing cannot reuse a VC-only or
+realm-scoped key. Primary-key selection is otherwise unchanged (first
+`oidc_token` keyring, otherwise first configured keyring); a VC reference does
+not switch it.
+The daemon loads each selected VC key into that realm's signing context and
+publishes its public key through the existing configurable JWKS endpoint.
+Configured local keyring names that map to the same key-file path (including
+case-insensitive aliases) are refused at startup rather than sharing a key
+accidentally. Remote signer transports remain unsupported and fail closed as
+before.
+
+Credential JWTs and their payloads use the issuing realm's `issuer`, and
+issuance holder proofs must use that exact identifier as their audience.
+Presentation verification trusts only configured realm issuer/key pairs and
+requires the stored status record to belong to that same realm. It never
+fetches keys from a presented issuer URL or accepts the primary/another realm's
+key as a fallback. This is local configured-issuer trust, not discovery of
+external issuers or an OID4VP/HAIP conformance claim.
+
 ### Inbound HR webhook bindings
 
 A `webhook` provider receives ordered lifecycle batches at

@@ -621,6 +621,8 @@ pub struct VcProtocolConfig {
     #[serde(default)]
     pub holder_binding_required: bool,
     #[serde(default)]
+    /// Exact name of a dedicated `other:vc_issuer` keyring owned by this realm.
+    /// Without a reference, credential issuance and verification fail closed.
     pub issuer_key_ref: Option<String>,
     /// Policy ceiling for requested credential lifetimes in seconds.
     /// Issuance rejects `lifetime_seconds` above this value fail-closed.

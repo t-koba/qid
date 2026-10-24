@@ -101,6 +101,87 @@ impl QidConfig {
         Ok(config)
     }
 
+    /// Resolve VC references by exact keyring name, with dedicated realm ownership.
+    pub fn validate_vc_issuer_keys(&self) -> QidResult<()> {
+        for realm in &self.realms {
+            let vc = &realm.protocols.vc;
+            let Some(reference) = vc.issuer_key_ref.as_deref() else {
+                if vc.oid4vci || vc.oid4vp {
+                    return Err(QidError::Config {
+                        message: format!("realm {} VC requires issuer_key_ref", realm.id),
+                    });
+                }
+                continue;
+            };
+            let issuer_is_secure = url::Url::parse(&realm.issuer).is_ok_and(|issuer| {
+                issuer.scheme() == "https"
+                    && issuer.host_str().is_some()
+                    && issuer.username().is_empty()
+                    && issuer.password().is_none()
+                    && issuer.query().is_none()
+                    && issuer.fragment().is_none()
+            });
+            if !issuer_is_secure {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} VC issuer must be an HTTPS URL without credentials, query, or fragment",
+                        realm.id
+                    ),
+                });
+            }
+            let mut matches = self
+                .crypto
+                .keyrings
+                .iter()
+                .filter(|key| key.name == reference);
+            let key = matches.next();
+            if reference.trim().is_empty()
+                || matches.next().is_some()
+                || key.is_none_or(|key| {
+                    key.realm_id.as_deref() != Some(&realm.id)
+                        || key.purposes != ["other:vc_issuer"]
+                })
+            {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} issuer_key_ref must name exactly one dedicated other:vc_issuer keyring owned by that realm",
+                        realm.id
+                    ),
+                });
+            }
+            if self
+                .realms
+                .iter()
+                .filter(|other| other.issuer == realm.issuer)
+                .count()
+                != 1
+            {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} VC issuer must uniquely identify its realm",
+                        realm.id
+                    ),
+                });
+            }
+        }
+        if self
+            .realms
+            .iter()
+            .any(|realm| realm.protocols.vc.issuer_key_ref.is_some())
+            && self
+                .crypto
+                .keyrings
+                .iter()
+                .find(|key| key.purposes.iter().any(|purpose| purpose == "oidc_token"))
+                .is_none_or(|key| key.realm_id.is_some())
+        {
+            return Err(QidError::Config {
+                message: "VC issuer keys require a deployment-level oidc_token keyring for deployment signing".to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> QidResult<()> {
         if self.realms.is_empty() {
@@ -109,6 +190,7 @@ impl QidConfig {
             });
         }
 
+        self.validate_vc_issuer_keys()?;
         let mut seen_ids = std::collections::HashSet::new();
         let mut seen_registration_audiences = std::collections::HashSet::new();
         for realm in &self.realms {
@@ -851,15 +933,6 @@ fn validate_vc_profile(config: &QidConfig) -> QidResult<()> {
                     message: format!("profile vc requires {feature} for realm {}", realm.id),
                 });
             }
-        }
-        if vc
-            .issuer_key_ref
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty())
-        {
-            return Err(QidError::Config {
-                message: format!("profile vc requires issuer_key_ref for realm {}", realm.id),
-            });
         }
     }
     Ok(())

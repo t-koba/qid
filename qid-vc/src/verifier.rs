@@ -155,12 +155,31 @@ pub async fn verify_presentation_with_status<R: Repository>(
     state: &Arc<SharedState<R>>,
     request: PresentationVerificationRequest,
 ) -> QidResult<PresentationVerification> {
-    let token_data = state
-        .signer
+    // The unverified issuer is only an index into the configured trust set.
+    // Never follow token-provided key URLs or fall back to the deployment signer.
+    let payload = request
+        .credential
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| crate::bad_request("invalid credential JWT"))?;
+    let payload: Value = crate::decode_base64url_json(payload, "credential JWT payload")?;
+    let issuer = payload
+        .get("iss")
+        .and_then(Value::as_str)
+        .ok_or_else(|| crate::bad_request("credential JWT requires issuer"))?;
+    let realm = state
+        .plan
+        .realms
+        .iter()
+        .find(|realm| realm.issuer == issuer)
+        .ok_or_else(|| crate::bad_request("untrusted credential issuer"))?;
+    let signer = state
+        .vc_issuer_signers
+        .get(&realm.id)
+        .ok_or_else(|| crate::bad_request("VC issuer key is not configured for this realm"))?;
+    let token_data = signer
         .decode_signature_only(&request.credential)
-        .map_err(|e| QidError::BadRequest {
-            message: format!("invalid credential JWT: {e}"),
-        })?;
+        .map_err(|_| crate::bad_request("invalid credential JWT signature"))?;
     let credential_value =
         token_data
             .claims
@@ -173,7 +192,9 @@ pub async fn verify_presentation_with_status<R: Repository>(
         serde_json::from_value(credential_value.clone()).map_err(|e| QidError::BadRequest {
             message: format!("invalid credential payload in JWT: {e}"),
         })?;
-    if token_data.claims.iss.as_deref() != Some(&credential.issuer)
+    if credential.issuer != realm.issuer
+        || token_data.claims.iss.as_deref() != Some(&credential.issuer)
+        || token_data.claims.sub.as_deref() != Some(&credential.subject)
         || token_data.claims.iat != Some(credential.issued_at as usize)
         || token_data.claims.exp != Some(credential.expires_at as usize)
     {
@@ -189,6 +210,11 @@ pub async fn verify_presentation_with_status<R: Repository>(
         .ok_or_else(|| QidError::BadRequest {
             message: "Credential status is not known to this issuer".to_string(),
         })?;
+    if status.realm_id != realm.id {
+        return Err(crate::bad_request(
+            "credential status belongs to another realm",
+        ));
+    }
     validate_status_matches_credential(&credential, &status)?;
     if status.revoked {
         return Err(QidError::BadRequest {

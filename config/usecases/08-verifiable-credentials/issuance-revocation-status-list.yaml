@@ -17,6 +17,12 @@ server:
 
 crypto:
   keyrings:
+    # Keep OIDC and other deployment tokens on a separate primary key.
+    - name: oidc-primary
+      purposes:
+        - oidc_token
+      signer:
+        type: local
     - name: credential-status-issuer
       realm_id: credentials
       purposes:

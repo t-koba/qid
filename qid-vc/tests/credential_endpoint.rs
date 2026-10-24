@@ -33,6 +33,16 @@ fn db_url() -> String {
     format!("sqlite:{}", path.display())
 }
 
+fn vc_keyring(realm: &str, name: &str) -> qid_core::config::KeyringConfig {
+    qid_core::config::KeyringConfig {
+        name: name.into(),
+        realm_id: Some(realm.into()),
+        purposes: vec!["other:vc_issuer".into()],
+        signer: Default::default(),
+        rotation: Default::default(),
+    }
+}
+
 async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, User) {
     let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
     repo.migrate().await.unwrap();
@@ -57,15 +67,24 @@ async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, User) {
     repo.create_user(&user).await.unwrap();
 
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-vc"));
-    let state = Arc::new(
-        SharedState::new(
-            test_helpers::test_config(),
-            repo,
-            signer,
-            serde_json::json!({}),
-        )
-        .unwrap(),
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.vc.issuer_key_ref = Some("vc-test".into());
+    config.crypto.keyrings = vec![
+        qid_core::config::KeyringConfig {
+            name: "oidc-primary".into(),
+            realm_id: None,
+            purposes: vec!["oidc_token".into()],
+            signer: Default::default(),
+            rotation: Default::default(),
+        },
+        vc_keyring("test", "vc-test"),
+    ];
+    let mut state = SharedState::new(config, repo, signer, serde_json::json!({})).unwrap();
+    state.vc_issuer_signers.insert(
+        "test".into(),
+        Arc::new(LocalSigner::from_secret("vc-test", b"dedicated-vc-secret")),
     );
+    let state = Arc::new(state);
     let app = qid_vc::vc_routes::<SqlRepository>().with_state(state.clone());
     (app, state, user)
 }
@@ -100,6 +119,15 @@ async fn issue_identity_access_token(state: &SharedState<SqlRepository>, user: &
 }
 
 fn credential_proof(private_pem: &str, public_jwk: &qid_crypto::Jwk, nonce: &str) -> String {
+    credential_proof_for_issuer(private_pem, public_jwk, nonce, "https://id.example.com")
+}
+
+fn credential_proof_for_issuer(
+    private_pem: &str,
+    public_jwk: &qid_crypto::Jwk,
+    nonce: &str,
+    issuer: &str,
+) -> String {
     let binding = qid_vc::holder_binding_from_jwk(public_jwk).unwrap();
     sign_es256_jwt_with_jwk_header(
         private_pem.as_bytes(),
@@ -107,7 +135,7 @@ fn credential_proof(private_pem: &str, public_jwk: &qid_crypto::Jwk, nonce: &str
         "openid4vci-proof+jwt",
         &serde_json::json!({
             "iss": binding.jwk_thumbprint,
-            "aud": "https://id.example.com",
+            "aud": issuer,
             "nonce": nonce,
             "iat": util::now_seconds(),
             "jti": format!("proof-{}", ulid::Ulid::new()),
@@ -177,7 +205,9 @@ async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
     let credential_jwt = body["credential"].as_str().unwrap().to_string();
-    let token_data = state.signer.decode_signature_only(&credential_jwt).unwrap();
+    let token_data = state.vc_issuer_signers["test"]
+        .decode_signature_only(&credential_jwt)
+        .unwrap();
     let vc = token_data.claims.extra.get("vc").unwrap();
 
     let credential_id = vc["status"]["credential_id"].as_str().unwrap().to_string();
@@ -333,7 +363,9 @@ async fn credential_revoke_requires_credential_owner() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let credential_jwt = body["credential"].as_str().unwrap();
-    let token_data = state.signer.decode_signature_only(credential_jwt).unwrap();
+    let token_data = state.vc_issuer_signers["test"]
+        .decode_signature_only(credential_jwt)
+        .unwrap();
     let credential_id = token_data.claims.extra["vc"]["status"]["credential_id"]
         .as_str()
         .unwrap()
@@ -493,7 +525,9 @@ async fn credential_second_issuance_revokes_independently() {
     }
 
     fn credential_id_of(state: &Arc<SharedState<SqlRepository>>, credential_jwt: &str) -> String {
-        let token_data = state.signer.decode_signature_only(credential_jwt).unwrap();
+        let token_data = state.vc_issuer_signers["test"]
+            .decode_signature_only(credential_jwt)
+            .unwrap();
         token_data.claims.extra.get("vc").unwrap()["status"]["credential_id"]
             .as_str()
             .unwrap()
@@ -714,7 +748,9 @@ async fn credential_concurrent_issuances_use_distinct_revocable_identifiers() {
 
     let mut credential_ids = Vec::with_capacity(PARALLEL_ISSUANCES);
     for credential_jwt in &credential_jwts {
-        let token_data = state.signer.decode_signature_only(credential_jwt).unwrap();
+        let token_data = state.vc_issuer_signers["test"]
+            .decode_signature_only(credential_jwt)
+            .unwrap();
         credential_ids.push(
             token_data.claims.extra["vc"]["status"]["credential_id"]
                 .as_str()
@@ -735,5 +771,316 @@ async fn credential_concurrent_issuances_use_distinct_revocable_identifiers() {
             .unwrap()
             .unwrap();
         assert!(!stored.revoked);
+    }
+}
+
+#[tokio::test]
+async fn realm_issuers_isolate_credentials_keys_status_and_metadata() {
+    let (app, state, first_user) = setup().await;
+    drop(app);
+    let mut state = Arc::try_unwrap(state).ok().unwrap();
+    state.config.realms[0].issuer = "https://id.example.com/realms/test".into();
+    let mut second_realm = state.config.realms[0].clone();
+    second_realm.id = "second".into();
+    second_realm.issuer = "https://id.example.com/realms/second/".into();
+    second_realm.protocols.vc.issuer_key_ref = Some("second-vc".into());
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &"second".into(),
+            &second_realm.issuer,
+            None,
+        )
+        .await
+        .unwrap();
+    state.config.realms.push(second_realm);
+    state
+        .config
+        .crypto
+        .keyrings
+        .push(vc_keyring("second", "second-vc"));
+    state.vc_issuer_signers.insert(
+        "second".into(),
+        Arc::new(LocalSigner::from_secret("second-vc", b"another-vc-secret")),
+    );
+    state.plan = qid_core::plan::RuntimePlan::from_config(&state.config).unwrap();
+    let mut second_user = first_user.clone();
+    second_user.id = "second-user".into();
+    second_user.realm_id = "second".into();
+    state.repo.create_user(&second_user).await.unwrap();
+    let state = Arc::new(state);
+    let holder = generate_es256("holder").unwrap();
+    let binding = qid_vc::holder_binding_from_jwk(&holder.public_jwk).unwrap();
+
+    for user in [&first_user, &second_user] {
+        let realm = state.plan.realm(&user.realm_id).unwrap();
+        let id_token = qid_oauth::endpoints::issue_id_token(
+            &state,
+            &realm.issuer,
+            user,
+            "vc-client",
+            &realm.id,
+            &["openid".into()],
+            TokenIssueClaims::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            state
+                .signer
+                .decode_signature_only(&id_token)
+                .unwrap()
+                .claims
+                .iss
+                .as_deref(),
+            Some(realm.issuer.as_str())
+        );
+        for signer in state.vc_issuer_signers.values() {
+            assert!(signer.decode_signature_only(&id_token).is_err());
+        }
+        let (access_token, _) = issue_access_token(
+            &state,
+            &realm.issuer,
+            user,
+            "vc-client",
+            &realm.id,
+            &["openid".into(), "qid_identity".into()],
+            TokenIssueClaims::default(),
+        )
+        .await
+        .unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {access_token}").parse().unwrap(),
+        );
+        let nonce = "realm-nonce";
+        let make_request = |audience: &str| {
+            serde_json::from_value(serde_json::json!({
+            "claims": ["sub"], "holder_jwk": holder.public_jwk,
+            "proof": { "jwt": credential_proof_for_issuer(&holder.private_pem, &holder.public_jwk, nonce, audience) },
+            "nonce": nonce,
+        })).unwrap()
+        };
+        // The shared deployment endpoint is not the issuing realm's proof audience.
+        assert!(
+            qid_vc::issue_credential_from_bearer(
+                &state,
+                &headers,
+                make_request(&state.plan.public_base_url)
+            )
+            .await
+            .is_err()
+        );
+        let issued =
+            qid_vc::issue_credential_from_bearer(&state, &headers, make_request(&realm.issuer))
+                .await
+                .unwrap();
+        let signer = &state.vc_issuer_signers[&realm.id];
+        let token = signer.decode_signature_only(&issued.credential).unwrap();
+        assert_eq!(token.claims.iss.as_deref(), Some(realm.issuer.as_str()));
+        assert_eq!(token.claims.extra["vc"]["issuer"], realm.issuer);
+        assert!(
+            state
+                .signer
+                .decode_signature_only(&issued.credential)
+                .is_err()
+        );
+        for (id, other_signer) in &state.vc_issuer_signers {
+            if id != &realm.id {
+                assert!(
+                    other_signer
+                        .decode_signature_only(&issued.credential)
+                        .is_err()
+                );
+            }
+        }
+        let presentation_proof = sign_es256_jwt_with_jwk_header(
+            holder.private_pem.as_bytes(),
+            &holder.public_jwk,
+            "openid4vp-proof+jwt",
+            &serde_json::json!({
+                "iss": binding.jwk_thumbprint, "aud": "https://verifier.example",
+                "nonce": nonce, "iat": util::now_seconds(), "jti": "presentation",
+                "credential_id": token.claims.extra["vc"]["status"]["credential_id"],
+                "cnf": { "jkt": binding.jwk_thumbprint }
+            }),
+        )
+        .unwrap();
+        let request: qid_vc::PresentationVerificationRequest = serde_json::from_value(serde_json::json!({
+            "credential": issued.credential, "presentation_proof": { "jwt": presentation_proof },
+            "expected_audience": "https://verifier.example", "nonce": nonce
+        })).unwrap();
+        let verified = qid_vc::verify_presentation_with_status(&state, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(verified.issuer, realm.issuer);
+        // Neither the primary signer nor another realm can assert this issuer.
+        for (id, other_signer) in &state.vc_issuer_signers {
+            if id == &realm.id {
+                continue;
+            }
+            let mut forged = request.clone();
+            forged.credential = other_signer.sign(&token.claims).unwrap();
+            assert!(
+                qid_vc::verify_presentation_with_status(&state, forged)
+                    .await
+                    .unwrap_err()
+                    .message()
+                    .contains("signature")
+            );
+        }
+        let mut forged = request.clone();
+        forged.credential = state.signer.sign(&token.claims).unwrap();
+        assert!(
+            qid_vc::verify_presentation_with_status(&state, forged)
+                .await
+                .is_err()
+        );
+        let mut foreign_claims = token.claims.clone();
+        foreign_claims.iss = Some("https://untrusted.example".into());
+        let mut forged = request.clone();
+        forged.credential = signer.sign(&foreign_claims).unwrap();
+        assert!(
+            qid_vc::verify_presentation_with_status(&state, forged)
+                .await
+                .unwrap_err()
+                .message()
+                .contains("untrusted")
+        );
+        // A signature is not enough if the status record belongs to another realm.
+        let mut wrong_status_credential: qid_vc::SdJwtCredential =
+            serde_json::from_value(token.claims.extra["vc"].clone()).unwrap();
+        wrong_status_credential.status.credential_id = ulid::Ulid::new().to_string();
+        let status =
+            qid_vc::issuer::credential_status_record("wrong-realm", &wrong_status_credential);
+        state
+            .repo
+            .store_vc_credential_status(&status)
+            .await
+            .unwrap();
+        let mut claims = token.claims.clone();
+        claims.extra.insert(
+            "vc".into(),
+            serde_json::to_value(wrong_status_credential).unwrap(),
+        );
+        let mut forged = request.clone();
+        forged.credential = signer.sign(&claims).unwrap();
+        assert!(
+            qid_vc::verify_presentation_with_status(&state, forged)
+                .await
+                .unwrap_err()
+                .message()
+                .contains("another realm")
+        );
+    }
+    let app = qid_vc::vc_routes::<SqlRepository>().with_state(state.clone());
+    for (path, expected) in [
+        ("/.well-known/openid-credential-issuer", None),
+        ("/.well-known/openid-credential-issuer/", None),
+        (
+            "/.well-known/openid-credential-issuer/realms/test",
+            Some("https://id.example.com/realms/test"),
+        ),
+        ("/.well-known/openid-credential-issuer/realms/second", None),
+        (
+            "/.well-known/openid-credential-issuer/realms/second/",
+            Some("https://id.example.com/realms/second/"),
+        ),
+        ("/.well-known/openid-credential-issuer/realms/missing", None),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if expected.is_some() {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+        if let Some(issuer) = expected {
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(body["credential_issuer"], issuer);
+            assert_eq!(
+                body["jwks_uri"],
+                format!("https://id.example.com{}", state.paths.jwks)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn single_realm_metadata_path_matches_exact_issuer_identifier() {
+    let (app, state, _) = setup().await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/openid-credential-issuer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["credential_issuer"], "https://id.example.com");
+    assert_eq!(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/openid-credential-issuer/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    drop(app);
+
+    let mut state = Arc::try_unwrap(state).ok().unwrap();
+    state.config.realms[0].issuer = "https://id.example.com/credentials/corp//".into();
+    state.config.realms[0].display_name = None;
+    state.plan = qid_core::plan::RuntimePlan::from_config(&state.config).unwrap();
+    let app = qid_vc::vc_routes::<SqlRepository>().with_state(Arc::new(state));
+    for (path, expected) in [
+        ("/.well-known/openid-credential-issuer", false),
+        ("/.well-known/openid-credential-issuer/", false),
+        ("/.well-known/openid-credential-issuer/realms/test/", false),
+        (
+            "/.well-known/openid-credential-issuer/credentials/corp/",
+            false,
+        ),
+        (
+            "/.well-known/openid-credential-issuer/credentials/corp//",
+            true,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status() == StatusCode::OK, expected, "{path}");
+        if expected {
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(
+                body["credential_issuer"],
+                "https://id.example.com/credentials/corp//"
+            );
+            assert_eq!(body["display"][0]["name"], "test");
+        }
     }
 }

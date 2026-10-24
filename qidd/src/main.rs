@@ -239,6 +239,7 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
         signing_material.pep_assertion_signers,
         signing_material.jwks,
     )?;
+    shared_state.vc_issuer_signers = signing_material.vc_issuer_signers;
     shared_state.password_credentials = password_contexts;
     shared_state = shared_state.with_shared_cache(
         build_shared_cache(&config).context("failed to initialize shared cache")?,
@@ -1283,6 +1284,7 @@ fn state_dir(config_path: &Path) -> PathBuf {
 }
 
 struct SigningMaterial {
+    vc_issuer_signers: BTreeMap<String, Arc<dyn Signer>>,
     signer: Arc<dyn Signer>,
     pep_assertion_signers: BTreeMap<String, Arc<dyn Signer>>,
     jwks: serde_json::Value,
@@ -1337,6 +1339,7 @@ fn initialize_signing_material(
     config: &QidConfig,
     state_dir: &Path,
 ) -> anyhow::Result<SigningMaterial> {
+    config.validate_vc_issuer_keys()?;
     let key_protector = key_protector_from_config(config, state_dir)
         .context("failed to initialize signing key protector")?;
     if config.crypto.keyrings.is_empty() {
@@ -1353,8 +1356,24 @@ fn initialize_signing_material(
         return Ok(SigningMaterial {
             signer,
             pep_assertion_signers: BTreeMap::new(),
+            vc_issuer_signers: BTreeMap::new(),
             jwks,
         });
+    }
+
+    // Distinct configured references must not alias the same sanitized key file.
+    let mut key_paths = std::collections::HashSet::new();
+    for keyring in &config.crypto.keyrings {
+        let (private, public) =
+            signing_key_paths(state_dir, &keyring.name, &config.crypto.default_alg);
+        // Windows and common macOS filesystems are case-insensitive.
+        let identity = (
+            private.to_string_lossy().to_ascii_lowercase(),
+            public.to_string_lossy().to_ascii_lowercase(),
+        );
+        if !key_paths.insert(identity) {
+            anyhow::bail!("configured signing keyrings resolve to the same local key path");
+        }
     }
 
     let primary_index = config
@@ -1368,6 +1387,7 @@ fn initialize_signing_material(
                 .any(|purpose| purpose == "oidc_token")
         })
         .unwrap_or(0);
+    let mut vc_issuer_signers = BTreeMap::new();
     let mut primary_signer: Option<Arc<dyn Signer>> = None;
     let mut pep_assertion_signers: BTreeMap<String, Arc<dyn Signer>> = BTreeMap::new();
     let mut jwks = Vec::new();
@@ -1399,12 +1419,18 @@ fn initialize_signing_material(
         {
             pep_assertion_signers.insert(realm_id.to_string(), signer.clone());
         }
+        for realm in &config.realms {
+            if realm.protocols.vc.issuer_key_ref.as_deref() == Some(&configured.name) {
+                vc_issuer_signers.insert(realm.id.clone(), signer.clone());
+            }
+        }
         let kr_jwks = keyring.jwks();
         append_keyring_jwks(&mut jwks, &kr_jwks)?;
     }
 
     Ok(SigningMaterial {
         signer: primary_signer.context("no primary signing key")?,
+        vc_issuer_signers,
         pep_assertion_signers,
         jwks: json!({ "keys": jwks }),
     })
@@ -1836,6 +1862,97 @@ mod tests {
         assert_eq!(material.jwks["keys"][0]["alg"], "EdDSA");
         assert!(material.pep_assertion_signers.is_empty());
         std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[test]
+    fn vc_keys_are_realm_isolated_and_published_without_changing_primary() {
+        let mut config = minimal_config();
+        config.crypto.default_alg = "EdDSA".into();
+        let mut second = config.realms[0].clone();
+        second.id = "wallet".into();
+        second.issuer = "https://id.example.com/realms/wallet".into();
+        config.realms.push(second);
+        for realm in &mut config.realms {
+            let name = format!("{}-vc", realm.id);
+            realm.protocols.vc.issuer_key_ref = Some(name.clone());
+            config.crypto.keyrings.push(KeyringConfig {
+                name,
+                realm_id: Some(realm.id.clone()),
+                purposes: vec!["other:vc_issuer".into()],
+                signer: Default::default(),
+                rotation: Default::default(),
+            });
+        }
+        config.crypto.keyrings.push(KeyringConfig {
+            name: "oidc-primary".into(),
+            realm_id: None,
+            purposes: vec!["oidc_token".into()],
+            signer: Default::default(),
+            rotation: Default::default(),
+        });
+        let state_dir = test_state_dir("vc-realms");
+        let material = initialize_signing_material(&config, &state_dir).unwrap();
+        let claims: qid_core::jwt::JwtClaims = serde_json::from_value(
+            json!({"iss": "test", "exp": qid_core::util::now_seconds() + 600}),
+        )
+        .unwrap();
+        let primary_token = material.signer.sign(&claims).unwrap();
+        assert_eq!(
+            material
+                .signer
+                .decode_signature_only(&primary_token)
+                .unwrap()
+                .header
+                .kid
+                .as_deref(),
+            Some("oidc-primary")
+        );
+        for realm in &config.realms {
+            let signer = &material.vc_issuer_signers[&realm.id];
+            assert!(signer.decode_signature_only(&primary_token).is_err());
+            let token = signer.sign(&claims).unwrap();
+            assert!(material.signer.decode_signature_only(&token).is_err());
+            let key = material.jwks["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|key| key["kid"] == format!("{}-vc", realm.id))
+                .unwrap();
+            let jwk = serde_json::from_value(key.clone()).unwrap();
+            qid_crypto::jwt::verify_jwt_signature_with_jwk(&token, &jwk, "EdDSA").unwrap();
+            for (other, signer) in &material.vc_issuer_signers {
+                if other != &realm.id {
+                    assert!(signer.decode_signature_only(&token).is_err());
+                }
+            }
+        }
+        // Missing/ambiguous references fail before creating or loading any keys.
+        config.realms[0].protocols.vc.issuer_key_ref = Some("missing".into());
+        assert!(initialize_signing_material(&config, &state_dir).is_err());
+        config.realms[0].protocols.vc.issuer_key_ref = Some("corp-vc".into());
+        config.crypto.keyrings[1].name = "corp/vc".into();
+        config.crypto.keyrings[0].name = "corp_vc".into();
+        config.realms[0].protocols.vc.issuer_key_ref = Some("corp_vc".into());
+        config.realms[1].protocols.vc.issuer_key_ref = Some("corp/vc".into());
+        assert!(
+            initialize_signing_material(&config, &state_dir)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("same local key path")
+        );
+        config.crypto.keyrings[0].name = "Corp-vc".into();
+        config.crypto.keyrings[1].name = "corp-vc".into();
+        config.realms[0].protocols.vc.issuer_key_ref = Some("Corp-vc".into());
+        config.realms[1].protocols.vc.issuer_key_ref = Some("corp-vc".into());
+        assert!(
+            initialize_signing_material(&config, &state_dir)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("same local key path")
+        );
+        std::fs::remove_dir_all(&state_dir).unwrap();
     }
 
     #[test]

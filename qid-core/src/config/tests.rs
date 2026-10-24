@@ -2776,3 +2776,100 @@ fn pep_decision_fail_policy_defaults_to_deny_and_accepts_only_deny_or_allow() {
         );
     }
 }
+
+#[test]
+fn vc_issuer_reference_is_exact_dedicated_and_realm_owned() {
+    let mut config = minimal_config();
+    let realm = config.realms[0].id.clone();
+    config.realms[0].protocols.vc.issuer_key_ref = Some("vc-key".into());
+    let key = KeyringConfig {
+        name: "vc-key".into(),
+        realm_id: Some(realm),
+        purposes: vec!["other:vc_issuer".into()],
+        signer: Default::default(),
+        rotation: Default::default(),
+    };
+    let primary = KeyringConfig {
+        name: "oidc-primary".into(),
+        realm_id: None,
+        purposes: vec!["oidc_token".into()],
+        signer: Default::default(),
+        rotation: Default::default(),
+    };
+    config.crypto.keyrings = vec![key.clone(), primary];
+    config.validate().unwrap();
+    for issuer in [
+        "http://id.example.com/realms/corp",
+        "https://user@id.example.com/realms/corp",
+        "https://id.example.com/realms/corp?query",
+        "https://id.example.com/realms/corp#fragment",
+    ] {
+        let mut invalid = config.clone();
+        invalid.realms[0].issuer = issuer.into();
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .message()
+                .contains("HTTPS URL")
+        );
+    }
+    let mut no_primary = config.clone();
+    no_primary
+        .crypto
+        .keyrings
+        .retain(|key| key.name != "oidc-primary");
+    assert!(
+        no_primary
+            .validate()
+            .unwrap_err()
+            .message()
+            .contains("deployment-level oidc_token keyring")
+    );
+    let mut realm_scoped_primary = config.clone();
+    realm_scoped_primary.crypto.keyrings[1].realm_id = Some("corp".into());
+    assert!(
+        realm_scoped_primary
+            .validate()
+            .unwrap_err()
+            .message()
+            .contains("deployment-level oidc_token keyring")
+    );
+    for reference in ["", " vc-key", "vc-key ", "missing"] {
+        let mut invalid = config.clone();
+        invalid.realms[0].protocols.vc.issuer_key_ref = Some(reference.into());
+        assert!(invalid.validate().is_err(), "{reference}");
+    }
+    for realm_id in [None, Some("other".into())] {
+        let mut invalid = config.clone();
+        invalid.crypto.keyrings[0].realm_id = realm_id;
+        assert!(invalid.validate().is_err());
+    }
+    for purposes in [
+        vec![],
+        vec!["oidc_token".into()],
+        vec!["other:vc_issuer".into(), "oidc_token".into()],
+    ] {
+        let mut invalid = config.clone();
+        invalid.crypto.keyrings[0].purposes = purposes;
+        assert!(invalid.validate().is_err());
+    }
+    let mut invalid = config.clone();
+    invalid.crypto.keyrings.push(key);
+    assert!(invalid.validate_vc_issuer_keys().is_err());
+    let mut invalid = config.clone();
+    invalid.realms.push(config.realms[0].clone());
+    invalid.realms[1].id = "other".into();
+    invalid.realms[1].protocols.vc.issuer_key_ref = None;
+    assert!(
+        invalid.validate().is_err(),
+        "issuer must identify only one realm"
+    );
+    for flag in ["oid4vci", "oid4vp"] {
+        let mut invalid = config.clone();
+        invalid.realms[0].protocols.vc.issuer_key_ref = None;
+        invalid.realms[0].protocols.vc.oid4vci = flag == "oid4vci";
+        invalid.realms[0].protocols.vc.oid4vp = flag == "oid4vp";
+        assert!(invalid.validate().is_err(), "{flag}");
+    }
+}

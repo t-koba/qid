@@ -73,9 +73,12 @@ impl Pkcs11Backend for SoftwarePkcs11 {
         })
     }
     fn sign(&self, _key: &Pkcs11Key, data: &[u8]) -> QidResult<Vec<u8>> {
-        use p256::ecdsa::SigningKey;
         use p256::ecdsa::signature::Signer;
-        let sk = SigningKey::random(&mut rand::thread_rng());
+        let sk = crate::jwk::generate_es256_signing_key().map_err(|err| {
+            qid_core::error::QidError::Crypto {
+                message: format!("P-256 key generation failed: {err}"),
+            }
+        })?;
         let signature: p256::ecdsa::Signature = sk.sign(data);
         Ok(signature.to_bytes().to_vec())
     }

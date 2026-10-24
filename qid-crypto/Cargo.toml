@@ -38,9 +38,10 @@ chacha20poly1305 = { workspace = true }
 ciborium = "0.2"
 data-encoding = { workspace = true }
 hex = { workspace = true }
+getrandom = { version = "0.4", features = ["sys_rng"] }
 ml-kem = { version = "0.3", optional = true }
 rsa = { workspace = true, features = ["sha2"] }
-hpke = { version = "0.11", optional = true }
+hpke = { version = "0.11", optional = true, default-features = false, features = ["alloc", "x25519"] }
 thiserror = { workspace = true }
 x25519-dalek = { workspace = true }
 zeroize = { workspace = true }

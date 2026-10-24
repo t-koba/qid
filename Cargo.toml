@@ -173,7 +173,10 @@ exclude = ["vendor/rustls"]
 # for versioned proof digests and atomic no-attempt-on-binding-mismatch across
 # file and SQL. Cross-backend and delivered-link OIDC resume regressions cover
 # wrong-browser exhaustion, one-use redemption, and preserved authorization.
-total = 108903
+# The RUSTSEC-2026-0387 fix upgrades P-256 to 0.14 and needs 9 additional
+# qid-crypto source lines for the shared fallible ES256 key-generation path
+# (5972 -> 5981; workspace total 108903 -> 108912).
+total = 108912
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -181,7 +184,7 @@ default_per_crate = 4000
 qid-network = 4500
 qid-admin = 6000
 qid-core = 14000
-qid-crypto = 5972
+qid-crypto = 5981
 qid-storage = 13641
 qid-oidc = 6000
 qid-oauth = 12000
@@ -218,7 +221,7 @@ jsonwebtoken = "9"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
-p256 = { version = "0.13", features = ["pem", "ecdsa", "pkcs8"] }
+p256 = { version = "0.14", features = ["pem", "ecdsa", "pkcs8"] }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }

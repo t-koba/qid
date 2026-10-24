@@ -86,8 +86,8 @@ fn embedded_keyinfo_cannot_override_the_selected_key() {
     );
     assert!(verify_ec(EXTERNAL_EC, key.as_bytes()).is_ok());
     // Add an unrelated document-supplied ECKeyValue, outside SignedInfo/target digest.
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
-    let point = STANDARD.encode(wrong.public_key().to_encoded_point(false).as_bytes());
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    let point = STANDARD.encode(wrong.public_key().to_sec1_point(false).as_bytes());
     let inline = format!(
         r#"<ds:KeyValue><dsig11:ECKeyValue xmlns:dsig11="http://www.w3.org/2009/xmldsig11#"><dsig11:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"/><dsig11:PublicKey>{point}</dsig11:PublicKey></dsig11:ECKeyValue></ds:KeyValue>"#
     );

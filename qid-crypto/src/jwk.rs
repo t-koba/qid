@@ -3,12 +3,18 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     ecdsa::SigningKey,
+    elliptic_curve::Generate,
     pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey},
 };
+
 use qid_core::error::{QidError, QidResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+
+pub(crate) fn generate_es256_signing_key() -> anyhow::Result<SigningKey> {
+    SigningKey::try_generate_from_rng(&mut getrandom::SysRng).map_err(Into::into)
+}
 
 /// A JSON Web Key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +70,7 @@ pub struct GeneratedKeyPair {
 /// Generate a new ES256 key pair.
 pub fn generate_es256(kid: impl Into<String>) -> anyhow::Result<GeneratedKeyPair> {
     let kid = kid.into();
-    let signing_key = SigningKey::random(&mut rand::thread_rng());
+    let signing_key = generate_es256_signing_key()?;
     let private_pem = signing_key
         .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?
         .to_string();
@@ -73,7 +79,7 @@ pub fn generate_es256(kid: impl Into<String>) -> anyhow::Result<GeneratedKeyPair
     let public_pem = verifying_key
         .to_public_key_pem(p256::pkcs8::LineEnding::LF)?
         .to_string();
-    let encoded_point = verifying_key.to_encoded_point(false);
+    let encoded_point = verifying_key.to_sec1_point(false);
     let x = encoded_point
         .x()
         .map(|b| qid_core::util::base64_url_encode(b));
@@ -148,7 +154,7 @@ pub fn es256_jwk_from_pem(kid: impl Into<String>, pem: &str) -> anyhow::Result<J
     let kid = kid.into();
     let signing_key = SigningKey::from_pkcs8_pem(pem)?;
     let verifying_key = signing_key.verifying_key();
-    let encoded_point = verifying_key.to_encoded_point(false);
+    let encoded_point = verifying_key.to_sec1_point(false);
     let x = encoded_point
         .x()
         .map(|b| qid_core::util::base64_url_encode(b));

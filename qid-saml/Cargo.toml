@@ -14,8 +14,8 @@ rust-version.workspace = true
 aes-gcm = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
-bergshamra-dsig = { version = "=0.9.2", default-features = false, features = ["rustcrypto"] }
-bergshamra-keys = { version = "=0.9.2", default-features = false, features = ["rustcrypto"] }
+bergshamra-dsig = { version = "=0.9.2", default-features = false, features = ["aws-lc"] }
+bergshamra-keys = { version = "=0.9.2", default-features = false, features = ["aws-lc"] }
 uppsala = "=0.10.1"
 flate2 = { workspace = true }
 hex = { workspace = true }

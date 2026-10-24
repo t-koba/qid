@@ -777,10 +777,10 @@ mod tests {
     use super::*;
 
     fn generate_p256_keypair() -> ([u8; 32], Vec<u8>) {
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let signing_key = crate::jwk::generate_es256_signing_key().unwrap();
         let secret: [u8; 32] = signing_key.to_bytes().into();
         let verifying_key = signing_key.verifying_key();
-        let public_bytes = verifying_key.to_encoded_point(true).as_bytes().to_vec();
+        let public_bytes = verifying_key.to_sec1_point(true).as_bytes().to_vec();
         (secret, public_bytes)
     }
 

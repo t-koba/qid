@@ -1049,10 +1049,10 @@ mod tests {
 
     #[cfg(feature = "tls-pok")]
     mod handshake {
+        use p256::elliptic_curve::sec1::ToSec1Point;
         use std::io::Cursor;
         use std::sync::Arc;
 
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
         use p256::pkcs8::EncodePublicKey;
         use rcgen::{
             BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
@@ -1198,7 +1198,7 @@ mod tests {
         fn client_raw_public_key() -> ClientRawPublicKey {
             let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
             let public_key = p256::PublicKey::from_sec1_bytes(key_pair.public_key_raw()).unwrap();
-            let compressed_point = public_key.to_encoded_point(true);
+            let compressed_point = public_key.to_sec1_point(true);
             let uncompressed_spki = public_key.to_public_key_der().unwrap();
             let parsed = SubjectPublicKeyInfoRef::try_from(uncompressed_spki.as_ref()).unwrap();
             let compressed_spki = SubjectPublicKeyInfoOwned {

@@ -732,11 +732,26 @@ request.
 
 ## Observability
 
-`observability.logs.format` selects how the daemon writes its logs: `json` (the default) or `text`. Any other value is a configuration error naming the key.
+`observability.logs.format` selects how the daemon writes its local logs: `json` (the default) or `text`. Any other value is a configuration error naming the key.
 
 `observability.metrics.listen` defaults to `127.0.0.1:9464`. It must be a valid socket address and cannot bind to all interfaces.
 
-These two settings are the whole observability block. The daemon does not export traces to an OpenTelemetry collector.
+`observability.tracing` optionally exports **spans** to an OTLP/gRPC collector; it does not export logs or metrics. The endpoint is omitted by default, so no exporter is started. For example:
+
+```yaml
+observability:
+  tracing:
+    endpoint: http://127.0.0.1:4317
+    service_name: qidd
+    scheduled_delay_ms: 5000
+    export_timeout_ms: 3000
+    max_queue_size: 2048
+    max_export_batch_size: 512
+```
+
+`endpoint` must be an absolute HTTP or HTTPS URL without credentials, query, or fragment. HTTPS uses the system's native root certificates. `service_name` defaults to `qidd`; the scheduled delay defaults to 5000 ms, export timeout to 3000 ms, queue size to 2048 spans, and batch size to 512 spans. Timing values and sizes must be positive, and the batch size cannot exceed the queue size. `RUST_LOG` filters both local logs and spans; without a valid value the filter defaults to `info`.
+
+OTLP export is an opt-in build capability: build qidd with `cargo build -p qidd --features otel-otlp`. If `endpoint` is configured in a binary built without that feature, startup fails instead of silently ignoring the setting. The exporter uses a bounded batch queue and is flushed and shut down with the daemon.
 
 Audit events are not configured here. They are stored in the audit store of the configured primary repository, scoped to their realm and chained by hash, and the admin API exports them as JSONL.
 

@@ -8,7 +8,8 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use qid_core::web::JsonObject;
 use qid_core::{
     QidError, QidResult,
-    models::{PasswordCredential, PasswordResetToken},
+    models::{AuditEvent, PasswordCredential, PasswordResetToken},
+    notification::{NotificationChannel, NotificationRequest},
     state::SharedState,
     util,
 };
@@ -19,12 +20,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PasswordResetIssueRequest {
     pub user_id: String,
     pub device_id: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_password_reset_risk")]
     pub risk: serde_json::Value,
-    pub now_epoch_seconds: u64,
     pub ttl_seconds: u64,
 }
 
@@ -41,9 +42,10 @@ pub struct IssuedPasswordResetChallenge {
     pub challenge: PasswordResetChallenge,
     pub token_hash: String,
     pub delivery_secret: String,
+    pub created_at_epoch_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 pub struct PasswordResetConsumeRequest {
     pub token_id: String,
     pub token: String,
@@ -98,20 +100,149 @@ pub struct CiamProtectionDecision {
     pub max_attempts: u32,
 }
 
-pub async fn password_reset_issue<R: Repository>(
-    State(_state): State<Arc<SharedState<R>>>,
-    Path(_realm): Path<String>,
-    JsonObject(_req): JsonObject<PasswordResetIssueRequest>,
+pub async fn password_reset_issue<R: Repository + 'static>(
+    State(state): State<Arc<SharedState<R>>>,
+    Path(realm): Path<String>,
+    JsonObject(req): JsonObject<PasswordResetIssueRequest>,
 ) -> Response {
-    ciam_challenge_unavailable("challenge delivery is not implemented")
+    let issued = match issue_password_reset(&realm, &req) {
+        Ok(issued) => issued,
+        Err(error) => return qid_http::error_response(error),
+    };
+    let Some(realm_config) = state.config.realms.iter().find(|config| config.id == realm) else {
+        return password_reset_accepted();
+    };
+    if !realm_config.authentication.password.enabled
+        || qid_crypto::realm_password_context(&state, &realm).is_err()
+    {
+        return password_reset_accepted();
+    }
+    let (Some(notification), Some(transport)) = (
+        state.config.server.notification.as_ref(),
+        state.notification_transport.clone(),
+    ) else {
+        return password_reset_accepted();
+    };
+    let provider = notification.provider.clone();
+    let realm_id = realm.clone().into();
+    let user = match state
+        .repo
+        .get_user_by_id_in_realm(&realm_id, &req.user_id)
+        .await
+    {
+        Ok(Some(user)) => user,
+        Ok(None) => return password_reset_accepted(),
+        Err(_) => {
+            tracing::warn!("password reset account lookup failed");
+            return password_reset_accepted();
+        }
+    };
+    let Some(address) = user.email.filter(|value| !value.trim().is_empty()) else {
+        return password_reset_accepted();
+    };
+    let record = PasswordResetToken {
+        id: issued.challenge.id.clone(),
+        realm_id: realm.clone(),
+        user_id: user.id,
+        token_hash: issued.token_hash,
+        device_id: req.device_id.clone(),
+        risk_json: req.risk,
+        expires_at_epoch_seconds: issued.challenge.expires_at_epoch_seconds,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: issued.created_at_epoch_seconds,
+    };
+    let state_for_delivery = state.clone();
+    tokio::spawn(async move {
+        deliver_password_reset(
+            state_for_delivery,
+            transport,
+            provider,
+            address,
+            realm,
+            record,
+            issued.delivery_secret,
+            req.device_id,
+        )
+        .await;
+    });
+    password_reset_accepted()
 }
 
-fn ciam_challenge_unavailable(message: &'static str) -> Response {
+fn password_reset_accepted() -> Response {
     (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({"error":message})),
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "message": "If the account is eligible, password reset instructions may be sent."
+        })),
     )
         .into_response()
+}
+
+async fn deliver_password_reset<R: Repository>(
+    state: Arc<SharedState<R>>,
+    transport: Arc<dyn qid_core::notification::NotificationTransport>,
+    provider: String,
+    address: String,
+    realm: String,
+    record: PasswordResetToken,
+    token: String,
+    device_id: Option<String>,
+) {
+    if state
+        .repo
+        .store_password_reset_token(&record)
+        .await
+        .is_err()
+    {
+        tracing::warn!("password reset challenge persistence failed");
+        return;
+    }
+    let body = serde_json::json!({
+        "instructions": "Submit this one-time token to the password-reset consume endpoint and provide a new password. Server time is authoritative.",
+        "realm": realm,
+        "token_id": record.id,
+        "token": token,
+        "device_id": device_id,
+        "new_password": "<your new password>",
+        "now_epoch_seconds": 0,
+        "expires_at_epoch_seconds": record.expires_at_epoch_seconds
+    })
+    .to_string();
+    let response = transport
+        .send(NotificationRequest {
+            channel: NotificationChannel::Email,
+            provider,
+            recipient: address,
+            subject: Some("Password reset instructions".into()),
+            body,
+            template_id: None,
+            data_json: serde_json::json!({}),
+        })
+        .await;
+    let status = match response {
+        Ok(response) if response.sent && (200..300).contains(&response.status) => response.status,
+        _ => {
+            // Adapter errors can contain the secret-bearing request body.
+            tracing::warn!("password reset delivery was not accepted");
+            return;
+        }
+    };
+    let event = AuditEvent {
+        id: format!("audit_{}", ulid::Ulid::new()),
+        realm_id: Some(record.realm_id.clone()),
+        actor: "system".into(),
+        action: "ciam.password_reset.delivery_accepted".into(),
+        target_type: "password_reset_token".into(),
+        target_id: record.id,
+        reason: "delivery accepted".into(),
+        metadata_json: serde_json::json!({"status": status}),
+        created_at: util::now_seconds(),
+        previous_hash: None,
+        event_hash: None,
+    };
+    if state.repo.append_audit_event(&event).await.is_err() {
+        tracing::warn!("password reset delivery audit failed");
+    }
 }
 
 pub async fn password_reset_consume<R: Repository>(
@@ -191,6 +322,10 @@ pub async fn protection_evaluate<R: Repository>(
     .into_response()
 }
 
+fn default_password_reset_risk() -> serde_json::Value {
+    serde_json::json!({})
+}
+
 pub fn issue_password_reset(
     realm: &str,
     req: &PasswordResetIssueRequest,
@@ -213,16 +348,22 @@ pub fn issue_password_reset(
     let id = format!("pwdreset_{}", ulid::Ulid::new());
     let token = generate_password_reset_token();
     let now = util::now_seconds();
+    let expires_at_epoch_seconds =
+        now.checked_add(req.ttl_seconds)
+            .ok_or_else(|| QidError::BadRequest {
+                message: "password reset expiry is out of range".to_string(),
+            })?;
     let challenge = PasswordResetChallenge {
         id,
         user_id: req.user_id.clone(),
-        expires_at_epoch_seconds: now + req.ttl_seconds,
+        expires_at_epoch_seconds,
         delivery_ref: format!("pwdreset_delivery_{}", ulid::Ulid::new()),
     };
     Ok(IssuedPasswordResetChallenge {
         token_hash: util::sha256_base64url(&token),
         delivery_secret: token,
         challenge,
+        created_at_epoch_seconds: now,
     })
 }
 
@@ -450,7 +591,6 @@ mod tests {
             user_id: "user-1".to_string(),
             device_id: Some("device-1".to_string()),
             risk: serde_json::json!({"score": 10}),
-            now_epoch_seconds: 1_800_000_000,
             ttl_seconds: 900,
         };
         let issued = issue_password_reset("corp", &req).unwrap();

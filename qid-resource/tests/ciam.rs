@@ -14,7 +14,7 @@ use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use tower::ServiceExt;
 
 static DB_SEQ: AtomicU16 = AtomicU16::new(0);
@@ -105,6 +105,33 @@ async fn setup_with_transport(
     let state = Arc::new(state);
     let app = qid_resource::resource_routes(&state.paths).with_state(state.clone());
     (app, state)
+}
+
+fn password_reset_issue_body(user_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "user_id": user_id,
+        "device_id": "device-1",
+        "risk": {"score": 10},
+        "ttl_seconds": 900
+    })
+}
+
+async fn post_password_reset_issue(
+    app: &axum::Router,
+    realm: &str,
+    user_id: &str,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/{realm}/ciam/password-reset/issue"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(password_reset_issue_body(user_id).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
 
 async fn add_session(state: &Arc<SharedState<SqlRepository>>, user_id: &str) -> String {
@@ -600,63 +627,240 @@ async fn ciam_trusted_identity_links_are_listed_lookupable_and_deletions_audited
 }
 
 #[tokio::test]
-async fn ciam_password_reset_issue_route_fails_without_delivery() {
-    let (app, state) = setup().await;
-    let issue_requests = [(
-        "/api/v1/test/ciam/password-reset/issue",
-        r#"{
-                "user_id":"user-ciam",
-                "device_id":"device-1",
-                "risk":{"score":10},
-                "now_epoch_seconds":1800000100,
-                "ttl_seconds":900
-            }"#,
-    )];
-    for (uri, body) in issue_requests {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri(uri)
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-        let response = json(response).await;
-        assert_eq!(response["error"], "challenge delivery is not implemented");
-        for field in ["id", "delivery_ref", "delivery_secret", "code", "token"] {
-            assert!(
-                response.get(field).is_none(),
-                "unexpected {field} in response"
-            );
-        }
+async fn ciam_password_reset_issue_is_generic_and_delivery_is_nonblocking() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    delivery.block.store(true, Ordering::Relaxed);
+    let (app, state) =
+        setup_with_transport(verification_config(), &[], Some(delivery.clone())).await;
+
+    let started = delivery.started.notified();
+    let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let response_body = json(response).await;
+    assert_eq!(
+        response_body,
+        serde_json::json!({
+            "message": "If the account is eligible, password reset instructions may be sent."
+        })
+    );
+    for field in [
+        "id",
+        "user_id",
+        "email",
+        "delivery_ref",
+        "delivery_secret",
+        "token",
+    ] {
+        assert!(response_body.get(field).is_none());
     }
-    // The issue routes must persist nothing: the user's email stays
-    // unverified and no audit event records a challenge that was never
-    // delivered.
-    let realm_id = RealmId::from("test");
-    let user = state
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), started)
+        .await
+        .expect("background delivery did not start");
+    let request = delivery.requests.lock().unwrap()[0].clone();
+    assert_eq!(
+        request.channel,
+        qid_core::notification::NotificationChannel::Email
+    );
+    assert_eq!(request.recipient, "ciam@example.com");
+    assert_eq!(
+        request.provider,
+        "https://delivery.example.com/private-adapter"
+    );
+    let payload: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    let token_id = payload["token_id"].as_str().unwrap();
+    let secret = payload["token"].as_str().unwrap();
+    assert_eq!(secret.len(), 43);
+    assert_eq!(payload["device_id"], "device-1");
+    assert_eq!(payload["now_epoch_seconds"], 0);
+    assert_eq!(payload["realm"], "test");
+
+    let record = state
         .repo
-        .get_user_by_id_in_realm(&realm_id, "user-ciam")
+        .get_password_reset_token(token_id)
         .await
         .unwrap()
-        .expect("the user exists");
-    assert!(
-        !user.email_verified,
-        "the 501 routes must not verify an email"
+        .expect("the challenge is persisted before delivery");
+    assert_eq!(record.realm_id, "test");
+    assert_eq!(record.user_id, "user-ciam");
+    assert_eq!(record.device_id.as_deref(), Some("device-1"));
+    assert_eq!(record.risk_json, serde_json::json!({"score": 10}));
+    assert_eq!(record.token_hash, qid_core::util::sha256_base64url(secret));
+    assert_eq!(
+        record.expires_at_epoch_seconds - record.created_at_epoch_seconds,
+        900
     );
-    let audits = state
+    assert_eq!(record.consumed_at_epoch_seconds, None);
+
+    let debug = format!("{request:?}");
+    let response_text = response_body.to_string();
+    for secret in [
+        secret,
+        request.recipient.as_str(),
+        request.provider.as_str(),
+    ] {
+        assert!(
+            !debug.contains(secret),
+            "notification debug leaked delivery data"
+        );
+        assert!(
+            !response_text.contains(secret),
+            "reset response leaked delivery data"
+        );
+    }
+    assert!(!response_text.contains(&request.body));
+
+    let user = state
         .repo
-        .list_audit_events(Some(&realm_id), 10)
+        .get_user_by_id_in_realm(&RealmId::from("test"), "user-ciam")
         .await
+        .unwrap()
         .unwrap();
     assert!(
-        audits.is_empty(),
-        "the 501 routes must not write an audit event"
+        !user.email_verified,
+        "a reset must not verify the email address"
+    );
+
+    delivery.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let audits = state
+                .repo
+                .list_audit_events(Some(&RealmId::from("test")), 10)
+                .await
+                .unwrap();
+            if let Some(event) = audits
+                .iter()
+                .find(|event| event.action == "ciam.password_reset.delivery_accepted")
+            {
+                let audit = serde_json::to_string(event).unwrap();
+                assert!(!audit.contains(secret));
+                assert!(!audit.contains(&request.recipient));
+                assert!(!audit.contains(&request.provider));
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("accepted delivery was not recorded");
+}
+
+#[tokio::test]
+async fn ciam_password_reset_issue_is_generic_for_unknown_ineligible_and_unconfigured_accounts() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let (app, state) =
+        setup_with_transport(verification_config(), &["other"], Some(delivery.clone())).await;
+
+    let unknown = post_password_reset_issue(&app, "test", "unknown-user").await;
+    assert_eq!(unknown.status(), StatusCode::ACCEPTED);
+    let unknown_body = json(unknown).await;
+
+    let mut user = state
+        .repo
+        .get_user_by_id_in_realm(&RealmId::from("test"), "user-ciam")
+        .await
+        .unwrap()
+        .unwrap();
+    user.email = None;
+    state.repo.update_user(&user).await.unwrap();
+    let ineligible = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(ineligible.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(ineligible).await, unknown_body);
+
+    // A user ID present in another realm is not eligible in this realm.
+    let foreign = post_password_reset_issue(&app, "other", "user-ciam").await;
+    assert_eq!(foreign.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(foreign).await, unknown_body);
+    assert!(delivery.requests.lock().unwrap().is_empty());
+
+    let (unconfigured, unconfigured_state) = setup().await;
+    let response = post_password_reset_issue(&unconfigured, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(response).await, unknown_body);
+    assert!(
+        unconfigured_state
+            .repo
+            .list_audit_events(Some(&RealmId::from("test")), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut forged_clock = password_reset_issue_body("user-ciam");
+    forged_clock["now_epoch_seconds"] = serde_json::json!(1);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/test/ciam/password-reset/issue")
+                .header("Content-Type", "application/json")
+                .body(Body::from(forged_clock.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ciam_password_reset_delivery_failures_do_not_expose_secrets() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(0, Ordering::Relaxed);
+    let (app, state) =
+        setup_with_transport(verification_config(), &[], Some(delivery.clone())).await;
+    let started = delivery.started.notified();
+    let response = post_password_reset_issue(&app, "test", "user-ciam").await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let response_body = json(response).await;
+    assert_eq!(
+        response_body,
+        serde_json::json!({
+            "message": "If the account is eligible, password reset instructions may be sent."
+        })
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), started)
+        .await
+        .expect("background delivery did not start");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        delivery.finished.notified(),
+    )
+    .await
+    .expect("mock delivery did not finish");
+
+    let request = delivery.requests.lock().unwrap()[0].clone();
+    let payload: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    let secret = payload["token"].as_str().unwrap();
+    let debug = format!("{request:?}");
+    let output = response_body.to_string();
+    for private in [
+        secret,
+        request.recipient.as_str(),
+        request.provider.as_str(),
+        "untrusted adapter error",
+    ] {
+        assert!(
+            !debug.contains(private),
+            "notification debug exposed private data"
+        );
+        assert!(
+            !output.contains(private),
+            "reset response exposed private data"
+        );
+    }
+    assert!(!output.contains(&request.body));
+    assert!(
+        state
+            .repo
+            .list_audit_events(Some(&RealmId::from("test")), 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "failed adapter delivery is not recorded as accepted"
     );
 }
 
@@ -1012,6 +1216,10 @@ async fn ciam_password_reset_creates_the_credential_with_the_realm_argon2id_cost
 struct VerificationDelivery {
     requests: std::sync::Mutex<Vec<qid_core::notification::NotificationRequest>>,
     outcome: AtomicU16,
+    block: AtomicBool,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    finished: tokio::sync::Notify,
 }
 
 #[async_trait::async_trait]
@@ -1023,10 +1231,16 @@ impl qid_core::notification::NotificationTransport for VerificationDelivery {
         // Even debug logging by a transport must not reveal delivery content.
         tracing::debug!(?request, "mock delivery");
         self.requests.lock().unwrap().push(request.clone());
+        self.started.notify_one();
+        if self.block.load(Ordering::Relaxed) {
+            self.release.notified().await;
+        }
         let status = self.outcome.load(Ordering::Relaxed);
         if status == 0 {
+            self.finished.notify_one();
             return Err(format!("untrusted adapter error {}", request.body));
         }
+        self.finished.notify_one();
         Ok(qid_core::notification::NotificationResponse {
             status,
             sent: status != 202,

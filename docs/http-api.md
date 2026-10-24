@@ -265,7 +265,7 @@ realms return HTTP 404.
 | `GET` | `/api/v1/:realm/ciam/privacy/:user_id` | Privacy dashboard. |
 | `POST` | `/api/v1/:realm/ciam/verification/issue` | Issue an email ownership challenge to the authenticated session owner’s stored email; configured delivery required. |
 | `POST` | `/api/v1/:realm/ciam/verification/confirm` | Confirm a persisted email challenge for the authenticated same-realm session owner; bounded attempts and atomic one-use verification. |
-| `POST` | `/api/v1/:realm/ciam/password-reset/issue` | Returns `501 Not Implemented` until a delivery mechanism is implemented; no reset token is stored. |
+| `POST` | `/api/v1/:realm/ciam/password-reset/issue` | Public, generic password-reset issuance; uses the realm-local user’s stored email and configured delivery. |
 | `POST` | `/api/v1/:realm/ciam/password-reset/consume` | Consume password reset. |
 | `POST` | `/api/v1/:realm/ciam/protection/evaluate` | Protection/risk evaluation. |
 
@@ -304,9 +304,42 @@ expires_at`). Success returns `{"verified":true}`; replay cannot succeed.
 Delivery happens before persistence, so a storage failure can leave an unusable
 message; retry issuance in that case. If persistence succeeds but the audit or
 HTTP response fails, the ID included in the message permits confirmation from
-the owning session without needing the issue response. Password-reset routes
-retain their separate behavior below; this is not public registration or
-password-reset initiation.
+the owning session without needing the issue response. This is not public
+registration or password-reset initiation.
+
+### Password reset
+
+`POST /api/v1/:realm/ciam/password-reset/issue` is public and takes
+`{"user_id":"…","device_id":"…","risk":{},"ttl_seconds":900}`. The user ID
+is only a lookup selector inside the path realm; qid resolves the destination
+from that account's stored email and ignores caller-supplied time (the issue
+request has no time field). The TTL must be 1–1800 seconds and the expiry is
+calculated from server time. A stored email and both `server.notification` and
+a composed transport are required. The reset mail contains the one-time token;
+only its SHA-256 hash and realm/user/device/risk/expiry context are persisted.
+
+For every well-formed request the route returns the same `202` response:
+`{"message":"If the account is eligible, password reset instructions may be sent."}`
+This response is not proof that a user exists or that a message was sent. Unknown
+users, accounts without a stored email, unconfigured delivery, and adapter or
+persistence failures do not disclose their outcome. Account lookup uses the
+path realm, destination is never caller-selected, and no session or public
+registration is added. The lookup is performed on the request path; challenge
+persistence, adapter delivery and the redacted delivery-acceptance audit run in
+a background task so provider latency does not become an account-existence
+oracle. A stopped process may cancel an in-flight delivery; retrying the generic
+request can create another independent, short-lived token; existing tokens
+retain their own expiry and one-use semantics. Adapter errors and message bodies
+are never logged, and the response contains no user ID, challenge ID, address,
+token, expiry or delivery reference.
+
+`POST /api/v1/:realm/ciam/password-reset/consume` retains its existing
+single-use, device-bound behavior: the server resolves the token record, uses
+server time, hashes the new password with the realm's configured password
+context, and atomically replaces the credential while consuming the token.
+Issuance does not mark the stored email verified, and prior email verification is
+not required: possession of the stored mailbox is demonstrated by the reset
+token itself.
 
 Identity links are written only by trusted federation callbacks after validating provider
 assertions. The session-only POST surface rejects both `verified: true` and

@@ -145,7 +145,13 @@ exclude = ["vendor/rustls"]
 # worker transport and daemon composition. The measured per-crate increases
 # are qid-storage 12971 -> 13147 and qid-worker 5542 -> 5571; other crates
 # remain within their existing caps. Contract tests are uncapped.
-total = 107502
+# Generic password-reset issuance replaces the 501 stub with realm-scoped
+# account resolution, hash-only persistence, background delivery and a redacted
+# acceptance audit (+140 measured product-source lines, 107502 -> 107642).
+# The blocking-transport integration test demonstrates the generic response is
+# independent of provider latency; qid-resource rises 3734 -> 3874 within its
+# existing limit. Tests remain uncapped.
+total = 107642
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

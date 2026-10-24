@@ -151,19 +151,29 @@ pub async fn password_reset_issue<R: Repository + 'static>(
         consumed_at_epoch_seconds: None,
         created_at_epoch_seconds: issued.created_at_epoch_seconds,
     };
+    let body = serde_json::json!({
+        "instructions": "Submit this one-time token to the password-reset consume endpoint and provide a new password. Server time is authoritative.",
+        "realm": realm,
+        "token_id": record.id,
+        "token": issued.delivery_secret,
+        "device_id": req.device_id,
+        "new_password": "<your new password>",
+        "now_epoch_seconds": 0,
+        "expires_at_epoch_seconds": record.expires_at_epoch_seconds
+    })
+    .to_string();
+    let request = NotificationRequest {
+        channel: NotificationChannel::Email,
+        provider,
+        recipient: address,
+        subject: Some("Password reset instructions".into()),
+        body,
+        template_id: None,
+        data_json: serde_json::json!({}),
+    };
     let state_for_delivery = state.clone();
     tokio::spawn(async move {
-        deliver_password_reset(
-            state_for_delivery,
-            transport,
-            provider,
-            address,
-            realm,
-            record,
-            issued.delivery_secret,
-            req.device_id,
-        )
-        .await;
+        deliver_password_reset(state_for_delivery, transport, record, request).await;
     });
     password_reset_accepted()
 }
@@ -181,12 +191,8 @@ fn password_reset_accepted() -> Response {
 async fn deliver_password_reset<R: Repository>(
     state: Arc<SharedState<R>>,
     transport: Arc<dyn qid_core::notification::NotificationTransport>,
-    provider: String,
-    address: String,
-    realm: String,
     record: PasswordResetToken,
-    token: String,
-    device_id: Option<String>,
+    request: NotificationRequest,
 ) {
     if state
         .repo
@@ -197,28 +203,7 @@ async fn deliver_password_reset<R: Repository>(
         tracing::warn!("password reset challenge persistence failed");
         return;
     }
-    let body = serde_json::json!({
-        "instructions": "Submit this one-time token to the password-reset consume endpoint and provide a new password. Server time is authoritative.",
-        "realm": realm,
-        "token_id": record.id,
-        "token": token,
-        "device_id": device_id,
-        "new_password": "<your new password>",
-        "now_epoch_seconds": 0,
-        "expires_at_epoch_seconds": record.expires_at_epoch_seconds
-    })
-    .to_string();
-    let response = transport
-        .send(NotificationRequest {
-            channel: NotificationChannel::Email,
-            provider,
-            recipient: address,
-            subject: Some("Password reset instructions".into()),
-            body,
-            template_id: None,
-            data_json: serde_json::json!({}),
-        })
-        .await;
+    let response = transport.send(request).await;
     let status = match response {
         Ok(response) if response.sent && (200..300).contains(&response.status) => response.status,
         _ => {

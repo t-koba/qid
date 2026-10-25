@@ -12,7 +12,7 @@ impl RealmRepository for SqlRepository {
         display_name: Option<&str>,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "INSERT INTO realms (id, tenant_id, issuer, display_name) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO realms (id, tenant_id, issuer, display_name) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
         )
         .bind(realm_id.as_str())
         .bind(tenant.as_str())

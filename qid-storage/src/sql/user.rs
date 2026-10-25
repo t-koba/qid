@@ -10,7 +10,7 @@ impl UserRepository for SqlRepository {
         // that carries a taken record ID or a taken email in the realm.
         // The read names the reason of the refusal.
         let result = sqlx::query(
-            "INSERT INTO users (id, realm_id, email, email_verified, display_name, failed_login_attempts, locked_until, org) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO users (id, realm_id, email, email_verified, display_name, failed_login_attempts, locked_until, org) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
         )
         .bind(&user.id)
         .bind(&user.realm_id)

@@ -187,26 +187,18 @@ async fn postgres_push_quota_and_row_lock_invariants() {
     let second = SqlRepository::connect(quota_url.as_str()).await.unwrap();
     let realm = format!("realm-{}", ulid::Ulid::new());
     let user = format!("user-{}", ulid::Ulid::new());
-    first
-        .create_realm(
-            &ulid::Ulid::new().to_string().into(),
-            &realm.clone().into(),
-            "https://id.example.com",
-            None,
-        )
+    let tenant = ulid::Ulid::new().to_string();
+    sqlx::query("INSERT INTO realms (id, tenant_id, issuer) VALUES ($1, $2, $3)")
+        .bind(&realm)
+        .bind(&tenant)
+        .bind("https://id.example.com")
+        .execute(&pool)
         .await
         .unwrap();
-    first
-        .create_user(&User {
-            id: user.clone(),
-            realm_id: realm.clone(),
-            email: None,
-            email_verified: false,
-            display_name: None,
-            failed_login_attempts: 0,
-            locked_until: None,
-            org: None,
-        })
+    sqlx::query("INSERT INTO users (id, realm_id, email_verified) VALUES ($1, $2, 0)")
+        .bind(&user)
+        .bind(&realm)
+        .execute(&pool)
         .await
         .unwrap();
 

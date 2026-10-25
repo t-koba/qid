@@ -49,6 +49,7 @@ mod workload;
 use row::*;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+const POSTGRES_EPOCH_DEFAULT: &str = "FLOOR(EXTRACT(EPOCH FROM NOW()))::BIGINT";
 
 fn page_bound(value: usize) -> i64 {
     value.min(i64::MAX as usize) as i64
@@ -111,28 +112,22 @@ impl SqlDatabaseKind {
     }
 }
 
-// The historical migration set contains SQLite-only PRAGMAs and epoch-time
-// defaults. Adapt those backend expressions for PostgreSQL while retaining the
-// canonical source checksums and shared schema changes.
+// The historical migration set contains SQLite-only PRAGMAs, time types and defaults.
+// Adapt them for PostgreSQL while retaining the canonical source checksums and shared schema.
 fn postgres_migrator() -> sqlx::migrate::Migrator {
     let migrations = MIGRATOR
         .iter()
         .cloned()
         .map(|mut migration| {
-            if migration.sql.contains("PRAGMA foreign_keys =")
-                || migration.sql.contains("strftime('%s', 'now')")
-            {
-                migration.sql = std::borrow::Cow::Owned(
-                    migration
-                        .sql
-                        .replace("PRAGMA foreign_keys = off;", "")
-                        .replace("PRAGMA foreign_keys = on;", "")
-                        .replace(
-                            "strftime('%s', 'now')",
-                            "FLOOR(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP))::BIGINT",
-                        ),
-                );
-            }
+            migration.sql = std::borrow::Cow::Owned(
+                migration
+                    .sql
+                    .replace("PRAGMA foreign_keys = off;", "")
+                    .replace("PRAGMA foreign_keys = on;", "")
+                    .replace("DATETIME", "BIGINT")
+                    .replace("CURRENT_TIMESTAMP", POSTGRES_EPOCH_DEFAULT)
+                    .replace("strftime('%s', 'now')", POSTGRES_EPOCH_DEFAULT),
+            );
             migration
         })
         .collect::<Vec<_>>();
@@ -157,19 +152,22 @@ mod postgres_migration_tests {
                 .sql
                 .replace("PRAGMA foreign_keys = off;", "")
                 .replace("PRAGMA foreign_keys = on;", "")
-                .replace(
-                    "strftime('%s', 'now')",
-                    "FLOOR(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP))::BIGINT",
-                );
+                .replace("DATETIME", "BIGINT")
+                .replace("CURRENT_TIMESTAMP", POSTGRES_EPOCH_DEFAULT)
+                .replace("strftime('%s', 'now')", POSTGRES_EPOCH_DEFAULT);
             assert_eq!(adapted.version, original.version);
             assert_eq!(adapted.sql, expected_sql);
             assert_eq!(adapted.checksum, original.checksum);
         }
-        assert!(postgres.iter().any(|migration| {
-            migration
-                .sql
-                .contains("EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)")
-        }));
+        assert_eq!(
+            POSTGRES_EPOCH_DEFAULT,
+            "FLOOR(EXTRACT(EPOCH FROM NOW()))::BIGINT"
+        );
+        assert!(
+            postgres
+                .iter()
+                .any(|migration| { migration.sql.contains(POSTGRES_EPOCH_DEFAULT) })
+        );
         assert!(
             postgres
                 .iter()

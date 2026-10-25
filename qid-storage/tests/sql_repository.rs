@@ -28,9 +28,15 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
     std::fs::create_dir_all(&dir).expect("create storage cleanup fixture dir");
     let test_database = dir.join("test_123.db");
     let template = dir.join("schema_template.db");
+    // Unit-test binaries keep live databases below a process directory.
+    // The integration sweep must not recurse into it, even for test_*.db.
+    let unit_dir = dir.join(format!("sql_unit_{}", std::process::id()));
+    std::fs::create_dir(&unit_dir).expect("create unit-test cleanup fixture dir");
+    let unit_database = unit_dir.join("test_0.db");
     for (path, suffixes) in [
         (&test_database, &["", "-wal", "-shm", "-journal"][..]),
         (&template, &["", "-wal", "-shm", "-journal"][..]),
+        (&unit_database, &["", "-wal", "-shm", "-journal"][..]),
     ] {
         for suffix in suffixes {
             let mut candidate = path.as_os_str().to_os_string();
@@ -48,6 +54,12 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
         assert!(
             !PathBuf::from(test_file).exists(),
             "stale test database file was not removed"
+        );
+        let mut unit_file = unit_database.as_os_str().to_os_string();
+        unit_file.push(suffix);
+        assert!(
+            PathBuf::from(unit_file).exists(),
+            "live unit-test database must not match integration cleanup"
         );
         let mut template_file = template.as_os_str().to_os_string();
         template_file.push(suffix);

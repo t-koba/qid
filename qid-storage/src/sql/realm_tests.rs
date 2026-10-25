@@ -1,69 +1,19 @@
+use super::iga_tests::test_support::IsolatedDb;
 use super::*;
 
-struct TempDbDir(Option<std::path::PathBuf>);
-
-impl TempDbDir {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("qid-realm-{}", ulid::Ulid::new()));
-        std::fs::create_dir(&path).unwrap();
-        Self(Some(path))
+async fn setup() -> IsolatedDb {
+    // Schema comes from the per-process migrated template; the realm seed is
+    // still applied per test on the isolated copy, preserving seed behavior.
+    let db = IsolatedDb::setup().await;
+    let seed = include_str!("../../tests/fixtures/realm_seed.sql");
+    for sql in [
+        seed.to_string(),
+        seed.replace("'realm", "'realm-peer")
+            .replace("https://realm.", "https://realm-peer."),
+    ] {
+        sqlx::raw_sql(&sql).execute(&db.repo().pool).await.unwrap();
     }
-
-    fn path(&self) -> &std::path::Path {
-        self.0
-            .as_deref()
-            .expect("temporary database directory exists")
-    }
-
-    fn remove(mut self) {
-        std::fs::remove_dir_all(self.0.take().unwrap()).unwrap();
-    }
-}
-
-impl Drop for TempDbDir {
-    fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
-}
-
-struct SqlRealmTestDb {
-    temp_dir: TempDbDir,
-    repo: SqlRepository,
-}
-
-impl SqlRealmTestDb {
-    async fn setup() -> Self {
-        let temp_dir = TempDbDir::new();
-        let path = temp_dir.path().join("realm.db");
-        let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
-            .await
-            .unwrap();
-        repo.migrate().await.unwrap();
-        let seed = include_str!("../../tests/fixtures/realm_seed.sql");
-        for sql in [
-            seed.to_string(),
-            seed.replace("'realm", "'realm-peer")
-                .replace("https://realm.", "https://realm-peer."),
-        ] {
-            sqlx::raw_sql(&sql).execute(&repo.pool).await.unwrap();
-        }
-        Self { temp_dir, repo }
-    }
-
-    fn repo(&self) -> &SqlRepository {
-        &self.repo
-    }
-
-    async fn cleanup(self) {
-        self.repo.close().await;
-        self.temp_dir.remove();
-    }
-}
-
-async fn setup() -> SqlRealmTestDb {
-    SqlRealmTestDb::setup().await
+    db
 }
 
 async fn counts(repo: &SqlRepository, realm: &str) -> Vec<(String, i64)> {
@@ -234,8 +184,8 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
     assert_deleted(repo, true).await;
     assert_eq!(counts(repo, "realm-peer").await, peer_expected);
     assert_history(repo).await;
-    db.cleanup().await;
     drop(repo_clone);
+    db.cleanup().await;
 }
 
 #[tokio::test]

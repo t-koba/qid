@@ -1,26 +1,14 @@
+use self::test_support::IsolatedDb;
 use super::*;
-use crate::iga_grants::tests::{fixture, rejects_invalid_sets};
 
-struct Database(std::path::PathBuf);
-impl Database {
-    async fn new() -> (Self, SqlRepository, String) {
-        let dir = std::env::temp_dir().join(format!("qid-grants-{}", ulid::Ulid::new()));
-        std::fs::create_dir(&dir).unwrap();
-        let url = format!("sqlite:{}", dir.join("grants.db").display());
-        let repo = SqlRepository::connect(&url).await.unwrap();
-        repo.migrate().await.unwrap();
-        (Self(dir), repo, url)
-    }
-}
-impl Drop for Database {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "test_support.rs"]
+pub(in crate::sql) mod test_support;
+use crate::iga_grants::tests::{fixture, rejects_invalid_sets};
 
 #[tokio::test]
 async fn grant_batch_rolls_back_second_insert_then_retries_and_replays() {
-    let (_db, repo, _) = Database::new().await;
+    let db = IsolatedDb::setup().await;
+    let repo = db.repo();
     let (request, candidates) = fixture();
     repo.store_iga_access_request(&request).await.unwrap();
     sqlx::query("CREATE TRIGGER fail_second_grant BEFORE INSERT ON iga_access_grants WHEN NEW.entitlement = 'member-b' BEGIN SELECT RAISE(ABORT, 'injected second member failure'); END")
@@ -64,17 +52,22 @@ async fn grant_batch_rolls_back_second_insert_then_retries_and_replays() {
             .len(),
         2
     );
+    db.cleanup().await;
 }
 
 #[tokio::test]
 async fn grant_batch_rejects_invalid_sets_without_effects() {
-    let (_db, repo, _) = Database::new().await;
-    rejects_invalid_sets(&repo).await;
+    let db = IsolatedDb::setup().await;
+    let repo = db.repo();
+    rejects_invalid_sets(repo).await;
+    db.cleanup().await;
 }
 
 #[tokio::test]
 async fn grant_batch_serializes_independent_sqlite_repositories() {
-    let (_db, repo, url) = Database::new().await;
+    let db = IsolatedDb::setup().await;
+    let repo = db.repo();
+    let url = db.url().to_string();
     let second = SqlRepository::connect(&url).await.unwrap();
     let (request, candidates) = fixture();
     repo.store_iga_access_request(&request).await.unwrap();
@@ -95,11 +88,14 @@ async fn grant_batch_serializes_independent_sqlite_repositories() {
             .len(),
         2
     );
+    second.close().await;
+    db.cleanup().await;
 }
 
 #[tokio::test]
 async fn grant_batch_preserves_revoked_incumbent_and_rejects_malformed_evidence() {
-    let (_db, repo, _) = Database::new().await;
+    let db = IsolatedDb::setup().await;
+    let repo = db.repo();
     let (request, candidates) = fixture();
     repo.store_iga_access_request(&request).await.unwrap();
     let mut incumbent = candidates[0].clone();
@@ -136,11 +132,13 @@ async fn grant_batch_preserves_revoked_incumbent_and_rejects_malformed_evidence(
         stored.iter().find(|grant| grant.id == incumbent.id),
         Some(&incumbent)
     );
+    db.cleanup().await;
 }
 
 #[tokio::test]
 async fn sql_iga_entitlement_store_upserts_tenant_scoped_row() {
-    let (_db, repo, _) = Database::new().await;
+    let db = IsolatedDb::setup().await;
+    let repo = db.repo();
     let initial = IgaEntitlementRecord {
         id: "ent-1".into(),
         tenant_id: "tenant-a".into(),
@@ -182,11 +180,13 @@ async fn sql_iga_entitlement_store_upserts_tenant_scoped_row() {
         repo.list_iga_entitlements("tenant-b").await.unwrap(),
         vec![other_tenant]
     );
+    db.cleanup().await;
 }
 
 #[tokio::test]
 async fn sql_iga_access_package_store_upserts_tenant_scoped_row() {
-    let (_db, repo, _) = Database::new().await;
+    let db = IsolatedDb::setup().await;
+    let repo = db.repo();
     let initial = IgaAccessPackageRecord {
         id: "pkg-1".into(),
         tenant_id: "tenant-a".into(),
@@ -228,4 +228,5 @@ async fn sql_iga_access_package_store_upserts_tenant_scoped_row() {
         repo.list_iga_access_packages("tenant-b").await.unwrap(),
         vec![other_tenant]
     );
+    db.cleanup().await;
 }

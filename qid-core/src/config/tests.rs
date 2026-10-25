@@ -2873,3 +2873,47 @@ fn vc_issuer_reference_is_exact_dedicated_and_realm_owned() {
         assert!(invalid.validate().is_err(), "{flag}");
     }
 }
+
+#[test]
+fn push_policy_is_disabled_bounded_and_strict() {
+    let defaults: AuthenticationConfig = serde_json::from_str("{}").unwrap();
+    assert!(!defaults.mfa.push.enabled);
+    assert_eq!(defaults.mfa.push.resend_cooldown_seconds, 30);
+    assert_eq!(defaults.mfa.push, PushConfig::default());
+    let policy: PushConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+    assert!(policy.validate().is_ok());
+    assert!(
+        PushConfig {
+            max_proof_bytes: 256,
+            ..PushConfig::default()
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        PushConfig {
+            max_proof_bytes: 128,
+            ..PushConfig::default()
+        }
+        .validate()
+        .is_err()
+    );
+    for key in [
+        "ttl_seconds",
+        "max_attempts",
+        "max_issuances_per_window",
+        "issuance_window_seconds",
+        "resend_cooldown_seconds",
+        "recent_reauth_seconds",
+        "max_destination_bytes",
+        "max_proof_bytes",
+    ] {
+        for value in [0, 100_000] {
+            let candidate = serde_json::json!({key: value});
+            let policy: PushConfig = serde_json::from_value(candidate).unwrap();
+            assert!(policy.validate().is_err(), "{key}={value}");
+        }
+    }
+    assert!(serde_json::from_str::<MfaConfig>(r#"{"push":{"algorithm":"none"}}"#).is_err());
+    assert!(serde_json::from_str::<MfaConfig>(r#"{"require_step_up":true}"#).is_err());
+}

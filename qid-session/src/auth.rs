@@ -24,6 +24,37 @@ pub struct AuthResult {
     pub session_id: Option<String>,
 }
 
+/// Whether an enrolled push requirement is satisfied or not applicable.
+///
+/// `amr` must come from a trusted server-side authentication result or session,
+/// never from request parameters. Push applies only when password authentication
+/// has no second-factor proof. WebAuthn/TOTP already provide that proof; the
+/// server may add `push` only after verifying a current device's signature for
+/// the exact login transaction. Email magic link keeps its separate behavior.
+pub async fn push_factor_satisfied<R: PushRepository>(
+    repo: &R,
+    realm_id: &RealmId,
+    user_id: &str,
+    amr: &[String],
+) -> QidResult<bool> {
+    let password_authenticated = amr
+        .iter()
+        .any(|method| matches!(method.as_str(), "pwd" | "password"));
+    let already_has_second_factor = amr
+        .iter()
+        .any(|method| matches!(method.as_str(), "webauthn" | "totp" | "push"));
+    if !password_authenticated || already_has_second_factor {
+        return Ok(true);
+    }
+
+    let has_active_registration = repo
+        .list_push_authenticators(realm_id, user_id)
+        .await?
+        .iter()
+        .any(|authenticator| authenticator.revoked_at.is_none());
+    Ok(!has_active_registration)
+}
+
 /// The password policy a realm enforces.
 #[derive(Debug, Clone, Copy)]
 pub struct PasswordPolicy {

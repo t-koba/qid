@@ -10,8 +10,9 @@ Scope: every write the repository traits declare. That is the writes that
 persist a record under an ID the caller supplies or that the record is keyed by
 (create / store / update / upsert), the one-shot consumption, revocation,
 approval, poll, mutation and deletion writes, and the owner-scoped deletes that
-carry the ownership contract. The traits declare 116 write methods and the
-tables below list all 116 of them, one row each. Pure reads are not listed.
+carry the ownership contract. The traits declare 127 write methods, all listed
+in the tables below. The push lifecycle table also shows its owner-bound reads
+for context.
 
 Terminology used in the tables:
 
@@ -250,6 +251,22 @@ IGA tables declare `id` alone as the primary key
 | `delete_iga_entitlement` (delete) | tenant (`tenant_id`) | `(tenant_id, id)` | none, removal | File: the tenant-scoped key is removed; a missing record is a silent no-op (`qid-storage/src/file/iga.rs:34`). SQL: `DELETE ... WHERE tenant_id = ? AND id = ?`; a missing record is a silent no-op (`qid-storage/src/sql/iga.rs:37`). Both refuse to delete another tenant's record. | file `qid-storage/src/file/iga.rs:34`; sql `qid-storage/src/sql/iga.rs:37` |
 | `delete_iga_access_package` (delete) | tenant (`tenant_id`) | `(tenant_id, id)` | none, removal | File: the tenant-scoped key is removed (`qid-storage/src/file/iga.rs:69`). SQL: `DELETE ... WHERE tenant_id = ? AND id = ?` (`qid-storage/src/sql/iga.rs:79`). Both refuse to delete another tenant's record. | file `qid-storage/src/file/iga.rs:69`; sql `qid-storage/src/sql/iga.rs:79` |
 
+## oidc_continuation
+
+`OidcAuthorizationContinuation` stores protocol context only, never
+authentication or authorization-code authority. Ownership is exact realm + user
++ client; IDs are globally unique. The record carries a nonempty JSON-object
+context bounded to 64 KiB and only a SHA-256 browser-binding verifier. Creation
+requires trusted server time. Consumption is one-use and requires every owner key,
+the browser binding, and `created_at <= now < expires_at`; cleanup is bounded to
+1..=1000 expired rows.
+
+| Method - record type | Owner key | Identity key | Mutable fields | Transition rule | Sources |
+| --- | --- | --- | --- | --- | --- |
+| `create_oidc_continuation` - `OidcAuthorizationContinuation` | realm + user + client | global continuation ID | none | Requires `created_at == now`; any existing ID is `Conflict`. | file `qid-storage/src/file/oidc_continuation.rs:57`; sql `qid-storage/src/sql/oidc_continuation.rs:8`; schema `qid-storage/migrations/20261025000001_oidc_continuations.sql:4` |
+| `consume_oidc_continuation` - `OidcAuthorizationContinuation` | realm + user + client | ID + browser-binding verifier | one `consumed_at` | Atomic one-use transition; wrong owner/binding, replay, not-yet-valid or expired records return none. | file `qid-storage/src/file/oidc_continuation.rs:83`; sql `qid-storage/src/sql/oidc_continuation.rs:27`; schema `qid-storage/migrations/20261025000001_oidc_continuations.sql:12` |
+| `cleanup_expired_oidc_continuations` - expired protocol context | global maintenance | ID + expiry | removal | Removes only expired rows, at most 1000 per call. | file `qid-storage/src/file/oidc_continuation.rs:125`; sql `qid-storage/src/sql/oidc_continuation.rs:63`; schema `qid-storage/migrations/20261025000001_oidc_continuations.sql:17` |
+
 ## policy
 
 Model type: `PolicyBundle`. Owner: realm (`realm_id`); the table also declares
@@ -260,6 +277,75 @@ Model type: `PolicyBundle`. Owner: realm (`realm_id`); the table also declares
 |---|---|---|---|---|---|
 | `create_policy_bundle` - `PolicyBundle` | realm (`realm_id`) | record `id` and `(realm_id, name)` | name, `source_hash`, `compiled_json`, version, `active` | File: `insert_new` under the exclusive write lock refuses a taken record ID or a taken `(realm, name)` with `Conflict` and leaves the incumbent unchanged (`qid-storage/src/file/policy.rs:9`, `qid-storage/src/file/insert.rs:71`, `qid-storage/src/file/insert.rs:12`). SQL: `INSERT ... ON CONFLICT DO NOTHING` refuses either taken key atomically and `ensure_upsert_applied` turns the zero-row result into `Conflict` (`qid-storage/src/sql/policy.rs:11`, `qid-storage/src/sql/policy.rs:24`). Both refuse; same name in another realm and a distinct name in the same realm are allowed. | file `qid-storage/src/file/policy.rs:9`, `qid-storage/src/file/insert.rs:71`, `qid-storage/src/file/insert.rs:12`; sql `qid-storage/src/sql/policy.rs:11`, `qid-storage/src/sql/policy.rs:24`; schema `qid-storage/migrations/20250101000001_initial_schema.sql:263` |
 | `delete_policy_bundle` (delete) | realm (`realm_id`) in the record; the write is not realm-filtered | record `id` | none, removal | File: the bundle is removed by ID and a missing bundle is a silent no-op (`qid-storage/src/file/policy.rs:41`). SQL: `DELETE FROM policy_bundles WHERE id = ?` and a missing bundle is a silent no-op (`qid-storage/src/sql/policy.rs:48`). Both delete by ID only, so a bundle of another realm is removed as well. | file `qid-storage/src/file/policy.rs:41`; sql `qid-storage/src/sql/policy.rs:48` |
+
+## push
+
+Model: `PushAuthenticatorRecord` is the single persisted lifecycle row for one
+registration/authenticator ID; `PushLoginChallenge` is a separate one-use login
+challenge. Owners are exact `realm_id` + `user_id`; IDs are immutable and never
+upserted. Storage does not verify signatures or deliver notifications. The service
+must perform recent account-bound reauthentication, validate the candidate key,
+deliver fresh nonces, and verify domain-separated signatures over every immutable
+claim before passing a successful transition. Delivery acceptance is never proof.
+
+A pending registration is never login authority. Successful proof atomically
+replaces its pending payload with an enrolled authenticator payload in the same row,
+removing the registration nonce verifier, expiry and attempt state. The row's global
+ID remains reserved after enrollment and one-way revocation. `get_push_registration`
+returns pending rows only (including expired/exhausted rows); authenticator get/list
+return enrolled rows only (including revoked tombstones). Every read is owner-bound.
+
+A login challenge's `id` is also its unique login-transaction ID; one row is the
+authoritative password-login transaction. The service selects one current
+authenticator before issuing a challenge and must not create independently
+redeemable per-device rows for one password success. Redemption atomically checks
+the current authenticator, approval, exclusive expiry, browser-binding verifier and
+one-use state. Invalid signatures count against the fixed attempt cap but never
+approve. All timestamps are server epoch seconds. Only lowercase hex SHA-256
+nonce/browser verifiers are persisted. Debug redacts destinations, key contents
+and verifier values; IDs and lifecycle state are not secrets.
+
+File mutations hold the exclusive lock through immediate persistence and roll back
+on write failure. SQL uses static owner-checked statements: registration activation
+and revocation update the same primary-key row; login mutations lock the enrolled
+authenticator before the challenge, serializing decisions and redemption with
+revocation. User/realm deletion removes owned push state in both backends.
+
+| Method - record type | Owner key | Identity key | Mutable fields | Transition rule | Sources |
+| --- | --- | --- | --- | --- | --- |
+| `try_issue_push_registration` - pending lifecycle | realm + user | global registration/authenticator ID | none | Requires a current account and explicit validated issuance budget; any existing ID is `Conflict`. | file `qid-storage/src/file/push.rs:297`; sql `qid-storage/src/sql/push.rs:296` |
+| `get_push_registration` - pending lifecycle | realm + user | ID | none | Returns pending only; expired/exhausted state remains non-authoritative. | file `qid-storage/src/file/push.rs:90`; sql `qid-storage/src/sql/push.rs:142` |
+| `attempt_push_registration` - lifecycle row | realm + user | ID + candidate destination/key + nonce verifier + expiry/cap | bounded attempts; pending-to-enrolled replacement | Exact immutable snapshot required; only verified, unexpired proof enrolls. | file `qid-storage/src/file/push.rs:109`; sql `qid-storage/src/sql/push.rs:156` |
+| `get_push_authenticator` / `list_push_authenticators` - enrolled rows | realm + user | global authenticator ID | none | Enrolled rows only, including revoked tombstones; pending rows return none. | file `qid-storage/src/file/push.rs:137`, `qid-storage/src/file/push.rs:155`; sql `qid-storage/src/sql/push.rs:177`, `qid-storage/src/sql/push.rs:188` |
+| `revoke_push_authenticator` - enrolled row | realm + user | global authenticator ID | one `revoked_at` | One-way revocation; missing, foreign, pending or already revoked rows return false. | file `qid-storage/src/file/push.rs:173`; sql `qid-storage/src/sql/push.rs:203` |
+| `try_issue_push_login` / `get_push_login` - `PushLoginChallenge` | realm + user | global challenge/transaction ID + authenticator + purpose + verifiers + expiry/cap | none | Requires the current authenticator and explicit validated issuance budget; duplicate IDs are `Conflict`. | file `qid-storage/src/file/push.rs:346`, `qid-storage/src/file/push.rs:202`; sql `qid-storage/src/sql/push.rs:363`, `qid-storage/src/sql/push.rs:222` |
+| `attempt_push_login` - `PushLoginChallenge` | realm + user | all immutable challenge bindings | bounded attempts; one approve/deny decision | Rechecks current registration; bad signatures count, one verified decision is terminal. | file `qid-storage/src/file/push.rs:221`; sql `qid-storage/src/sql/push.rs:233` |
+| `redeem_push_login` - `PushLoginChallenge` | realm + user | immutable bindings + browser verifier | one `consumed_at` | Rechecks registration, approval, expiry and browser binding atomically; one winner only. | file `qid-storage/src/file/push.rs:254`; sql `qid-storage/src/sql/push.rs:263` |
+| `try_resend_push_login` - `PushLoginChallenge` | realm + user + purpose quota, current authenticator | exact expected challenge/nonce/browser bindings | fresh nonce verifier; append-only bounded send history | Locks quota then authenticator then challenge, preserving current attempts and original lifetime. Initial/resend admissions share one rolling quota; provider failure does not refund it. | file `qid-storage/src/file/push.rs`; sql `qid-storage/src/sql/push.rs` |
+| `cleanup_expired_push_records` - expired issuance | global maintenance | ID + issuance + expiry + pending state/snapshot | removal only | At most 1000 rows per call; strictly retain the maximum quota window and all enrolled/revoked authenticators. | file `qid-storage/src/file/push.rs`; sql `qid-storage/src/sql/push.rs` |
+
+Push issuance has no unrestricted creation entry point. Admission `issued_at` is
+sampled from trusted server time **after** the storage
+and owner/purpose admission locks are held. It is persisted separately from the
+challenge lifecycle (`created_at`, `expires_at`), which must satisfy
+`created_at <= issued_at < expires_at`. Creation supplied by the service/device
+is never authority for quota accounting. Both `try_issue_*` methods and login resend
+require a positive maximum and a window of 1..=86400 seconds, counting every
+issuance in that owner/purpose window regardless of its subsequent lifecycle.
+Cleanup accepts only 1..=1000 rows per call and retains registration issuance
+and immutable login expiry at the exact 86400-second retention boundary. SQL expiry/state metadata is indexed, mirrors
+JSON on every read and transition, and is cleared for enrolled/revoked
+authenticators. Cleanup selects only expired eligible rows with a bounded LIMIT;
+conditional deletes recheck pending state, expiry, issuance and the selected JSON
+under the database row lock, so concurrent activation cannot delete an enrolled
+registration. PostgreSQL cleanup also takes the same owner/purpose admission
+lock before deletion, so it cannot remove quota history between admission-time
+sampling and counting. SQLite selection/deletion remains under BEGIN IMMEDIATE.
+File cleanup scans but selects only up to `limit` deterministic oldest candidates
+with a bounded heap (O(N log limit) work, O(limit) selection memory). It retains
+only removed records for rollback, at most 1000, never a full-store clone.
+Serialization for durable file persistence still covers the full store.
+
 
 ## realm
 
@@ -442,3 +528,11 @@ migrated prototype of the ownership contract.
 | `delete_workload_identity` (delete) | realm (`realm_id`) | record `id` | none, removal | File: an identity of another realm or an unknown ID is `NotFound` under the write lock (`qid-storage/src/file/workload.rs:62`, `qid-storage/src/file/workload.rs:67`). SQL: `DELETE ... WHERE realm_id = ? AND id = ?` and no affected row is `NotFound` (`qid-storage/src/sql/workload.rs:69`, `qid-storage/src/sql/workload.rs:76`). Both agree. | file `qid-storage/src/file/workload.rs:62`, `qid-storage/src/file/workload.rs:67`; sql `qid-storage/src/sql/workload.rs:69`, `qid-storage/src/sql/workload.rs:76` |
 | `store_workload_certificate` - `WorkloadCertificate` | realm + workload (`realm_id`, `workload_id`); the referenced identity must exist and match | record `id`; the thumbprint `x5t_s256` is unique per realm (`qid-storage/migrations/20250618000034_workload_certificates.sql:17`) | serial number, CSR, certificate PEM, `revoked_at`, validity dates | File: a missing workload is `BadRequest` (`qid-storage/src/file/workload.rs:79`, `qid-storage/src/file/workload.rs:80`) and a workload of another realm or SPIFFE ID is `BadRequest` (`qid-storage/src/file/workload.rs:84`, `qid-storage/src/file/workload.rs:86`); an incumbent ID bound to another `(realm, workload, spiffe_id)` is `Conflict` (`qid-storage/src/file/workload.rs:90`); another certificate with the same thumbprint in the realm is `BadRequest` (`qid-storage/src/file/workload.rs:102`, `qid-storage/src/file/workload.rs:107`). SQL: the same identity checks produce `BadRequest` (`qid-storage/src/sql/workload.rs:92`, `qid-storage/src/sql/workload.rs:97`) and a repeated thumbprint is `BadRequest` (`qid-storage/src/sql/workload.rs:99`, `qid-storage/src/sql/workload.rs:111`); the upsert's `WHERE` predicate covers `(realm, workload, spiffe_id)`, so an ID bound to another identity updates no row and `ensure_upsert_applied` returns `Conflict` (`qid-storage/src/sql/workload.rs:115`, `qid-storage/src/sql/workload.rs:116`, `qid-storage/src/sql/workload.rs:136`). Both refuse the same cases with the same errors. | file `qid-storage/src/file/workload.rs:90`, `qid-storage/src/file/workload.rs:102`; sql `qid-storage/src/sql/workload.rs:99`, `qid-storage/src/sql/workload.rs:115`, `qid-storage/src/sql/workload.rs:136` |
 | `revoke_workload_certificate` - `WorkloadCertificate` | realm (`realm_id`) | record `id` | `revoked_at` | Both backends: an unknown ID or a certificate in another realm is `NotFound` (file `qid-storage/src/file/workload.rs:147`, `qid-storage/src/file/workload.rs:149`; SQL `qid-storage/src/sql/workload.rs:176`, `qid-storage/src/sql/workload.rs:201`). A timestamp before `issued_at` returns the same `BadRequest` as model validation and leaves the incumbent unchanged (`qid-core/src/models/workload.rs:65`, `qid-core/src/models/workload.rs:70`). File validates a cloned candidate under the write lock before replacing the map entry (`qid-storage/src/file/workload.rs:143`, `qid-storage/src/file/workload.rs:152`, `qid-storage/src/file/workload.rs:154`). SQL uses a static unsigned-order predicate in the guarded `UPDATE`, then classifies zero-row results with a post-write lookup (`qid-storage/src/sql/workload.rs:172`, `qid-storage/src/sql/workload.rs:177`, `qid-storage/src/sql/workload.rs:188`, `qid-storage/src/sql/workload.rs:192`, `qid-storage/src/sql/workload.rs:205`). Valid timestamps continue to set or replace `revoked_at`; identical retries succeed. **Backends agree.** | file `qid-storage/src/file/workload.rs:143`, `qid-storage/src/file/workload.rs:152`; sql `qid-storage/src/sql/workload.rs:172`, `qid-storage/src/sql/workload.rs:177`; shared contract `qid-storage/tests/sql_repository.rs:224` |
+
+Push login resend timestamps are strictly increasing within the original at-most
+600-second lifetime, at least one second apart, and validated against immutable
+initial admission metadata. Quota counting validates each matching lifecycle row
+whose expiry can contain an in-window resend, counting its initial admission and
+each resend timestamp separately. Login cleanup retains rows until immutable
+`expires_at < now - 86400`; registration cleanup still uses original issuance
+and pending expiry. This conservatively retains all possible resend evidence.

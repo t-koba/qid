@@ -24,7 +24,10 @@ use qid_session::{
     session_is_active,
 };
 use qid_storage::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[path = "push.rs"]
+pub(crate) mod push;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -53,7 +56,7 @@ pub struct AuthorizeRequest {
     pub claims: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AuthorizeParameters {
     client_id: String,
     response_type: String,
@@ -71,8 +74,10 @@ struct AuthorizeParameters {
     /// header on the original authorization request. Carried
     /// through the call chain so the JARM response can embed the
     /// matching `apv` JWK thumbprint per FAPI 2.0 Message Signing.
-    #[serde(default)]
+    #[serde(skip)]
     pub dpop_proof: Option<String>,
+    #[serde(default)]
+    dpop_apv: Option<String>,
     request_uri: Option<String>,
     max_age: Option<u64>,
     acr_values: Option<String>,
@@ -106,16 +111,24 @@ pub async fn authorize_get<R: Repository>(
                 match authorize_with_browser_session(&state, &headers, &mut resolved, &client).await
                 {
                     Ok(Some(response)) => {
-                        if let Some(request_uri) = resolved.request_uri.as_deref()
-                            && let Err(e) = state.repo.mark_par_request_used(request_uri).await
-                        {
-                            return qid_http::error_response(e);
-                        }
                         return response;
                     }
                     Ok(None) => {}
                     Err(e) => return qid_http::error_response(e),
                 }
+            }
+            if resolved
+                .prompt
+                .as_deref()
+                .is_some_and(|p| p.split_ascii_whitespace().any(|v| v == "none"))
+            {
+                return authorization_error_response(
+                    &state,
+                    &resolved,
+                    &client,
+                    "login_required",
+                    "current authentication is required",
+                );
             }
             login_challenge_response(resolved, realm)
         }
@@ -166,6 +179,17 @@ async fn authorize_with_browser_session<R: Repository>(
         return Ok(None);
     };
 
+    if user.realm_id != client.realm_id
+        || !qid_session::auth::push_factor_satisfied(
+            state.repo.as_ref(),
+            &client.realm_id.clone().into(),
+            &user.id,
+            &session.amr,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
     if let Some(request_uri) = &resolved.request_uri {
         state.repo.mark_par_request_used(request_uri).await?;
     }
@@ -367,6 +391,23 @@ pub async fn authorize_post<R: Repository>(
         );
     }
 
+    match qid_session::auth::push_factor_satisfied(
+        state.repo.as_ref(),
+        &client.realm_id.clone().into(),
+        &auth_result.user.id,
+        &auth_result.amr,
+    )
+    .await
+    {
+        Ok(false) => {
+            return match push::start(&state, resolved, &client, &auth_result).await {
+                Ok(response) => response,
+                Err(e) => qid_http::error_response(e),
+            };
+        }
+        Ok(true) => {}
+        Err(e) => return qid_http::error_response(e),
+    }
     let auth_time = qid_core::util::now_seconds();
     let code =
         match issue_authorization_code(&state, &client, &auth_result, auth_time, &resolved).await {
@@ -488,6 +529,7 @@ async fn resolve_authorize_request<R: Repository>(
         acr_values: req.acr_values.clone(),
         claims: req.claims.clone(),
         dpop_proof: None,
+        dpop_apv: None,
     };
 
     // The client of the request is resolved once. A request object names
@@ -1343,7 +1385,11 @@ async fn authorization_response_redirect<R: Repository>(
         // the response was produced for the same key. The DPoP header is
         // propagated by the caller (authorize_get / authorize_post) so
         // apv resolution works for both flows.
-        if let Some(apv) = dpop_apv_for_request(client, dpop_header) {
+        if let Some(apv) = req
+            .dpop_apv
+            .clone()
+            .or_else(|| dpop_apv_for_request(client, dpop_header))
+        {
             entries.push(("apv".to_string(), serde_json::Value::String(apv)));
         }
         let (issuer, response) = sign_jarm_response(state, req, client, entries)?;

@@ -143,6 +143,18 @@ pub fn routes_with_password_attempt_limiter<R: Repository>(
             get(check_session_iframe_for_realm::<R>),
         )
         .route(&paths.authorize, get(authorize_get).post(authorize_post))
+        .route(
+            &format!("{}/push/decision", paths.authorize),
+            post(crate::provider::push::decision::<R>),
+        )
+        .route(
+            &format!("{}/push/resend", paths.authorize),
+            post(crate::provider::push::resend::<R>),
+        )
+        .route(
+            &format!("{}/push/complete", paths.authorize),
+            post(crate::provider::push::complete::<R>),
+        )
         .route(&paths.userinfo, get(userinfo))
         .route(&paths.logout, post(logout))
         .route(&paths.backchannel_logout, post(backchannel_logout))

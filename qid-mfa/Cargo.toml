@@ -11,6 +11,9 @@ documentation.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64 = { workspace = true }
+ciborium = { workspace = true }
+p256 = { workspace = true }
 qid-core = { workspace = true }
 qid-crypto = { workspace = true }
 rand = { workspace = true }
@@ -19,3 +22,7 @@ sha2 = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+qid-storage = { workspace = true }
+tokio = { workspace = true }

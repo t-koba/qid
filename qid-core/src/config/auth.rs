@@ -375,12 +375,12 @@ fn default_max_failed_attempts_per_realm() -> u32 {
     100
 }
 
-/// The realm's multi-factor settings. The only factor the realm
-/// configuration names is TOTP, and a realm that does not enable it
-/// refuses TOTP enrolment and challenges.
+/// The realm's multi-factor settings. Factors default to disabled.
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct MfaConfig {
+    #[serde(default)]
+    pub push: PushConfig,
     #[serde(default)]
     pub totp: TotpConfig,
 }
@@ -879,4 +879,53 @@ impl Default for MetricsConfig {
 
 fn default_metrics_listen() -> String {
     "127.0.0.1:9464".to_string()
+}
+
+/// Push proof and issuance policy. Provider availability is a separate runtime
+/// prerequisite; enabling this flag alone never authorizes login or enrollment.
+/// Disabling delivery must not permit password-only login for an enrolled user.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PushConfig {
+    pub enabled: bool,
+    pub ttl_seconds: u64,
+    pub max_attempts: u32,
+    /// Realm + user + purpose budget, shared by every device.
+    pub max_issuances_per_window: u32,
+    pub issuance_window_seconds: u64,
+    pub resend_cooldown_seconds: u64,
+    pub recent_reauth_seconds: u64,
+    pub max_destination_bytes: usize,
+    pub max_proof_bytes: usize,
+}
+impl Default for PushConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ttl_seconds: 300,
+            max_attempts: 5,
+            max_issuances_per_window: 5,
+            issuance_window_seconds: 3600,
+            resend_cooldown_seconds: 30,
+            recent_reauth_seconds: 300,
+            max_destination_bytes: 1024,
+            max_proof_bytes: 4096,
+        }
+    }
+}
+impl PushConfig {
+    pub(crate) fn validate(&self) -> QidResult<()> {
+        if !(1..=600).contains(&self.ttl_seconds)
+            || !(1..=20).contains(&self.max_attempts)
+            || !(1..=100).contains(&self.max_issuances_per_window)
+            || !(1..=86400).contains(&self.issuance_window_seconds)
+            || !(1..=600).contains(&self.resend_cooldown_seconds)
+            || !(1..=900).contains(&self.recent_reauth_seconds)
+            || !(1..=4096).contains(&self.max_destination_bytes)
+            || !(256..=8192).contains(&self.max_proof_bytes)
+        {
+            return Err(QidError::Config { message: "authentication.mfa.push requires ttl_seconds in 1..=600, max_attempts in 1..=20, max_issuances_per_window in 1..=100, issuance_window_seconds in 1..=86400, resend_cooldown_seconds in 1..=600, recent_reauth_seconds in 1..=900, max_destination_bytes in 1..=4096 and max_proof_bytes in 256..=8192".into() });
+        }
+        Ok(())
+    }
 }

@@ -34,6 +34,12 @@ pub(crate) struct Args {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Delete one bounded batch of expired push records outside quota retention.
+    /// Schedule repeated invocations externally; never deletes authenticator tombstones.
+    PushCleanup {
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        limit: u32,
+    },
     /// Evaluate audit retention policy and optionally record an audit event.
     #[command(name = "audit-retention-evaluate")]
     RetentionEvaluate {
@@ -273,6 +279,19 @@ pub(crate) enum Command {
 pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
     let repo = open_repo(&args.config).await?;
     match args.command {
+        Command::PushCleanup { limit } => {
+            use qid_storage::{OidcContinuationRepository, PushRepository};
+            let now = now_seconds();
+            let push_deleted = repo.cleanup_expired_push_records(now, limit).await?;
+            let oidc_continuations_deleted =
+                repo.cleanup_expired_oidc_continuations(now, limit).await?;
+            Ok(serde_json::json!({
+                "command": "push_cleanup",
+                "deleted": push_deleted + oidc_continuations_deleted,
+                "push_deleted": push_deleted,
+                "oidc_continuations_deleted": oidc_continuations_deleted
+            }))
+        }
         Command::RetentionEvaluate {
             realm,
             actor,
@@ -923,6 +942,46 @@ realms:
         )
         .expect("config file");
         (config, store)
+    }
+
+    #[tokio::test]
+    async fn push_cleanup_command_is_bounded_and_independent_of_audit() {
+        use clap::Parser;
+        for limit in ["0", "1001"] {
+            assert!(
+                Args::try_parse_from(["qid-worker", "push-cleanup", "--limit", limit]).is_err()
+            );
+        }
+        let dir = temp_dir("push-cleanup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (config, store) = write_config(&dir);
+        let repo = AnyRepository::connect(store.to_str().unwrap())
+            .await
+            .unwrap();
+        append_audit_event(&repo, "must-remain", 1).await;
+        drop(repo);
+        let args = Args::try_parse_from([
+            "qid-worker",
+            "--config",
+            config.to_str().unwrap(),
+            "push-cleanup",
+        ])
+        .unwrap();
+        let result = run(args).await.unwrap();
+        assert_eq!(result["command"], "push_cleanup");
+        assert_eq!(result["deleted"], 0);
+        let repo = AnyRepository::connect(store.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(
+            repo.list_audit_events(None, 10)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.id == "must-remain")
+        );
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

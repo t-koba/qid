@@ -27,7 +27,9 @@ mod hr;
 mod iga;
 #[cfg(test)]
 mod iga_tests;
+mod oidc_continuation;
 mod policy;
+mod push;
 mod realm;
 #[cfg(test)]
 mod realm_tests;
@@ -81,7 +83,10 @@ impl SqlRepository {
     }
 
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
-        MIGRATOR.run(&self.pool).await
+        match self.database_kind {
+            SqlDatabaseKind::Sqlite => MIGRATOR.run(&self.pool).await,
+            SqlDatabaseKind::Postgres => postgres_migrator().run(&self.pool).await,
+        }
     }
 
     pub async fn migration_plan(&self) -> QidResult<MigrationPlan> {
@@ -103,6 +108,73 @@ impl SqlDatabaseKind {
         } else {
             Self::Sqlite
         }
+    }
+}
+
+// The historical migration set contains SQLite-only PRAGMAs and epoch-time
+// defaults. Adapt those backend expressions for PostgreSQL while retaining the
+// canonical source checksums and shared schema changes.
+fn postgres_migrator() -> sqlx::migrate::Migrator {
+    let migrations = MIGRATOR
+        .iter()
+        .cloned()
+        .map(|mut migration| {
+            if migration.sql.contains("PRAGMA foreign_keys =")
+                || migration.sql.contains("strftime('%s', 'now')")
+            {
+                migration.sql = std::borrow::Cow::Owned(
+                    migration
+                        .sql
+                        .replace("PRAGMA foreign_keys = off;", "")
+                        .replace("PRAGMA foreign_keys = on;", "")
+                        .replace(
+                            "strftime('%s', 'now')",
+                            "FLOOR(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP))::BIGINT",
+                        ),
+                );
+            }
+            migration
+        })
+        .collect::<Vec<_>>();
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(migrations),
+        ignore_missing: MIGRATOR.ignore_missing,
+        locking: MIGRATOR.locking,
+        no_tx: MIGRATOR.no_tx,
+    }
+}
+
+#[cfg(test)]
+mod postgres_migration_tests {
+    use super::*;
+
+    #[test]
+    fn postgres_migrations_adapt_sqlite_expressions_and_keep_source_checksums() {
+        let postgres = postgres_migrator();
+        assert_eq!(postgres.iter().count(), MIGRATOR.iter().count());
+        for (original, adapted) in MIGRATOR.iter().zip(postgres.iter()) {
+            let expected_sql = original
+                .sql
+                .replace("PRAGMA foreign_keys = off;", "")
+                .replace("PRAGMA foreign_keys = on;", "")
+                .replace(
+                    "strftime('%s', 'now')",
+                    "FLOOR(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP))::BIGINT",
+                );
+            assert_eq!(adapted.version, original.version);
+            assert_eq!(adapted.sql, expected_sql);
+            assert_eq!(adapted.checksum, original.checksum);
+        }
+        assert!(postgres.iter().any(|migration| {
+            migration
+                .sql
+                .contains("EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)")
+        }));
+        assert!(
+            postgres
+                .iter()
+                .all(|migration| !migration.sql.contains("PRAGMA"))
+        );
     }
 }
 

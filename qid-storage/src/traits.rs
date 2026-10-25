@@ -967,6 +967,8 @@ pub trait Repository:
     + ScimRepository
     + FedCmRepository
     + CiamRepository
+    + PushRepository
+    + OidcContinuationRepository
     + WorkloadRepository
     + SaasRepository
     + IgaRepository
@@ -995,6 +997,8 @@ impl<T> Repository for T where
         + ScimRepository
         + FedCmRepository
         + CiamRepository
+        + PushRepository
+        + OidcContinuationRepository
         + WorkloadRepository
         + SaasRepository
         + IgaRepository
@@ -1070,4 +1074,184 @@ pub async fn ensure_client_id_unambiguous<R: ClientRepository + ?Sized>(
         });
     }
     Ok(())
+}
+
+/// Durable push-MFA state, not a signature verifier or delivery adapter.
+///
+/// IDs are globally unique within each record kind, immutable and never upserted.
+/// A registration ID is also its eventual authenticator ID; revocation retains a
+/// tombstone and cannot be undone. Only proof completion enrolls an authenticator.
+/// One lifecycle row replaces pending state on enrollment, discarding proof verifiers.
+///
+/// Before creating a registration the service must authorize recent account-bound
+/// reauthentication (including required step-up), validate the candidate public key,
+/// then persist pending state and deliver a fresh nonce to its destination.
+/// Before passing `verified = true`
+/// or `Some(decision)`, it MUST verify the signature with the bound key and exact
+/// realm, user, purpose, challenge/transaction ID, nonce, authenticator/destination
+/// binding and (for login) decision claims. Check the nonce against the stored
+/// SHA-256 verifier. Registration and login signatures must be domain-separated.
+/// Provider acceptance is not proof. Store only nonce/browser SHA-256 verifiers.
+///
+/// Pass the immutable record read for that verification as `expected`; storage
+/// checks every immutable field against the current row. Mutable state in that
+/// snapshot is ignored, so parallel bad signatures still count independently.
+/// All times are trusted server epoch seconds, never device/client timestamps.
+/// Expiry is exclusive. Attempt caps are fixed when creating the challenge.
+///
+/// Attempt methods return true when an attempt was recorded, INCLUDING an invalid
+/// signature; this is not an authentication result. `None` records a bad login
+/// signature, never a decision. Only a successful redemption authorizes completion
+/// of the already password-verified, exact browser-bound login transaction. A login
+/// row ID is its transaction ID; create only one row per password login, selecting
+/// one enrolled authenticator before issuance rather than creating parallel rows.
+#[async_trait]
+pub trait PushRepository: Send + Sync + 'static {
+    /// Returns pending state only (including expired/exhausted rows), never enrolled state.
+    async fn get_push_registration(
+        &self,
+        realm: &RealmId,
+        user: &str,
+        id: &str,
+    ) -> QidResult<Option<PushRegistrationChallenge>>;
+    async fn attempt_push_registration(
+        &self,
+        expected: &PushRegistrationChallenge,
+        verified: bool,
+        now: u64,
+    ) -> QidResult<bool>;
+    /// Returns enrolled state, including revoked tombstones; pending rows return None.
+    async fn get_push_authenticator(
+        &self,
+        realm: &RealmId,
+        user: &str,
+        id: &str,
+    ) -> QidResult<Option<PushAuthenticator>>;
+    /// Includes revoked tombstones; callers select active registrations explicitly.
+    async fn list_push_authenticators(
+        &self,
+        realm: &RealmId,
+        user: &str,
+    ) -> QidResult<Vec<PushAuthenticator>>;
+    async fn revoke_push_authenticator(
+        &self,
+        realm: &RealmId,
+        user: &str,
+        id: &str,
+        now: u64,
+    ) -> QidResult<bool>;
+    async fn get_push_login(
+        &self,
+        realm: &RealmId,
+        user: &str,
+        id: &str,
+    ) -> QidResult<Option<PushLoginChallenge>>;
+    async fn attempt_push_login(
+        &self,
+        expected: &PushLoginChallenge,
+        decision: Option<PushDecision>,
+        now: u64,
+    ) -> QidResult<bool>;
+    /// `binding_verifier` is computed by the service from the browser-held secret.
+    async fn redeem_push_login(
+        &self,
+        expected: &PushLoginChallenge,
+        binding_verifier: &str,
+        now: u64,
+    ) -> QidResult<bool>;
+    /// Atomically admit a registration issuance under a rolling owner-wide budget.
+    /// The budget key is realm + user + purpose (`registration`); the
+    /// authenticator ID is never part of the key, so parallel devices share it.
+    /// Counts every row of that key issued at or after
+    /// `admitted_at.saturating_sub(window_seconds - 1)` — pending, enrolled and
+    /// revoked alike — including expired rows. Admission time is sampled from
+    /// the trusted server clock only after storage and owner/purpose locks are held,
+    /// and persisted separately from lifecycle creation/expiry. Requires
+    /// `created_at <= admitted_at < expires_at`; creation is never quota authority. `true` means inserted; `false`
+    /// means suppressed with no write. Invalid shape, budget (`max_issuances`
+    /// must be positive, `window_seconds` 1..=86400) or timestamps that do not
+    /// fit signed storage are `BadRequest`; duplicate IDs and missing accounts
+    /// are `Conflict`, never suppression. These are the only issuance entry points.
+    async fn try_issue_push_registration(
+        &self,
+        challenge: &PushRegistrationChallenge,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool>;
+    /// Atomically admit a password-login issuance under a rolling owner-wide
+    /// budget keyed realm + user + purpose, never the authenticator ID, so one
+    /// password success cannot mint independently redeemable per-device rows
+    /// beyond the shared budget. Counts every initial/resend send of that key in the window,
+    /// including expired, decided, denied, consumed and delivery-failed
+    /// (undecided) rows. Requires the bound authenticator to be current.
+    /// `true`/`false` and error semantics match `try_issue_push_registration`;
+    /// a non-current authenticator is `Conflict`.
+    async fn try_issue_push_login(
+        &self,
+        challenge: &PushLoginChallenge,
+        max_issuances: u32,
+        window_seconds: u64,
+    ) -> QidResult<bool>;
+    /// Atomically reserve a send under the initial-send quota and rotate the nonce.
+    /// Checks the expected immutable binding, nonce generation and resend history,
+    /// plus the separately supplied browser verifier, current enrollment, liveness,
+    /// attempts and cooldown (at least one second since the last admitted send).
+    /// Trusted time is sampled under durable admission locks. Only the nonce verifier
+    /// and resend history change; concurrent attempts are preserved, not overwritten.
+    /// Returns the persisted rotated snapshot, or None without mutation on refusal.
+    /// Invalid budget parameters are BadRequest; corrupt records fail closed.
+    /// Delivery failures after admission are not refunded.
+    async fn try_resend_push_login(
+        &self,
+        expected: &PushLoginChallenge,
+        binding_verifier: &str,
+        nonce_verifier: &str,
+        max_issuances: u32,
+        window_seconds: u64,
+        cooldown_seconds: u64,
+    ) -> QidResult<Option<PushLoginChallenge>>;
+    /// Delete at most `limit` expired rows that no admissible quota window can
+    /// still count, and return the number deleted. Pending registrations require
+    /// expiry and `issued_at < now - 86400`; login rows require immutable
+    /// `expires_at < now - 86400`. Equality is retained. Never deletes enrolled or revoked
+    /// authenticator rows. `limit` must be in 1..=1000 (a hard per-call bound);
+    /// `now` must fit signed storage. A future independent worker may schedule
+    /// periodic calls; scheduling lives outside qid-storage and qid-worker is
+    /// untouched by this slice.
+    async fn cleanup_expired_push_records(&self, now: u64, limit: u32) -> QidResult<u64>;
+}
+
+/// OIDC-owned immutable validated request context, not proof of authentication.
+/// Callers use a trusted server clock and SHA-256 of a browser-held secret.
+/// No read/update API: the only retrieval consumes atomically. IDs remain reserved
+/// after consumption until bounded expiry cleanup removes them. This contract neither
+/// approves factors nor issues codes.
+#[async_trait]
+pub trait OidcContinuationRepository: Send + Sync + 'static {
+    /// Unique insert; even identical duplicate IDs are Conflict, never replacement.
+    /// IDs/owner labels are nonempty, <=256 UTF-8 bytes, no whitespace/control.
+    /// Context is a nonempty JSON object <=64 KiB. Requires created_at == now
+    /// and created_at < expires_at <= i64::MAX. Invalid shape is BadRequest.
+    async fn create_oidc_continuation(
+        &self,
+        record: &OidcAuthorizationContinuation,
+        now: u64,
+    ) -> QidResult<()>;
+    /// Exactly one matching browser/realm/user/client may retrieve the original
+    /// envelope while created_at <= now < expires_at. A mismatch, missing,
+    /// expired or consumed ID returns None without consuming. now > i64::MAX
+    /// is BadRequest. Caller must still verify completed authentication and
+    /// current account/client policy before resuming protocol processing.
+    async fn consume_oidc_continuation(
+        &self,
+        realm: &RealmId,
+        user: &str,
+        client: &str,
+        id: &str,
+        browser_binding_sha256: &[u8; 32],
+        now: u64,
+    ) -> QidResult<Option<OidcAuthorizationContinuation>>;
+    /// Delete at most `limit` expired records (expiry is inclusive at `now`).
+    /// The hard per-call bound is 1..=1000; expired IDs are no longer retained.
+    async fn cleanup_expired_oidc_continuations(&self, now: u64, limit: u32) -> QidResult<u64>;
 }

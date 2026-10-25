@@ -35,7 +35,10 @@ form bodies.
 | `GET` | configurable `well_known_oauth_authorization_server`, default `/.well-known/oauth-authorization-server` | OAuth AS metadata. |
 | `GET` | `/.well-known/oauth-authorization-server/realms/:realm` | Realm-scoped OAuth AS metadata. |
 | `GET` | configurable `well_known_oauth_protected_resource`, default `/.well-known/oauth-protected-resource` | Protected resource metadata. |
-| `GET, POST` | configurable `authorize`, default `/oauth2/authorize` | Authorization endpoint. Password login is subject to the shared account and realm admission caps; exhaustion returns `temporarily_unavailable` and issues no code. |
+| `GET, POST` | configurable `authorize`, default `/oauth2/authorize` | Authorization endpoint. Password login is subject to the shared account and realm admission caps; exhaustion returns `temporarily_unavailable` and issues no code. With an active push registration, password authentication starts a browser-bound push challenge and issues no code before signed approval; see [push-MFA continuation](oidc-authorization-continuation.md). |
+| `POST` | `<authorize>/push/decision` | Record a device-signed push approval or denial; HTTP 204 records a decision but does not issue a code. |
+| `POST` | `<authorize>/push/resend` | Same-browser, client-bound resend; stable display number and fresh nonce, unchanged validated continuation. |
+| `POST` | `<authorize>/push/complete` | Complete the approved OIDC continuation from the same browser using its binding cookie; one-use device approval and validated request context are required. |
 | `GET` | configurable `userinfo`, default `/oidc/userinfo` | UserInfo endpoint. |
 | `POST` | configurable `logout`, default `/oidc/logout` | Logout. |
 | `POST` | configurable `backchannel_logout`, default `/oidc/logout/backchannel` | Back-channel logout. |
@@ -63,11 +66,18 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | `/oauth2/challenge` | OAuth challenge helper. |
 | `POST` | configurable `par`, default `/oauth2/par` | Pushed Authorization Request, installed when PAR is enabled. |
 
-## Session, email magic link, WebAuthn, TOTP
+## Session, email magic link, WebAuthn, TOTP, and push MFA
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. A login is admitted before any credential is verified: the submitted email's admission count follows the realm's `password.max_failed_attempts` within `password.lockout_duration_seconds`, and the realm's admission count follows the realm's `password.max_failed_attempts_per_realm` within the same window; a successful login gives back the admission it spent on the address and on the realm. A refused admission, a locked account, and a realm that has spent its budget of failed password logins answer `429 Too Many Requests`. |
+| `POST` | configurable `auth_password`, default `/api/v1/:realm/auth/password` | Password authentication. A login is admitted before any credential is verified: the submitted email's admission count follows the realm's `password.max_failed_attempts` within `password.lockout_duration_seconds`, and the realm's admission count follows the realm's `password.max_failed_attempts_per_realm` within the same window; a successful login gives back the admission it spent on the address and on the realm. A refused admission, a locked account, and a realm that has spent its budget of failed password logins answer `429 Too Many Requests`. An active push registration returns HTTP 202 and requires signed approval before a session is created; see [registered push MFA](password-push-login.md). |
+| `POST` | `<auth_password>/push/decision` | Record a registered device's signed approve/deny decision. HTTP 204 is not session creation. |
+| `POST` | `<auth_password>/push/resend` | Same-browser bounded resend with nonce rotation and stable display transaction number; never approval. |
+| `POST` | `<auth_password>/push/complete` | Complete an approved password login from the same browser using the binding cookie; replay, expiry, revocation, and wrong-browser use are rejected. |
+| `POST` | `<auth_password>/push/registrations/start` | Start account-owned device enrollment with a recent authenticated session, opaque destination, non-secret device name and platform, and public P-256 JWK. |
+| `POST` | `<auth_password>/push/registrations/finish` | Activate the new device only after same-session, destination-bound signed proof. |
+| `GET` | `<auth_password>/push/registrations` | List the caller's enrolled devices (registration ID, device name, platform, creation time, active/revoked status) with an authenticated account session; available when push delivery is disabled. Never returns destinations or key material. |
+| `POST` | `<auth_password>/push/registrations/revoke` | Revoke an enrolled device using a recently reauthenticated owner session. |
 | `POST` | configurable `auth_email_magic_link_send`, default `/api/v1/:realm/auth/email-magic-link/send` | Email selector only: `{"email":"alice@example.com"}`; unknown fields/redirects are rejected. Always generic `202` for valid requests, with the browser-binding cookie, independent of eligibility/delivery. No recipient, ID, expiry or secret is returned. |
 | `GET` | configurable `auth_email_magic_link_verify`, default `/api/v1/:realm/auth/email-magic-link/verify` | Confirmation page only, never session creation or challenge consumption. Reads `#challenge_id.token`, clears fragment history and POSTs only on explicit button click. Open in the requesting browser. |
 | `POST` | same configurable `auth_email_magic_link_verify` | `{"challenge_id":"...","token":"..."}` plus the binding cookie; no extra fields. Success sets the configured session cookie and returns only `{"status":"authenticated"}`. Invalid/expired/replayed/foreign credentials return uniform `401 {"status":"authentication_failed"}` without a session cookie. |

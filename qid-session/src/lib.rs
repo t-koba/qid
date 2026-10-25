@@ -9,6 +9,7 @@ pub mod browser;
 mod email_magic_link;
 pub mod hibp;
 mod password_limit;
+pub mod push;
 pub mod refresh;
 pub mod totp_api;
 mod totp_limit;

@@ -112,6 +112,20 @@ impl Store {
         realm: Option<&str>,
     ) {
         let in_realm = |owner: &str| realm == Some(owner);
+        self.push.authenticators.retain(|_, row| {
+            let a = row.authenticator();
+            !users.contains(&a.user_id) && !in_realm(&a.realm_id)
+        });
+        self.push
+            .logins
+            .retain(|_, c| !users.contains(&c.user_id) && !in_realm(&c.realm_id));
+        let live: std::collections::HashSet<&String> = self.push.authenticators.keys().collect();
+        self.push
+            .login_issued_at
+            .retain(|id, _| self.push.logins.contains_key(id));
+        self.push
+            .registration_issued_at
+            .retain(|id, _| live.contains(id));
         // Follow ownership links before removing their parents. All live auth state
         // disappears together under this write lock; realm/client peers are untouched.
         let sessions: std::collections::HashSet<_> = self

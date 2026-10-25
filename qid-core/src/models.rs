@@ -6,6 +6,8 @@ mod auth;
 mod ciam;
 mod iga;
 mod oauth;
+mod oidc_continuation;
+mod push;
 mod rebac;
 mod saas;
 mod scim;
@@ -36,6 +38,12 @@ pub use oauth::{
     DeviceAuthorizationGrant, ParRequest, ServiceAccount, Session, TokenFamily, TokenFormat,
     TotpCredential, VcCredentialStatusRecord, WebAuthnCredential,
     default_device_poll_interval_seconds,
+};
+pub use oidc_continuation::{OIDC_CONTINUATION_CONTEXT_MAX_BYTES, OidcAuthorizationContinuation};
+pub use push::{
+    PUSH_DEVICE_METADATA_MAX, PushAuthenticator, PushAuthenticatorRecord, PushDecision,
+    PushLoginChallenge, PushPublicJwk, PushPurpose, PushRegistrationChallenge,
+    valid_push_device_metadata,
 };
 pub use rebac::{
     CheckRequest, CheckResponse, ExpandNode, ExpandRequest, ExpandResponse, ReadRequest,

@@ -54,6 +54,35 @@ jobs:
           RUSTFLAGS: "-D warnings"
         run: cargo test --workspace --locked -- --test-threads=1
 
+  postgres-push:
+    name: PostgreSQL Push Storage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          # Public, disposable CI database credentials; never repository secrets.
+          POSTGRES_USER: qid_test
+          POSTGRES_PASSWORD: qid_test
+          POSTGRES_DB: qid_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qid_test -d qid_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Test PostgreSQL push storage
+        env:
+          QID_TEST_POSTGRES_URL: postgres://qid_test:qid_test@localhost:5432/qid_test
+          RUSTFLAGS: "-D warnings"
+        run: cargo test -p qid-storage --test postgres_push --locked -- --nocapture
+
   all-features:
     name: All Features
     runs-on: ubuntu-latest

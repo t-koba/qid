@@ -33,9 +33,11 @@ mod iga;
 #[cfg(test)]
 mod iga_tests;
 mod insert;
+mod oidc_continuation;
 #[cfg(test)]
 mod persistence_tests;
 mod policy;
+mod push;
 mod realm;
 #[cfg(test)]
 mod realm_tests;
@@ -57,6 +59,10 @@ fn ciam_progressive_profile_key(realm_id: &str, user_id: &str) -> String {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Store {
+    #[serde(default)]
+    oidc_continuations: HashMap<String, oidc_continuation::StoredContinuation>,
+    #[serde(default)]
+    push: push::PushStore,
     realm_issuers: HashMap<String, String>,
     #[serde(default)]
     realm_tenants: HashMap<String, String>,
@@ -332,7 +338,8 @@ impl FileRepository {
         _save_guard: &tokio::sync::MutexGuard<'_, ()>,
         content: &str,
     ) -> QidResult<()> {
-        // Atomic write: temp → fsync → rename (crash-safe)
+        // Atomic replacement: fsync the temporary file, then rename it in place.
+        // Parent-directory fsync below is best-effort for platform compatibility.
         let tmp_path = self.path.with_extension("tmp");
         tokio::fs::write(&tmp_path, content)
             .await
@@ -365,11 +372,13 @@ impl FileRepository {
             .map_err(|e| QidError::Internal {
                 message: format!("failed to rename store file: {e}"),
             })?;
-        // fsync the directory to ensure the rename is durable
+        // Best-effort directory fsync: some supported platforms/filesystems do
+        // not permit opening or syncing a directory. Success guarantees the file
+        // data sync and atomic rename, but not power-loss durability of the entry.
         if let Some(parent) = self.path.parent()
             && let Ok(dir) = tokio::fs::File::open(parent).await
         {
-            dir.sync_all().await.ok();
+            let _ = dir.sync_all().await;
         }
         Ok(())
     }

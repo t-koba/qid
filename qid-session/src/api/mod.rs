@@ -65,7 +65,20 @@ pub fn auth_routes_with_password_attempt_limiter<R: Repository>(
             axum::routing::get(crate::email_magic_link::landing)
                 .post(crate::email_magic_link::verify::<R>),
         )
+        .merge(push_enrollment::routes::<R>(paths))
         .route(&paths.auth_password, post(password_auth::<R>))
+        .route(
+            &format!("{}/push/decision", paths.auth_password),
+            post(push::decision::<R>),
+        )
+        .route(
+            &format!("{}/push/resend", paths.auth_password),
+            post(push::resend::<R>),
+        )
+        .route(
+            &format!("{}/push/complete", paths.auth_password),
+            post(push::complete::<R>),
+        )
         .route(&paths.auth_session_refresh, post(session_refresh::<R>))
         .route(&paths.auth_session_revoke, post(session_revoke::<R>))
         .route(
@@ -150,6 +163,8 @@ pub struct UserResponse {
 }
 
 mod password;
+mod push;
+mod push_enrollment;
 mod session;
 mod webauthn;
 

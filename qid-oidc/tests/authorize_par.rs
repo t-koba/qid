@@ -2834,3 +2834,6 @@ async fn the_realm_wide_par_requirement_still_binds_unmarked_clients() {
         "the realm-wide refusal names the realm: {body}"
     );
 }
+
+#[path = "authorize_par/push.rs"]
+mod push;

@@ -70,7 +70,7 @@ flowchart LR
 | `qid-diagnostics` | Config, profile, storage, ops, and network readiness checks. |
 | `qid-oidc` | OIDC discovery, authorization, userinfo, logout, WebFinger, Shared Signals Framework. |
 | `qid-oauth` | Token, introspection, revocation, device flow, CIBA, DCR, DPoP, mTLS, private_key_jwt, token-exchange helpers (GNAP parse/serialize helpers only, not wired). |
-| `qid-session` | Password auth, browser sessions, refresh, WebAuthn/passkeys, TOTP API. |
+| `qid-session` | Password auth, browser sessions, refresh, WebAuthn/passkeys, TOTP, push enrollment and password-plus-push completion. |
 | `qid-mfa` | MFA factor primitives. |
 | `qid-saml` | SAML metadata, SSO/SLO, artifact, XMLDSig, encryption, and strict signed SOAP AttributeQuery with realm-local SP trust and subject lookup. |
 | `qid-scim` | SCIM 2.0 server surface and outbound reconcile helpers. |

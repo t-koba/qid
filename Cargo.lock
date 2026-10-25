@@ -4097,11 +4097,16 @@ dependencies = [
 name = "qid-mfa"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "ciborium",
+ "p256",
  "qid-core",
  "qid-crypto",
+ "qid-storage",
  "rand 0.8.8",
  "serde",
  "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]
@@ -4231,16 +4236,20 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "ciborium",
  "hmac 0.12.1",
  "http-body-util",
  "jsonwebtoken",
  "metrics",
+ "p256",
  "qid-core",
  "qid-crypto",
  "qid-http",
+ "qid-mfa",
  "qid-oauth",
  "qid-session",
  "qid-storage",
+ "rand 0.8.8",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -1,6 +1,8 @@
 //! Multi-factor authentication primitives for qid.
 #![forbid(unsafe_code)]
 
+pub mod push;
+
 use qid_core::{
     error::{QidError, QidResult},
     models::TotpCredential,

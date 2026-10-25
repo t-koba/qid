@@ -28,6 +28,11 @@ qid also integrates with external enforcement points. A proxy, gateway, service 
 8. [standards.md](standards.md): exact RFC and draft implementation boundaries.
 9. [storage-ownership.md](storage-ownership.md): the ID-keyed write inventory of the file and SQL storage backends, with the owner key, identity key and same-owner collision semantics of each write.
 
+## Feature Guides
+
+- [Registered push MFA](password-push-login.md): account-owned device enrollment, password login approval, and revocation.
+- [OIDC push authorization continuation](oidc-authorization-continuation.md): validated authorization context, browser binding, one-use completion, and storage semantics.
+
 ## References
 
 - [../config/README.md](../config/README.md): use-case-oriented configuration samples.

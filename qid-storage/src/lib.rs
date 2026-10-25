@@ -14,7 +14,11 @@ mod file;
 mod hr;
 mod iga_grants;
 pub use hr::{HrBatch, HrBatchResult, HrReceipt, HrSummary, HrUserChange, hr_order};
+mod oidc_continuation;
 mod ownership;
+mod push;
+#[cfg(test)]
+mod push_tests;
 mod sql;
 pub mod traits;
 
@@ -26,11 +30,11 @@ pub use traits::*;
 pub mod prelude {
     pub use crate::{
         AdminRepository, AuditRepository, CiamRepository, ClientRepository, CredentialRepository,
-        DeviceRepository, FedCmRepository, FileFlushMode, IgaRepository, PolicyRepository,
-        RealmRepository, RebacRepository, Repository, SaasRepository, ScimRepository,
-        ServiceAccountRepository, SessionRepository, SiemDeliveryRecord, SiemDeliveryRepository,
-        SiemDeliveryStatus, SsfRepository, TokenRepository, UserRepository, VcRepository,
-        WorkloadRepository,
+        DeviceRepository, FedCmRepository, FileFlushMode, IgaRepository,
+        OidcContinuationRepository, PolicyRepository, PushRepository, RealmRepository,
+        RebacRepository, Repository, SaasRepository, ScimRepository, ServiceAccountRepository,
+        SessionRepository, SiemDeliveryRecord, SiemDeliveryRepository, SiemDeliveryStatus,
+        SsfRepository, TokenRepository, UserRepository, VcRepository, WorkloadRepository,
     };
 }
 
@@ -409,3 +413,24 @@ impl From<StorageError> for QidError {
         }
     }
 }
+
+delegate!(PushRepository {
+    get_push_registration(&self, realm: &qid_core::tenant::RealmId, user: &str, id: &str) -> QidResult<Option<qid_core::models::PushRegistrationChallenge>>;
+    attempt_push_registration(&self, expected: &qid_core::models::PushRegistrationChallenge, verified: bool, now: u64) -> QidResult<bool>;
+    get_push_authenticator(&self, realm: &qid_core::tenant::RealmId, user: &str, id: &str) -> QidResult<Option<qid_core::models::PushAuthenticator>>;
+    list_push_authenticators(&self, realm: &qid_core::tenant::RealmId, user: &str) -> QidResult<Vec<qid_core::models::PushAuthenticator>>;
+    revoke_push_authenticator(&self, realm: &qid_core::tenant::RealmId, user: &str, id: &str, now: u64) -> QidResult<bool>;
+    get_push_login(&self, realm: &qid_core::tenant::RealmId, user: &str, id: &str) -> QidResult<Option<qid_core::models::PushLoginChallenge>>;
+    attempt_push_login(&self, expected: &qid_core::models::PushLoginChallenge, decision: Option<qid_core::models::PushDecision>, now: u64) -> QidResult<bool>;
+    redeem_push_login(&self, expected: &qid_core::models::PushLoginChallenge, binding_verifier: &str, now: u64) -> QidResult<bool>;
+    try_issue_push_registration(&self, challenge: &qid_core::models::PushRegistrationChallenge, max_issuances: u32, window_seconds: u64) -> QidResult<bool>;
+    try_issue_push_login(&self, challenge: &qid_core::models::PushLoginChallenge, max_issuances: u32, window_seconds: u64) -> QidResult<bool>;
+    try_resend_push_login(&self, expected: &qid_core::models::PushLoginChallenge, binding_verifier: &str, nonce_verifier: &str, max_issuances: u32, window_seconds: u64, cooldown_seconds: u64) -> QidResult<Option<qid_core::models::PushLoginChallenge>>;
+    cleanup_expired_push_records(&self, now: u64, limit: u32) -> QidResult<u64>;
+});
+
+delegate!(OidcContinuationRepository {
+    create_oidc_continuation(&self, record: &qid_core::models::OidcAuthorizationContinuation, now: u64) -> QidResult<()>;
+    consume_oidc_continuation(&self, realm: &qid_core::tenant::RealmId, user: &str, client: &str, id: &str, browser_binding_sha256: &[u8; 32], now: u64) -> QidResult<Option<qid_core::models::OidcAuthorizationContinuation>>;
+    cleanup_expired_oidc_continuations(&self, now: u64, limit: u32) -> QidResult<u64>;
+});

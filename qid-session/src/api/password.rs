@@ -6,6 +6,7 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
+use qid_core::error::QidResult;
 use qid_core::web::JsonObject;
 use qid_core::{error::QidError, state::SharedState, tenant::RealmId};
 use qid_storage::prelude::*;
@@ -80,34 +81,52 @@ pub async fn password_auth<R: Repository>(
         }
     };
 
-    let session_config = &realm_config.browser_session;
-    let old_session_id = super::extract_cookie(&headers, &session_config.cookie_name);
+    let result = match crate::auth::push_factor_satisfied(
+        state.repo.as_ref(),
+        &realm.clone().into(),
+        &auth_result.user.id,
+        &auth_result.amr,
+    )
+    .await
+    {
+        Ok(false) => super::push::start(&state, &auth_result).await,
+        Ok(true) => establish_session(&state, &realm, &headers, auth_result).await,
+        Err(e) => Err(e),
+    };
+    super::push::protected(match result {
+        Ok(response) => response,
+        Err(e) => qid_http::error_response(e),
+    })
+}
+
+pub(super) async fn establish_session<R: Repository>(
+    state: &Arc<SharedState<R>>,
+    realm: &str,
+    headers: &HeaderMap,
+    auth_result: crate::auth::AuthResult,
+) -> QidResult<Response> {
+    let session_config = &state.require_realm(realm)?.browser_session;
+    let old_session_id = super::extract_cookie(headers, &session_config.cookie_name);
 
     let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
 
-    let session = match manager
+    let session = manager
         .create_with_regeneration(
-            &realm,
+            realm,
             &auth_result.user.id,
             &auth_result.acr,
             &auth_result.amr,
             old_session_id.as_deref(),
         )
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => return qid_http::error_response(e),
-    };
+        .await?;
 
     let mut headers = HeaderMap::new();
-    if let Err(error) = super::set_session_cookie(
+    super::set_session_cookie(
         &mut headers,
         session_config,
         &session.id,
         "failed to build session cookie header",
-    ) {
-        return qid_http::error_response(error);
-    }
+    )?;
 
     let body = Json(PasswordAuthResponse {
         session: session.id,
@@ -117,5 +136,5 @@ pub async fn password_auth<R: Repository>(
         },
     });
 
-    (headers, body).into_response()
+    Ok((headers, body).into_response())
 }

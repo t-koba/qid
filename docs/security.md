@@ -33,7 +33,7 @@ Important validation rules:
 
 ## Authentication
 
-Supported authentication surfaces include password, passkeys/WebAuthn, TOTP, browser sessions, and refresh token rotation.
+Supported authentication surfaces include password, passkeys/WebAuthn, TOTP, opt-in registered-device push MFA for password login, browser sessions, and refresh token rotation. Push delivery is notification-only; a current registered-device signature and same-browser completion are required, and no password-only fallback is issued for an account with an active push registration.
 
 Operational guidance:
 

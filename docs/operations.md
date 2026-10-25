@@ -58,6 +58,8 @@ cargo run --bin qid-migrate -- --database-url sqlite:target/qid.db
 
 For Postgres, set `QID_DATABASE_URL` or pass `--database-url`.
 
+PostgreSQL applies the shared versioned migrations with SQLite-only foreign-key `PRAGMA` directives omitted and SQLite epoch-time defaults translated to PostgreSQL expressions; the schema changes and recorded source checksums remain unchanged.
+
 Storage diagnostics are a startup safety gate. A storage audit error means qid may not have verified realm, tenant, connector, SAML, OIDC, or SaaS object references; daemon preflight treats that as an error.
 
 One SPIFFE ID names one workload identity in a realm. A database that already holds two workload identities with the same SPIFFE ID in one realm fails the migration that adds the unique index; remove the redundant identity before migrating.
@@ -296,6 +298,25 @@ cargo run --bin qidc -- --config /etc/qid/qid.yaml ops restore-execute \
 ops:
   emergency:
     read_only: true
+```
+
+## Push Challenge and OIDC Continuation Cleanup
+
+`qid-worker push-cleanup` is a one-shot, bounded cleanup operation. Configure an
+external scheduler to invoke it repeatedly with the current QID configuration;
+QID does not schedule the command. Each invocation deletes at most `--limit`
+expired push records and at most `--limit` expired OIDC authorization
+continuations (default `100`, range `1..=1000`). Pending push records remain
+available through the maximum quota-retention horizon: login rows are retained
+until immutable expiry is strictly older than 86400 seconds, so resent sends
+cannot disappear from a rolling quota early. Pending registrations retain the
+original-issuance horizon and must also be expired. Enrolled and revoked
+authenticator records are retained. Expired OIDC continuations, including
+consumed records, are deleted in bounded batches. Without the external schedule,
+expired OIDC request context remains stored until cleanup is run.
+
+```sh
+cargo run --bin qid-worker -- --config /etc/qid/qid.yaml push-cleanup --limit 100
 ```
 
 ## Directory Synchronization

@@ -169,6 +169,12 @@ fi
 info "starting local upstream server"
 python3 -m http.server 18090 >"${UPSTREAM_LOG}" 2>&1 &
 UPSTREAM_PID=$!
+if ! wait_for_tcp 127.0.0.1 18090 30; then
+    info "local upstream server failed to start"
+    cat "${UPSTREAM_LOG}"
+    exit 1
+fi
+info "local upstream server ready"
 
 info "starting qpxd (${QPXD_BIN})"
 "${QPXD_BIN}" run -c "${SCRIPT_DIR}/qpx.yaml" >"${QPXD_LOG}" 2>&1 &

@@ -17,7 +17,8 @@ use qid_core::{
     test_helpers, util,
 };
 use qid_crypto::{
-    LocalSigner, hash_password, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header,
+    Argon2idParams, LocalSigner, hash_password_with_params, jwk::generate_es256,
+    jwt::sign_es256_jwt_with_jwk_header,
 };
 use qid_storage::{SqlRepository, prelude::*};
 use std::collections::HashMap;
@@ -142,8 +143,11 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
 // Each isolated fixture uses the same test password, so hash it once per process.
 fn correct_password_hash() -> String {
     static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| hash_password("correct-password").expect("test password hashing failed"))
-        .clone()
+    HASH.get_or_init(|| {
+        hash_password_with_params("correct-password", &Argon2idParams::new(8, 1, 1))
+            .expect("test password hashing failed")
+    })
+    .clone()
 }
 
 fn dpop_test_key() -> (String, qid_crypto::Jwk) {
@@ -185,7 +189,15 @@ async fn setup() -> (Router, Arc<SharedState<SqlRepository>>) {
     setup_with_config(config).await
 }
 
-async fn setup_with_config(config: QidConfig) -> (Router, Arc<SharedState<SqlRepository>>) {
+async fn setup_with_config(mut config: QidConfig) -> (Router, Arc<SharedState<SqlRepository>>) {
+    // These OIDC tests do not measure password work-factor calibration.
+    // Use the minimum accepted cost; password-policy tests cover the higher costs.
+    for realm in &mut config.realms {
+        let argon2id = &mut realm.authentication.password.argon2id;
+        argon2id.memory_kib = 8;
+        argon2id.time_cost = 1;
+        argon2id.parallelism = 1;
+    }
     let url = db_url();
     let path = std::path::Path::new(url.strip_prefix("sqlite:").unwrap());
     // Migrations are run once here and covered on fresh databases by qid-storage;

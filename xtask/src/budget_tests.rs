@@ -7,7 +7,8 @@ use super::*;
 fn the_product_source_stays_within_the_budget() {
     let metadata = cargo_metadata().expect("the workspace metadata is readable");
     let config = BudgetConfig::from_metadata(&metadata).expect("the budget config is valid");
-    let packages = packages_in_workspace().expect("the workspace packages are readable");
+    let packages = packages_in_workspace_from_metadata(&metadata)
+        .expect("the workspace packages are readable");
     let mut total = 0usize;
     for (name, manifest_path) in &packages {
         let dir = manifest_path.parent().expect("a manifest has a parent");

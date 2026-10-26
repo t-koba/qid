@@ -575,12 +575,15 @@ fn cargo_metadata() -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-pub(crate) fn workspace_root() -> anyhow::Result<PathBuf> {
-    let meta = cargo_metadata()?;
+fn workspace_root_from_metadata(meta: &serde_json::Value) -> anyhow::Result<PathBuf> {
     let root = meta["workspace_root"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("workspace_root not found in metadata"))?;
     Ok(PathBuf::from(root))
+}
+
+pub(crate) fn workspace_root() -> anyhow::Result<PathBuf> {
+    workspace_root_from_metadata(&cargo_metadata()?)
 }
 
 fn cmd_docs_routes() -> anyhow::Result<()> {
@@ -707,9 +710,10 @@ fn extract_route_literals_from_source(
     routes
 }
 
-fn packages_in_workspace() -> anyhow::Result<Vec<(String, PathBuf)>> {
-    let meta = cargo_metadata()?;
-    let root = workspace_root()?;
+fn packages_in_workspace_from_metadata(
+    meta: &serde_json::Value,
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let root = workspace_root_from_metadata(meta)?;
     let packages = meta["packages"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("packages not found in metadata"))?;
@@ -729,6 +733,10 @@ fn packages_in_workspace() -> anyhow::Result<Vec<(String, PathBuf)>> {
         })
         .collect();
     Ok(result)
+}
+
+fn packages_in_workspace() -> anyhow::Result<Vec<(String, PathBuf)>> {
+    packages_in_workspace_from_metadata(&cargo_metadata()?)
 }
 
 fn cmd_structure() -> anyhow::Result<()> {
@@ -907,7 +915,7 @@ fn count_rs_lines(dir: &Path, package_name: &str) -> io::Result<RsLineCounts> {
 fn cmd_budget() -> anyhow::Result<()> {
     let metadata = cargo_metadata()?;
     let config = BudgetConfig::from_metadata(&metadata)?;
-    let packages = packages_in_workspace()?;
+    let packages = packages_in_workspace_from_metadata(&metadata)?;
 
     let mut product_total = 0;
     let mut test_total = 0;

@@ -157,11 +157,11 @@ pub async fn generate_fedcm_token<R: Repository>(
     };
     let now = qid_core::util::now_seconds();
     let mut extra = HashMap::new();
-    if account.email_verified {
-        if let Some(email) = account.email.filter(|email| !email.is_empty()) {
-            extra.insert("email".to_string(), serde_json::json!(email));
-            extra.insert("email_verified".to_string(), serde_json::json!(true));
-        }
+    if account.email_verified
+        && let Some(email) = account.email.filter(|email| !email.is_empty())
+    {
+        extra.insert("email".to_string(), serde_json::json!(email));
+        extra.insert("email_verified".to_string(), serde_json::json!(true));
     }
     extra.insert("name".to_string(), serde_json::json!(identity.name));
     extra.insert(

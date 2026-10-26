@@ -1,5 +1,6 @@
 //! Storage tests deliberately supply verification outcomes, not signatures. The
 //! service must perform cryptographic verification before requesting transitions.
+use crate::sql::test_support::IsolatedDb;
 use crate::{FileRepository, SqlRepository, prelude::*};
 use qid_core::{QidError, models::*, tenant::RealmId};
 
@@ -839,15 +840,9 @@ async fn file_push_contract() {
 }
 #[tokio::test]
 async fn sql_push_contract() {
-    let dir = std::env::temp_dir().join(format!("qid-push-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
-    contract(&repo).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let db = IsolatedDb::setup().await;
+    contract(db.repo()).await;
+    db.cleanup().await;
 }
 
 #[test]
@@ -1162,13 +1157,11 @@ async fn malformed_file_push_records_fail_closed() {
 
 #[tokio::test]
 async fn malformed_sql_push_records_fail_closed() {
-    let dir = std::env::temp_dir().join(format!("qid-push-corrupt-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let url = format!("sqlite:{}", dir.join("store.db").display());
-    let repo = SqlRepository::connect(&url).await.unwrap();
-    repo.migrate().await.unwrap();
-    seed(&repo).await;
-    active(&repo, "device").await;
+    let db = IsolatedDb::setup().await;
+    let url = db.url().to_string();
+    let repo = db.repo();
+    seed(repo).await;
+    active(repo, "device").await;
     let challenge = login("login", "device");
     repo.fixture_login(&challenge, 10_000, 86_400)
         .await
@@ -1226,9 +1219,8 @@ async fn malformed_sql_push_records_fail_closed() {
         repo.get_push_login(&"realm".into(), "owner", "login").await,
         Err(QidError::Internal { .. })
     ));
-    assert_corrupt_pending(&repo, &pending).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    assert_corrupt_pending(repo, &pending).await;
+    db.cleanup().await;
 }
 
 async fn assert_corrupt_pending(
@@ -1772,15 +1764,9 @@ async fn file_push_quota_cleanup_contract() {
 }
 #[tokio::test]
 async fn sql_push_quota_cleanup_contract() {
-    let dir = std::env::temp_dir().join(format!("qid-push-quota-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
-    quota_cleanup_contract(&repo).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let db = IsolatedDb::setup().await;
+    quota_cleanup_contract(db.repo()).await;
+    db.cleanup().await;
 }
 
 // Deterministic ordering of the two competing transitions: cleanup first makes
@@ -1950,24 +1936,17 @@ async fn file_cleanup_activation_and_retention_guards() {
 
 #[tokio::test]
 async fn sql_cleanup_activation_and_retention_guards() {
-    let dir = std::env::temp_dir().join(format!("qid-push-guards-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let url = format!("sqlite:{}", dir.join("store.db").display());
-    let repo = SqlRepository::connect(&url).await.unwrap();
-    repo.migrate().await.unwrap();
-    cleanup_activation_contract(&repo).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let db = IsolatedDb::setup().await;
+    cleanup_activation_contract(db.repo()).await;
+    db.cleanup().await;
 }
 
 #[tokio::test]
 async fn sql_push_expiry_metadata_mirrors_lifecycle_and_fails_closed() {
-    let dir = std::env::temp_dir().join(format!("qid-push-metadata-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let url = format!("sqlite:{}", dir.join("store.db").display());
-    let repo = SqlRepository::connect(&url).await.unwrap();
-    repo.migrate().await.unwrap();
-    seed(&repo).await;
+    let db = IsolatedDb::setup().await;
+    let url = db.url().to_string();
+    let repo = db.repo();
+    seed(repo).await;
     let c = registration("metadata");
     assert!(repo.fixture_registration(&c, 1, 60).await.unwrap());
     let pool = sqlx::AnyPool::connect(&url).await.unwrap();
@@ -2018,8 +1997,7 @@ async fn sql_push_expiry_metadata_mirrors_lifecycle_and_fails_closed() {
         Err(QidError::Internal { .. })
     ));
     pool.close().await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    db.cleanup().await;
 }
 
 #[async_trait::async_trait]
@@ -2243,15 +2221,9 @@ async fn file_delayed_admission_cleanup_boundary() {
 }
 #[tokio::test]
 async fn sql_delayed_admission_cleanup_boundary() {
-    let dir = std::env::temp_dir().join(format!("qid-delayed-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
-    delayed_admission_contract(&repo).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let db = IsolatedDb::setup().await;
+    delayed_admission_contract(db.repo()).await;
+    db.cleanup().await;
 }
 #[tokio::test]
 async fn file_cleanup_restores_only_removed_rows_on_write_failure() {
@@ -2344,15 +2316,9 @@ async fn file_push_registration_activation_clock() {
 }
 #[tokio::test]
 async fn sql_push_registration_activation_clock() {
-    let dir = std::env::temp_dir().join(format!("qid-activation-clock-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
-    registration_activation_clock_contract(&repo).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let db = IsolatedDb::setup().await;
+    registration_activation_clock_contract(db.repo()).await;
+    db.cleanup().await;
 }
 
 async fn resend_contract(repo: &impl FixtureRepository) {
@@ -2633,15 +2599,9 @@ async fn file_push_resend_contract() {
 }
 #[tokio::test]
 async fn sql_push_resend_contract() {
-    let dir = std::env::temp_dir().join(format!("qid-resend-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
-    resend_contract(&repo).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let db = IsolatedDb::setup().await;
+    resend_contract(db.repo()).await;
+    db.cleanup().await;
 }
 
 #[test]
@@ -2812,13 +2772,7 @@ async fn file_push_resend_retention_and_public_snapshot() {
 }
 #[tokio::test]
 async fn sql_push_resend_retention_and_public_snapshot() {
-    let dir = std::env::temp_dir().join(format!("qid-resend-retention-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
-    resend_retention_contract(&repo).await;
-    repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let db = IsolatedDb::setup().await;
+    resend_retention_contract(db.repo()).await;
+    db.cleanup().await;
 }

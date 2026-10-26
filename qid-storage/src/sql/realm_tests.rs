@@ -1,4 +1,4 @@
-use super::iga_tests::test_support::IsolatedDb;
+use super::test_support::IsolatedDb;
 use super::*;
 
 async fn setup() -> IsolatedDb {

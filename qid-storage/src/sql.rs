@@ -41,6 +41,8 @@ mod service_account;
 mod session;
 mod siem;
 mod ssf;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod token;
 mod user;
 mod vc;

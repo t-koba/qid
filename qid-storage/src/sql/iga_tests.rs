@@ -1,8 +1,5 @@
-use self::test_support::IsolatedDb;
+use super::test_support::IsolatedDb;
 use super::*;
-
-#[path = "test_support.rs"]
-pub(in crate::sql) mod test_support;
 use crate::iga_grants::tests::{fixture, rejects_invalid_sets};
 
 #[tokio::test]

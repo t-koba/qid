@@ -1,11 +1,11 @@
-//! Test-only shared SQLite fixture for the SQL unit tests.
+//! Test-only shared SQLite fixture for SQL-backed unit tests.
 //!
 //! Each test used to create a fresh database and run all migrations. With 65
 //! migrations that repeats the same work per test, while
 //! `qid-storage/tests/support` already showed that copying a migrated schema
-//! template keeps every test database isolated. This helper brings that
-//! pattern to the in-crate SQL tests: one migrated schema template per test
-//! process, copied to a distinct per-test database file.
+//! template keeps every test database isolated. This helper provides one
+//! migrated schema template per process, copied to distinct per-test database
+//! files for SQL-backed unit tests.
 //!
 //! Fresh-migration coverage stays where it is: `test_connect_and_migrate` and
 //! the migration-plan tests in `qid-storage/tests/sql_repository.rs` keep
@@ -13,7 +13,7 @@
 //! Seed and transaction behavior is unchanged: callers apply their seed SQL
 //! after the copy, on the per-test database only.
 
-use super::super::SqlRepository;
+use super::SqlRepository;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -93,14 +93,14 @@ async fn schema_template() -> PathBuf {
 /// the file handle and removal fails. Call [`IsolatedDb::cleanup`] at the end
 /// of the test; the `Drop` impl only best-effort removes files for panic
 /// paths where the pool could not be closed.
-pub(in crate::sql) struct IsolatedDb {
+pub(crate) struct IsolatedDb {
     path: PathBuf,
     url: String,
     repo: Option<SqlRepository>,
 }
 
 impl IsolatedDb {
-    pub(in crate::sql) async fn setup() -> Self {
+    pub(crate) async fn setup() -> Self {
         let template = schema_template().await;
         let n = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
         let path = test_root().join(format!("test_{n}.db"));
@@ -116,17 +116,17 @@ impl IsolatedDb {
         }
     }
 
-    pub(in crate::sql) fn repo(&self) -> &SqlRepository {
+    pub(crate) fn repo(&self) -> &SqlRepository {
         self.repo
             .as_ref()
             .expect("unit-test database repository exists")
     }
 
-    pub(in crate::sql) fn url(&self) -> &str {
+    pub(crate) fn url(&self) -> &str {
         &self.url
     }
 
-    pub(in crate::sql) async fn cleanup(mut self) {
+    pub(crate) async fn cleanup(mut self) {
         if let Some(repo) = self.repo.take() {
             repo.close().await;
         }

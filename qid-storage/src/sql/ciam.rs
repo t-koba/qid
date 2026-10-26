@@ -206,14 +206,14 @@ impl CiamRepository for SqlRepository {
         Ok(verified)
     }
 
-    async fn try_issue_email_magic_link_challenge(
+    async fn try_issue_email_challenge(
         &self,
         challenge: &CiamVerificationChallengeRecord,
         max_issuances: u32,
         window_seconds: u64,
     ) -> QidResult<bool> {
         let start =
-            crate::domain::email_magic_link_window_start(challenge, max_issuances, window_seconds)?;
+            crate::domain::email_challenge_window_start(challenge, max_issuances, window_seconds)?;
         // Serialize admission before checking the budget, as for password resets.
         let mut tx = self
             .pool
@@ -247,15 +247,16 @@ impl CiamRepository for SqlRepository {
         }
         let current_owner: Option<String> = sqlx::query_scalar(match self.database_kind {
             SqlDatabaseKind::Sqlite => {
-                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = 1"
+                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = $4"
             }
             SqlDatabaseKind::Postgres => {
-                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = 1 FOR UPDATE"
+                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = $4 FOR UPDATE"
             }
         })
         .bind(&challenge.user_id)
         .bind(&challenge.realm_id)
         .bind(&challenge.address)
+        .bind(i64::from(challenge.purpose == "email_magic_link"))
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage_to_qid_error)?;

@@ -1,5 +1,6 @@
 //! One confirmation contract, exercised against both supported stores.
 use qid_core::{
+    QidError,
     models::{CiamVerificationChallengeRecord, User},
     tenant::RealmId,
 };
@@ -313,5 +314,351 @@ fn file_email_verification_is_durable_even_with_interval_flush_and_rolls_back_fa
     // Dropping the runtime cancels the interval task and releases its file lock
     // before cleanup, including on Windows.
     drop(runtime);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn issuance(
+    realm: &str,
+    user: &str,
+    address: &str,
+    id: &str,
+    created_at: u64,
+) -> CiamVerificationChallengeRecord {
+    CiamVerificationChallengeRecord {
+        id: id.into(),
+        realm_id: realm.into(),
+        user_id: user.into(),
+        channel: "email".into(),
+        address: address.into(),
+        purpose: "email_verification".into(),
+        code_hash: "plain-verification-hash".into(),
+        attempt_count: 0,
+        expires_at_epoch_seconds: created_at + 100,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: created_at,
+    }
+}
+
+fn ml2_proof() -> String {
+    format!("ml2:{}:{}", "a".repeat(64), "b".repeat(64))
+}
+
+async fn issue(
+    repo: &impl Repository,
+    challenge: &CiamVerificationChallengeRecord,
+    cap: u32,
+    window: u64,
+) -> bool {
+    repo.try_issue_email_challenge(challenge, cap, window)
+        .await
+        .unwrap()
+}
+
+async fn missing(repo: &impl Repository, id: &str) -> bool {
+    repo.get_ciam_verification_challenge(&"test".into(), id)
+        .await
+        .unwrap()
+        .is_none()
+}
+
+/// The same rolling per-(realm,user,purpose) admission as email magic-link:
+/// only the same realm/user's current stored email while still unverified is
+/// admitted, failed deliveries and newer records still spend the budget, and a
+/// magic-link proof is never admissible as email verification (or vice versa).
+async fn issuance_contract(repo: &impl Repository) {
+    seed(repo).await;
+    // Admission refuses a stale destination, a foreign realm, and an owner
+    // whose stored email is already verified.
+    let stale = issuance("test", "owner", "old@example.com", "stale-address", 100);
+    assert!(!issue(repo, &stale, 1, 10).await);
+    assert!(missing(repo, &stale.id).await);
+    let foreign = issuance("other", "owner", "owner@example.com", "foreign-realm", 100);
+    assert!(!issue(repo, &foreign, 1, 10).await);
+    let mut verified = repo.get_user_by_id("owner").await.unwrap().unwrap();
+    verified.email_verified = true;
+    repo.update_user(&verified).await.unwrap();
+    let ineligible = issuance("test", "owner", "owner@example.com", "verified-owner", 100);
+    assert!(!issue(repo, &ineligible, 1, 10).await);
+    assert!(missing(repo, &ineligible.id).await);
+    verified.email_verified = false;
+    repo.update_user(&verified).await.unwrap();
+    // Stored records of another purpose, owner or realm do not spend this
+    // account's email-verification budget.
+    repo.create_realm(
+        &"tenant".into(),
+        &"other".into(),
+        "https://id.example.com/other",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_user(&User {
+        id: "secondary".into(),
+        realm_id: "test".into(),
+        email: Some("secondary@example.com".into()),
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    for (kind, realm, user, purpose) in [
+        ("purpose", "test", "owner", "email_magic_link"),
+        ("user", "test", "secondary", "email_verification"),
+        ("realm", "other", "owner", "email_verification"),
+    ] {
+        let mut unrelated = issuance(
+            realm,
+            user,
+            "owner@example.com",
+            &format!("unrelated-{kind}"),
+            100,
+        );
+        unrelated.purpose = purpose.into();
+        if user == "secondary" {
+            unrelated.address = "secondary@example.com".into();
+        }
+        repo.store_ciam_verification_challenge(&unrelated)
+            .await
+            .unwrap();
+    }
+    // Independent owners are eligible through admission, not just raw storage.
+    let secondary = issuance(
+        "test",
+        "secondary",
+        "secondary@example.com",
+        "secondary-issued",
+        100,
+    );
+    assert!(issue(repo, &secondary, 2, 10).await);
+    assert!(
+        !issue(
+            repo,
+            &issuance(
+                "test",
+                "secondary",
+                "secondary@example.com",
+                "secondary-full",
+                100
+            ),
+            2,
+            10
+        )
+        .await
+    );
+    let mut other = repo.get_user_by_id("secondary").await.unwrap().unwrap();
+    other.id = "other-owner".into();
+    other.realm_id = "other".into();
+    repo.create_user(&other).await.unwrap();
+    let other_challenge = issuance(
+        "other",
+        "other-owner",
+        "secondary@example.com",
+        "other-issued",
+        100,
+    );
+    assert!(issue(repo, &other_challenge, 1, 10).await);
+    assert_eq!(
+        repo.get_ciam_verification_challenge(&"other".into(), &other_challenge.id)
+            .await
+            .unwrap(),
+        Some(other_challenge)
+    );
+    let mut earliest = issuance("test", "owner", "owner@example.com", "saturating-window", 1);
+    earliest.expires_at_epoch_seconds = 2;
+    assert!(issue(repo, &earliest, 1, 86400).await);
+    let old = issuance("test", "owner", "owner@example.com", "old-consumed", 100);
+    let mut old = old;
+    old.expires_at_epoch_seconds = 101;
+    assert!(issue(repo, &old, 1, 10).await);
+    assert!(confirm(repo, "test", &old.id, "owner", &old.code_hash, 101, 5).await);
+    assert_eq!(
+        row(repo, &old.id).await.consumed_at_epoch_seconds,
+        Some(101)
+    );
+    verified.email_verified = false;
+    verified.email = Some("replacement@example.com".into());
+    repo.update_user(&verified).await.unwrap();
+    let changed_address = issuance(
+        "test",
+        "owner",
+        "replacement@example.com",
+        "changed-address",
+        109,
+    );
+    assert!(!issue(repo, &changed_address, 1, 10).await);
+    verified.email = Some("owner@example.com".into());
+    repo.update_user(&verified).await.unwrap();
+    // Window [100,109]: the old record still counts at equality.
+    let next = issuance("test", "owner", "owner@example.com", "not-delivered", 109);
+    assert!(!issue(repo, &next, 1, 10).await);
+    assert!(missing(repo, &next.id).await);
+    // Window [101,110]: the old creation is now outside, exactly one second later.
+    let mut next = next;
+    next.id = "admitted-after-window".into();
+    next.created_at_epoch_seconds = 110;
+    next.expires_at_epoch_seconds = 210;
+    assert!(issue(repo, &next, 1, 10).await);
+    // A failed delivery is deliberately not deleted, nor discounted after expiry.
+    let mut suppressed = issuance("test", "owner", "owner@example.com", "suppressed", 119);
+    suppressed.expires_at_epoch_seconds = 219;
+    assert!(!issue(repo, &suppressed, 1, 10).await);
+    assert!(missing(repo, &suppressed.id).await);
+    let mut duplicate = suppressed.clone();
+    duplicate.id = next.id.clone();
+    assert!(matches!(
+        repo.try_issue_email_challenge(&duplicate, 1, 10).await,
+        Err(QidError::Conflict { .. })
+    ));
+    assert_eq!(row(repo, &next.id).await, next);
+
+    let future = issuance("test", "owner", "owner@example.com", "newer-record", 1000);
+    assert!(issue(repo, &future, 1, 10).await);
+    let backward = issuance("test", "owner", "owner@example.com", "clock-backward", 900);
+    assert!(!issue(repo, &backward, 1, 10).await);
+    assert!(missing(repo, &backward.id).await);
+
+    // Issuance serializes independent requests sharing the last budget slot.
+    let a = issuance("test", "owner", "owner@example.com", "concurrent-a", 2000);
+    let mut b = a.clone();
+    b.id = "concurrent-b".into();
+    let (issued_a, issued_b) = tokio::join!(
+        repo.try_issue_email_challenge(&a, 1, 10),
+        repo.try_issue_email_challenge(&b, 1, 10),
+    );
+    assert_ne!(issued_a.unwrap(), issued_b.unwrap());
+    assert_ne!(
+        repo.get_ciam_verification_challenge(&"test".into(), &a.id)
+            .await
+            .unwrap()
+            .is_some(),
+        repo.get_ciam_verification_challenge(&"test".into(), &b.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Invalid admission inputs fail closed without inserting anything: the
+    // wrong channel, either cross-kind proof confusion, attempts, consumption
+    // and unrepresentable expiry all refuse before any budget accounting.
+    for kind in [
+        "channel",
+        "magic-link-purpose",
+        "verification-proof",
+        "other-purpose",
+        "attempts",
+        "consumed",
+        "timestamp",
+        "empty-hash",
+    ] {
+        let mut invalid = issuance(
+            "test",
+            "owner",
+            "owner@example.com",
+            &format!("invalid-{kind}"),
+            3000,
+        );
+        invalid.expires_at_epoch_seconds = 3100;
+        match kind {
+            "channel" => invalid.channel = "phone".into(),
+            "magic-link-purpose" => invalid.purpose = "email_magic_link".into(),
+            "verification-proof" => invalid.code_hash = ml2_proof(),
+            "other-purpose" => invalid.purpose = "verify_email".into(),
+            "attempts" => invalid.attempt_count = 1,
+            "consumed" => invalid.consumed_at_epoch_seconds = Some(3001),
+            "timestamp" => invalid.expires_at_epoch_seconds = u64::MAX,
+            _ => invalid.code_hash.clear(),
+        }
+        assert!(
+            matches!(
+                repo.try_issue_email_challenge(&invalid, 1, 10).await,
+                Err(QidError::BadRequest { .. })
+            ),
+            "{kind} must fail closed"
+        );
+        assert!(missing(repo, &invalid.id).await);
+    }
+    for (cap, window) in [(0, 10), (1, 0), (1, 86401)] {
+        let budget = issuance("test", "owner", "owner@example.com", "invalid-budget", 3000);
+        assert!(
+            repo.try_issue_email_challenge(&budget, cap, window)
+                .await
+                .is_err()
+        );
+    }
+    // A one-second window excludes the previous second; the largest window is supported.
+    let short = issuance("test", "owner", "owner@example.com", "short-window", 3001);
+    assert!(issue(repo, &short, 1, 1).await);
+    let long = issuance("test", "owner", "owner@example.com", "long-window", 90000);
+    assert!(issue(repo, &long, 1, 86400).await);
+
+    // The budget key is purpose, not channel. Even an old phone record of this
+    // purpose counts; raising the cap admits exactly the next remaining slot.
+    let mut legacy = issuance("test", "owner", "owner@example.com", "legacy-phone", 94999);
+    legacy.channel = "phone".into();
+    legacy.expires_at_epoch_seconds = 96000;
+    repo.store_ciam_verification_challenge(&legacy)
+        .await
+        .unwrap();
+    let later = issuance("test", "owner", "owner@example.com", "larger-budget", 95000);
+    assert!(!issue(repo, &later, 1, 10).await);
+    assert!(issue(repo, &later, 2, 10).await);
+    let mut spent = later.clone();
+    spent.id = "larger-budget-spent".into();
+    assert!(!issue(repo, &spent, 2, 10).await);
+    assert!(missing(repo, &spent.id).await);
+}
+
+#[tokio::test]
+async fn file_email_verification_issuance_budget() {
+    let dir = std::env::temp_dir().join(format!("qid-email-issuance-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = FileRepository::new(dir.join("store.json").to_str().unwrap())
+        .await
+        .unwrap();
+    issuance_contract(&repo).await;
+    let before = row(&repo, "larger-budget").await;
+    drop(repo);
+    let repo = FileRepository::new(dir.join("store.json").to_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(row(&repo, &before.id).await, before);
+    assert!(
+        !issue(
+            &repo,
+            &issuance("test", "owner", "owner@example.com", "after-reopen", 95000),
+            2,
+            10
+        )
+        .await
+    );
+    drop(repo);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_email_verification_issuance_budget() {
+    let dir = std::env::temp_dir().join(format!("qid-email-issuance-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let url = format!("sqlite:{}", dir.join("store.db").display());
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    repo.migrate().await.unwrap();
+    issuance_contract(&repo).await;
+    let before = row(&repo, "larger-budget").await;
+    repo.close().await;
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    assert_eq!(row(&repo, &before.id).await, before);
+    assert!(
+        !issue(
+            &repo,
+            &issuance("test", "owner", "owner@example.com", "after-reopen", 95000),
+            2,
+            10
+        )
+        .await
+    );
+    repo.close().await;
     std::fs::remove_dir_all(dir).unwrap();
 }

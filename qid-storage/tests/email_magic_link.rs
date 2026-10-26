@@ -82,7 +82,7 @@ async fn contract(repo: &impl Repository) {
         }
         assert!(
             !repo
-                .try_issue_email_magic_link_challenge(&invalid, 1, 10)
+                .try_issue_email_challenge(&invalid, 1, 10)
                 .await
                 .unwrap()
         );
@@ -100,7 +100,7 @@ async fn contract(repo: &impl Repository) {
     ineligible.id = "unverified-owner".into();
     assert!(
         !repo
-            .try_issue_email_magic_link_challenge(&ineligible, 1, 10)
+            .try_issue_email_challenge(&ineligible, 1, 10)
             .await
             .unwrap()
     );
@@ -128,29 +128,20 @@ async fn contract(repo: &impl Repository) {
     earliest.created_at_epoch_seconds = 1;
     earliest.expires_at_epoch_seconds = 2;
     assert!(
-        repo.try_issue_email_magic_link_challenge(&earliest, 1, 86400)
+        repo.try_issue_email_challenge(&earliest, 1, 86400)
             .await
             .unwrap()
     );
     let mut old = base.clone();
     old.id = "old-consumed".into();
     old.expires_at_epoch_seconds = 101;
-    assert!(
-        repo.try_issue_email_magic_link_challenge(&old, 1, 10)
-            .await
-            .unwrap()
-    );
+    assert!(repo.try_issue_email_challenge(&old, 1, 10).await.unwrap());
     assert!(redeem(repo, &old, &old.code_hash, 101, 2).await.is_some());
     let mut next = base.clone();
     next.id = "not-delivered".into();
     next.created_at_epoch_seconds = 109;
     // Window [100,109]: the consumed, expired record still counts at equality.
-    assert!(
-        !repo
-            .try_issue_email_magic_link_challenge(&next, 1, 10)
-            .await
-            .unwrap()
-    );
+    assert!(!repo.try_issue_email_challenge(&next, 1, 10).await.unwrap());
     assert!(
         repo.get_ciam_verification_challenge(&"test".into(), &next.id)
             .await
@@ -160,11 +151,7 @@ async fn contract(repo: &impl Repository) {
     // Window [101,110]: the old creation is now outside, exactly one second later.
     next.created_at_epoch_seconds = 110;
     next.expires_at_epoch_seconds = 111;
-    assert!(
-        repo.try_issue_email_magic_link_challenge(&next, 1, 10)
-            .await
-            .unwrap()
-    );
+    assert!(repo.try_issue_email_challenge(&next, 1, 10).await.unwrap());
     let mut suppressed = next.clone();
     suppressed.id = "suppressed".into();
     suppressed.created_at_epoch_seconds = 119;
@@ -172,7 +159,7 @@ async fn contract(repo: &impl Repository) {
     // A failed delivery is deliberately not deleted, nor discounted after expiry.
     assert!(
         !repo
-            .try_issue_email_magic_link_challenge(&suppressed, 1, 10)
+            .try_issue_email_challenge(&suppressed, 1, 10)
             .await
             .unwrap()
     );
@@ -180,15 +167,13 @@ async fn contract(repo: &impl Repository) {
     duplicate.id = next.id.clone();
     duplicate.code_hash = proof("d", "e");
     assert!(matches!(
-        repo.try_issue_email_magic_link_challenge(&duplicate, 1, 10)
-            .await,
+        repo.try_issue_email_challenge(&duplicate, 1, 10).await,
         Err(QidError::Conflict { .. })
     ));
     assert_eq!(row(repo, &next.id).await, next);
     duplicate.user_id = "secondary".into(); // global identity is immutable across owners too
     assert!(matches!(
-        repo.try_issue_email_magic_link_challenge(&duplicate, 1, 10)
-            .await,
+        repo.try_issue_email_challenge(&duplicate, 1, 10).await,
         Err(QidError::Conflict { .. })
     ));
     assert_eq!(row(repo, &next.id).await, next);
@@ -198,7 +183,7 @@ async fn contract(repo: &impl Repository) {
     future.created_at_epoch_seconds = 1000;
     future.expires_at_epoch_seconds = 1100;
     assert!(
-        repo.try_issue_email_magic_link_challenge(&future, 1, 10)
+        repo.try_issue_email_challenge(&future, 1, 10)
             .await
             .unwrap()
     );
@@ -207,7 +192,7 @@ async fn contract(repo: &impl Repository) {
     backward.created_at_epoch_seconds = 900;
     assert!(
         !repo
-            .try_issue_email_magic_link_challenge(&backward, 1, 10)
+            .try_issue_email_challenge(&backward, 1, 10)
             .await
             .unwrap()
     );
@@ -220,8 +205,8 @@ async fn contract(repo: &impl Repository) {
     let mut b = a.clone();
     b.id = "concurrent-b".into();
     let (issued_a, issued_b) = tokio::join!(
-        repo.try_issue_email_magic_link_challenge(&a, 1, 10),
-        repo.try_issue_email_magic_link_challenge(&b, 1, 10),
+        repo.try_issue_email_challenge(&a, 1, 10),
+        repo.try_issue_email_challenge(&b, 1, 10),
     );
     assert_ne!(issued_a.unwrap(), issued_b.unwrap());
     assert_ne!(
@@ -257,8 +242,7 @@ async fn contract(repo: &impl Repository) {
             _ => invalid.code_hash.clear(),
         }
         assert!(matches!(
-            repo.try_issue_email_magic_link_challenge(&invalid, 1, 10)
-                .await,
+            repo.try_issue_email_challenge(&invalid, 1, 10).await,
             Err(QidError::BadRequest { .. })
         ));
         assert!(
@@ -270,7 +254,7 @@ async fn contract(repo: &impl Repository) {
     }
     for (cap, window) in [(0, 10), (1, 0), (1, 86401)] {
         assert!(
-            repo.try_issue_email_magic_link_challenge(&base, cap, window)
+            repo.try_issue_email_challenge(&base, cap, window)
                 .await
                 .is_err()
         );
@@ -280,17 +264,13 @@ async fn contract(repo: &impl Repository) {
     short.id = "short-window".into();
     short.created_at_epoch_seconds = 2001;
     short.expires_at_epoch_seconds = 2100;
-    assert!(
-        repo.try_issue_email_magic_link_challenge(&short, 1, 1)
-            .await
-            .unwrap()
-    );
+    assert!(repo.try_issue_email_challenge(&short, 1, 1).await.unwrap());
     let mut long = short.clone();
     long.id = "long-window".into();
     long.created_at_epoch_seconds = 90000;
     long.expires_at_epoch_seconds = 90001;
     assert!(
-        repo.try_issue_email_magic_link_challenge(&long, 1, 86400)
+        repo.try_issue_email_challenge(&long, 1, 86400)
             .await
             .unwrap()
     );
@@ -309,24 +289,10 @@ async fn contract(repo: &impl Repository) {
     later.id = "larger-budget".into();
     later.channel = "email".into();
     later.created_at_epoch_seconds = 95000;
-    assert!(
-        !repo
-            .try_issue_email_magic_link_challenge(&later, 1, 10)
-            .await
-            .unwrap()
-    );
-    assert!(
-        repo.try_issue_email_magic_link_challenge(&later, 2, 10)
-            .await
-            .unwrap()
-    );
+    assert!(!repo.try_issue_email_challenge(&later, 1, 10).await.unwrap());
+    assert!(repo.try_issue_email_challenge(&later, 2, 10).await.unwrap());
     later.id = "larger-budget-spent".into();
-    assert!(
-        !repo
-            .try_issue_email_magic_link_challenge(&later, 2, 10)
-            .await
-            .unwrap()
-    );
+    assert!(!repo.try_issue_email_challenge(&later, 2, 10).await.unwrap());
 
     // Redemption rejects foreign/inactive records without spending attempts.
     repo.store_ciam_verification_challenge(&base).await.unwrap();
@@ -602,11 +568,7 @@ fn file_magic_link_interval_mode_persists_and_rolls_back_errors() {
         let c = seed(&repo).await;
         let tmp = path.with_extension("tmp");
         std::fs::create_dir(&tmp).unwrap();
-        assert!(
-            repo.try_issue_email_magic_link_challenge(&c, 1, 10)
-                .await
-                .is_err()
-        );
+        assert!(repo.try_issue_email_challenge(&c, 1, 10).await.is_err());
         assert!(
             repo.get_ciam_verification_challenge(&"test".into(), &c.id)
                 .await
@@ -614,11 +576,7 @@ fn file_magic_link_interval_mode_persists_and_rolls_back_errors() {
                 .is_none()
         );
         std::fs::remove_dir(&tmp).unwrap();
-        assert!(
-            repo.try_issue_email_magic_link_challenge(&c, 1, 10)
-                .await
-                .unwrap()
-        );
+        assert!(repo.try_issue_email_challenge(&c, 1, 10).await.unwrap());
         let issued = std::fs::read(&path).unwrap();
         std::fs::create_dir(&tmp).unwrap();
         for hash in [&proof("a", "c"), &c.code_hash] {
@@ -662,7 +620,7 @@ async fn sql_magic_link_storage_errors_roll_back_admission_and_redemption() {
     sqlx::query("CREATE TRIGGER fail_issuance BEFORE INSERT ON ciam_verification_challenges BEGIN SELECT RAISE(ABORT, 'injected storage error'); END")
         .execute(&pool).await.unwrap();
     assert!(matches!(
-        repo.try_issue_email_magic_link_challenge(&c, 1, 10).await,
+        repo.try_issue_email_challenge(&c, 1, 10).await,
         Err(QidError::Storage { .. })
     ));
     assert!(
@@ -675,11 +633,7 @@ async fn sql_magic_link_storage_errors_roll_back_admission_and_redemption() {
         .execute(&pool)
         .await
         .unwrap();
-    assert!(
-        repo.try_issue_email_magic_link_challenge(&c, 1, 10)
-            .await
-            .unwrap()
-    );
+    assert!(repo.try_issue_email_challenge(&c, 1, 10).await.unwrap());
     // Failure of consumption must roll back the earlier attempt increment too.
     sqlx::query("CREATE TRIGGER fail_consumption BEFORE UPDATE OF consumed_at_epoch_seconds ON ciam_verification_challenges BEGIN SELECT RAISE(ABORT, 'injected storage error'); END")
         .execute(&pool).await.unwrap();

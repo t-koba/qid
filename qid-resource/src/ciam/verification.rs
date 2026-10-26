@@ -121,6 +121,27 @@ pub async fn verification_issue<R: Repository>(
         created_at_epoch_seconds: now,
     };
     record.code_hash = secret_hash(&record, &code);
+    let Ok(_delivery_slot) = state
+        .notification_delivery_slots
+        .clone()
+        .try_acquire_owned()
+    else {
+        return unavailable();
+    };
+    // Admit before delivery so concurrency and failures spend the budget; persistence is never success.
+    match state
+        .repo
+        .try_issue_email_challenge(
+            &record,
+            policy.max_issuances_per_window,
+            policy.issuance_window_seconds,
+        )
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return rejected(),
+        Err(error) => return qid_http::error_response(error),
+    }
     let response = transport
         .send(NotificationRequest {
             channel: NotificationChannel::Email,
@@ -139,9 +160,6 @@ pub async fn verification_issue<R: Repository>(
         Ok(response) if response.sent && (200..300).contains(&response.status) => response.status,
         _ => return unavailable(), // Never log secret-bearing adapter errors.
     };
-    if let Err(error) = state.repo.store_ciam_verification_challenge(&record).await {
-        return qid_http::error_response(error);
-    }
     let event = AuditEvent {
         id: format!("audit_{}", ulid::Ulid::new()),
         realm_id: Some(realm),

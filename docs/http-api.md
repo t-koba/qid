@@ -299,10 +299,17 @@ channel, purpose, time or policy. Unknown request fields are rejected.
 Configure `server.notification` and the realm's
 `authentication.email_verification` policy (see [configuration](configuration.md)).
 Without both configuration and a composed transport, issuance returns `503`.
+Before delivery, atomic repository admission checks that the session owner still
+belongs to the realm, has the same stored address and remains unverified, then
+persists the challenge under the realm/user/purpose issuance budget (default
+5 per rolling 3600 seconds). Suppression or ineligibility returns `400` with
+`{"error":"email verification challenge unavailable"}` and sends nothing.
 Only adapter acceptance (`sent=true` and HTTP-equivalent status `200..299`)
-persists a challenge and appends a redacted delivery-acceptance audit event; this
-is not proof of address ownership. Transport failure or non-acceptance returns
-`503` without storing a challenge or logging adapter error details. The success
+appends a redacted delivery-acceptance audit event; this is not proof of address
+ownership. Transport failure or non-acceptance returns `503` without logging
+adapter error details or returning the challenge ID. The persisted challenge
+remains unconsumed and counts against the budget, so delivery failures and
+concurrent requests cannot bypass the limit. The success
 response is only `{"challenge_id":"verify_…","expires_at_epoch_seconds":…}`.
 Neither the secret, hash, recipient nor user ID is returned. Delivery contains
 both the challenge ID and a random 32-byte base64url secret (the `code`).

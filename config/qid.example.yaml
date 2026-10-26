@@ -131,6 +131,11 @@ realms:
         ttl_seconds: 900 # Server-derived expiry; range 1..1800.
         max_issuances_per_window: 5 # Per realm/user, includes failed deliveries.
         issuance_window_seconds: 3600 # Rolling window, range 1..86400.
+      email_verification:
+        ttl_seconds: 600 # Session-bound challenge expiry; range 1..3600.
+        max_attempts: 5 # Positive; attempts counted server-side.
+        max_issuances_per_window: 5 # Per realm/user/purpose, includes failed deliveries.
+        issuance_window_seconds: 3600 # Rolling window, range 1..86400.
       passkeys:
         enabled: true
         rp_id: "id.example.com"

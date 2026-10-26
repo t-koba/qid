@@ -533,19 +533,17 @@ pub trait CiamRepository: Send + Sync + 'static {
         attempted_at: u64,
         max_attempts: u32,
     ) -> QidResult<bool>;
-    /// Atomically admit a fresh email/email_magic_link challenge under a rolling
+    /// Atomically admit a fresh email challenge under a rolling
     /// per-(realm,user,purpose) budget. Count all records of that purpose created
     /// at or after `created_at.saturating_sub(window_seconds - 1)`, including
     /// consumed, expired, failed-delivery and newer records (clock rollback).
     /// Server-authored creation/expiry must fit i64; max_issuances must be positive
     /// and window_seconds must be 1..=86400, as for password-reset admission.
-    /// code_hash must use the versioned digest-pair encoding documented below.
-    /// Admission also requires the user to remain in the realm with this exact
-    /// currently verified stored email. Returns false without writing on
-    /// ineligibility or budget suppression; duplicate global IDs are
-    /// Conflict, and persistence errors are errors, never suppression. Identity
-    /// is immutable; fresh challenges have zero attempts and no consumption.
-    async fn try_issue_email_magic_link_challenge(
+    /// `email_magic_link` needs the digest-pair proof and verified email;
+    /// `email_verification` forbids the proof and needs the same email unverified.
+    /// False without writing on suppression/ineligibility; duplicates are Conflict.
+    /// Fresh attempts are zero, unconsumed; persistence errors are errors.
+    async fn try_issue_email_challenge(
         &self,
         challenge: &CiamVerificationChallengeRecord,
         max_issuances: u32,

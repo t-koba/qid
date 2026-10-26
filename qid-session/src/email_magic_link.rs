@@ -211,7 +211,7 @@ pub(crate) async fn send<R: Repository>(
             let _permit = permit;
             match state
                 .repo
-                .try_issue_email_magic_link_challenge(
+                .try_issue_email_challenge(
                     &record,
                     policy.max_issuances_per_window,
                     policy.issuance_window_seconds,

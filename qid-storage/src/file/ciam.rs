@@ -236,18 +236,17 @@ impl CiamRepository for FileRepository {
         })?
     }
 
-    async fn try_issue_email_magic_link_challenge(
+    async fn try_issue_email_challenge(
         &self,
         challenge: &CiamVerificationChallengeRecord,
         max_issuances: u32,
         window_seconds: u64,
     ) -> QidResult<bool> {
         let start =
-            crate::domain::email_magic_link_window_start(challenge, max_issuances, window_seconds)?;
+            crate::domain::email_challenge_window_start(challenge, max_issuances, window_seconds)?;
         let repo = self.clone();
         let challenge = challenge.clone();
-        // As for email verification, cancellation must not interrupt persistence
-        // or rollback, even when the repository uses interval flushing.
+        // Cancellation must not interrupt persistence or rollback under interval flushing.
         tokio::spawn(async move {
             let save_guard = repo.save_lock.lock().await;
             let mut store = repo.store.write().await;
@@ -260,7 +259,7 @@ impl CiamRepository for FileRepository {
             if !store.users.get(&challenge.user_id).is_some_and(|user| {
                 user.realm_id == challenge.realm_id
                     && user.email.as_deref() == Some(challenge.address.as_str())
-                    && user.email_verified
+                    && user.email_verified == (challenge.purpose == "email_magic_link")
             }) {
                 return Ok(false);
             }
@@ -294,7 +293,7 @@ impl CiamRepository for FileRepository {
         })
         .await
         .map_err(|_| QidError::Internal {
-            message: "magic-link issuance persistence task failed".into(),
+            message: "email challenge issuance persistence task failed".into(),
         })?
     }
 

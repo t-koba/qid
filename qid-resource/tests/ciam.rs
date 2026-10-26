@@ -1400,10 +1400,9 @@ async fn email_verification_requires_session_configuration_and_accepted_delivery
         let response =
             verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = json(response).await.to_string();
+        let body = json(response).await;
+        assert_eq!(body.as_object().unwrap().len(), 1);
         let request = delivery.requests.lock().unwrap().last().unwrap().clone();
-        assert!(!body.contains("Code:"));
-        assert!(!body.contains(&request.recipient));
         let id = request
             .body
             .lines()
@@ -1411,14 +1410,22 @@ async fn email_verification_requires_session_configuration_and_accepted_delivery
             .unwrap()
             .strip_prefix("Email verification challenge: ")
             .unwrap();
-        assert!(
-            state
-                .repo
-                .get_ciam_verification_challenge(&"test".into(), id)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        // Failed delivery is not success: no challenge id, secret or audit,
+        // but the admitted challenge persists and spends the issuance budget.
+        assert!(!body.to_string().contains(id));
+        assert!(!body.to_string().contains("Code:"));
+        assert!(!body.to_string().contains(&request.recipient));
+        let stored = state
+            .repo
+            .get_ciam_verification_challenge(&"test".into(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.attempt_count, 0);
+        assert!(stored.consumed_at_epoch_seconds.is_none());
+        let debug = format!("{request:?}");
+        assert!(!debug.contains(&request.body));
+        assert!(!debug.contains(&request.recipient));
     }
     assert!(
         state
@@ -1713,12 +1720,40 @@ async fn email_verification_delivery_failures_do_not_expose_secrets() {
     let body = json(response).await;
     assert_eq!(body["error"], "email verification delivery unavailable");
 
+    // Both admitted challenges persist unconsumed: failed delivery spends the
+    // per-account issuance budget instead of bypassing it.
+    let ids: Vec<String> = {
+        let requests = delivery.requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "both delivery attempts reached the adapter"
+        );
+        requests
+            .iter()
+            .map(|request| {
+                request
+                    .body
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .strip_prefix("Email verification challenge: ")
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    };
+    for id in &ids {
+        let stored = state
+            .repo
+            .get_ciam_verification_challenge(&"test".into(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.attempt_count, 0);
+        assert!(stored.consumed_at_epoch_seconds.is_none());
+    }
     let requests = delivery.requests.lock().unwrap();
-    assert_eq!(
-        requests.len(),
-        2,
-        "both delivery attempts reached the adapter"
-    );
     for request in requests.iter() {
         let code = request
             .body
@@ -1882,4 +1917,183 @@ async fn ciam_password_reset_capacity_suppression_is_generic_and_does_not_spend_
     assert_eq!(json(response).await, expected);
     drain_reset_deliveries(&state, 1).await;
     assert_eq!(delivery.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn email_verification_issuance_budget_suppresses_without_new_delivery() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let mut config = verification_config();
+    config.realms[0]
+        .authentication
+        .email_verification
+        .max_issuances_per_window = 2;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    let _ = delivered(&app, &cookie, &delivery).await;
+    let _ = delivered(&app, &cookie, &delivery).await;
+    assert_eq!(delivery.requests.lock().unwrap().len(), 2);
+    // The persisted budget is exhausted: suppression rejects without delivery.
+    let response =
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json(response).await;
+    assert_eq!(body["error"], "email verification challenge unavailable");
+    assert_eq!(delivery.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn email_verification_capacity_suppression_does_not_spend_budget() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let mut config = verification_config();
+    config
+        .server
+        .notification
+        .as_mut()
+        .unwrap()
+        .max_concurrent_deliveries = 1;
+    config.realms[0]
+        .authentication
+        .email_verification
+        .max_issuances_per_window = 1;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    let slot = state
+        .notification_delivery_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+
+    let response =
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(delivery.requests.lock().unwrap().is_empty());
+    drop(slot);
+
+    // Capacity suppression does not create a challenge or consume the user's
+    // issuance budget; the first delivery after release succeeds.
+    let _ = delivered(&app, &cookie, &delivery).await;
+    assert_eq!(delivery.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn email_verification_failed_delivery_spends_budget() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(0, Ordering::Relaxed);
+    let mut config = verification_config();
+    config.realms[0]
+        .authentication
+        .email_verification
+        .max_issuances_per_window = 1;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    let response =
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(delivery.requests.lock().unwrap().len(), 1);
+    // Adapter recovery does not recover the spent budget.
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let response =
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(delivery.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn email_verification_issue_requires_current_unverified_owner() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    let (app, state) =
+        setup_with_transport(verification_config(), &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    // An already-verified owner is ineligible: rejected before any delivery.
+    let mut user = state
+        .repo
+        .get_user_by_id("user-ciam")
+        .await
+        .unwrap()
+        .unwrap();
+    user.email_verified = true;
+    state.repo.update_user(&user).await.unwrap();
+    let response =
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(delivery.requests.lock().unwrap().is_empty());
+    // A changed stored address is the only destination, still unverified.
+    user.email_verified = false;
+    user.email = Some("new-address@example.com".into());
+    state.repo.update_user(&user).await.unwrap();
+    let response =
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let request = delivery.requests.lock().unwrap().last().unwrap().clone();
+    // The trusted stored address is the only destination; the body carries
+    // only the opaque challenge id, secret code and expiry.
+    assert_eq!(request.recipient, "new-address@example.com");
+}
+
+#[tokio::test]
+async fn email_verification_concurrent_request_cannot_bypass_pending_delivery() {
+    let delivery = Arc::new(VerificationDelivery::default());
+    delivery.outcome.store(200, Ordering::Relaxed);
+    delivery.block.store(true, Ordering::Relaxed);
+    let mut config = verification_config();
+    config.realms[0]
+        .authentication
+        .email_verification
+        .max_issuances_per_window = 1;
+    let (app, state) = setup_with_transport(config, &[], Some(delivery.clone())).await;
+    let cookie = add_session(&state, "user-ciam").await;
+    let first = {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        tokio::spawn(async move {
+            verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await
+        })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        delivery.started.notified(),
+    )
+    .await
+    .expect("delivery started");
+    // Admission is durable before the adapter has accepted the first delivery.
+    let id = delivery.requests.lock().unwrap()[0]
+        .body
+        .lines()
+        .next()
+        .unwrap()
+        .strip_prefix("Email verification challenge: ")
+        .unwrap()
+        .to_owned();
+    let stored = state
+        .repo
+        .get_ciam_verification_challenge(&"test".into(), &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.user_id, "user-ciam");
+    assert_eq!(stored.attempt_count, 0);
+    assert!(stored.consumed_at_epoch_seconds.is_none());
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})),
+    )
+    .await
+    .expect("second request completes without waiting for delivery");
+    assert_eq!(second.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json(second).await["error"],
+        "email verification challenge unavailable"
+    );
+    assert_eq!(delivery.requests.lock().unwrap().len(), 1);
+    delivery.release.notify_one();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), first)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json(response).await["challenge_id"], id);
 }

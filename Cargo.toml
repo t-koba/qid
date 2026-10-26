@@ -190,7 +190,11 @@ exclude = ["vendor/rustls"]
 # The realm-authoritative FedCM email correction adds 14 measured source lines
 # (113701 -> 113715); per-crate caps, counting rules, and gates are unchanged.
 # Approval does not constitute candidate acceptance or publication.
-total = 113970
+# Session-bound email-verification issuance admission reuses the existing
+# atomic email challenge path and delivery semaphore; measured product
+# source rises 113961 -> 113985 (+24), so the 9 existing lines of
+# headroom are consumed and the total cap rises by exactly 15.
+total = 113985
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

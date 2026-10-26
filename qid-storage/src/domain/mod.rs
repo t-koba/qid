@@ -168,16 +168,18 @@ pub(crate) fn password_reset_window_start(
         .saturating_sub(window_seconds - 1))
 }
 
-/// The same rolling-window convention and supported bounds as password resets.
-pub(crate) fn email_magic_link_window_start(
+/// Shared rolling-window admission for both email challenge kinds (same bounds
+/// as password resets); only `email_magic_link` carries the digest-pair proof.
+pub(crate) fn email_challenge_window_start(
     challenge: &qid_core::models::CiamVerificationChallengeRecord,
     max_issuances: u32,
     window_seconds: u64,
 ) -> QidResult<u64> {
     challenge.validate()?;
+    let magic_link = challenge.purpose == "email_magic_link";
     if challenge.channel != "email"
-        || challenge.purpose != "email_magic_link"
-        || email_magic_link_proof(&challenge.code_hash).is_none()
+        || (!magic_link && challenge.purpose != "email_verification")
+        || (magic_link != email_magic_link_proof(&challenge.code_hash).is_some())
         || challenge.attempt_count != 0
         || challenge.consumed_at_epoch_seconds.is_some()
         || max_issuances == 0
@@ -186,7 +188,7 @@ pub(crate) fn email_magic_link_window_start(
         || i64::try_from(challenge.expires_at_epoch_seconds).is_err()
     {
         return Err(QidError::BadRequest {
-            message: "invalid email magic-link challenge, issuance budget or timestamp".into(),
+            message: "invalid email challenge, issuance budget or timestamp".into(),
         });
     }
     Ok(challenge

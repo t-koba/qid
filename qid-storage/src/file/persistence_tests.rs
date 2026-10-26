@@ -665,7 +665,7 @@ async fn cancelled_magic_link_operations_finish_persistence_or_rollback() {
                 created_at_epoch_seconds: 100,
             };
             if operation != "issue" {
-                repo.try_issue_email_magic_link_challenge(&challenge, 1, 10)
+                repo.try_issue_email_challenge(&challenge, 1, 10)
                     .await
                     .unwrap();
             }
@@ -673,7 +673,7 @@ async fn cancelled_magic_link_operations_finish_persistence_or_rollback() {
             let (reached, resume) = pause_next_write(&repo, fail);
             let mut request = Box::pin(async {
                 if operation == "issue" {
-                    repo.try_issue_email_magic_link_challenge(&challenge, 1, 10)
+                    repo.try_issue_email_challenge(&challenge, 1, 10)
                         .await
                         .map(|_| ())
                 } else {

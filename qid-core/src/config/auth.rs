@@ -110,6 +110,8 @@ impl PasswordResetConfig {
 pub struct EmailVerificationConfig {
     pub ttl_seconds: u64,
     pub max_attempts: u32,
+    pub max_issuances_per_window: u32,
+    pub issuance_window_seconds: u64,
 }
 
 impl Default for EmailVerificationConfig {
@@ -117,15 +119,19 @@ impl Default for EmailVerificationConfig {
         Self {
             ttl_seconds: 600,
             max_attempts: 5,
+            max_issuances_per_window: 5,
+            issuance_window_seconds: 3600,
         }
     }
 }
 
 impl EmailVerificationConfig {
     pub(crate) fn validate(&self) -> QidResult<()> {
-        if !(1..=3600).contains(&self.ttl_seconds) || self.max_attempts == 0 {
+        let issuance_ok = (1..=100).contains(&self.max_issuances_per_window)
+            && (1..=86400).contains(&self.issuance_window_seconds);
+        if !(1..=3600).contains(&self.ttl_seconds) || self.max_attempts == 0 || !issuance_ok {
             return Err(QidError::Config {
-                message: "authentication.email_verification requires ttl_seconds in 1..=3600 and positive max_attempts".into(),
+                message: "authentication.email_verification requires ttl_seconds in 1..=3600, positive max_attempts, max_issuances_per_window in 1..=100 and issuance_window_seconds in 1..=86400".into(),
             });
         }
         Ok(())

@@ -2502,18 +2502,38 @@ fn server_notification_debug_redacts_provider_url() {
 fn email_verification_policy_defaults_and_bounds() {
     let mut config = minimal_config();
     let policy = &config.realms[0].authentication.email_verification;
-    assert_eq!((policy.ttl_seconds, policy.max_attempts), (600, 5));
-    for (ttl, attempts) in [(1, 1), (3600, 10)] {
+    assert_eq!(
+        (
+            policy.ttl_seconds,
+            policy.max_attempts,
+            policy.max_issuances_per_window,
+            policy.issuance_window_seconds
+        ),
+        (600, 5, 5, 3600)
+    );
+    for (ttl, attempts, issuances, window) in [(1, 1, 1, 1), (3600, 10, 100, 86400)] {
         config.realms[0].authentication.email_verification = EmailVerificationConfig {
             ttl_seconds: ttl,
             max_attempts: attempts,
+            max_issuances_per_window: issuances,
+            issuance_window_seconds: window,
         };
         config.validate().unwrap();
     }
-    for (ttl, attempts) in [(0, 5), (3601, 5), (600, 0)] {
+    for (ttl, attempts, issuances, window) in [
+        (0, 5, 5, 3600),
+        (3601, 5, 5, 3600),
+        (600, 0, 5, 3600),
+        (600, 5, 0, 3600),
+        (600, 5, 101, 3600),
+        (600, 5, 5, 0),
+        (600, 5, 5, 86401),
+    ] {
         config.realms[0].authentication.email_verification = EmailVerificationConfig {
             ttl_seconds: ttl,
             max_attempts: attempts,
+            max_issuances_per_window: issuances,
+            issuance_window_seconds: window,
         };
         assert!(
             config
@@ -2534,10 +2554,27 @@ fn email_verification_policy_defaults_and_bounds() {
     assert_eq!(
         (
             parsed.email_verification.ttl_seconds,
-            parsed.email_verification.max_attempts
+            parsed.email_verification.max_attempts,
+            parsed.email_verification.max_issuances_per_window,
+            parsed.email_verification.issuance_window_seconds
         ),
-        (120, 2)
+        (120, 2, 5, 3600)
     );
+    for (json, issuances, window) in [
+        (serde_json::json!({"max_issuances_per_window": 2}), 2, 3600),
+        (serde_json::json!({"issuance_window_seconds": 60}), 5, 60),
+    ] {
+        let policy: EmailVerificationConfig = serde_json::from_value(json).unwrap();
+        assert_eq!((policy.ttl_seconds, policy.max_attempts), (600, 5));
+        assert_eq!(
+            (
+                policy.max_issuances_per_window,
+                policy.issuance_window_seconds
+            ),
+            (issuances, window)
+        );
+        policy.validate().unwrap();
+    }
 }
 
 #[test]

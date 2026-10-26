@@ -44,6 +44,21 @@ Error vocabulary used below, taken from the code:
 
 Where a backend's behaviour differs from the other's, both files are named.
 
+## Email challenge admission
+
+`try_issue_email_challenge` is the shared atomic admission for email magic-link
+login and session-bound email verification. It persists before delivery under a
+per-(realm,user,purpose) rolling quota; consumed, expired, failed-delivery and
+newer records count. Both backends check the current realm/user and exact stored
+address. Magic-link admission still requires a verified email and digest-pair
+proof; email verification requires an unverified email and no magic-link proof.
+Duplicates return `Conflict` without overwriting the incumbent; quota or owner
+ineligibility returns false without insertion. File admission holds the exclusive
+save/store locks through persistence with rollback on error, including interval
+flush mode. SQL uses `BEGIN IMMEDIATE` on SQLite, or a purpose-bound advisory
+transaction lock and owner-row lock on PostgreSQL, before counting and inserting.
+See `qid-storage/src/file/ciam.rs` and `qid-storage/src/sql/ciam.rs`.
+
 ## The ownership contract
 
 One shape covers every migrated write. A resource states three things and

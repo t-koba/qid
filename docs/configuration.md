@@ -107,6 +107,8 @@ realms:
       email_verification:
         ttl_seconds: 600
         max_attempts: 5
+        max_issuances_per_window: 5
+        issuance_window_seconds: 3600
       mfa:
         push:
           enabled: true
@@ -499,7 +501,7 @@ naming the key.
 
 - `passkeys.enabled`, `rp_id`, `rp_origin`, `rp_name`, `preferred`, optional `attestation`
 - `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `max_failed_attempts_per_realm`, `argon2id`, `pepper`
-- `email_verification.ttl_seconds` (default `600`, allowed `1..=3600`) and `email_verification.max_attempts` (default `5`, positive): persisted session-bound email challenge policy.
+- `email_verification.ttl_seconds` (default `600`, allowed `1..=3600`) and `email_verification.max_attempts` (default `5`, positive): persisted session-bound email challenge policy. `email_verification.max_issuances_per_window` (default `5`, allowed `1..=100`) and `email_verification.issuance_window_seconds` (default `3600`, allowed `1..=86400`) bound issuance per realm/user/purpose independently of magic-link login. All fields may be omitted independently. Admission atomically checks the current stored address and unverified owner and persists before delivery. All records created at or after `server_creation_time - issuance_window_seconds + 1` count, including consumed, expired, failed-delivery and newer records (clock rollback). At the next second after the boundary an old record stops counting. Changing the stored address does not reset the account budget; suppression sends nothing, and delivery failure does not refund admission.
 - `mfa.totp.enabled`, `mfa.totp.max_failed_attempts` (default `5`, allowed `1..=100`), `mfa.totp.failed_attempt_window_seconds` (default `300`, allowed `1..=86400`): per-account TOTP proof admission policy.
 - `mfa.push.enabled` (default `false`), `mfa.push.ttl_seconds` (default `300`, `1..=600`), `mfa.push.max_attempts` (default `5`, `1..=20`), `mfa.push.max_issuances_per_window` (default `5`, `1..=100`), `mfa.push.issuance_window_seconds` (default `3600`, `1..=86400`), `mfa.push.resend_cooldown_seconds` (default `30`, `1..=600`), `mfa.push.recent_reauth_seconds` (default `300`, `1..=900`), `mfa.push.max_destination_bytes` (default `1024`, `1..=4096`) and `mfa.push.max_proof_bytes` (default `4096`, `256..=8192`): registered-device push-MFA and enrollment limits. The login purpose issuance quota counts initial sends and admitted resends together; failures/timeouts consume admission. Resends never reset expiry or signature attempts. Cooldown uses durable last-send admission time.
 - `passwordless_only`

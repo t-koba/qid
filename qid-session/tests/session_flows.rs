@@ -11,7 +11,7 @@ use qid_core::{
     tenant::RealmId,
     throttle::FailureBudget,
 };
-use qid_crypto::{ARGON2ID_ALGORITHM, hash_password};
+use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, hash_password_with_params};
 use qid_session::{
     auth::{Authenticator, PasswordPolicy},
     browser::{SessionManager, session_cache_put},
@@ -111,15 +111,24 @@ async fn password_login_session_and_revoke_propagate_through_shared_cache() -> a
         .context("failed to create user")?;
     repo.store_password_credential(&PasswordCredential {
         user_id: user.id.clone(),
-        hash: hash_password("correct horse battery staple").context("failed to hash password")?,
+        hash: hash_password_with_params(
+            "correct horse battery staple",
+            &Argon2idParams::new(8, 1, 1),
+        )
+        .context("failed to hash password")?,
         algorithm: ARGON2ID_ALGORITHM.to_string(),
     })
     .await
     .context("failed to store password credential")?;
 
+    // This session-cache test does not measure Argon2 cost; password-policy tests cover the default.
+    let mut authentication = AuthenticationConfig::default();
+    authentication.password.argon2id.memory_kib = 8;
+    authentication.password.argon2id.time_cost = 1;
+    authentication.password.argon2id.parallelism = 1;
     let auth = Authenticator::new(
         Arc::clone(&repo),
-        PasswordPolicy::from_config(&AuthenticationConfig::default().password),
+        PasswordPolicy::from_config(&authentication.password),
         Arc::new(FailureBudget::new()),
     );
     let authn = auth

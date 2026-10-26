@@ -20,10 +20,38 @@ use ring::{
     signature::{self, KeyPair},
 };
 use serde_json::{Value as JsonValue, json};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 const BASE: &str = "/api/v1/corp/auth/password";
+static SCHEMA_TEMPLATE: tokio::sync::OnceCell<(tempfile::TempDir, PathBuf)> =
+    tokio::sync::OnceCell::const_new();
+
+async fn schema_template_path() -> &'static PathBuf {
+    let (_, path) = SCHEMA_TEMPLATE
+        .get_or_init(|| async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("schema.db");
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .unwrap();
+            repo.migrate().await.unwrap();
+            repo.close().await;
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                assert!(
+                    !PathBuf::from(sidecar).exists(),
+                    "schema template has a sidecar after closing the pool: {}",
+                    path.display()
+                );
+            }
+            (dir, path)
+        })
+        .await;
+    path
+}
 const PASSWORD: &str = "correct-password-123!";
 #[derive(Default)]
 struct Delivery {
@@ -71,9 +99,12 @@ async fn fixture_policy(
     cooldown: u64,
 ) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let url = format!("sqlite:{}", dir.path().join("test.db").display());
+    let db_path = dir.path().join("test.db");
+    // Storage tests cover fresh migrations; copying keeps each push case isolated
+    // without rerunning the full migration set for every fixture.
+    std::fs::copy(schema_template_path().await, &db_path).unwrap();
+    let url = format!("sqlite:{}", db_path.display());
     let repo = Arc::new(SqlRepository::connect(&url).await.unwrap());
-    repo.migrate().await.unwrap();
     repo.create_realm(
         &"tenant-1".into(),
         &"corp".into(),

@@ -1,6 +1,6 @@
 //! Storage tests deliberately supply verification outcomes, not signatures. The
 //! service must perform cryptographic verification before requesting transitions.
-use crate::sql::test_support::IsolatedDb;
+use crate::sql::iga_tests::test_support::IsolatedDb;
 use crate::{FileRepository, SqlRepository, prelude::*};
 use qid_core::{QidError, models::*, tenant::RealmId};
 

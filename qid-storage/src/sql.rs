@@ -26,7 +26,7 @@ mod fedcm;
 mod hr;
 mod iga;
 #[cfg(test)]
-mod iga_tests;
+pub(crate) mod iga_tests;
 mod oidc_continuation;
 mod policy;
 mod push;
@@ -41,8 +41,6 @@ mod service_account;
 mod session;
 mod siem;
 mod ssf;
-#[cfg(test)]
-pub(crate) mod test_support;
 mod token;
 mod user;
 mod vc;

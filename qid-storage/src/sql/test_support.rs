@@ -13,7 +13,7 @@
 //! Seed and transaction behavior is unchanged: callers apply their seed SQL
 //! after the copy, on the per-test database only.
 
-use super::SqlRepository;
+use super::super::SqlRepository;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -62,6 +62,18 @@ six digits. It identifies context for comparison, is not globally unique and is
 Only the current registered device's signature over the exact bound challenge
 and nonce can authorize a decision, followed by same-browser completion.
 
+## Assurance boundary
+
+qid's push flow combines a signature from a registered device key with a
+six-digit transaction-number comparison. The number is display context, not
+cryptographic proof; the signature proves possession of the enrolled key, but
+not that a human compared the number. qid does not claim that this
+comparison/secondary-channel approval is a NIST SP 800-63B-4-conforming
+out-of-band (OOB) method, provides AAL2 assurance, or is phishing-resistant
+authentication. WebAuthn/passkeys are separately available as a
+phishing-resistant option; their availability alone does not establish that a
+deployment meets AAL2. See the [official NIST SP 800-63B-4 publication](https://pages.nist.gov/800-63-4/sp800-63b.html).
+
 Resend retains the challenge ID, owner, realm, purpose, authenticator, browser
 binding, original creation/expiry, attempt cap/count and any OIDC continuation.
 Every admitted resend rotates to a fresh random nonce, durably replacing only its

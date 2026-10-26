@@ -451,6 +451,14 @@ or no trust domain is refused wherever it is named.
 
 ## Directory, risk, SSF, VC
 
+Directory provider list/detail routes require the `x-qid-admin-session-id`
+header and a valid admin elevation with an allowed directory/admin role. The
+requested realm must be specified when multiple realms are configured, and it
+must be bound to the administrator's tenant. These routes expose configuration
+only; periodic scheduling remains external, and an operator-owned scheduler
+can read the same deployment configuration used by `qid-worker` rather than
+requiring an admin API session.
+
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/directory/v1/providers` | List directory providers, including disabled bindings, `enabled`/`syncable` flags, and supported types; read per-provider cadence from the detail route. |

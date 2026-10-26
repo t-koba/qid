@@ -322,17 +322,18 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml push-cleanup --limit 10
 ## Directory Synchronization
 
 `sync_interval_minutes` is a requested per-provider cadence for an operator-owned
-scheduler, not a QID timer. List providers with the authenticated
-`GET /directory/v1/providers?realm=<realm>` route and read each enabled,
-syncable pull provider's cadence from
-`GET /directory/v1/providers/<id>?realm=<realm>`. The scheduler must
-periodically re-read provider details and reconcile timers after configuration
-changes; schedule each provider at its returned interval, and do not schedule
-a provider whose interval is `null`. A hard-coded cron interval cannot honor
-per-provider changes. QID does not enqueue, track, or lock periodic jobs; HTTP
-`/sync` and `/sync/status` remain unsupported. The external scheduler must
-enforce single-flight per `(realm, provider_id)`, including across scheduler
-instances.
+scheduler, not a QID timer. The supported scheduler runs in the deployment's
+operator-controlled environment, reads the same current QID configuration that
+`qid-worker` will use, and reconciles its schedule whenever that configuration
+changes. Schedule only enabled pull providers with a positive interval; if the
+field is `null`, do not schedule that provider. If the entire `sync` section is
+omitted, its existing default cadence is 60 minutes. The provider list/detail
+HTTP routes also expose this configuration, but require an already authorized
+administrator elevation; a scheduler does not need to call them or obtain a
+separate API credential. A hard-coded cron interval cannot honor per-provider
+changes. QID does not enqueue, track, or lock periodic jobs; HTTP `/sync` and
+`/sync/status` remain unsupported. The external scheduler must enforce
+single-flight per `(realm, provider_id)`, including across scheduler instances.
 
 For LDAP/Active Directory, sequential replay of the same provider snapshot
 updates matching provider-owned users and reports unchanged rows; this does not

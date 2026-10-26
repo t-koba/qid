@@ -3876,7 +3876,7 @@ async fn assert_iga_repository_round_trip(repo: &impl IgaRepository) {
         .await
         .expect("list IGA dormant findings failed");
     assert_eq!(dormant_findings, vec![finding_1.clone()]);
-    repo.resolve_iga_finding("finding-1")
+    repo.resolve_iga_finding("tenant-iga", "finding-1")
         .await
         .expect("resolve IGA finding failed");
     let dormant_findings = repo

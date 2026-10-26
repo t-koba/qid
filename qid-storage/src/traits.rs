@@ -853,15 +853,14 @@ pub trait IgaRepository: Send + Sync + 'static {
         tenant_id: &str,
         certification_type: Option<&str>,
     ) -> QidResult<Vec<IgaCertificationRecord>>;
-    /// Store an IGA finding with a global ID; duplicate IDs return `Conflict`.
-    /// Use `resolve_iga_finding` for the separate monotonic resolution transition.
+    /// Store an IGA finding with a global ID; duplicate IDs return `Conflict`; `resolve_iga_finding` is the tenant-scoped monotonic resolution transition (unknown/foreign IDs are a safe no-op).
     async fn store_iga_finding(&self, finding: &IgaFindingRecord) -> QidResult<()>;
     async fn list_iga_findings(
         &self,
         tenant_id: &str,
         finding_type: Option<&str>,
     ) -> QidResult<Vec<IgaFindingRecord>>;
-    async fn resolve_iga_finding(&self, id: &str) -> QidResult<()>;
+    async fn resolve_iga_finding(&self, tenant_id: &str, id: &str) -> QidResult<()>;
 }
 
 #[async_trait]

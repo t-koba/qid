@@ -478,10 +478,10 @@ impl IgaRepository for FileRepository {
         Ok(findings)
     }
 
-    async fn resolve_iga_finding(&self, id: &str) -> QidResult<()> {
+    async fn resolve_iga_finding(&self, tenant_id: &str, id: &str) -> QidResult<()> {
         let mut store = self.store.write().await;
         if let Some(finding) = store.iga_findings.get_mut(id) {
-            finding.resolved = true;
+            finding.resolved |= finding.tenant_id == tenant_id;
         }
         drop(store);
         self.save().await

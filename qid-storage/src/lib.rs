@@ -348,7 +348,7 @@ delegate!(IgaRepository {
     list_iga_certifications(&self, tenant_id: &str, certification_type: Option<&str>) -> QidResult<Vec<qid_core::models::IgaCertificationRecord>>;
     store_iga_finding(&self, finding: &qid_core::models::IgaFindingRecord) -> QidResult<()>;
     list_iga_findings(&self, tenant_id: &str, finding_type: Option<&str>) -> QidResult<Vec<qid_core::models::IgaFindingRecord>>;
-    resolve_iga_finding(&self, id: &str) -> QidResult<()>;
+    resolve_iga_finding(&self, tenant_id: &str, id: &str) -> QidResult<()>;
 });
 
 delegate!(AdminRepository {

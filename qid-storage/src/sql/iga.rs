@@ -639,8 +639,9 @@ impl IgaRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn resolve_iga_finding(&self, id: &str) -> QidResult<()> {
-        sqlx::query("UPDATE iga_findings SET resolved = 1 WHERE id = ?")
+    async fn resolve_iga_finding(&self, tenant_id: &str, id: &str) -> QidResult<()> {
+        sqlx::query("UPDATE iga_findings SET resolved = 1 WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
             .bind(id)
             .execute(&self.pool)
             .await

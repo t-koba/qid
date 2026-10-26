@@ -2162,9 +2162,50 @@ where
     repo.store_iga_finding(&finding)
         .await
         .expect("store incumbent IGA finding failed");
-    repo.resolve_iga_finding(&finding.id)
+    repo.resolve_iga_finding("tenant-iga-finding-other", &finding.id)
+        .await
+        .expect("wrong-tenant resolve of IGA finding failed");
+    let stored = repo
+        .list_iga_findings(&finding.tenant_id, Some("dormant_account"))
+        .await
+        .expect("list IGA findings after wrong-tenant resolve failed");
+    assert_eq!(
+        stored,
+        vec![finding.clone()],
+        "a wrong-tenant resolve must leave the incumbent unchanged"
+    );
+    repo.resolve_iga_finding(&finding.tenant_id, "no-such-finding")
+        .await
+        .expect("unknown-ID resolve of IGA finding failed");
+    let stored = repo
+        .list_iga_findings(&finding.tenant_id, Some("dormant_account"))
+        .await
+        .expect("list IGA findings after unknown-ID resolve failed");
+    assert_eq!(
+        stored,
+        vec![finding.clone()],
+        "an unknown-ID resolve must leave the incumbent unchanged"
+    );
+    repo.resolve_iga_finding(&finding.tenant_id, &finding.id)
         .await
         .expect("resolve incumbent IGA finding failed");
+    repo.resolve_iga_finding("tenant-iga-finding-other", &finding.id)
+        .await
+        .expect("wrong-tenant resolve after resolution failed");
+    let stored = repo
+        .list_iga_findings(&finding.tenant_id, Some("dormant_account"))
+        .await
+        .expect("list IGA findings after correct resolve failed");
+    let mut resolved = finding.clone();
+    resolved.resolved = true;
+    assert_eq!(
+        stored,
+        vec![resolved],
+        "the owning tenant resolves the finding exactly once"
+    );
+    repo.resolve_iga_finding(&finding.tenant_id, &finding.id)
+        .await
+        .expect("repeat resolve of IGA finding failed");
 
     let same_tenant_duplicate = IgaFindingRecord {
         subject: "different-user".to_string(),

@@ -133,7 +133,7 @@ pub(super) async fn resolve_finding<R: Repository>(
     let Some(existing) = existing else {
         return not_found_response("IGA finding not found");
     };
-    if let Err(error) = state.repo.resolve_iga_finding(&id).await {
+    if let Err(error) = state.repo.resolve_iga_finding(&tenant_id, &id).await {
         return storage_error_response("resolve_iga_finding", error);
     }
     Json(serde_json::json!({

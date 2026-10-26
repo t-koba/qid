@@ -968,6 +968,8 @@ mod tests {
         let device_code_hash = "concurrent-device-code-hash";
         let now = util::now_seconds();
         let grant = DeviceAuthorizationGrant {
+            resource: Vec::new(),
+            audience: Vec::new(),
             device_code_hash: device_code_hash.to_string(),
             user_code: "CONCURRENT".to_string(),
             client_id: "device-client".to_string(),
@@ -1407,6 +1409,8 @@ mod tests {
         let auth_req_id_hash = "concurrent-ciba-hash";
         let now = util::now_seconds();
         let grant = BackchannelAuthenticationGrant {
+            resource: Vec::new(),
+            audience: Vec::new(),
             auth_req_id_hash: auth_req_id_hash.to_string(),
             client_id: "ciba-client".to_string(),
             realm_id: "test".to_string(),

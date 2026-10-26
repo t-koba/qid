@@ -190,7 +190,7 @@ exclude = ["vendor/rustls"]
 # The realm-authoritative FedCM email correction adds 14 measured source lines
 # (113701 -> 113715); per-crate caps, counting rules, and gates are unchanged.
 # Approval does not constitute candidate acceptance or publication.
-total = 113715
+total = 113970
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
@@ -199,7 +199,7 @@ qid-network = 4500
 qid-admin = 6000
 qid-core = 14000
 qid-crypto = 5981
-qid-storage = 15967
+qid-storage = 15990
 qid-session = 4806
 qid-oidc = 6000
 qid-oauth = 12000

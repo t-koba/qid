@@ -633,3 +633,74 @@ async fn file_client_require_par_round_trip() {
         "the PAR flag defaults to false for legacy records"
     );
 }
+
+#[tokio::test]
+async fn file_polling_grant_targets_survive_reopen_and_legacy_records_default_empty() {
+    use qid_core::models::{BackchannelAuthenticationGrant, DeviceAuthorizationGrant};
+    let path = std::env::temp_dir().join(format!("qid_grant_targets_{}.json", ulid::Ulid::new()));
+    let repo = setup_at(path.clone()).await;
+    let mut device: DeviceAuthorizationGrant = serde_json::from_value(serde_json::json!({
+        "device_code_hash": "device", "user_code": "user-code", "client_id": "client", "realm_id": "test",
+        "scopes": ["read"], "user_id": null, "expires_at": 3000, "approved_at": null, "consumed": false, "created_at": 1
+    })).unwrap();
+    let mut ciba: BackchannelAuthenticationGrant = serde_json::from_value(serde_json::json!({
+        "auth_req_id_hash": "ciba", "client_id": "client", "realm_id": "test", "login_hint": "user@example.com",
+        "binding_message": null, "scopes": ["read"], "user_id": null, "expires_at": 3000,
+        "approved_at": null, "consumed": false, "created_at": 1
+    })).unwrap();
+    assert!(device.resource.is_empty() && device.audience.is_empty());
+    assert!(ciba.resource.is_empty() && ciba.audience.is_empty());
+    device.resource = vec!["https://api.example.com/bound".into()];
+    device.audience = vec!["api://bound".into()];
+    ciba.resource = device.resource.clone();
+    ciba.audience = device.audience.clone();
+    repo.store_device_authorization_grant(&device)
+        .await
+        .unwrap();
+    repo.store_backchannel_authentication_grant(&ciba)
+        .await
+        .unwrap();
+    drop(repo);
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let loaded = repo
+        .get_device_authorization_grant("device")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.resource, device.resource);
+    assert_eq!(loaded.audience, device.audience);
+    let loaded = repo
+        .get_backchannel_authentication_grant("ciba")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.resource, ciba.resource);
+    assert_eq!(loaded.audience, ciba.audience);
+    drop(repo);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (table, key) in [
+        ("device_authorization_grants", "device"),
+        ("backchannel_authentication_grants", "ciba"),
+    ] {
+        let row = stored[table][key].as_object_mut().unwrap();
+        row.remove("resource");
+        row.remove("audience");
+    }
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let legacy = repo
+        .get_device_authorization_grant("device")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(legacy.resource.is_empty() && legacy.audience.is_empty());
+    let legacy = repo
+        .get_backchannel_authentication_grant("ciba")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(legacy.resource.is_empty() && legacy.audience.is_empty());
+    drop(repo);
+    std::fs::remove_file(path).unwrap();
+}

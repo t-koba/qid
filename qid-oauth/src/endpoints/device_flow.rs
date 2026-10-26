@@ -24,6 +24,7 @@ use super::{
 pub struct DeviceAuthorizationRequest {
     pub client_id: String,
     pub scope: Option<String>,
+    pub resource: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,19 +87,29 @@ pub async fn device_authorization<R: Repository>(
     let scope = req
         .scope
         .as_deref()
-        .map(|s| s.split(' ').map(String::from).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![realm.oauth_default_scope.clone()]);
+        .unwrap_or(realm.oauth_default_scope.as_str())
+        .split(' ')
+        .map(String::from)
+        .collect::<Vec<_>>();
     let now = qid_core::util::now_seconds();
     let ttl_seconds = state
         .realm(&client.realm_id)
         .map(|realm| realm.token_ttl.device_code_ttl_seconds)
         .unwrap_or_else(|| qid_core::config::TokenTtlConfig::default().device_code_ttl_seconds);
+    let resource = req.resource.iter().cloned().collect::<Vec<_>>();
+    let realm_config = super::token::oauth_realm_config(&state, &realm.id);
+    let realm_config = super::error_response_or_return!(realm_config);
+    let audience = super::error_response_or_return!(
+        qid_core::oauth::resolve_authorization_audience(realm_config, &[], &resource, &scope)
+    );
     let grant = DeviceAuthorizationGrant {
         device_code_hash: qid_core::util::sha256_base64url(&device_code),
         user_code: user_code.clone(),
         client_id: req.client_id,
         realm_id: realm.id.clone(),
         scopes: scope,
+        resource,
+        audience,
         user_id: None,
         expires_at: now + ttl_seconds,
         approved_at: None,
@@ -174,6 +185,7 @@ pub async fn device_verification_page<R: Repository>(
             &format!("{}/approve", state.paths.device_authorization),
             &grant.client_id,
             &grant.scopes,
+            &grant.resource,
             &grant.user_code,
         ),
         None => verification_code_entry_page(&state.paths.device_verification),
@@ -200,13 +212,15 @@ fn verification_page_for_grant(
     approval_path: &str,
     client_id: &str,
     scopes: &[String],
+    resource: &[String],
     user_code: &str,
 ) -> String {
     let approval_body = serde_json::json!({"user_code": user_code}).to_string();
     format!(
-        "<!doctype html><html><body><h1>Authorize device?</h1><p>Client <b>{}</b> requests access with scopes: {}.</p><p>Confirm the code on your device matches: <b>{}</b></p><button id=\"approve\">Approve</button> <span id=\"result\"></span><script>const approve=document.getElementById(\"approve\"),result=document.getElementById(\"result\");approve.onclick=async()=>{{const r=await fetch(\"{}\",{{method:\"POST\",headers:{{\"Content-Type\":\"application/json\"}},body:{},credentials:\"same-origin\"}});result.textContent=r.ok?\"Approved. You may close this page.\":\"Approval failed: \"+r.status;}};</script></body></html>",
+        "<!doctype html><html><body><h1>Authorize device?</h1><p>Client <b>{}</b> requests access with scopes: {}.</p><p>Resource: {}</p><p>Confirm the code on your device matches: <b>{}</b></p><button id=\"approve\">Approve</button> <span id=\"result\"></span><script>const approve=document.getElementById(\"approve\"),result=document.getElementById(\"result\");approve.onclick=async()=>{{const r=await fetch(\"{}\",{{method:\"POST\",headers:{{\"Content-Type\":\"application/json\"}},body:{},credentials:\"same-origin\"}});result.textContent=r.ok?\"Approved. You may close this page.\":\"Approval failed: \"+r.status;}};</script></body></html>",
         html_escape(client_id),
         html_escape(&scopes.join(" ")),
+        html_escape(&resource.join(" ")),
         html_escape(user_code),
         html_escape(approval_path),
         approval_body,
@@ -376,6 +390,16 @@ pub(crate) async fn device_code_grant<R: Repository>(
             message: "device authorization is disabled".to_string(),
         });
     }
+    let realm_config = super::token::oauth_realm_config(state, &grant.realm_id)?;
+    let scopes = super::validate_grant_target(
+        realm_config,
+        req,
+        &grant.client_id,
+        &grant.resource,
+        &grant.audience,
+        &grant.scopes,
+        cnf,
+    )?;
     state
         .repo
         .consume_device_authorization_grant(&device_code_hash)
@@ -386,10 +410,10 @@ pub(crate) async fn device_code_grant<R: Repository>(
         &user,
         &grant.client_id,
         &grant.realm_id,
-        &grant.scopes,
+        &scopes,
         TokenIssueClaims {
-            audience: None,
-            resource: None,
+            audience: Some(&grant.audience),
+            resource: Some(&grant.resource),
             authorization_details: None,
             cnf,
             auth_time: Some(now),
@@ -410,7 +434,7 @@ pub(crate) async fn device_code_grant<R: Repository>(
         expires_in: pair.expires_in,
         refresh_token: Some(pair.refresh_token),
         id_token: None,
-        scope: Some(grant.scopes.join(" ")),
+        scope: Some(scopes.join(" ")),
         issued_token_type: None,
     })
 }

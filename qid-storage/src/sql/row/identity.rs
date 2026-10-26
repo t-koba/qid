@@ -1,4 +1,7 @@
-use qid_core::models::*;
+use qid_core::{
+    error::{QidError, QidResult},
+    models::*,
+};
 
 #[derive(sqlx::FromRow)]
 pub(in crate::sql) struct UserRow {
@@ -331,6 +334,8 @@ pub(in crate::sql) struct DeviceAuthorizationGrantRow {
     client_id: String,
     realm_id: String,
     scopes: String,
+    resource: String,
+    audience: String,
     user_id: Option<String>,
     expires_at: i64,
     approved_at: Option<i64>,
@@ -340,14 +345,24 @@ pub(in crate::sql) struct DeviceAuthorizationGrantRow {
     created_at: i64,
 }
 
-impl From<DeviceAuthorizationGrantRow> for DeviceAuthorizationGrant {
-    fn from(row: DeviceAuthorizationGrantRow) -> Self {
-        Self {
+fn parse_grant_values(value: &str, field: &str) -> QidResult<Vec<String>> {
+    serde_json::from_str(value).map_err(|_| QidError::Storage {
+        message: format!("invalid stored OAuth grant {field}"),
+    })
+}
+
+impl TryFrom<DeviceAuthorizationGrantRow> for DeviceAuthorizationGrant {
+    type Error = QidError;
+
+    fn try_from(row: DeviceAuthorizationGrantRow) -> QidResult<Self> {
+        Ok(Self {
             device_code_hash: row.device_code_hash,
             user_code: row.user_code,
             client_id: row.client_id,
             realm_id: row.realm_id,
-            scopes: serde_json::from_str(&row.scopes).unwrap_or_default(),
+            scopes: parse_grant_values(&row.scopes, "scopes")?,
+            resource: parse_grant_values(&row.resource, "resource")?,
+            audience: parse_grant_values(&row.audience, "audience")?,
             user_id: row.user_id,
             expires_at: row.expires_at as u64,
             approved_at: row.approved_at.map(|approved_at| approved_at as u64),
@@ -355,7 +370,7 @@ impl From<DeviceAuthorizationGrantRow> for DeviceAuthorizationGrant {
             last_poll_at: row.last_poll_at.map(|polled_at| polled_at as u64),
             poll_interval_seconds: row.poll_interval_seconds as u64,
             created_at: row.created_at as u64,
-        }
+        })
     }
 }
 
@@ -367,6 +382,8 @@ pub(in crate::sql) struct BackchannelAuthenticationGrantRow {
     login_hint: String,
     binding_message: Option<String>,
     scopes: String,
+    resource: String,
+    audience: String,
     user_id: Option<String>,
     expires_at: i64,
     approved_at: Option<i64>,
@@ -376,15 +393,19 @@ pub(in crate::sql) struct BackchannelAuthenticationGrantRow {
     created_at: i64,
 }
 
-impl From<BackchannelAuthenticationGrantRow> for BackchannelAuthenticationGrant {
-    fn from(row: BackchannelAuthenticationGrantRow) -> Self {
-        Self {
+impl TryFrom<BackchannelAuthenticationGrantRow> for BackchannelAuthenticationGrant {
+    type Error = QidError;
+
+    fn try_from(row: BackchannelAuthenticationGrantRow) -> QidResult<Self> {
+        Ok(Self {
             auth_req_id_hash: row.auth_req_id_hash,
             client_id: row.client_id,
             realm_id: row.realm_id,
             login_hint: row.login_hint,
             binding_message: row.binding_message,
-            scopes: serde_json::from_str(&row.scopes).unwrap_or_default(),
+            scopes: parse_grant_values(&row.scopes, "scopes")?,
+            resource: parse_grant_values(&row.resource, "resource")?,
+            audience: parse_grant_values(&row.audience, "audience")?,
             user_id: row.user_id,
             expires_at: row.expires_at as u64,
             approved_at: row.approved_at.map(|approved_at| approved_at as u64),
@@ -392,7 +413,7 @@ impl From<BackchannelAuthenticationGrantRow> for BackchannelAuthenticationGrant 
             last_poll_at: row.last_poll_at.map(|polled_at| polled_at as u64),
             poll_interval_seconds: row.poll_interval_seconds as u64,
             created_at: row.created_at as u64,
-        }
+        })
     }
 }
 

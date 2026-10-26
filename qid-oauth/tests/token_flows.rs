@@ -412,6 +412,7 @@ async fn seed_token_flow_clients(state: &Arc<SharedState<SqlRepository>>) {
         token_exchange_client("exchange-client"),
         jwt_bearer_client("jwt-bearer-client"),
         client_credentials_client("mtls-client", "tls_client_auth"),
+        client_credentials_client("self-signed-mtls-client", "self_signed_tls_client_auth"),
         ciba_client("ciba-client"),
     ];
     for client in clients {
@@ -483,7 +484,10 @@ fn client_credentials_client(client_id: &str, auth_method: &str) -> Client {
     );
     client.client_secret_hash = matches!(auth_method, "client_secret_basic" | "client_secret_post")
         .then(|| qid_core::util::client_secret_hash("secret"));
-    if auth_method == "tls_client_auth" {
+    if matches!(
+        auth_method,
+        "tls_client_auth" | "self_signed_tls_client_auth"
+    ) {
         client.mtls_certificate_thumbprints =
             vec!["AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8".to_string()];
     }
@@ -1452,8 +1456,7 @@ async fn mtls_client_credentials_rejects_unregistered_thumbprint() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
-async fn mtls_client_credentials_accepts_authenticated_pep_metadata() {
+async fn assert_mtls_client_credentials_accepts_authenticated_pep_metadata(client_id: &str) {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.mtls.enabled = true;
     config.realms[0].pep_registrations.enabled = true;
@@ -1483,9 +1486,9 @@ async fn mtls_client_credentials_accepts_authenticated_pep_metadata() {
             format!("Bearer {adapter_auth}"),
         )
         .header("x-qid-mtls-x5t-s256", registered_thumbprint)
-        .body(Body::from(
-            "grant_type=client_credentials&client_id=mtls-client&scope=api",
-        ))
+        .body(Body::from(format!(
+            "grant_type=client_credentials&client_id={client_id}&scope=api"
+        )))
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
@@ -1496,6 +1499,17 @@ async fn mtls_client_credentials_accepts_authenticated_pep_metadata() {
     assert_eq!(claims.extra["token_type"], "Bearer");
     assert_eq!(claims.extra["cnf"]["x5t#S256"], registered_thumbprint);
     assert!(claims.extra["cnf"]["jkt"].is_null());
+}
+
+#[tokio::test]
+async fn mtls_client_credentials_accepts_authenticated_pep_metadata() {
+    assert_mtls_client_credentials_accepts_authenticated_pep_metadata("mtls-client").await;
+}
+
+#[tokio::test]
+async fn self_signed_mtls_client_credentials_accepts_authenticated_pep_metadata() {
+    assert_mtls_client_credentials_accepts_authenticated_pep_metadata("self-signed-mtls-client")
+        .await;
 }
 
 #[tokio::test]
@@ -3253,6 +3267,12 @@ async fn device_code_grant_requires_approval_then_consumes_code() {
     assert_eq!(token_response.status(), StatusCode::OK);
     let token_json = json_body(token_response).await;
     assert_eq!(token_json["token_type"], "DPoP");
+    let claims = decode_claims(&state, token_json["access_token"].as_str().unwrap());
+    assert_eq!(
+        claims.aud,
+        Some(Audience::Single("device-client-flow".into()))
+    );
+    assert!(!claims.extra.contains_key("resource"));
 
     let replay_response = post_form(app, &token_path, pending_body).await;
     assert_eq!(replay_response.status(), StatusCode::UNAUTHORIZED);
@@ -3350,6 +3370,9 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
     assert_eq!(token_response.status(), StatusCode::OK);
     let token_json = json_body(token_response).await;
     assert_eq!(token_json["token_type"], "DPoP");
+    let claims = decode_claims(&state, token_json["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("ciba-client".into())));
+    assert!(!claims.extra.contains_key("resource"));
     assert!(token_json["id_token"].as_str().unwrap().len() > 10);
 
     let replay_response = post_form(app, &token_path, pending_body).await;
@@ -3934,4 +3957,1223 @@ async fn dynamic_client_registration_refuses_required_par_when_par_is_disabled()
         !client.require_pushed_authorization_requests,
         "rejected DCR metadata must not mutate the existing client"
     );
+}
+
+// Exercise both public polling protocols against the same resource policy,
+// without bypassing either approval surface or token-endpoint proof validation.
+async fn resource_bound_polling_flow(ciba: bool, require_proof: bool) {
+    let mut config = test_helpers::test_config();
+    let oauth = &mut config.realms[0].protocols.oauth;
+    oauth.device_authorization.enabled = true;
+    oauth.ciba.enabled = true;
+    oauth.dpop.enabled = true;
+    let mut target = test_server("api://bound", &["read", "openid"], "unused");
+    target.require_sender_constraint = require_proof;
+    oauth.resource_servers = vec![target, test_server("api://other", &["read"], "unused")];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let mut client = if ciba {
+        ciba_client("ciba-client")
+    } else {
+        device_test_client("bound-device", "bound-device")
+    };
+    client.grant_types.push("refresh_token".into());
+    if ciba {
+        state.repo.update_client(&client).await.unwrap();
+    } else {
+        state.repo.create_client(&client).await.unwrap();
+    }
+    state
+        .repo
+        .create_user(&User {
+            id: "bound-user".into(),
+            realm_id: "test".into(),
+            email: Some("bound@example.com".into()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let initiation_path = if ciba {
+        &state.paths.backchannel_authentication
+    } else {
+        &state.paths.device_authorization
+    };
+    let client_form = if ciba {
+        "client_id=ciba-client&client_secret=secret"
+    } else {
+        "client_id=bound-device"
+    };
+    let initiation = format!("{client_form}&login_hint=bound%40example.com");
+    for suffix in [
+        "scope=read",
+        "scope=read&resource=https://api.example.com/unknown",
+        "scope=admin&resource=https://api.example.com/bound",
+    ] {
+        let response = post_form(
+            app.clone(),
+            initiation_path,
+            format!("{initiation}&{suffix}"),
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "invalid initiation accepted: {suffix}"
+        );
+    }
+    // Even a sender-constrained target is selectable without proof at initiation.
+    let response = post_form(
+        app.clone(),
+        initiation_path,
+        format!("{initiation}&scope=read%20openid&resource=https://api.example.com/bound"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let authorization = json_body(response).await;
+    let secret = authorization[if ciba { "auth_req_id" } else { "device_code" }]
+        .as_str()
+        .unwrap();
+    let secret_hash = util::sha256_base64url(secret);
+    let poll = if ciba {
+        format!("grant_type=urn:openid:params:grant-type:ciba&{client_form}&auth_req_id={secret}")
+    } else {
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&{client_form}&device_code={secret}"
+        )
+    };
+    assert_eq!(
+        post_token_status(app.clone(), &token_path, poll.clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    if !ciba {
+        let page = get_response(
+            app.clone(),
+            authorization["verification_uri_complete"].as_str().unwrap(),
+        )
+        .await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let html = String::from_utf8(
+            page.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("Resource: https://api.example.com/bound"));
+        assert!(html.contains("read openid"));
+    }
+    let session = SessionManager::new(state.repo.clone(), 15, 1)
+        .create("test", "bound-user", "password", &[])
+        .await
+        .unwrap();
+    let approval = if ciba {
+        serde_json::json!({"auth_req_id": secret, "user_id": "bound-user", "resource": "https://api.example.com/other", "scope": "admin", "audience": "api://other"})
+    } else {
+        serde_json::json!({"user_code": authorization["user_code"], "resource": "https://api.example.com/other", "scope": "admin", "audience": "api://other"})
+    };
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{initiation_path}/approve"))
+        .header("Content-Type", "application/json")
+        .header(
+            "Cookie",
+            format!(
+                "{}={}",
+                state.config.realms[0].sessions.browser.cookie_name, session.id
+            ),
+        )
+        .body(Body::from(approval.to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::OK
+    );
+    for suffix in [
+        "resource=https://api.example.com/other",
+        "audience=api://other",
+        "scope=admin",
+        "scope=read%20openid%20admin",
+    ] {
+        assert!(
+            post_token_status(app.clone(), &token_path, format!("{poll}&{suffix}"))
+                .await
+                .is_client_error()
+        );
+    }
+    // Reopening the policy over the same durable grant must check the current
+    // registration, audience, ceiling, and sender requirement before consumption.
+    for mutation in 0..4 {
+        let mut changed = state.config.clone();
+        let servers = &mut changed.realms[0].protocols.oauth.resource_servers;
+        match mutation {
+            0 => servers.clear(),
+            1 => servers[0].audience = "api://replacement".into(),
+            2 => servers[0].scopes = vec!["unrelated".into()],
+            _ => servers[0].require_sender_constraint = true,
+        }
+        let changed_state = Arc::new(
+            SharedState::new(
+                changed,
+                state.repo.clone(),
+                state.signer.clone(),
+                state.jwks.clone(),
+            )
+            .unwrap(),
+        );
+        let changed_app = qid_oauth::routes(&changed_state.paths).with_state(changed_state);
+        assert!(
+            post_token_status(changed_app, &token_path, poll.clone())
+                .await
+                .is_client_error()
+        );
+    }
+    if require_proof {
+        assert_eq!(
+            post_token_status(app.clone(), &token_path, poll.clone()).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let forged = Request::builder()
+            .method(Method::POST)
+            .uri(&token_path)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("x-qid-mtls-x5t-s256", "forged-certificate")
+            .body(Body::from(poll.clone()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(forged).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let (resource, audience, scopes, consumed) = if ciba {
+        let grant = state
+            .repo
+            .get_backchannel_authentication_grant(&secret_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        (grant.resource, grant.audience, grant.scopes, grant.consumed)
+    } else {
+        let grant = state
+            .repo
+            .get_device_authorization_grant(&secret_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        (grant.resource, grant.audience, grant.scopes, grant.consumed)
+    };
+    assert_eq!(resource, ["https://api.example.com/bound"]);
+    assert_eq!(audience, ["api://bound"]);
+    assert_eq!(scopes, ["read", "openid"]);
+    assert!(!consumed, "refusals consumed the approved grant");
+    // Cover omitted and explicit matching target/audience, plus valid downscope.
+    let token_body = if require_proof {
+        format!("{poll}&scope=read&resource=https://api.example.com/bound&audience=api://bound")
+    } else {
+        poll.clone()
+    };
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded");
+    if require_proof {
+        request = request.header("DPoP", build_dpop_proof("bound-poll-issue"));
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(token_body)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = json_body(response).await;
+    let claims = decode_claims(&state, token["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("api://bound".into())));
+    assert_eq!(
+        claims.extra["resource"],
+        serde_json::json!(["https://api.example.com/bound"])
+    );
+    assert_eq!(
+        token["scope"],
+        if require_proof { "read" } else { "read openid" }
+    );
+    if require_proof {
+        assert!(claims.extra["cnf"]["jkt"].is_string());
+    }
+    if ciba {
+        let id = decode_claims(&state, token["id_token"].as_str().unwrap());
+        assert_eq!(id.aud, Some(Audience::Single("ciba-client".into())));
+    }
+    assert_eq!(
+        post_token_status(app.clone(), &token_path, poll).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let refresh = format!(
+        "grant_type=refresh_token&{client_form}&refresh_token={}",
+        token["refresh_token"].as_str().unwrap()
+    );
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded");
+    if require_proof {
+        request = request.header("DPoP", build_dpop_proof("bound-poll-refresh"));
+    }
+    let response = app
+        .oneshot(request.body(Body::from(refresh)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let refreshed = json_body(response).await;
+    let claims = decode_claims(&state, refreshed["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("api://bound".into())));
+    assert_eq!(
+        claims.extra["resource"],
+        serde_json::json!(["https://api.example.com/bound"])
+    );
+}
+
+#[tokio::test]
+async fn ciba_approval_context_returns_bound_target_without_approving() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.ciba.enabled = true;
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://bound", &["read", "openid"], "unused")];
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_user(&User {
+            id: "context-user".into(),
+            realm_id: "test".into(),
+            email: Some("context-user@example.com".into()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "context-other".into(),
+            realm_id: "test".into(),
+            email: Some("context-other@example.com".into()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let response = post_form(
+        app.clone(),
+        &state.paths.backchannel_authentication,
+        "client_id=ciba-client&client_secret=secret&login_hint=context-user%40example.com&scope=read%20openid&resource=https://api.example.com/bound",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let auth_req_id = json_body(response).await["auth_req_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sessions = SessionManager::new(state.repo.clone(), 15, 1);
+    let session = sessions
+        .create("test", "context-user", "password", &[])
+        .await
+        .unwrap();
+    let cookie = format!(
+        "{}={}",
+        state.config.realms[0].sessions.browser.cookie_name, session.id
+    );
+    let other_session = sessions
+        .create("test", "context-other", "password", &[])
+        .await
+        .unwrap();
+    let other_cookie = format!(
+        "{}={}",
+        state.config.realms[0].sessions.browser.cookie_name, other_session.id
+    );
+    let context_path = format!(
+        "{}/approve?auth_req_id={auth_req_id}",
+        state.paths.backchannel_authentication
+    );
+    let context_request = Request::builder()
+        .method(Method::GET)
+        .uri(&context_path)
+        .header(axum::http::header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let context_response = app.clone().oneshot(context_request).await.unwrap();
+    assert_eq!(context_response.status(), StatusCode::OK);
+    let context = json_body(context_response).await;
+    assert_eq!(context["client_id"], "ciba-client");
+    assert_eq!(context["scopes"], serde_json::json!(["read", "openid"]));
+    assert_eq!(
+        context["resource"],
+        serde_json::json!(["https://api.example.com/bound"])
+    );
+    assert_eq!(context["audience"], serde_json::json!(["api://bound"]));
+    // No session cookie fails closed, and another user learns nothing.
+    let anonymous = Request::builder()
+        .method(Method::GET)
+        .uri(&context_path)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(anonymous).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let wrong_user = Request::builder()
+        .method(Method::GET)
+        .uri(&context_path)
+        .header(axum::http::header::COOKIE, &other_cookie)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(wrong_user).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let unknown = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "{}/approve?auth_req_id=ciba_unknown",
+            state.paths.backchannel_authentication
+        ))
+        .header(axum::http::header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(unknown).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    // The read-only context fetch approved and consumed nothing.
+    let stored = state
+        .repo
+        .get_backchannel_authentication_grant(&util::sha256_base64url(&auth_req_id))
+        .await
+        .unwrap()
+        .expect("context read must not remove the grant");
+    assert!(stored.approved_at.is_none());
+    assert!(!stored.consumed);
+    // The existing approval path still completes the same grant.
+    let approve = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "{}/approve",
+            state.paths.backchannel_authentication
+        ))
+        .header("Content-Type", "application/json")
+        .header(axum::http::header::COOKIE, &cookie)
+        .body(Body::from(
+            serde_json::json!({"auth_req_id": auth_req_id, "user_id": "context-user"}).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(approve).await.unwrap().status(),
+        StatusCode::OK
+    );
+    // After token redemption consumes the grant, the context is gone too.
+    let redeemed = post_form(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:openid:params:grant-type:ciba&client_id=ciba-client&client_secret=secret&auth_req_id={auth_req_id}"
+        ),
+    )
+    .await;
+    assert_eq!(redeemed.status(), StatusCode::OK);
+    let consumed = Request::builder()
+        .method(Method::GET)
+        .uri(&context_path)
+        .header(axum::http::header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(consumed).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    // An expired grant is likewise invisible to the context reader.
+    let expired_id = "ciba_expired_context";
+    state
+        .repo
+        .store_backchannel_authentication_grant(&qid_core::models::BackchannelAuthenticationGrant {
+            auth_req_id_hash: util::sha256_base64url(expired_id),
+            client_id: "ciba-client".to_string(),
+            realm_id: "test".to_string(),
+            login_hint: "context-user@example.com".to_string(),
+            binding_message: None,
+            scopes: vec!["read".to_string()],
+            resource: vec!["https://api.example.com/bound".to_string()],
+            audience: vec!["api://bound".to_string()],
+            user_id: Some("context-user".to_string()),
+            expires_at: util::now_seconds().saturating_sub(1),
+            approved_at: None,
+            consumed: false,
+            last_poll_at: None,
+            poll_interval_seconds: 5,
+            created_at: util::now_seconds().saturating_sub(700),
+        })
+        .await
+        .unwrap();
+    let expired = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "{}/approve?auth_req_id={expired_id}",
+            state.paths.backchannel_authentication
+        ))
+        .header(axum::http::header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(expired).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn device_resource_binding_survives_approval_and_polling() {
+    for require_proof in [false, true] {
+        resource_bound_polling_flow(false, require_proof).await;
+    }
+}
+
+#[tokio::test]
+async fn ciba_resource_binding_survives_approval_and_polling() {
+    for require_proof in [false, true] {
+        resource_bound_polling_flow(true, require_proof).await;
+    }
+}
+
+#[tokio::test]
+async fn unconfigured_resource_targets_are_rejected_without_changing_default_grants() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    config.realms[0].protocols.oauth.ciba.enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&device_test_client(
+            "unconfigured-device",
+            "unconfigured-device",
+        ))
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "unconfigured-resource-user".into(),
+            realm_id: "test".into(),
+            email: Some("unconfigured-resource@example.com".into()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+
+    for (path, request, fallback) in [
+        (
+            state.paths.device_authorization.as_str(),
+            "client_id=unconfigured-device&scope=read&resource=https://api.example.com/unknown",
+            "client_id=unconfigured-device&scope=read",
+        ),
+        (
+            state.paths.backchannel_authentication.as_str(),
+            "client_id=ciba-client&client_secret=secret&login_hint=unconfigured-resource%40example.com&scope=openid&resource=https://api.example.com/unknown",
+            "client_id=ciba-client&client_secret=secret&login_hint=unconfigured-resource%40example.com&scope=openid",
+        ),
+    ] {
+        assert!(
+            post_form(app.clone(), path, request)
+                .await
+                .status()
+                .is_client_error()
+        );
+        assert_eq!(
+            post_form(app.clone(), path, fallback).await.status(),
+            StatusCode::OK
+        );
+    }
+}
+
+fn basic_auth_header(client_id: &str, secret: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{secret}").as_bytes())
+}
+
+async fn token_with_headers(
+    app: Router,
+    uri: &str,
+    headers: Vec<(&str, String)>,
+    form_body: String,
+) -> axum::response::Response {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("Content-Type", "application/x-www-form-urlencoded");
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    app.oneshot(request.body(Body::from(form_body)).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn device_client_mismatch_cannot_redeem_bound_grant() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    config.realms[0].protocols.oauth.private_key_jwt.enabled = true;
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://bound", &["read", "openid"], "unused")];
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&device_test_client("mismatch-b-id", "mismatch-b"))
+        .await
+        .unwrap();
+    let mut attacker = base_test_client(
+        "attacker-a",
+        ClientType::Confidential,
+        "client_secret_basic",
+        vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+    );
+    attacker.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    state.repo.create_client(&attacker).await.unwrap();
+    let mut pkjwt_attacker = private_key_jwt_client("mismatch-pkjwt");
+    pkjwt_attacker
+        .grant_types
+        .push("urn:ietf:params:oauth:grant-type:device_code".to_string());
+    state.repo.create_client(&pkjwt_attacker).await.unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "mismatch-user".into(),
+            realm_id: "test".into(),
+            email: Some("mismatch@example.com".into()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+
+    let authorize = post_form(
+        app.clone(),
+        &state.paths.device_authorization,
+        "client_id=mismatch-b&scope=read%20openid&resource=https%3A%2F%2Fapi.example.com%2Fbound",
+    )
+    .await;
+    assert_eq!(authorize.status(), StatusCode::OK);
+    let authorization = json_body(authorize).await;
+    let device_code = authorization["device_code"].as_str().unwrap().to_string();
+    let user_code = authorization["user_code"].as_str().unwrap().to_string();
+    let device_code_hash = util::sha256_base64url(&device_code);
+
+    let sessions = SessionManager::new(state.repo.clone(), 60, 24);
+    let session = sessions
+        .create(
+            "test",
+            "mismatch-user",
+            "password",
+            &["password".to_string()],
+        )
+        .await
+        .unwrap();
+    let approve = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{}/approve", state.paths.device_authorization))
+        .header("Content-Type", "application/json")
+        .header(
+            "Cookie",
+            format!(
+                "{}={}",
+                state.config.realms[0].sessions.browser.cookie_name, session.id
+            ),
+        )
+        .body(Body::from(format!(
+            r#"{{"user_code":"{user_code}","user_id":"mismatch-user"}}"#
+        )))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(approve).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // Confidential attacker A authenticates validly as itself but names B's
+    // grant: both Basic and private_key_jwt attempts must fail unconsumed.
+    let basic_poll = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=mismatch-b&device_code={device_code}"
+    );
+    let basic_attack = token_with_headers(
+        app.clone(),
+        &token_path,
+        vec![(
+            "Authorization",
+            format!("Basic {}", basic_auth_header("attacker-a", "secret")),
+        )],
+        basic_poll,
+    )
+    .await;
+    assert_eq!(basic_attack.status(), StatusCode::UNAUTHORIZED);
+    let assertion = build_client_assertion("mismatch-pkjwt", "mismatch-pkjwt-1");
+    let pkjwt_attack = token_with_headers(
+        app.clone(),
+        &token_path,
+        vec![],
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=mismatch-b&device_code={device_code}&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}"
+        ),
+    )
+    .await;
+    assert_eq!(pkjwt_attack.status(), StatusCode::UNAUTHORIZED);
+    let grant = state
+        .repo
+        .get_device_authorization_grant(&device_code_hash)
+        .await
+        .unwrap()
+        .expect("mismatched attempts must leave the grant stored");
+    assert!(
+        !grant.consumed,
+        "client mismatch must not consume another client's grant"
+    );
+
+    // B's own public polling still redeems the approved, resource-bound grant.
+    let token = post_token_json(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=mismatch-b&device_code={device_code}"
+        ),
+    )
+    .await;
+    assert_eq!(token["scope"], "read openid");
+    let claims = decode_claims(&state, token["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("api://bound".into())));
+    assert_eq!(
+        claims.extra["resource"],
+        serde_json::json!(["https://api.example.com/bound"])
+    );
+}
+
+#[tokio::test]
+async fn ciba_client_mismatch_cannot_redeem_bound_grant() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.ciba.enabled = true;
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://bound", &["read", "openid"], "unused")];
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&ciba_client("mismatch-ciba-b"))
+        .await
+        .unwrap();
+    let mut attacker = base_test_client(
+        "attacker-ciba-a",
+        ClientType::Confidential,
+        "client_secret_basic",
+        vec!["urn:openid:params:grant-type:ciba".to_string()],
+    );
+    attacker.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    state.repo.create_client(&attacker).await.unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "mismatch-ciba-user".into(),
+            realm_id: "test".into(),
+            email: Some("mismatch-ciba@example.com".into()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+
+    let initiate = post_form(
+        app.clone(),
+        &state.paths.backchannel_authentication,
+        "client_id=mismatch-ciba-b&client_secret=secret&login_hint=mismatch-ciba%40example.com&scope=read%20openid&resource=https%3A%2F%2Fapi.example.com%2Fbound",
+    )
+    .await;
+    assert_eq!(initiate.status(), StatusCode::OK);
+    let auth_req_id = json_body(initiate).await["auth_req_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let auth_req_id_hash = util::sha256_base64url(&auth_req_id);
+
+    let sessions = SessionManager::new(state.repo.clone(), 15, 1);
+    let session = sessions
+        .create("test", "mismatch-ciba-user", "password", &[])
+        .await
+        .unwrap();
+    let approve = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "{}/approve",
+            state.paths.backchannel_authentication
+        ))
+        .header("Content-Type", "application/json")
+        .header(
+            axum::http::header::COOKIE,
+            format!(
+                "{}={}",
+                state.config.realms[0].sessions.browser.cookie_name, session.id
+            ),
+        )
+        .body(Body::from(
+            serde_json::json!({"auth_req_id": auth_req_id, "user_id": "mismatch-ciba-user"})
+                .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(approve).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let attack = token_with_headers(
+        app.clone(),
+        &token_path,
+        vec![(
+            "Authorization",
+            format!("Basic {}", basic_auth_header("attacker-ciba-a", "secret")),
+        )],
+        format!(
+            "grant_type=urn:openid:params:grant-type:ciba&client_id=mismatch-ciba-b&auth_req_id={auth_req_id}"
+        ),
+    )
+    .await;
+    assert_eq!(attack.status(), StatusCode::UNAUTHORIZED);
+    let grant = state
+        .repo
+        .get_backchannel_authentication_grant(&auth_req_id_hash)
+        .await
+        .unwrap()
+        .expect("mismatched attempts must leave the grant stored");
+    assert!(
+        !grant.consumed,
+        "client mismatch must not consume another client's grant"
+    );
+
+    let token = post_token_json(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:openid:params:grant-type:ciba&client_id=mismatch-ciba-b&client_secret=secret&auth_req_id={auth_req_id}"
+        ),
+    )
+    .await;
+    assert_eq!(token["scope"], "read openid");
+    let claims = decode_claims(&state, token["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("api://bound".into())));
+    assert_eq!(
+        claims.extra["resource"],
+        serde_json::json!(["https://api.example.com/bound"])
+    );
+    let id_token = decode_claims(&state, token["id_token"].as_str().unwrap());
+    assert_eq!(
+        id_token.aud,
+        Some(Audience::Single("mismatch-ciba-b".into()))
+    );
+}
+
+async fn default_scope_tokenization_flow(ciba: bool) {
+    let mut config = test_helpers::test_config();
+    if ciba {
+        config.realms[0].protocols.oauth.ciba.enabled = true;
+        config.realms[0].protocols.oidc.default_scope = "read openid".to_string();
+    } else {
+        config.realms[0]
+            .protocols
+            .oauth
+            .device_authorization
+            .enabled = true;
+        config.realms[0].protocols.oauth.default_scope = "read openid".to_string();
+    }
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://bound", &["read", "openid"], "unused")];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let client_id = if ciba {
+        "default-scope-ciba"
+    } else {
+        "default-scope-device"
+    };
+    if ciba {
+        let mut client = ciba_client(client_id);
+        client.grant_types.push("refresh_token".into());
+        state.repo.create_client(&client).await.unwrap();
+    } else {
+        let mut client = device_test_client("default-scope-device-id", client_id);
+        client.grant_types.push("refresh_token".into());
+        state.repo.create_client(&client).await.unwrap();
+    }
+    state
+        .repo
+        .create_user(&User {
+            id: format!("{client_id}-user"),
+            realm_id: "test".into(),
+            email: Some(format!("{client_id}-user@example.com")),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+
+    // Omit scope at initiation: the configured "read openid" default must be
+    // stored as two scopes so the resource ceiling still admits the target.
+    let initiation_path = if ciba {
+        state.paths.backchannel_authentication.clone()
+    } else {
+        state.paths.device_authorization.clone()
+    };
+    let initiation = if ciba {
+        format!(
+            "client_id={client_id}&client_secret=secret&login_hint={client_id}-user%40example.com&resource=https%3A%2F%2Fapi.example.com%2Fbound"
+        )
+    } else {
+        format!("client_id={client_id}&resource=https%3A%2F%2Fapi.example.com%2Fbound")
+    };
+    let response = post_form(app.clone(), &initiation_path, initiation).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let authorization = json_body(response).await;
+    let secret = authorization[if ciba { "auth_req_id" } else { "device_code" }]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let secret_hash = util::sha256_base64url(&secret);
+    let (stored_scopes, consumed) = if ciba {
+        let grant = state
+            .repo
+            .get_backchannel_authentication_grant(&secret_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        (grant.scopes, grant.consumed)
+    } else {
+        let grant = state
+            .repo
+            .get_device_authorization_grant(&secret_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        (grant.scopes, grant.consumed)
+    };
+    assert_eq!(
+        stored_scopes,
+        vec!["read".to_string(), "openid".to_string()]
+    );
+    assert!(!consumed);
+
+    let sessions = SessionManager::new(state.repo.clone(), 15, 1);
+    let session = sessions
+        .create("test", &format!("{client_id}-user"), "password", &[])
+        .await
+        .unwrap();
+    let approval = if ciba {
+        serde_json::json!({"auth_req_id": secret, "user_id": format!("{client_id}-user")})
+    } else {
+        serde_json::json!({"user_code": authorization["user_code"], "user_id": format!("{client_id}-user")})
+    };
+    let approve = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{initiation_path}/approve"))
+        .header("Content-Type", "application/json")
+        .header(
+            axum::http::header::COOKIE,
+            format!(
+                "{}={}",
+                state.config.realms[0].sessions.browser.cookie_name, session.id
+            ),
+        )
+        .body(Body::from(approval.to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(approve).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // Narrower polling against the tokenized default issues a bound token.
+    let client_form = if ciba {
+        format!("client_id={client_id}&client_secret=secret")
+    } else {
+        format!("client_id={client_id}")
+    };
+    let poll = if ciba {
+        format!(
+            "grant_type=urn:openid:params:grant-type:ciba&{client_form}&auth_req_id={secret}&scope=read"
+        )
+    } else {
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&{client_form}&device_code={secret}&scope=read"
+        )
+    };
+    let token = post_token_json(app.clone(), &token_path, poll).await;
+    assert_eq!(token["scope"], "read");
+    let claims = decode_claims(&state, token["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("api://bound".into())));
+    assert_eq!(
+        claims.extra["resource"],
+        serde_json::json!(["https://api.example.com/bound"])
+    );
+}
+
+#[tokio::test]
+async fn device_omitted_scope_tokenizes_configured_default() {
+    default_scope_tokenization_flow(false).await;
+}
+
+#[tokio::test]
+async fn ciba_omitted_scope_tokenizes_configured_default() {
+    default_scope_tokenization_flow(true).await;
+}
+
+async fn mtls_bound_polling_flow(ciba: bool) {
+    const THUMBPRINT_A: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const THUMBPRINT_B: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB";
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    config.realms[0].protocols.oauth.ciba.enabled = true;
+    config.realms[0].protocols.oauth.mtls.enabled = true;
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations = vec![PepRegistrationConfig {
+        name: "egress-main".to_string(),
+        audience: Some("qid-pep-adapter".to_string()),
+        capabilities: Vec::new(),
+        assertion: Default::default(),
+        decision: Default::default(),
+        auth: Default::default(),
+    }];
+    let mut target = test_server("api://bound", &["read", "openid"], "unused");
+    target.require_sender_constraint = true;
+    config.realms[0].protocols.oauth.resource_servers = vec![target];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let client_id = if ciba { "mtls-ciba" } else { "mtls-device" };
+    let client = if ciba {
+        let mut client = ciba_client(client_id);
+        client.grant_types.push("refresh_token".to_string());
+        client
+    } else {
+        let mut client = device_test_client(client_id, client_id);
+        client.grant_types.push("refresh_token".to_string());
+        client
+    };
+    state.repo.create_client(&client).await.unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: format!("{client_id}-user"),
+            realm_id: "test".into(),
+            email: Some(format!("{client_id}-user@example.com")),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+
+    let initiation_path = if ciba {
+        state.paths.backchannel_authentication.clone()
+    } else {
+        state.paths.device_authorization.clone()
+    };
+    let initiation = if ciba {
+        format!(
+            "client_id={client_id}&client_secret=secret&login_hint={client_id}-user%40example.com&scope=read%20openid&resource=https%3A%2F%2Fapi.example.com%2Fbound"
+        )
+    } else {
+        format!(
+            "client_id={client_id}&scope=read%20openid&resource=https%3A%2F%2Fapi.example.com%2Fbound"
+        )
+    };
+    let response = post_form(app.clone(), &initiation_path, initiation).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let authorization = json_body(response).await;
+    let secret = authorization[if ciba { "auth_req_id" } else { "device_code" }]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let secret_hash = util::sha256_base64url(&secret);
+
+    let sessions = SessionManager::new(state.repo.clone(), 15, 1);
+    let session = sessions
+        .create("test", &format!("{client_id}-user"), "password", &[])
+        .await
+        .unwrap();
+    let approval = if ciba {
+        serde_json::json!({"auth_req_id": secret, "user_id": format!("{client_id}-user")})
+    } else {
+        serde_json::json!({"user_code": authorization["user_code"], "user_id": format!("{client_id}-user")})
+    };
+    let approve = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{initiation_path}/approve"))
+        .header("Content-Type", "application/json")
+        .header(
+            axum::http::header::COOKIE,
+            format!(
+                "{}={}",
+                state.config.realms[0].sessions.browser.cookie_name, session.id
+            ),
+        )
+        .body(Body::from(approval.to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(approve).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let adapter_a =
+        build_adapter_auth_token(&state, "egress-main", "qid-pep-adapter", THUMBPRINT_A);
+    let adapter_b =
+        build_adapter_auth_token(&state, "egress-main", "qid-pep-adapter", THUMBPRINT_B);
+    let poll_secret = if ciba {
+        format!("auth_req_id={secret}")
+    } else {
+        format!("device_code={secret}")
+    };
+    let poll_token_type = if ciba {
+        "urn:openid:params:grant-type:ciba"
+    } else {
+        "urn:ietf:params:oauth:grant-type:device_code"
+    };
+    let client_form = if ciba {
+        format!("client_id={client_id}&client_secret=secret")
+    } else {
+        format!("client_id={client_id}")
+    };
+    let poll = format!("grant_type={poll_token_type}&{client_form}&{poll_secret}");
+
+    // Proof-free polling and forged adapter metadata both fail unconsumed.
+    assert_eq!(
+        post_token_status(app.clone(), &token_path, poll.clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let forged = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("x-qid-mtls-x5t-s256", "forged-certificate")
+        .body(Body::from(poll.clone()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(forged).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let consumed = if ciba {
+        state
+            .repo
+            .get_backchannel_authentication_grant(&secret_hash)
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed
+    } else {
+        state
+            .repo
+            .get_device_authorization_grant(&secret_hash)
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed
+    };
+    assert!(!consumed, "refused mTLS proofs must not consume the grant");
+
+    // The registered thumbprint issues the target-bound token with its cnf.
+    let issued = token_with_headers(
+        app.clone(),
+        &token_path,
+        vec![
+            (
+                "x-qid-pep-adapter-authorization",
+                format!("Bearer {adapter_a}"),
+            ),
+            ("x-qid-mtls-x5t-s256", THUMBPRINT_A.to_string()),
+        ],
+        format!("{poll}&scope=read"),
+    )
+    .await;
+    assert_eq!(issued.status(), StatusCode::OK);
+    let token = json_body(issued).await;
+    assert_eq!(token["token_type"], "Bearer");
+    assert_eq!(token["scope"], "read");
+    let claims = decode_claims(&state, token["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("api://bound".into())));
+    assert_eq!(
+        claims.extra["resource"],
+        serde_json::json!(["https://api.example.com/bound"])
+    );
+    assert_eq!(claims.extra["cnf"]["x5t#S256"], THUMBPRINT_A);
+    let refresh_token = token["refresh_token"].as_str().unwrap().to_string();
+
+    // A different registered thumbprint passes client auth but fails the
+    // family binding without consuming it; the original proof still refreshes.
+    let wrong = token_with_headers(
+        app.clone(),
+        &token_path,
+        vec![
+            (
+                "x-qid-pep-adapter-authorization",
+                format!("Bearer {adapter_b}"),
+            ),
+            ("x-qid-mtls-x5t-s256", THUMBPRINT_B.to_string()),
+        ],
+        format!("grant_type=refresh_token&{client_form}&refresh_token={refresh_token}"),
+    )
+    .await;
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    let renewed = token_with_headers(
+        app.clone(),
+        &token_path,
+        vec![
+            (
+                "x-qid-pep-adapter-authorization",
+                format!("Bearer {adapter_a}"),
+            ),
+            ("x-qid-mtls-x5t-s256", THUMBPRINT_A.to_string()),
+        ],
+        format!("grant_type=refresh_token&{client_form}&refresh_token={refresh_token}"),
+    )
+    .await;
+    assert_eq!(renewed.status(), StatusCode::OK);
+    let refreshed = json_body(renewed).await;
+    let claims = decode_claims(&state, refreshed["access_token"].as_str().unwrap());
+    assert_eq!(claims.aud, Some(Audience::Single("api://bound".into())));
+    assert_eq!(claims.extra["cnf"]["x5t#S256"], THUMBPRINT_A);
+}
+
+#[tokio::test]
+async fn device_mtls_polling_binds_registered_thumbprint() {
+    mtls_bound_polling_flow(false).await;
+}
+
+#[tokio::test]
+async fn ciba_mtls_polling_binds_registered_thumbprint() {
+    mtls_bound_polling_flow(true).await;
 }

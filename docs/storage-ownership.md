@@ -536,3 +536,9 @@ whose expiry can contain an in-window resend, counting its initial admission and
 each resend timestamp separately. Login cleanup retains rows until immutable
 `expires_at < now - 86400`; registration cleanup still uses original issuance
 and pending expiry. This conservatively retains all possible resend evidence.
+
+Device and CIBA grant creation also persists immutable `resource` and resolved
+`audience` vectors with `scopes`, client and realm. File serialization and SQL
+migration `20261026000001_grant_targets` default legacy target vectors to empty.
+Approval, poll updates and consumption do not replace any target or scope field;
+create-only conflicts cannot rewrite this authorization context.

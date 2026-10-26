@@ -62,7 +62,7 @@ pub fn unsigned_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedS
         )
         .route(
             &ciba_approval_path,
-            post(backchannel_authentication_approve),
+            get(backchannel_authentication_context).post(backchannel_authentication_approve),
         )
         .route("/oauth2/challenge", post(challenge::<R>))
 }
@@ -230,7 +230,10 @@ mod token_issue;
 
 pub use challenge::challenge;
 pub(crate) use ciba::ciba_grant;
-pub use ciba::{backchannel_authentication, backchannel_authentication_approve};
+pub use ciba::{
+    backchannel_authentication, backchannel_authentication_approve,
+    backchannel_authentication_context,
+};
 pub use dcr::{
     dynamic_client_registration, dynamic_client_registration_delete,
     dynamic_client_registration_get, dynamic_client_registration_update,
@@ -253,3 +256,52 @@ pub use token_issue::{
 };
 
 pub(crate) use token_issue::generate_jti;
+
+/// Polling cannot replace the authorization context. Revalidate current policy
+/// and real sender proof before the caller atomically consumes the grant.
+fn validate_grant_target(
+    realm: &qid_core::config::RealmConfig,
+    req: &TokenRequest,
+    client_id: &str,
+    resource: &[String],
+    audience: &[String],
+    granted_scopes: &[String],
+    cnf: Option<&serde_json::Value>,
+) -> QidResult<Vec<String>> {
+    let scopes = req
+        .scope
+        .as_deref()
+        .map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>())
+        .unwrap_or_else(|| granted_scopes.to_vec());
+    let requested_audience = req
+        .audience
+        .as_deref()
+        .map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>());
+    let effective_audience = if audience.is_empty() {
+        vec![client_id.to_string()]
+    } else {
+        audience.to_vec()
+    };
+    if req
+        .resource
+        .as_ref()
+        .is_some_and(|r| resource != [r.clone()])
+        || requested_audience
+            .as_ref()
+            .is_some_and(|a| a != &effective_audience)
+        || scopes.iter().any(|scope| !granted_scopes.contains(scope))
+    {
+        return Err(QidError::BadRequest {
+            message: "token request exceeds the approved target or scopes".to_string(),
+        });
+    }
+    // Resolve from the resource again: a changed registration must not silently
+    // redirect an already approved grant to a new audience.
+    let current = qid_core::oauth::resolve_token_audience(realm, &[], resource, &scopes, cnf)?;
+    if current != audience {
+        return Err(QidError::Unauthorized {
+            message: "approved target audience has changed".to_string(),
+        });
+    }
+    Ok(scopes)
+}

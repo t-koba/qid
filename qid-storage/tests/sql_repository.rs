@@ -2251,6 +2251,8 @@ async fn test_device_authorization_grant_polling_crud() {
     .unwrap();
 
     let grant = DeviceAuthorizationGrant {
+        resource: Vec::new(),
+        audience: Vec::new(),
         device_code_hash: "device-code-hash".to_string(),
         user_code: "QID-DEVICE".to_string(),
         client_id: "device-client".to_string(),
@@ -2326,6 +2328,8 @@ async fn test_backchannel_authentication_grant_crud() {
     .unwrap();
 
     let grant = BackchannelAuthenticationGrant {
+        resource: Vec::new(),
+        audience: Vec::new(),
         auth_req_id_hash: "auth-req-hash".to_string(),
         client_id: "ciba-client".to_string(),
         realm_id: "realm-ciba".to_string(),
@@ -4658,4 +4662,60 @@ async fn test_sql_client_require_par_round_trip() {
         !found.require_pushed_authorization_requests,
         "an unmarked client must stay unmarked in SQL"
     );
+}
+
+#[tokio::test]
+async fn test_polling_grant_target_migration_defaults_existing_rows() {
+    let url = db_url();
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+    for sql in [
+        include_str!("../migrations/20250101000001_initial_schema.sql"),
+        include_str!("../migrations/20250618000002_device_authorization_grants.sql"),
+        include_str!("../migrations/20250618000011_ciba_grants.sql"),
+        include_str!("../migrations/20250618000025_device_authorization_polling.sql"),
+        include_str!("../migrations/20250618000026_ciba_polling.sql"),
+    ] {
+        sqlx::raw_sql(sql).execute(&pool).await.unwrap();
+    }
+    sqlx::query("INSERT INTO realms (id, tenant_id, issuer, created_at) VALUES ('test', 'tenant', 'https://id.example.com', 1)").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO device_authorization_grants (device_code_hash, user_code, client_id, realm_id, scopes, expires_at, created_at) VALUES ('device', 'user-code', 'client', 'test', '[\"read\"]', 3000, 1)").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO backchannel_authentication_grants (auth_req_id_hash, client_id, realm_id, login_hint, scopes, expires_at, created_at) VALUES ('ciba', 'client', 'test', 'user@example.com', '[\"read\"]', 3000, 1)").execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/20261026000001_grant_targets.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let device = repo
+        .get_device_authorization_grant("device")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(device.resource.is_empty() && device.audience.is_empty());
+    assert_eq!(device.scopes, ["read"]);
+    let ciba = repo
+        .get_backchannel_authentication_grant("ciba")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(ciba.resource.is_empty() && ciba.audience.is_empty());
+    assert_eq!(ciba.scopes, ["read"]);
+    sqlx::raw_sql(r#"UPDATE device_authorization_grants SET audience = '"QZX"' WHERE device_code_hash = 'device'; UPDATE backchannel_authentication_grants SET resource = '"QZX"' WHERE auth_req_id_hash = 'ciba';"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let clean = |error: qid_core::QidError| !error.message().contains("QZX");
+    assert!(clean(
+        repo.get_device_authorization_grant("device")
+            .await
+            .unwrap_err()
+    ));
+    assert!(clean(
+        repo.get_backchannel_authentication_grant("ciba")
+            .await
+            .unwrap_err()
+    ));
+    pool.close().await;
+    repo.close().await;
 }

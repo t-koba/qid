@@ -1,6 +1,6 @@
 use axum::{
     Form, Json,
-    extract::State,
+    extract::{Query, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
@@ -26,6 +26,7 @@ pub struct BackchannelAuthenticationRequest {
     pub client_id: String,
     pub client_secret: Option<String>,
     pub scope: Option<String>,
+    pub resource: Option<String>,
     pub login_hint: String,
     pub binding_message: Option<String>,
 }
@@ -46,6 +47,19 @@ pub struct BackchannelAuthenticationApprovalRequest {
 #[derive(Debug, Serialize)]
 pub struct BackchannelAuthenticationApprovalResponse {
     pub approved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BackchannelAuthenticationContextQuery {
+    pub auth_req_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackchannelAuthenticationContextResponse {
+    pub client_id: String,
+    pub scopes: Vec<String>,
+    pub resource: Vec<String>,
+    pub audience: Vec<String>,
 }
 
 pub async fn backchannel_authentication<R: Repository>(
@@ -117,8 +131,14 @@ async fn create_backchannel_authentication_grant<R: Repository>(
     let scopes = req
         .scope
         .as_deref()
-        .map(|s| s.split(' ').map(String::from).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![realm.oidc_default_scope.clone()]);
+        .unwrap_or(realm.oidc_default_scope.as_str())
+        .split(' ')
+        .map(String::from)
+        .collect::<Vec<_>>();
+    let resource = req.resource.iter().cloned().collect::<Vec<_>>();
+    let realm_config = super::token::oauth_realm_config(state, &realm.id);
+    let audience =
+        qid_core::oauth::resolve_authorization_audience(realm_config?, &[], &resource, &scopes)?;
     let grant = BackchannelAuthenticationGrant {
         auth_req_id_hash: qid_core::util::sha256_base64url(&auth_req_id),
         client_id: req.client_id,
@@ -126,6 +146,8 @@ async fn create_backchannel_authentication_grant<R: Repository>(
         login_hint: req.login_hint,
         binding_message: req.binding_message,
         scopes,
+        resource,
+        audience,
         user_id: Some(user.id),
         expires_at: now + 600,
         approved_at: None,
@@ -180,57 +202,9 @@ pub async fn backchannel_authentication_approve<R: Repository>(
             message: "approval subject does not match login_hint".to_string(),
         });
     }
-    let user = match super::error_response_or_return!(state.repo.get_user_by_id(&req.user_id).await)
+    if let Err(error) = authorize_ciba_browser_session(&state, &headers, &grant, &req.user_id).await
     {
-        Some(user) => user,
-        None => {
-            return qid_http::error_response(QidError::NotFound {
-                resource: "user".to_string(),
-            });
-        }
-    };
-    if user.realm_id != grant.realm_id {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "approval user realm does not match CIBA grant".to_string(),
-        });
-    }
-    // Require an active session for CIBA approval.
-    let realm_cfg = state.plan.realms.iter().find(|r| r.id == grant.realm_id);
-    let Some(realm_cfg) = realm_cfg else {
-        return qid_http::error_response(QidError::Config {
-            message: format!("realm '{}' not found for CIBA grant", grant.realm_id),
-        });
-    };
-    let cookie_name = &realm_cfg.browser_session.cookie_name;
-    if let Some(session_id) = extract_cookie(&headers, cookie_name) {
-        let session =
-            match super::error_response_or_return!(state.repo.get_session(session_id).await) {
-                Some(session) => session,
-                None => {
-                    return qid_http::error_response(QidError::Unauthorized {
-                        message: "invalid or expired session".to_string(),
-                    });
-                }
-            };
-        if !qid_session::browser::session_is_active(&session, qid_core::util::now_seconds()) {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "session is no longer active".to_string(),
-            });
-        }
-        if session.user_id != req.user_id {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "session user does not match approval user".to_string(),
-            });
-        }
-        if session.realm_id != grant.realm_id {
-            return qid_http::error_response(QidError::Unauthorized {
-                message: "session realm does not match CIBA grant".to_string(),
-            });
-        }
-    } else {
-        return qid_http::error_response(QidError::Unauthorized {
-            message: "authentication required: missing session cookie".to_string(),
-        });
+        return qid_http::error_response(error);
     }
     super::error_response_or_return!(
         state
@@ -285,6 +259,108 @@ pub async fn backchannel_authentication_approve<R: Repository>(
         });
     }
     Json(BackchannelAuthenticationApprovalResponse { approved: true }).into_response()
+}
+
+async fn authorize_ciba_browser_session<R: Repository>(
+    state: &SharedState<R>,
+    headers: &HeaderMap,
+    grant: &BackchannelAuthenticationGrant,
+    approval_user_id: &str,
+) -> QidResult<()> {
+    let user = state
+        .repo
+        .get_user_by_id(approval_user_id)
+        .await?
+        .ok_or_else(|| QidError::NotFound {
+            resource: "user".to_string(),
+        })?;
+    if user.realm_id != grant.realm_id {
+        return Err(QidError::Unauthorized {
+            message: "approval user realm does not match CIBA grant".to_string(),
+        });
+    }
+    // Require a live browser session whose user and realm match the grant.
+    let realm_cfg = state.plan.realms.iter().find(|r| r.id == grant.realm_id);
+    let Some(realm_cfg) = realm_cfg else {
+        return Err(QidError::Config {
+            message: format!("realm '{}' not found for CIBA grant", grant.realm_id),
+        });
+    };
+    let cookie_name = &realm_cfg.browser_session.cookie_name;
+    let Some(session_id) = extract_cookie(headers, cookie_name) else {
+        return Err(QidError::Unauthorized {
+            message: "authentication required: missing session cookie".to_string(),
+        });
+    };
+    let session =
+        state
+            .repo
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| QidError::Unauthorized {
+                message: "invalid or expired session".to_string(),
+            })?;
+    if !qid_session::browser::session_is_active(&session, qid_core::util::now_seconds()) {
+        return Err(QidError::Unauthorized {
+            message: "session is no longer active".to_string(),
+        });
+    }
+    if session.user_id != approval_user_id {
+        return Err(QidError::Unauthorized {
+            message: "session user does not match approval user".to_string(),
+        });
+    }
+    if session.realm_id != grant.realm_id {
+        return Err(QidError::Unauthorized {
+            message: "session realm does not match CIBA grant".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Read-only approval context for the CIBA approval path. It returns the
+/// immutable stored target before approval and never mutates the grant.
+pub async fn backchannel_authentication_context<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    headers: HeaderMap,
+    Query(query): Query<BackchannelAuthenticationContextQuery>,
+) -> Response {
+    let auth_req_id_hash = qid_core::util::sha256_base64url(&query.auth_req_id);
+    let grant = match state
+        .repo
+        .get_backchannel_authentication_grant(&auth_req_id_hash)
+        .await
+    {
+        Ok(Some(grant)) => grant,
+        Ok(None) => {
+            return qid_http::error_response(QidError::NotFound {
+                resource: "backchannel authentication grant".to_string(),
+            });
+        }
+        Err(error) => return qid_http::error_response(error),
+    };
+    if grant.expires_at <= qid_core::util::now_seconds() || grant.consumed {
+        return qid_http::error_response(QidError::NotFound {
+            resource: "backchannel authentication grant".to_string(),
+        });
+    }
+    let Some(approval_user_id) = grant.user_id.clone() else {
+        return qid_http::error_response(QidError::Unauthorized {
+            message: "approval subject does not match login_hint".to_string(),
+        });
+    };
+    if let Err(error) =
+        authorize_ciba_browser_session(&state, &headers, &grant, &approval_user_id).await
+    {
+        return qid_http::error_response(error);
+    }
+    Json(BackchannelAuthenticationContextResponse {
+        client_id: grant.client_id.clone(),
+        scopes: grant.scopes.clone(),
+        resource: grant.resource.clone(),
+        audience: grant.audience.clone(),
+    })
+    .into_response()
 }
 
 pub(crate) async fn ciba_grant<R: Repository>(
@@ -352,6 +428,16 @@ pub(crate) async fn ciba_grant<R: Repository>(
             message: "CIBA is disabled".to_string(),
         });
     }
+    let realm_config = super::token::oauth_realm_config(state, &grant.realm_id)?;
+    let scopes = super::validate_grant_target(
+        realm_config,
+        req,
+        &grant.client_id,
+        &grant.resource,
+        &grant.audience,
+        &grant.scopes,
+        cnf,
+    )?;
     state
         .repo
         .consume_backchannel_authentication_grant(&auth_req_id_hash)
@@ -363,10 +449,10 @@ pub(crate) async fn ciba_grant<R: Repository>(
         &user,
         &grant.client_id,
         &grant.realm_id,
-        &grant.scopes,
+        &scopes,
         TokenIssueClaims {
-            audience: None,
-            resource: None,
+            audience: Some(&grant.audience),
+            resource: Some(&grant.resource),
             authorization_details: None,
             cnf,
             auth_time: grant.approved_at,
@@ -409,7 +495,7 @@ pub(crate) async fn ciba_grant<R: Repository>(
             &user,
             &grant.client_id,
             &grant.realm_id,
-            &grant.scopes,
+            &scopes,
             TokenIssueClaims {
                 audience: None,
                 resource: None,
@@ -427,7 +513,7 @@ pub(crate) async fn ciba_grant<R: Repository>(
             },
             sub_override.as_deref(),
         )?),
-        scope: Some(grant.scopes.join(" ")),
+        scope: Some(scopes.join(" ")),
         issued_token_type: None,
     })
 }

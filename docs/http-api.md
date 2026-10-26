@@ -62,7 +62,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | `<device_authorization>/approve` | Device flow approval. |
 | `GET` | configurable `device_verification`, default `/oauth2/device` | Device verification interaction page. |
 | `POST` | configurable `backchannel_authentication`, default `/oauth2/backchannel-authentication` | CIBA back-channel authentication. |
-| `POST` | `<backchannel_authentication>/approve` | CIBA approval. |
+| `GET, POST` | `<backchannel_authentication>/approve` | CIBA approval context (`GET ?auth_req_id=...`, browser session only) and approval (`POST`). |
 | `POST` | `/oauth2/challenge` | OAuth challenge helper. |
 | `POST` | configurable `par`, default `/oauth2/par` | Pushed Authorization Request, installed when PAR is enabled. |
 
@@ -575,3 +575,25 @@ an identical retry; it does **not** claim rollback or commit. If the response is
 lost, retry identically regardless of whether the caller saw a status. Do not
 change the body/sequence to work around an uncertain outcome. Limits and their
 bounded defaults are documented in [configuration](configuration.md#inbound-hr-webhook-bindings).
+
+### Device and CIBA resource binding
+
+Device authorization and CIBA initiation accept one optional RFC 8707 `resource`
+form parameter. With OAuth resource servers configured, a registered target is
+required and the requested scopes must fit its configured ceiling. Initiation
+validates that authorization context without pretending to possess a sender
+proof. CIBA initiation accepts `client_secret_post` clients and verifies the secret
+immediately. The durable grant records the exact resource, resolved API audience
+and scopes before approval; approval only binds the subject and approval time. The
+device verification page displays that stored resource alongside the scopes. The CIBA approval path serves the same stored `client_id`, `scopes`, `resource`, and resolved `audience` read-only at `GET <backchannel_authentication>/approve?auth_req_id=...` before approval: it requires the same live browser session whose user and realm match the grant's bound user/realm, rejects missing, expired, or consumed grants without revealing the context to another user, and never approves or consumes the grant.
+
+Token polling may omit `resource` and `audience` or repeat the stored target and
+resolved audience, but cannot replace them. An optional `scope` may only narrow
+the approved scopes. Before consuming an approved grant, qid revalidates the
+current target registration, its audience and scope ceiling, and the token
+endpoint's verified sender proof when the target requires one. A refused target,
+scope or proof request leaves the grant unconsumed. Access tokens and refresh
+families retain this target context; CIBA ID tokens still address the client.
+Without resource servers and without a target, both flows retain the client-
+audience fallback. Old durable records default to empty target context and
+cannot bypass a subsequently configured resource-server policy.

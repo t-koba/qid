@@ -76,39 +76,21 @@ async fn handle_token<R: Repository>(
         None
     };
 
-    let effective_client_id = assertion_client_id
+    let presented_client_id = assertion_client_id
         .as_deref()
         .or(basic_client_auth
             .as_ref()
             .map(|auth| auth.client_id.as_str()))
-        .or(req.client_id.as_deref())
-        .unwrap_or("");
+        .or(req.client_id.as_deref());
     let inferred_client_id =
-        if effective_client_id.is_empty() && req.grant_type == "authorization_code" {
+        if presented_client_id.unwrap_or("").is_empty() && req.grant_type == "authorization_code" {
             infer_authorization_code_client_id(state, req).await?
         } else {
             None
         };
-    let effective_client_id = assertion_client_id
-        .as_deref()
-        .or(basic_client_auth
-            .as_ref()
-            .map(|auth| auth.client_id.as_str()))
-        .or(req.client_id.as_deref())
+    let effective_client_id = presented_client_id
         .or(inferred_client_id.as_deref())
         .unwrap_or("");
-    let used_auth_method = if assertion_client_id.is_some() {
-        "private_key_jwt"
-    } else if mtls_x5t_s256.is_some() {
-        "tls_client_auth"
-    } else if basic_client_auth.is_some() {
-        "client_secret_basic"
-    } else if req.client_secret.is_some() {
-        "client_secret_post"
-    } else {
-        "none"
-    };
-
     if effective_client_id.is_empty() {
         return Err(QidError::BadRequest {
             message: "client_id required".to_string(),
@@ -120,6 +102,24 @@ async fn handle_token<R: Repository>(
         });
     }
     let client = super::find_client_across_realms(state, effective_client_id).await?;
+    // A trusted certificate fingerprint may bind the issued token without
+    // replacing the client's configured token-endpoint authentication method.
+    let used_auth_method = if assertion_client_id.is_some() {
+        "private_key_jwt"
+    } else if basic_client_auth.is_some() {
+        "client_secret_basic"
+    } else if req.client_secret.is_some() {
+        "client_secret_post"
+    } else if mtls_x5t_s256.is_some()
+        && matches!(
+            client.token_endpoint_auth_method.as_str(),
+            "tls_client_auth" | "self_signed_tls_client_auth"
+        )
+    {
+        client.token_endpoint_auth_method.as_str()
+    } else {
+        "none"
+    };
     let realm_config = oauth_realm_config(state, &client.realm_id)?;
     let dpop_jkt = if let Some(ref dpop) = dpop_header {
         if !realm_config.protocols.oauth.dpop.enabled {
@@ -168,6 +168,23 @@ async fn handle_token<R: Repository>(
         mtls_x5t_s256.as_deref(),
     )
     .await?;
+
+    // A supplied form client_id is untrusted routing: when it disagrees with
+    // the authenticated client (Basic or private_key_jwt take precedence
+    // over the form), fail before any device/CIBA grant is consumed, so one
+    // confidential client cannot redeem another client's grant by naming it.
+    if matches!(
+        req.grant_type.as_str(),
+        "urn:ietf:params:oauth:grant-type:device_code" | "urn:openid:params:grant-type:ciba"
+    ) && req
+        .client_id
+        .as_deref()
+        .is_some_and(|form| form != client.client_id)
+    {
+        return Err(QidError::Unauthorized {
+            message: "authenticated client does not match request client_id".to_string(),
+        });
+    }
 
     let metric_start = std::time::Instant::now();
     let metric_grant_type = metric_grant_type_label(&req.grant_type);
@@ -956,10 +973,7 @@ async fn validate_client_auth_method<R: Repository>(
         }
         ClientType::Confidential => {
             let expected = client.token_endpoint_auth_method.as_str();
-            let mtls_auth_matches =
-                matches!(expected, "tls_client_auth" | "self_signed_tls_client_auth")
-                    && used_auth_method == "tls_client_auth";
-            if expected != used_auth_method && !mtls_auth_matches {
+            if expected != used_auth_method {
                 return Err(QidError::Unauthorized {
                     message: format!("confidential client must authenticate with {expected}"),
                 });
@@ -1068,7 +1082,7 @@ fn token_endpoint_url_for_realm<R: Repository>(state: &SharedState<R>, realm_id:
     format!("{issuer}{}", state.paths.token)
 }
 
-fn oauth_realm_config<'a, R: Repository>(
+pub(super) fn oauth_realm_config<'a, R: Repository>(
     state: &'a SharedState<R>,
     realm_id: &str,
 ) -> QidResult<&'a qid_core::config::RealmConfig> {

@@ -218,6 +218,10 @@ pub struct DeviceAuthorizationGrant {
     pub client_id: String,
     pub realm_id: String,
     pub scopes: Vec<String>,
+    #[serde(default)]
+    pub resource: Vec<String>,
+    #[serde(default)]
+    pub audience: Vec<String>,
     pub user_id: Option<String>,
     pub expires_at: u64,
     pub approved_at: Option<u64>,
@@ -242,6 +246,10 @@ pub struct BackchannelAuthenticationGrant {
     pub login_hint: String,
     pub binding_message: Option<String>,
     pub scopes: Vec<String>,
+    #[serde(default)]
+    pub resource: Vec<String>,
+    #[serde(default)]
+    pub audience: Vec<String>,
     pub user_id: Option<String>,
     pub expires_at: u64,
     pub approved_at: Option<u64>,

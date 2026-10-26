@@ -3062,6 +3062,8 @@ where
         .expect("create device contract user failed");
 
     let incumbent = DeviceAuthorizationGrant {
+        resource: vec!["https://api.example.com/device".into()],
+        audience: vec!["api://device".into()],
         device_code_hash: "device-code-contract".into(),
         user_code: "DEVICE-CONTRACT".into(),
         client_id: "client-device-contract".into(),
@@ -3091,6 +3093,8 @@ where
     // A second grant for the same device code hash is refused, even with a
     // changed owner and payload and reset lifecycle fields.
     let duplicate_hash = DeviceAuthorizationGrant {
+        resource: Vec::new(),
+        audience: Vec::new(),
         device_code_hash: incumbent.device_code_hash.clone(),
         user_code: "DEVICE-OTHER".into(),
         client_id: "other-client".into(),
@@ -3121,6 +3125,8 @@ where
     assert_eq!(stored.client_id, incumbent.client_id);
     assert_eq!(stored.user_code, incumbent.user_code);
     assert_eq!(stored.scopes, incumbent.scopes);
+    assert_eq!(stored.resource, incumbent.resource);
+    assert_eq!(stored.audience, incumbent.audience);
     assert_eq!(stored.user_id.as_deref(), Some("user-device-contract"));
     assert_eq!(stored.approved_at, Some(1200));
     assert!(stored.consumed, "duplicate reset the consumed device grant");
@@ -3130,6 +3136,8 @@ where
     // A second grant that carries the incumbent user code under a distinct
     // hash is refused, and the new hash stays absent.
     let duplicate_code = DeviceAuthorizationGrant {
+        resource: Vec::new(),
+        audience: Vec::new(),
         device_code_hash: "device-code-contract-other".into(),
         user_code: incumbent.user_code.clone(),
         client_id: "other-client".into(),
@@ -3204,6 +3212,8 @@ where
         .expect("create backchannel contract user failed");
 
     let incumbent = BackchannelAuthenticationGrant {
+        resource: vec!["https://api.example.com/ciba".into()],
+        audience: vec!["api://ciba".into()],
         auth_req_id_hash: "auth-req-contract".into(),
         client_id: "client-backchannel-contract".into(),
         realm_id: "realm-backchannel-contract".into(),
@@ -3238,6 +3248,8 @@ where
     // A second grant for the same hash is refused, even with a changed owner
     // and payload and reset lifecycle fields.
     let duplicate = BackchannelAuthenticationGrant {
+        resource: Vec::new(),
+        audience: Vec::new(),
         auth_req_id_hash: incumbent.auth_req_id_hash.clone(),
         client_id: "other-client".into(),
         realm_id: "other-realm".into(),
@@ -3270,6 +3282,8 @@ where
     assert_eq!(stored.login_hint, incumbent.login_hint);
     assert_eq!(stored.binding_message, incumbent.binding_message);
     assert_eq!(stored.scopes, incumbent.scopes);
+    assert_eq!(stored.resource, incumbent.resource);
+    assert_eq!(stored.audience, incumbent.audience);
     assert_eq!(stored.user_id.as_deref(), Some("user-backchannel-contract"));
     assert_eq!(stored.approved_at, Some(1200));
     assert!(

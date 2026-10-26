@@ -190,6 +190,8 @@ async fn seed(repo: &impl Repository) {
     for owner in [Some("target"), Some("survivor"), None] {
         let id = owner.unwrap_or("pending");
         repo.store_device_authorization_grant(&DeviceAuthorizationGrant {
+            resource: Vec::new(),
+            audience: Vec::new(),
             device_code_hash: id.into(),
             user_code: id.into(),
             client_id: "client".into(),
@@ -206,6 +208,8 @@ async fn seed(repo: &impl Repository) {
         .await
         .unwrap();
         repo.store_backchannel_authentication_grant(&BackchannelAuthenticationGrant {
+            resource: Vec::new(),
+            audience: Vec::new(),
             auth_req_id_hash: id.into(),
             client_id: "client".into(),
             realm_id: "realm".into(),
@@ -389,14 +393,6 @@ async fn sql_authentication_ownership_migration_drops_orphans_and_preserves_live
             ('pending', 'client', 'realm', 'hint', NULL, '[]', NULL, 1000, NULL, 0, 100, 120, 10);")
         .execute(&pool).await.unwrap();
     let code = serde_json::to_value(repo.get_authorization_code("live").await.unwrap()).unwrap();
-    let mut grants = vec![];
-    for id in ["live", "pending"] {
-        grants.push((
-            serde_json::to_value(repo.get_device_authorization_grant(id).await.unwrap()).unwrap(),
-            serde_json::to_value(repo.get_backchannel_authentication_grant(id).await.unwrap())
-                .unwrap(),
-        ));
-    }
     let mut tx = pool.begin().await.unwrap();
     sqlx::raw_sql(include_str!(
         "../migrations/20250630000012_user_authentication_lifecycle.sql"
@@ -405,6 +401,14 @@ async fn sql_authentication_ownership_migration_drops_orphans_and_preserves_live
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    // This fixture deliberately stops at the pre-target schema. Apply the newer
+    // migration after the historical ownership rewrite before using current rows.
+    sqlx::raw_sql(include_str!(
+        "../migrations/20261026000001_grant_targets.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         serde_json::to_value(repo.get_authorization_code("live").await.unwrap()).unwrap(),
         code
@@ -415,15 +419,58 @@ async fn sql_authentication_ownership_migration_drops_orphans_and_preserves_live
             .unwrap()
             .is_none()
     );
-    for (i, id) in ["live", "pending"].iter().enumerate() {
+    for id in ["live", "pending"] {
+        let live = id == "live";
         assert_eq!(
-            serde_json::to_value(repo.get_device_authorization_grant(id).await.unwrap()).unwrap(),
-            grants[i].0
+            serde_json::to_value(
+                repo.get_device_authorization_grant(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            json!({
+                "device_code_hash": id,
+                "user_code": id,
+                "client_id": "client",
+                "realm_id": "realm",
+                "scopes": if live { json!(["openid"]) } else { json!([]) },
+                "resource": [],
+                "audience": [],
+                "user_id": if live { Some("live") } else { None },
+                "expires_at": 1000,
+                "approved_at": if live { Some(150) } else { None },
+                "consumed": false,
+                "last_poll_at": 120,
+                "poll_interval_seconds": 10,
+                "created_at": 100
+            })
         );
         assert_eq!(
-            serde_json::to_value(repo.get_backchannel_authentication_grant(id).await.unwrap())
-                .unwrap(),
-            grants[i].1
+            serde_json::to_value(
+                repo.get_backchannel_authentication_grant(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            json!({
+                "auth_req_id_hash": id,
+                "client_id": "client",
+                "realm_id": "realm",
+                "login_hint": "hint",
+                "binding_message": if live { Some("binding") } else { None },
+                "scopes": if live { json!(["openid"]) } else { json!([]) },
+                "resource": [],
+                "audience": [],
+                "user_id": if live { Some("live") } else { None },
+                "expires_at": 1000,
+                "approved_at": if live { Some(150) } else { None },
+                "consumed": false,
+                "last_poll_at": 120,
+                "poll_interval_seconds": 10,
+                "created_at": 100
+            })
         );
     }
     assert!(

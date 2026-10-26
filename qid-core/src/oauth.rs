@@ -47,8 +47,35 @@ pub fn resolve_token_audience(
     scopes: &[String],
     cnf: Option<&serde_json::Value>,
 ) -> QidResult<Vec<String>> {
+    if realm.protocols.oauth.resource_servers.is_empty() {
+        return Ok(requested_audiences.to_vec());
+    }
+    let audiences = resolve_authorization_audience(realm, requested_audiences, resources, scopes)?;
+    for audience in &audiences {
+        if let Some(server) =
+            resource_server_by_audience(&realm.protocols.oauth.resource_servers, audience)
+        {
+            require_sender_constraint(server, cnf)?;
+        }
+    }
+    Ok(audiences)
+}
+
+/// Resolve an authorization target and its scope ceiling, without asserting
+/// sender proof. Proof is checked by `resolve_token_audience` at issuance.
+pub fn resolve_authorization_audience(
+    realm: &RealmConfig,
+    requested_audiences: &[String],
+    resources: &[String],
+    scopes: &[String],
+) -> QidResult<Vec<String>> {
     let resource_servers = &realm.protocols.oauth.resource_servers;
     if resource_servers.is_empty() {
+        if let Some(resource) = resources.first() {
+            return Err(QidError::Unauthorized {
+                message: format!("unknown resource indicator: {resource}"),
+            });
+        }
         return Ok(requested_audiences.to_vec());
     }
     let mut audiences = BTreeSet::new();
@@ -59,7 +86,6 @@ pub fn resolve_token_audience(
                 message: format!("unknown resource server audience: {audience}"),
             }
         })?;
-        require_sender_constraint(server, cnf)?;
         selected_servers.push(server);
         audiences.insert(audience.clone());
     }
@@ -77,7 +103,6 @@ pub fn resolve_token_audience(
                 ),
             });
         }
-        require_sender_constraint(server, cnf)?;
         selected_servers.push(server);
         audiences.insert(server.audience.clone());
     }

@@ -68,7 +68,7 @@ impl TokenRepository for SqlRepository {
 
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, scopes, auth_time, acr, amr, audience, resource, authorization_details, sender_constraint, issued_at, refresh_expires_at, session_id, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO token_families (id, user_id, client_id, realm_id, current_refresh_hash, scopes, auth_time, acr, amr, audience, resource, authorization_details, sender_constraint, issued_at, refresh_expires_at, session_id, revoked) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(&family.id)
         .bind(&family.user_id)
@@ -100,7 +100,7 @@ impl TokenRepository for SqlRepository {
 
     async fn get_token_family(&self, id: &str) -> QidResult<Option<TokenFamily>> {
         let row: Option<TokenFamilyRow> =
-            sqlx::query_as("SELECT * FROM token_families WHERE id = ?")
+            sqlx::query_as("SELECT * FROM token_families WHERE id = $1")
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await
@@ -121,7 +121,7 @@ impl TokenRepository for SqlRepository {
             });
         }
         let result = sqlx::query(
-            "UPDATE token_families SET current_refresh_hash = ?, refresh_expires_at = ? WHERE id = ? AND current_refresh_hash = ? AND revoked = 0",
+            "UPDATE token_families SET current_refresh_hash = $1, refresh_expires_at = $2 WHERE id = $3 AND current_refresh_hash = $4 AND revoked = 0",
         )
         .bind(refresh_hash)
         .bind(refresh_expires_at as i64)
@@ -152,7 +152,7 @@ impl TokenRepository for SqlRepository {
     }
 
     async fn revoke_token_family(&self, id: &str) -> QidResult<()> {
-        let result = sqlx::query("UPDATE token_families SET revoked = 1 WHERE id = ?")
+        let result = sqlx::query("UPDATE token_families SET revoked = 1 WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await
@@ -172,7 +172,7 @@ impl TokenRepository for SqlRepository {
         let rows: Vec<TokenFamilyRow> = match (user_id, client_id) {
             (Some(uid), Some(cid)) => {
                 sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = ? AND user_id = ? AND client_id = ? ORDER BY issued_at DESC",
+                    "SELECT * FROM token_families WHERE realm_id = $1 AND user_id = $2 AND client_id = $3 ORDER BY issued_at DESC",
                 )
                 .bind(realm_id)
                 .bind(uid)
@@ -183,7 +183,7 @@ impl TokenRepository for SqlRepository {
             }
             (Some(uid), None) => {
                 sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = ? AND user_id = ? ORDER BY issued_at DESC",
+                    "SELECT * FROM token_families WHERE realm_id = $1 AND user_id = $2 ORDER BY issued_at DESC",
                 )
                 .bind(realm_id)
                 .bind(uid)
@@ -193,7 +193,7 @@ impl TokenRepository for SqlRepository {
             }
             (None, Some(cid)) => {
                 sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = ? AND client_id = ? ORDER BY issued_at DESC",
+                    "SELECT * FROM token_families WHERE realm_id = $1 AND client_id = $2 ORDER BY issued_at DESC",
                 )
                 .bind(realm_id)
                 .bind(cid)
@@ -203,7 +203,7 @@ impl TokenRepository for SqlRepository {
             }
             (None, None) => {
                 sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = ? ORDER BY issued_at DESC",
+                    "SELECT * FROM token_families WHERE realm_id = $1 ORDER BY issued_at DESC",
                 )
                 .bind(realm_id)
                 .fetch_all(&self.pool)
@@ -216,7 +216,7 @@ impl TokenRepository for SqlRepository {
 
     async fn create_access_token(&self, token: &AccessToken) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO access_tokens (jti, family_id, user_id, client_id, realm_id, scopes, audience, resource, authorization_details, cnf, auth_time, acr, amr, nonce, sender_constraint, token_format, expires_at, revoked, issued_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO access_tokens (jti, family_id, user_id, client_id, realm_id, scopes, audience, resource, authorization_details, cnf, auth_time, acr, amr, nonce, sender_constraint, token_format, expires_at, revoked, issued_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
         )
         .bind(&token.jti)
         .bind(&token.family_id)
@@ -245,7 +245,7 @@ impl TokenRepository for SqlRepository {
 
     async fn get_access_token(&self, jti: &str) -> QidResult<Option<AccessToken>> {
         let row: Option<AccessTokenRow> =
-            sqlx::query_as("SELECT * FROM access_tokens WHERE jti = ?")
+            sqlx::query_as("SELECT * FROM access_tokens WHERE jti = $1")
                 .bind(jti)
                 .fetch_optional(&self.pool)
                 .await
@@ -309,7 +309,7 @@ impl TokenRepository for SqlRepository {
         grant: &DeviceAuthorizationGrant,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "INSERT INTO device_authorization_grants (device_code_hash, user_code, client_id, realm_id, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO device_authorization_grants (device_code_hash, user_code, client_id, realm_id, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at, resource, audience) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT DO NOTHING",
         )
         .bind(&grant.device_code_hash)
         .bind(&grant.user_code)
@@ -323,6 +323,8 @@ impl TokenRepository for SqlRepository {
         .bind(grant.last_poll_at.map(|polled_at| polled_at as i64))
         .bind(grant.poll_interval_seconds as i64)
         .bind(grant.created_at as i64)
+        .bind(serde_json::to_string(&grant.resource).unwrap_or_default())
+        .bind(serde_json::to_string(&grant.audience).unwrap_or_default())
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
@@ -336,12 +338,12 @@ impl TokenRepository for SqlRepository {
         device_code_hash: &str,
     ) -> QidResult<Option<DeviceAuthorizationGrant>> {
         let row: Option<DeviceAuthorizationGrantRow> =
-            sqlx::query_as("SELECT * FROM device_authorization_grants WHERE device_code_hash = ?")
+            sqlx::query_as("SELECT * FROM device_authorization_grants WHERE device_code_hash = $1")
                 .bind(device_code_hash)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
+        row.map(TryInto::try_into).transpose()
     }
 
     async fn get_device_authorization_grant_by_user_code(
@@ -349,12 +351,12 @@ impl TokenRepository for SqlRepository {
         user_code: &str,
     ) -> QidResult<Option<DeviceAuthorizationGrant>> {
         let row: Option<DeviceAuthorizationGrantRow> =
-            sqlx::query_as("SELECT * FROM device_authorization_grants WHERE user_code = ?")
+            sqlx::query_as("SELECT * FROM device_authorization_grants WHERE user_code = $1")
                 .bind(user_code)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
+        row.map(TryInto::try_into).transpose()
     }
 
     async fn approve_device_authorization_grant(
@@ -364,7 +366,7 @@ impl TokenRepository for SqlRepository {
         approved_at: u64,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE device_authorization_grants SET user_id = ?, approved_at = ? WHERE user_code = ?",
+            "UPDATE device_authorization_grants SET user_id = $1, approved_at = $2 WHERE user_code = $3",
         )
         .bind(user_id)
         .bind(approved_at as i64)
@@ -385,7 +387,7 @@ impl TokenRepository for SqlRepository {
         poll_interval_seconds: u64,
     ) -> QidResult<()> {
         sqlx::query(
-            "UPDATE device_authorization_grants SET last_poll_at = ?, poll_interval_seconds = ? WHERE device_code_hash = ?",
+            "UPDATE device_authorization_grants SET last_poll_at = $1, poll_interval_seconds = $2 WHERE device_code_hash = $3",
         )
         .bind(polled_at as i64)
         .bind(poll_interval_seconds as i64)
@@ -398,7 +400,7 @@ impl TokenRepository for SqlRepository {
 
     async fn consume_device_authorization_grant(&self, device_code_hash: &str) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE device_authorization_grants SET consumed = 1 WHERE device_code_hash = ? AND consumed = 0",
+            "UPDATE device_authorization_grants SET consumed = 1 WHERE device_code_hash = $1 AND consumed = 0",
         )
         .bind(device_code_hash)
         .execute(&self.pool)
@@ -415,7 +417,7 @@ impl TokenRepository for SqlRepository {
         grant: &BackchannelAuthenticationGrant,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "INSERT INTO backchannel_authentication_grants (auth_req_id_hash, client_id, realm_id, login_hint, binding_message, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (auth_req_id_hash) DO NOTHING",
+            "INSERT INTO backchannel_authentication_grants (auth_req_id_hash, client_id, realm_id, login_hint, binding_message, scopes, user_id, expires_at, approved_at, consumed, last_poll_at, poll_interval_seconds, created_at, resource, audience) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT (auth_req_id_hash) DO NOTHING",
         )
         .bind(&grant.auth_req_id_hash)
         .bind(&grant.client_id)
@@ -430,6 +432,8 @@ impl TokenRepository for SqlRepository {
         .bind(grant.last_poll_at.map(|polled_at| polled_at as i64))
         .bind(grant.poll_interval_seconds as i64)
         .bind(grant.created_at as i64)
+        .bind(serde_json::to_string(&grant.resource).unwrap_or_default())
+        .bind(serde_json::to_string(&grant.audience).unwrap_or_default())
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
@@ -446,13 +450,13 @@ impl TokenRepository for SqlRepository {
         auth_req_id_hash: &str,
     ) -> QidResult<Option<BackchannelAuthenticationGrant>> {
         let row: Option<BackchannelAuthenticationGrantRow> = sqlx::query_as(
-            "SELECT * FROM backchannel_authentication_grants WHERE auth_req_id_hash = ?",
+            "SELECT * FROM backchannel_authentication_grants WHERE auth_req_id_hash = $1",
         )
         .bind(auth_req_id_hash)
         .fetch_optional(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
+        row.map(TryInto::try_into).transpose()
     }
 
     async fn approve_backchannel_authentication_grant(
@@ -462,7 +466,7 @@ impl TokenRepository for SqlRepository {
         approved_at: u64,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE backchannel_authentication_grants SET user_id = ?, approved_at = ? WHERE auth_req_id_hash = ?",
+            "UPDATE backchannel_authentication_grants SET user_id = $1, approved_at = $2 WHERE auth_req_id_hash = $3",
         )
         .bind(user_id)
         .bind(approved_at as i64)
@@ -483,7 +487,7 @@ impl TokenRepository for SqlRepository {
         poll_interval_seconds: u64,
     ) -> QidResult<()> {
         sqlx::query(
-            "UPDATE backchannel_authentication_grants SET last_poll_at = ?, poll_interval_seconds = ? WHERE auth_req_id_hash = ?",
+            "UPDATE backchannel_authentication_grants SET last_poll_at = $1, poll_interval_seconds = $2 WHERE auth_req_id_hash = $3",
         )
         .bind(polled_at as i64)
         .bind(poll_interval_seconds as i64)
@@ -499,7 +503,7 @@ impl TokenRepository for SqlRepository {
         auth_req_id_hash: &str,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE backchannel_authentication_grants SET consumed = 1 WHERE auth_req_id_hash = ? AND consumed = 0",
+            "UPDATE backchannel_authentication_grants SET consumed = 1 WHERE auth_req_id_hash = $1 AND consumed = 0",
         )
         .bind(auth_req_id_hash)
         .execute(&self.pool)

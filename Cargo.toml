@@ -187,9 +187,10 @@ exclude = ["vendor/rustls"]
 # and separate deployment signing add 266 measured source lines (109261 ->
 # 109527); the additions preserve issuer trust and deployment token keys.
 # Operator-approved ceilings permit review of the complete push-MFA candidate.
+# The realm-authoritative FedCM email correction adds 14 measured source lines
+# (113701 -> 113715); per-crate caps, counting rules, and gates are unchanged.
 # Approval does not constitute candidate acceptance or publication.
-# Counting rules, other crate caps, and validation/publication gates are unchanged.
-total = 113703
+total = 113715
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

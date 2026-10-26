@@ -181,6 +181,15 @@ fn with_cookie(req: Request<Body>, cookie: &str) -> Request<Body> {
 async fn fedcm_token_is_signed_for_approved_client() {
     let (app, state) = setup().await;
     let cookie = add_session(&state, "acct-1").await;
+    let mut account = state
+        .repo
+        .get_user_by_id_in_realm(&RealmId("test".to_string()), "acct-1")
+        .await
+        .unwrap()
+        .unwrap();
+    account.email = Some("alice@example.com".to_string());
+    account.email_verified = true;
+    state.repo.update_user(&account).await.unwrap();
 
     let create_request = with_cookie(
         Request::builder()
@@ -190,7 +199,7 @@ async fn fedcm_token_is_signed_for_approved_client() {
             .body(Body::from(
                 r#"{
                     "account_id":"acct-1",
-                    "email":"user@example.com",
+                    "email":"bob@example.com",
                     "name":"FedCM User",
                     "approved_clients":["rp-client"]
                 }"#,
@@ -229,8 +238,83 @@ async fn fedcm_token_is_signed_for_approved_client() {
         .claims;
     assert_eq!(claims.sub.as_deref(), Some("acct-1"));
     assert_eq!(claims.aud_primary(), Some("rp-client"));
-    assert_eq!(claims.extra["email"], "user@example.com");
+    assert_eq!(claims.extra["email"], "alice@example.com");
+    assert_eq!(claims.extra["email_verified"], true);
+    assert_ne!(claims.extra["email"], "bob@example.com");
     assert_eq!(claims.extra["typ"], "fedcm");
+}
+
+#[tokio::test]
+async fn fedcm_token_omits_unverified_or_absent_account_email() {
+    let (app, state) = setup().await;
+    for (account_id, email) in [
+        ("acct-unverified", Some("unverified@example.com")),
+        ("acct-no-email", None),
+    ] {
+        let cookie = add_session(&state, account_id).await;
+        let mut account = state
+            .repo
+            .get_user_by_id_in_realm(&RealmId("test".to_string()), account_id)
+            .await
+            .unwrap()
+            .unwrap();
+        account.email = email.map(str::to_string);
+        account.email_verified = false;
+        state.repo.update_user(&account).await.unwrap();
+
+        let create_request = with_cookie(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/test/fedcm/accounts")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "account_id": account_id,
+                        "email": "attacker@example.com",
+                        "approved_clients": ["rp-client"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+            &cookie,
+        );
+        assert_eq!(
+            app.clone().oneshot(create_request).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+
+        let token_request = with_cookie(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/test/fedcm/token")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "account_id": account_id,
+                        "client_id": "rp-client"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+            &cookie,
+        );
+        let token_response = app.clone().oneshot(token_request).await.unwrap();
+        assert_eq!(token_response.status(), StatusCode::OK);
+        let bytes = token_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let claims = state
+            .signer
+            .decode_signature_only(json["token"].as_str().unwrap())
+            .expect("FedCM token should verify")
+            .claims;
+        assert!(!claims.extra.contains_key("email"));
+        assert!(!claims.extra.contains_key("email_verified"));
+    }
 }
 
 #[tokio::test]

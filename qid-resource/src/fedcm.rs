@@ -146,9 +146,23 @@ pub async fn generate_fedcm_token<R: Repository>(
             message: "FedCM client is not approved for this account".to_string(),
         });
     }
+    let account = match state
+        .repo
+        .get_user_by_id_in_realm(&RealmId(realm.clone()), &req.account_id)
+        .await
+    {
+        Ok(Some(user)) => user,
+        Ok(None) => return not_found_response("Account not found"),
+        Err(error) => return qid_http::error_response(error),
+    };
     let now = qid_core::util::now_seconds();
     let mut extra = HashMap::new();
-    extra.insert("email".to_string(), serde_json::json!(identity.email));
+    if account.email_verified {
+        if let Some(email) = account.email.filter(|email| !email.is_empty()) {
+            extra.insert("email".to_string(), serde_json::json!(email));
+            extra.insert("email_verified".to_string(), serde_json::json!(true));
+        }
+    }
     extra.insert("name".to_string(), serde_json::json!(identity.name));
     extra.insert(
         "given_name".to_string(),

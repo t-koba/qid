@@ -876,7 +876,14 @@ async fn ciam_password_reset_delivery_failures_do_not_expose_secrets() {
 
 #[tokio::test]
 async fn ciam_password_reset_validates_and_atomically_replaces_credentials() {
-    assert_atomic_password_reset(test_helpers::test_config()).await;
+    // This flow covers reset semantics; a dedicated test verifies configured KDF cost.
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.password.argon2id = Argon2idCostConfig {
+        memory_kib: 8,
+        time_cost: 1,
+        parallelism: 1,
+    };
+    assert_atomic_password_reset(config).await;
 }
 
 #[tokio::test]

@@ -123,8 +123,8 @@ mod tests {
     #[test]
     fn test_totp_wrong_code_rejected() {
         let verifier = TotpVerifier::default();
-        let secret = TotpVerifier::generate_secret();
-        assert!(!verifier.verify(&secret, "000000").unwrap());
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        assert!(!verifier.verify(secret, "0000000").unwrap());
     }
 
     #[test]
@@ -139,11 +139,11 @@ mod tests {
     #[test]
     fn test_totp_different_timestamps_different_codes() {
         let verifier = TotpVerifier::default();
-        let secret = TotpVerifier::generate_secret();
-        let code_a = verifier.generate_code(&secret, 1000000).unwrap();
-        let code_b = verifier.generate_code(&secret, 1000030).unwrap();
-        // Different time windows should produce different codes
-        assert_ne!(code_a, code_b);
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let code_a = verifier.generate_code(secret, 59).unwrap();
+        let code_b = verifier.generate_code(secret, 1111111109).unwrap();
+        assert_eq!(code_a, "287082");
+        assert_eq!(code_b, "081804");
     }
 
     #[test]

@@ -28,7 +28,7 @@ impl RealmRepository for SqlRepository {
     }
 
     async fn get_realm_issuer(&self, id: &RealmId) -> QidResult<Option<String>> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT issuer FROM realms WHERE id = ?")
+        let row: Option<(String,)> = sqlx::query_as("SELECT issuer FROM realms WHERE id = $1")
             .bind(id.as_str())
             .fetch_optional(&self.pool)
             .await
@@ -37,7 +37,7 @@ impl RealmRepository for SqlRepository {
     }
 
     async fn get_realm_tenant(&self, id: &RealmId) -> QidResult<Option<String>> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT tenant_id FROM realms WHERE id = ?")
+        let row: Option<(String,)> = sqlx::query_as("SELECT tenant_id FROM realms WHERE id = $1")
             .bind(id.as_str())
             .fetch_optional(&self.pool)
             .await

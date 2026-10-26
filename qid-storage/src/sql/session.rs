@@ -6,7 +6,7 @@ use super::*;
 impl SessionRepository for SqlRepository {
     async fn create_session(&self, session: &Session) -> QidResult<()> {
         // Check for duplicate id before inserting
-        let dup: Option<String> = sqlx::query_scalar("SELECT id FROM sessions WHERE id = ?")
+        let dup: Option<String> = sqlx::query_scalar("SELECT id FROM sessions WHERE id = $1")
             .bind(&session.id)
             .fetch_optional(&self.pool)
             .await
@@ -21,7 +21,7 @@ impl SessionRepository for SqlRepository {
             .as_ref()
             .map(|v| serde_json::to_string(v).unwrap_or_default());
         sqlx::query(
-            "INSERT INTO sessions (id, realm_id, user_id, auth_time, acr, amr, idle_expires_at, absolute_expires_at, revoked, created_at, cnf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, realm_id, user_id, auth_time, acr, amr, idle_expires_at, absolute_expires_at, revoked, created_at, cnf) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&session.id)
         .bind(&session.realm_id)
@@ -41,7 +41,7 @@ impl SessionRepository for SqlRepository {
     }
 
     async fn get_session(&self, id: &str) -> QidResult<Option<Session>> {
-        let row: Option<SessionRow> = sqlx::query_as("SELECT * FROM sessions WHERE id = ?")
+        let row: Option<SessionRow> = sqlx::query_as("SELECT * FROM sessions WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await

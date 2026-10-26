@@ -9,7 +9,7 @@ impl ClientRepository for SqlRepository {
         // insert refuses a client whose record ID or whose client id in the
         // realm is taken. The read names the reason of the refusal.
         let result = sqlx::query(
-            "INSERT INTO clients (id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint, require_pushed_authorization_requests) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO clients (id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint, require_pushed_authorization_requests) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT DO NOTHING",
         )
         .bind(&client.id)
         .bind(&client.realm_id)
@@ -66,7 +66,7 @@ impl ClientRepository for SqlRepository {
         // binding is updated, so a caller cannot move a client to another
         // realm or rename its client ID. No pre-read precedes the write.
         let result = sqlx::query(
-            "UPDATE clients SET client_type = ?, token_endpoint_auth_method = ?, client_secret_hash = ?, mtls_certificate_thumbprints = ?, jwks = ?, redirect_uris = ?, grant_types = ?, client_name = ?, client_uri = ?, logo_uri = ?, contacts = ?, post_logout_redirect_uris = ?, default_max_age = ?, require_auth_time = ?, sector_identifier_uri = ?, subject_type = ?, backchannel_logout_uri = ?, frontchannel_logout_uri = ?, backchannel_client_notification_endpoint = ?, require_pushed_authorization_requests = ? WHERE id = ? AND realm_id = ? AND client_id = ?",
+            "UPDATE clients SET client_type = $1, token_endpoint_auth_method = $2, client_secret_hash = $3, mtls_certificate_thumbprints = $4, jwks = $5, redirect_uris = $6, grant_types = $7, client_name = $8, client_uri = $9, logo_uri = $10, contacts = $11, post_logout_redirect_uris = $12, default_max_age = $13, require_auth_time = $14, sector_identifier_uri = $15, subject_type = $16, backchannel_logout_uri = $17, frontchannel_logout_uri = $18, backchannel_client_notification_endpoint = $19, require_pushed_authorization_requests = $20 WHERE id = $21 AND realm_id = $22 AND client_id = $23",
         )
         .bind(match client.client_type {
             ClientType::Confidential => "confidential",
@@ -103,7 +103,7 @@ impl ClientRepository for SqlRepository {
             // is a conflict, and a present matching binding is the identical
             // update SQLite reports as zero changed rows.
             let incumbent: Option<(String, String)> =
-                sqlx::query_as("SELECT realm_id, client_id FROM clients WHERE id = ?")
+                sqlx::query_as("SELECT realm_id, client_id FROM clients WHERE id = $1")
                     .bind(&client.id)
                     .fetch_optional(&self.pool)
                     .await
@@ -123,7 +123,7 @@ impl ClientRepository for SqlRepository {
         client_id: &str,
     ) -> QidResult<Option<Client>> {
         let row: Option<ClientRow> =
-            sqlx::query_as("SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint, require_pushed_authorization_requests FROM clients WHERE realm_id = ? AND client_id = ?")
+            sqlx::query_as("SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint, require_pushed_authorization_requests FROM clients WHERE realm_id = $1 AND client_id = $2")
                 .bind(realm_id.as_str())
                 .bind(client_id)
                 .fetch_optional(&self.pool)
@@ -143,12 +143,12 @@ impl ClientRepository for SqlRepository {
         // One read answers the client id in every named realm. The index on
         // (client_id, realm_id) keeps it cheap, and the realms outside the
         // list are never read.
-        let placeholders = vec!["?"; realm_ids.len()].join(", ");
+        let slots = (2..realm_ids.len() + 2).map(|n| format!("${n}"));
+        let placeholders = slots.collect::<Vec<_>>().join(", ");
         let sql = format!(
-            "SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint, require_pushed_authorization_requests FROM clients WHERE client_id = ? AND realm_id IN ({placeholders})"
+            "SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint, require_pushed_authorization_requests FROM clients WHERE client_id = $1 AND realm_id IN ({placeholders})"
         );
-        let mut query = sqlx::query_as::<_, ClientRow>(&sql);
-        query = query.bind(client_id);
+        let mut query = sqlx::query_as::<_, ClientRow>(&sql).bind(client_id);
         for realm_id in realm_ids {
             query = query.bind(realm_id.as_str());
         }

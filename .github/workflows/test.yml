@@ -81,7 +81,9 @@ jobs:
         env:
           QID_TEST_POSTGRES_URL: postgres://qid_test:qid_test@localhost:5432/qid_test
           RUSTFLAGS: "-D warnings"
-        run: cargo test -p qid-storage --test postgres_push --locked -- --nocapture
+        run: |
+          cargo test -p qid-storage --test postgres_push --locked -- --nocapture
+          cargo test -p qid-oauth --test postgres_grants --locked -- --nocapture
 
   all-features:
     name: All Features

@@ -38,7 +38,7 @@ impl UserRepository for SqlRepository {
     }
 
     async fn get_user_by_id(&self, id: &str) -> QidResult<Option<User>> {
-        let row: Option<UserRow> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+        let row: Option<UserRow> = sqlx::query_as("SELECT * FROM users WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -52,7 +52,7 @@ impl UserRepository for SqlRepository {
         id: &str,
     ) -> QidResult<Option<User>> {
         let row: Option<UserRow> =
-            sqlx::query_as("SELECT * FROM users WHERE realm_id = ? AND id = ?")
+            sqlx::query_as("SELECT * FROM users WHERE realm_id = $1 AND id = $2")
                 .bind(realm_id.as_str())
                 .bind(id)
                 .fetch_optional(&self.pool)
@@ -63,7 +63,7 @@ impl UserRepository for SqlRepository {
 
     async fn get_user_by_email(&self, realm_id: &RealmId, email: &str) -> QidResult<Option<User>> {
         let row: Option<UserRow> =
-            sqlx::query_as("SELECT * FROM users WHERE realm_id = ? AND email = ?")
+            sqlx::query_as("SELECT * FROM users WHERE realm_id = $1 AND email = $2")
                 .bind(realm_id.as_str())
                 .bind(email)
                 .fetch_optional(&self.pool)

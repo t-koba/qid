@@ -8,6 +8,7 @@
 
 use async_trait::async_trait;
 use qid_core::error::{QidError, QidResult};
+use qid_core::models::TotpCredential;
 
 mod domain;
 mod file;
@@ -185,7 +186,7 @@ delegate!(CredentialRepository {
     list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<qid_core::models::WebAuthnCredential>>;
     store_totp_credential(&self, cred: &qid_core::models::TotpCredential) -> QidResult<()>;
     get_totp_credential(&self, user_id: &str) -> QidResult<Option<qid_core::models::TotpCredential>>;
-    consume_totp_step(&self, credential_id: &str, candidate_step: u64) -> QidResult<bool>;
+    consume_totp_step(&self, cred: &TotpCredential, step: u64) -> QidResult<bool>;
 });
 
 delegate!(VcRepository {

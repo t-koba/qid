@@ -3953,7 +3953,7 @@ async fn sql_totp_step_consumption_single_winner() {
     })
     .await
     .unwrap();
-    repo.store_totp_credential(&TotpCredential {
+    let credential = TotpCredential {
         id: "totp-1".to_string(),
         user_id: "user-totp".to_string(),
         secret: "JBSWY3DPEHPK3PXP".to_string(),
@@ -3963,19 +3963,29 @@ async fn sql_totp_step_consumption_single_winner() {
         enabled: true,
         last_used_step: None,
         created_at: 1000,
-    })
-    .await
-    .unwrap();
+    };
+    repo.store_totp_credential(&credential).await.unwrap();
     // Two claims for the same step race; exactly one wins.
-    let r1 = repo.consume_totp_step("totp-1", 100);
-    let r2 = repo.consume_totp_step("totp-1", 100);
+    let r1 = repo.consume_totp_step(&credential, 100);
+    let r2 = repo.consume_totp_step(&credential, 100);
     let (r1, r2) = tokio::join!(r1, r2);
     assert!(r1.unwrap() ^ r2.unwrap(), "exactly one step claim must win");
     // A consumed step never wins again; a later step still advances.
-    assert!(!repo.consume_totp_step("totp-1", 100).await.unwrap());
-    assert!(repo.consume_totp_step("totp-1", 101).await.unwrap());
+    assert!(!repo.consume_totp_step(&credential, 100).await.unwrap());
+    assert!(repo.consume_totp_step(&credential, 101).await.unwrap());
     // Unknown credentials fail closed without persisting anything.
-    assert!(!repo.consume_totp_step("totp-missing", 1).await.unwrap());
+    assert!(
+        !repo
+            .consume_totp_step(
+                &TotpCredential {
+                    id: "totp-missing".into(),
+                    ..credential.clone()
+                },
+                1
+            )
+            .await
+            .unwrap()
+    );
     // Re-storing (enrollment confirmation) upserts instead of conflicting.
     let confirmed = repo
         .get_totp_credential("user-totp")

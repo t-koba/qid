@@ -207,7 +207,7 @@ async fn totp_verify<R: Repository>(
     };
 
     // Exactly one confirmer wins the step; losers fail without enabling.
-    match state.repo.consume_totp_step(&cred.id, current_step).await {
+    match state.repo.consume_totp_step(&cred, current_step).await {
         Ok(true) => {}
         Ok(false) => {
             return qid_http::error_response(QidError::BadRequest {
@@ -301,7 +301,7 @@ async fn totp_authenticate<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    match state.repo.consume_totp_step(&cred.id, current_step).await {
+    match state.repo.consume_totp_step(&cred, current_step).await {
         Ok(true) => {}
         Ok(false) => {
             return qid_http::error_response(QidError::BadRequest {

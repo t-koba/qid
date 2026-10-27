@@ -6,8 +6,8 @@ use qid_core::models::{
     DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
     IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
     IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, ParRequest,
-    PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, User, WebAuthnCredential,
-    WorkloadIdentity,
+    PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, TotpCredential, User,
+    WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
@@ -3494,4 +3494,91 @@ where
     assert_eq!(stored.poll_interval_seconds, 10);
     assert_eq!(stored.expires_at, incumbent.expires_at);
     assert_eq!(stored.created_at, incumbent.created_at);
+}
+
+pub async fn assert_totp_step_owner_bound<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CredentialRepository,
+{
+    let realm = RealmId("realm-totp-owner".to_string());
+    repo.create_realm(
+        &TenantId("tenant-totp-owner".to_string()),
+        &realm,
+        "https://totp-owner.example.com",
+        None,
+    )
+    .await
+    .expect("create TOTP owner realm failed");
+    repo.create_user(&User {
+        id: "user-totp-owner".to_string(),
+        realm_id: realm.0,
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .expect("create TOTP owner user failed");
+    let credential = TotpCredential {
+        id: "totp-owner-credential".to_string(),
+        user_id: "user-totp-owner".to_string(),
+        secret: "JBSWY3DPEHPK3PXP".to_string(),
+        algorithm: "SHA1".to_string(),
+        digits: 6,
+        period: 30,
+        enabled: true,
+        last_used_step: None,
+        created_at: 1,
+    };
+    repo.store_totp_credential(&credential)
+        .await
+        .expect("store TOTP owner credential failed");
+
+    let wrong_owner = TotpCredential {
+        user_id: "user-totp-other".to_string(),
+        ..credential.clone()
+    };
+    assert!(
+        !repo
+            .consume_totp_step(&wrong_owner, 100)
+            .await
+            .expect("wrong-owner TOTP step claim failed")
+    );
+    assert_eq!(
+        repo.get_totp_credential(&credential.user_id)
+            .await
+            .expect("get TOTP owner credential failed")
+            .expect("TOTP owner credential missing")
+            .last_used_step,
+        None,
+        "a wrong-owner claim must not consume the step"
+    );
+    assert!(
+        repo.consume_totp_step(&credential, 100)
+            .await
+            .expect("correct-owner TOTP step claim failed")
+    );
+    assert!(
+        !repo
+            .consume_totp_step(&credential, 100)
+            .await
+            .expect("replayed TOTP step claim failed")
+    );
+    let missing = TotpCredential {
+        id: "totp-owner-missing".to_string(),
+        ..credential.clone()
+    };
+    assert!(
+        !repo
+            .consume_totp_step(&missing, 101)
+            .await
+            .expect("unknown TOTP step claim failed")
+    );
+    assert!(
+        repo.consume_totp_step(&credential, 101)
+            .await
+            .expect("later TOTP step claim failed")
+    );
 }

@@ -322,12 +322,22 @@ async fn totp_step_claim_has_a_single_winner_per_step() -> anyhow::Result<()> {
         Some(step)
     );
     let (r1, r2) = tokio::join!(
-        repo.consume_totp_step(&first.id, step),
-        repo.consume_totp_step(&second.id, step)
+        repo.consume_totp_step(&first, step),
+        repo.consume_totp_step(&second, step)
     );
     assert!(r1? ^ r2?, "exactly one claim must win");
-    assert!(!repo.consume_totp_step(&first.id, step).await?);
-    assert!(repo.consume_totp_step(&first.id, step + 1).await?);
-    assert!(!repo.consume_totp_step("missing", 1).await?);
+    assert!(!repo.consume_totp_step(&first, step).await?);
+    assert!(repo.consume_totp_step(&first, step + 1).await?);
+    assert!(
+        !repo
+            .consume_totp_step(
+                &qid_core::models::TotpCredential {
+                    id: "missing".into(),
+                    ..first.clone()
+                },
+                1
+            )
+            .await?
+    );
     Ok(())
 }

@@ -86,12 +86,13 @@ impl CredentialRepository for SqlRepository {
         Ok(row.map(Into::into))
     }
 
-    async fn consume_totp_step(&self, credential_id: &str, candidate_step: u64) -> QidResult<bool> {
+    async fn consume_totp_step(&self, cred: &TotpCredential, step: u64) -> QidResult<bool> {
         let affected =
-            sqlx::query("UPDATE credentials_totp SET last_used_step = ? WHERE id = ? AND (last_used_step IS NULL OR last_used_step < ?)")
-                .bind(candidate_step as i64)
-                .bind(credential_id)
-                .bind(candidate_step as i64)
+            sqlx::query("UPDATE credentials_totp SET last_used_step = ? WHERE user_id = ? AND id = ? AND (last_used_step IS NULL OR last_used_step < ?)")
+                .bind(step as i64)
+                .bind(&cred.user_id)
+                .bind(&cred.id)
+                .bind(step as i64)
                 .execute(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?

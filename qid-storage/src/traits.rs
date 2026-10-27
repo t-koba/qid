@@ -285,10 +285,10 @@ pub trait CredentialRepository: Send + Sync + 'static {
     }
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()>;
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>>;
-    /// Atomically advance `last_used_step` to `candidate_step` when it is still
+    /// Atomically advance `last_used_step` to `step` when it is still
     /// fresh. Returns whether this caller won the claim; losers and unknown
-    /// credentials both fail closed without persisting anything.
-    async fn consume_totp_step(&self, credential_id: &str, candidate_step: u64) -> QidResult<bool>;
+    /// credentials both fail closed; the credential binds its user and record ID.
+    async fn consume_totp_step(&self, cred: &TotpCredential, step: u64) -> QidResult<bool>;
 }
 
 #[async_trait]

@@ -280,3 +280,11 @@ async fn backchannel_authentication_grant_create_only_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-backchannel-grant").await;
     support::assert_backchannel_authentication_grant_create_only(&file).await;
 }
+
+#[tokio::test]
+async fn totp_step_claim_is_user_bound_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_totp_step_owner_bound(&sql).await;
+    let file = support::file_repo("ownership-contract-totp-step").await;
+    support::assert_totp_step_owner_bound(&file).await;
+}

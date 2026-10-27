@@ -75,18 +75,16 @@ impl CredentialRepository for FileRepository {
             .cloned())
     }
 
-    async fn consume_totp_step(&self, credential_id: &str, candidate_step: u64) -> QidResult<bool> {
+    async fn consume_totp_step(&self, cred: &TotpCredential, step: u64) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        let Some(cred) = store.totp_credentials.get_mut(credential_id) else {
+        let Some(stored) = store.totp_credentials.get_mut(&cred.id) else {
             return Ok(false);
         };
-        if cred
-            .last_used_step
-            .is_some_and(|used| used >= candidate_step)
+        if stored.user_id != cred.user_id || stored.last_used_step.is_some_and(|used| used >= step)
         {
             return Ok(false);
         }
-        cred.last_used_step = Some(candidate_step);
+        stored.last_used_step = Some(step);
         drop(store);
         self.save().await?;
         Ok(true)

@@ -279,7 +279,7 @@ pub trait CredentialRepository: Send + Sync + 'static {
         id: &str,
         counter: u64,
     ) -> QidResult<()>;
-    async fn delete_webauthn_credential(&self, id: &str) -> QidResult<()>;
+    async fn delete_webauthn_credential(&self, user_id: &str, id: &str) -> QidResult<()>;
     async fn list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>> {
         self.get_webauthn_credentials(user_id).await
     }

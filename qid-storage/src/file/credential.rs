@@ -52,9 +52,9 @@ impl CredentialRepository for FileRepository {
         self.save().await
     }
 
-    async fn delete_webauthn_credential(&self, id: &str) -> QidResult<()> {
+    async fn delete_webauthn_credential(&self, user_id: &str, id: &str) -> QidResult<()> {
         let mut store = self.store.write().await;
-        for creds in store.webauthn_credentials.values_mut() {
+        if let Some(creds) = store.webauthn_credentials.get_mut(user_id) {
             creds.retain(|c| c.id != id);
         }
         drop(store);

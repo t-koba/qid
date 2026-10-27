@@ -181,7 +181,7 @@ delegate!(CredentialRepository {
     get_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<qid_core::models::WebAuthnCredential>>;
     store_webauthn_credential(&self, cred: &qid_core::models::WebAuthnCredential) -> QidResult<()>;
     update_webauthn_credential_counter(&self, user_id: &str, id: &str, counter: u64) -> QidResult<()>;
-    delete_webauthn_credential(&self, id: &str) -> QidResult<()>;
+    delete_webauthn_credential(&self, user_id: &str, id: &str) -> QidResult<()>;
     list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<qid_core::models::WebAuthnCredential>>;
     store_totp_credential(&self, cred: &qid_core::models::TotpCredential) -> QidResult<()>;
     get_totp_credential(&self, user_id: &str) -> QidResult<Option<qid_core::models::TotpCredential>>;

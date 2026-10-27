@@ -99,8 +99,9 @@ impl CredentialRepository for SqlRepository {
         Ok(affected == 1)
     }
 
-    async fn delete_webauthn_credential(&self, id: &str) -> QidResult<()> {
-        sqlx::query("DELETE FROM credentials_webauthn WHERE id = ?")
+    async fn delete_webauthn_credential(&self, user_id: &str, id: &str) -> QidResult<()> {
+        sqlx::query("DELETE FROM credentials_webauthn WHERE user_id = ? AND id = ?")
+            .bind(user_id)
             .bind(id)
             .execute(&self.pool)
             .await

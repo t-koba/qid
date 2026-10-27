@@ -1062,6 +1062,58 @@ where
     let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].counter, 8, "unknown ID changed incumbent counter");
+
+    let sibling = WebAuthnCredential {
+        id: "alice-other-credential".to_string(),
+        ..credential.clone()
+    };
+    let other_credential = WebAuthnCredential {
+        id: "bob-credential".to_string(),
+        ..duplicate
+    };
+    repo.store_webauthn_credential(&sibling).await.unwrap();
+    repo.store_webauthn_credential(&other_credential)
+        .await
+        .unwrap();
+    let alice_before = repo.get_webauthn_credentials(&user.id).await.unwrap();
+    let bob_before = repo.get_webauthn_credentials(&other_user.id).await.unwrap();
+    repo.delete_webauthn_credential(&other_user.id, &credential.id)
+        .await
+        .expect("wrong-owner deletion should be a no-op");
+    repo.delete_webauthn_credential(&user.id, "unknown-credential")
+        .await
+        .expect("unknown credential deletion should be a no-op");
+    assert_eq!(
+        serde_json::to_value(repo.get_webauthn_credentials(&user.id).await.unwrap()).unwrap(),
+        serde_json::to_value(&alice_before).unwrap(),
+        "no-op deletion changed the incumbent list"
+    );
+    assert_eq!(
+        serde_json::to_value(repo.get_webauthn_credentials(&other_user.id).await.unwrap()).unwrap(),
+        serde_json::to_value(&bob_before).unwrap(),
+        "no-op deletion changed the other user's list"
+    );
+    repo.delete_webauthn_credential(&user.id, &credential.id)
+        .await
+        .expect("owner deletion failed");
+    let remaining = repo.get_webauthn_credentials(&user.id).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&remaining[0]).unwrap(),
+        serde_json::to_value(&sibling).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(repo.get_webauthn_credentials(&other_user.id).await.unwrap()).unwrap(),
+        serde_json::to_value(&bob_before).unwrap(),
+        "owner deletion changed the other user's list"
+    );
+    repo.delete_webauthn_credential(&user.id, &credential.id)
+        .await
+        .expect("repeated deletion should be a no-op");
+    assert_eq!(
+        serde_json::to_value(repo.get_webauthn_credentials(&user.id).await.unwrap()).unwrap(),
+        serde_json::to_value(&remaining).unwrap()
+    );
 }
 
 /// The owner-bound contract of a service account: a record ID names one

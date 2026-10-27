@@ -204,6 +204,22 @@ inside a realm (`UNIQUE(realm_id, client_id)`,
 | `update_client` - `Client` | realm (`realm_id`) | record `id` plus stable `(realm_id, client_id)` binding | client metadata fields including `require_pushed_authorization_requests` | File: `replace_guarded` under the exclusive write lock refuses a mismatched `(realm_id, client_id)` binding with `Conflict` and leaves the incumbent unchanged; a matching binding, including an identical retry, replaces (`qid-storage/src/file/client.rs:14`, `qid-storage/src/file/insert.rs:119`, `qid-storage/src/file/insert.rs:124`). SQL: static `UPDATE ... WHERE id = ? AND realm_id = ? AND client_id = ?` updates only the same binding; a zero-row result is classified after the write with `ensure_same_binding`, so a present mismatch is `Conflict` and a present match (the identical update) succeeds (`qid-storage/src/sql/client.rs:63`, `qid-storage/src/sql/client.rs:69`, `qid-storage/src/sql/client.rs:100`, `qid-storage/src/sql/client.rs:111`). Both refuse a binding change with `Conflict`. The missing-ID difference is intentional and unchanged: the file backend inserts, the SQL backend is a silent no-op. | file `qid-storage/src/file/client.rs:14`, `qid-storage/src/file/insert.rs:119`, `qid-storage/src/file/insert.rs:124`; sql `qid-storage/src/sql/client.rs:63`, `qid-storage/src/sql/client.rs:69`, `qid-storage/src/sql/client.rs:100`, `qid-storage/src/sql/client.rs:111`, `qid-storage/migrations/20250703000001_clients_require_par.sql:1`; contract `qid-storage/src/ownership.rs:100`, `qid-storage/src/traits.rs:131` |
 | `delete_client` (delete) | realm (`realm_id`) | internal client record `id` | none, removal | File: under the exclusive write lock, a missing ID or realm mismatch is a no-op; only a matching `(realm_id, id)` is removed (`qid-storage/src/file/client.rs:65`). SQL: static `DELETE FROM clients WHERE realm_id = ? AND id = ?`; foreign and missing IDs are silent no-ops (`qid-storage/src/sql/client.rs:180`). | file `qid-storage/src/file/client.rs:65`; sql `qid-storage/src/sql/client.rs:180`; trait `qid-storage/src/traits.rs:165` |
 
+
+Call-site review at commit `24414a5bce345a2fec01acc84595231431390695`:
+DCR metadata updates authenticate the management client for the realm/client,
+read the record by `(realm_id, client_id)`, preserve its stable ID and client
+ID in the replacement, then call `update_client`
+(`qid-oauth/src/endpoints/dcr.rs:750-826`). DCR deletion resolves and
+reauthenticates the realm, reads by realm/client ID, then calls
+`delete_client(realm, id)` (`qid-oauth/src/endpoints/dcr.rs:860-900`). The admin
+directory delete authorizes the path realm, reads the matching realm/client,
+then calls the same realm+ID delete and audits it
+(`qid-admin/src/directory.rs:521-553`). Both stores enforce the delete owner
+inside the write; the DCR update also enforces its stable identity binding.
+These routes use pre-reads for existing response behavior, but no production
+client deletion path writes by ID alone. The documented missing-ID behavior
+for `update_client` remains relevant if its pre-read races with deletion.
+
 ## credential
 
 Model types: `WebAuthnCredential`, `TotpCredential`. The owner is the user

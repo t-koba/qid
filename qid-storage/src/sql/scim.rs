@@ -153,21 +153,12 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        let deprovisioned_at = sqlite_deprovisioned_at(user.deprovisioned_at)?;
-        sqlx::query("UPDATE scim_users SET external_id = ?, user_name = ?, name_json = ?, emails_json = ?, enterprise_json = ?, directory_provider_id = ?, deprovisioned_at = ?, active = ?, updated_at = strftime('%s', 'now') WHERE id = ?")
-            .bind(&user.external_id)
-            .bind(&user.user_name)
-            .bind(user.name_json.to_string())
-            .bind(user.emails_json.to_string())
-            .bind(user.enterprise_json.to_string())
-            .bind(&user.directory_provider_id)
-            .bind(deprovisioned_at)
-            .bind(user.active as i64)
-            .bind(&user.id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
-        Ok(())
+        self.mutate_scim_user(
+            &user.id,
+            Box::new(|_| Ok(ScimMutation::Replace(user.clone()))),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn mutate_scim_user(

@@ -58,8 +58,12 @@ impl ScimRepository for FileRepository {
     }
 
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        self.map_write(|store| store.scim_users.insert(user.id.clone(), user.clone()))
-            .await
+        self.mutate_scim_user(
+            &user.id,
+            Box::new(|_| Ok(ScimMutation::Replace(user.clone()))),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn mutate_scim_user(

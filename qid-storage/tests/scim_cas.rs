@@ -31,6 +31,14 @@ async fn exercise_cas(repo: &AnyRepository) {
         active: true,
     };
     repo.create_scim_user(&user).await.unwrap();
+    let mut wrong_owner = user.clone();
+    wrong_owner.realm_id = "other".into();
+    wrong_owner.user_name = "intruder".into();
+    assert!(repo.update_scim_user(&wrong_owner).await.is_err());
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_user(&user.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&user)).unwrap()
+    );
     // Repeated failures exceed pool capacity: no transaction may leak a lock
     // or partially persist a failed mutation. Conversion errors occur after begin.
     for _ in 0..12 {
@@ -139,9 +147,18 @@ async fn exercise_cas(repo: &AnyRepository) {
     assert!(!cas_user(repo, &wrong_realm, None).await.unwrap());
     // Server-owned changes must not be overwritten by an old SCIM snapshot.
     let mut lifecycle = winner.clone();
+    lifecycle.external_id = Some("external".into());
+    lifecycle.user_name = "lifecycle".into();
+    lifecycle.name_json = serde_json::json!({"givenName": "Alice"});
+    lifecycle.emails_json = serde_json::json!([{"value": "alice@example.com"}]);
+    lifecycle.enterprise_json = serde_json::json!({"department": "Engineering"});
     lifecycle.directory_provider_id = Some("directory".into());
     lifecycle.deprovisioned_at = Some(1234);
     repo.update_scim_user(&lifecycle).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_user(&user.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&lifecycle)).unwrap()
+    );
     assert!(!cas_user(repo, &winner, Some(&winner)).await.unwrap());
     // Deleting after an update succeeds only with the new snapshot; a stale
     // update after deletion must never resurrect the row (notably on files).
@@ -158,6 +175,8 @@ async fn exercise_cas(repo: &AnyRepository) {
         assert!(cas_user(repo, &deactivated, None).await.unwrap());
     }
     assert!(!cas_user(repo, &lifecycle, Some(&winner)).await.unwrap());
+    assert!(repo.get_scim_user(&user.id).await.unwrap().is_none());
+    repo.update_scim_user(&lifecycle).await.unwrap();
     assert!(repo.get_scim_user(&user.id).await.unwrap().is_none());
 
     let group = ScimGroup {

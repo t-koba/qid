@@ -531,6 +531,38 @@ record is bound to, and the identity is the opaque handle the caller presents.
 | `approve_backchannel_authentication_grant` - `BackchannelAuthenticationGrant` | realm + client (+ user once approved) | `auth_req_id_hash` | `user_id`, `approved_at` | File: the grant is looked up by `auth_req_id_hash`, and an unknown hash is `NotFound` (`qid-storage/src/file/token.rs:316`); an approval replaces the earlier one. SQL: `UPDATE backchannel_authentication_grants SET user_id = ?, approved_at = ? WHERE auth_req_id_hash = ?` and no affected row is `NotFound` (`qid-storage/src/sql/token.rs:465`, `qid-storage/src/sql/token.rs:473`). Both agree. | file `qid-storage/src/file/token.rs:316`; sql `qid-storage/src/sql/token.rs:473` |
 | `record_backchannel_authentication_poll` - `BackchannelAuthenticationGrant` | realm + client (+ user once approved) | `auth_req_id_hash` | `last_poll_at`, `poll_interval_seconds` | File: the grant is updated when it exists, and an unknown hash is a silent no-op (`qid-storage/src/file/token.rs:332`, `qid-storage/src/file/token.rs:336`). SQL: `UPDATE backchannel_authentication_grants SET ... WHERE auth_req_id_hash = ?` and no affected row is not an error (`qid-storage/src/sql/token.rs:486`). Both are silent no-ops for an unknown hash. | file `qid-storage/src/file/token.rs:332`; sql `qid-storage/src/sql/token.rs:486` |
 
+Call-site review at commit `24414a5bce345a2fec01acc84595231431390695`:
+the OAuth revocation endpoint authenticates its client, loads an access token
+by JTI, checks the stored client and realm, then calls the ID-only revoke. Its
+refresh-token path checks the signed token audience and the loaded family's
+client and realm before revoking by ID (`qid-oauth/src/endpoints/revoke.rs:36-84,156-213`).
+The admin route likewise checks the loaded family against the path realm
+before its ID-only revoke and audit (`qid-admin/src/identity.rs:213-248`).
+Refresh-token rotation checks the authenticated client, family realm/client
+and expected refresh hash; the reuse branch revokes that loaded family
+(`qid-oauth/src/endpoints/token_grant.rs:305-347,388-396,503-526`). These are
+caller-side owner checks, not owner predicates in the storage writes. New
+access-token JTIs and family IDs are generated with `generate_jti` (ULIDs),
+not supplied by these routes (`qid-oauth/src/endpoints/token_issue.rs:52-54,141-143`);
+this makes stale-ID reuse conditional, not a demonstrated production exploit.
+
+The one-use redemption writes are reached through handle lookups and
+validation: authorization-code redemption checks expiry, use, redirect, client,
+realm and PKCE before marking the code used; PAR resolution checks expiry/use
+and the merged client ID against the stored request before consumption;
+device approval checks the approving user's realm, and device and CIBA
+redemption check client, grant/user realm and target before consuming them
+(`qid-oauth/src/endpoints/token_grant.rs:21-68`,
+`qid-oidc/src/provider.rs:589-654`, `qid-oauth/src/endpoints/device_flow.rs:280-314,329-406`,
+`qid-oauth/src/endpoints/ciba.rs:366-444`). A focused future owner-bound slice
+is to add optional expected-owner predicates to reachable access-token and
+family revocation writes; the change must preserve each caller's current
+responses and audit, and account for the File/SQL missing-ID difference above.
+No change is proposed here: at this snapshot `qid-storage` is already
+15,990/15,990 source lines and the workspace is 113,959/113,985, so such a
+slice needs measured in-cap simplification for its storage code and required
+tests, not a cap change.
+
 ## user
 
 Model types: `User`, `PasswordCredential`. Owner: realm (`realm_id`); the

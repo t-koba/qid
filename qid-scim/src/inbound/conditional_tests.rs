@@ -119,8 +119,8 @@ async fn conditions_match_current_resources_on_both_backends() {
         .unwrap();
         for missing in [false, true] {
             if missing {
-                repo.delete_scim_user(&user.id).await.unwrap();
-                repo.delete_scim_group(&group.id).await.unwrap();
+                repo.delete_scim_user(&user.id, None).await.unwrap();
+                repo.delete_scim_group(&group.id, None).await.unwrap();
             }
             let put_user = super::super::parse_create_user(
                 serde_json::json!({"realm": "corp", "userName": "loser"}),
@@ -142,8 +142,12 @@ async fn conditions_match_current_resources_on_both_backends() {
                 )
                 .await,
             );
-            assert_stale(delete_user_record(&state, &user.id, false, checked_user.clone()).await);
-            assert_stale(delete_user_record(&state, &user.id, true, checked_user.clone()).await);
+            assert_stale(
+                delete_user_record(&state, &user.id, false, checked_user.clone(), None).await,
+            );
+            assert_stale(
+                delete_user_record(&state, &user.id, true, checked_user.clone(), None).await,
+            );
             assert_stale(
                 replace_group_record(&state, &group.id, put_group, checked_group.clone()).await,
             );
@@ -156,7 +160,7 @@ async fn conditions_match_current_resources_on_both_backends() {
                 )
                 .await,
             );
-            assert_stale(delete_group_record(&state, &group.id, checked_group.clone()).await);
+            assert_stale(delete_group_record(&state, &group.id, checked_group.clone(), None).await);
             let stored_user = repo.get_scim_user(&user.id).await.unwrap();
             let stored_group = repo.get_scim_group(&group.id).await.unwrap();
             if missing {
@@ -250,7 +254,7 @@ async fn exercise_current_conditions(
                     )
                     .await
                     .map(Some),
-                    _ => delete_user_record(state, &user.id, operation == "hard_delete", uc)
+                    _ => delete_user_record(state, &user.id, operation == "hard_delete", uc, None)
                         .await
                         .map(|_| None),
                 };
@@ -271,7 +275,7 @@ async fn exercise_current_conditions(
                     )
                     .await
                     .map(Some),
-                    _ => delete_group_record(state, &group.id, gc)
+                    _ => delete_group_record(state, &group.id, gc, None)
                         .await
                         .map(|_| None),
                 };

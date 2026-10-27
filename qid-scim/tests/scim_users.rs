@@ -1284,7 +1284,7 @@ async fn scim_owned_external_id_is_immutable_and_reconciles_with_directory_sync(
     let missing_stored = repo.get_scim_user(&missing_id).await.unwrap().unwrap();
     assert_eq!(missing_stored.external_id, None);
     assert_eq!(missing_stored.directory_provider_id.as_deref(), Some(OWNER));
-    repo.delete_scim_user(&missing_id).await.unwrap();
+    repo.delete_scim_user(&missing_id, None).await.unwrap();
 
     // Provider reconciliation still resolves the same owned row: run the real
     // directory sync after the rejected SCIM mutations and the allowed

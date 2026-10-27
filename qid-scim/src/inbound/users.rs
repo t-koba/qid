@@ -469,8 +469,9 @@ pub(crate) async fn delete_user<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(user.realm_id, &headers);
-    match delete_user_record(&state, &id, query.hard_delete, expected).await {
+    let expected = Condition::from_headers(user.realm_id.clone(), &headers);
+    let hard = query.hard_delete;
+    match delete_user_record(&state, &id, hard, expected, Some(&user.realm_id)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_response(),
     }
@@ -481,6 +482,7 @@ pub(crate) async fn delete_user_record<R: Repository>(
     id: &str,
     hard_delete: bool,
     expected: Option<Condition>,
+    realm: Option<&str>,
 ) -> WriteResult<()> {
     let realm_id = if let Some(condition) = expected {
         let user = state
@@ -504,8 +506,7 @@ pub(crate) async fn delete_user_record<R: Repository>(
             .ok_or(WriteError::PreconditionFailed)?;
         Some(user.realm_id)
     } else if hard_delete {
-        let user = state.repo.get_scim_user(id).await?;
-        state.repo.delete_scim_user(id).await?;
+        let user = state.repo.delete_scim_user(id, realm).await?;
         user.map(|u| u.realm_id)
     } else {
         let user = write_user(state, id, None, |mut user, _| {

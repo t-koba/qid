@@ -273,8 +273,8 @@ pub(crate) async fn delete_group<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(group.realm_id, &headers);
-    match delete_group_record(&state, &id, expected).await {
+    let expected = Condition::from_headers(group.realm_id.clone(), &headers);
+    match delete_group_record(&state, &id, expected, Some(&group.realm_id)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_response(),
     }
@@ -284,6 +284,7 @@ pub(crate) async fn delete_group_record<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     expected: Option<Condition>,
+    realm: Option<&str>,
 ) -> WriteResult<()> {
     if let Some(condition) = expected {
         state
@@ -301,7 +302,7 @@ pub(crate) async fn delete_group_record<R: Repository>(
             .await?
             .ok_or(WriteError::PreconditionFailed)?;
     } else {
-        state.repo.delete_scim_group(id).await?;
+        state.repo.delete_scim_group(id, realm).await?;
     }
     Ok(())
 }

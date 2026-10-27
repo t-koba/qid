@@ -202,10 +202,6 @@ impl ScimRepository for SqlRepository {
         Ok(Some(result))
     }
 
-    async fn delete_scim_user(&self, id: &str) -> QidResult<()> {
-        delete_scim_row(&self.pool, "scim_users", id).await
-    }
-
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
         // The table holds the invariant: the record ID is the primary key
         // and (realm_id, display_name) is unique. Either violation is a
@@ -320,10 +316,6 @@ impl ScimRepository for SqlRepository {
         };
         tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(Some(result))
-    }
-
-    async fn delete_scim_group(&self, id: &str) -> QidResult<()> {
-        delete_scim_row(&self.pool, "scim_groups", id).await
     }
 
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()> {

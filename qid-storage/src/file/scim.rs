@@ -80,10 +80,6 @@ impl ScimRepository for FileRepository {
         .await
     }
 
-    async fn delete_scim_user(&self, id: &str) -> QidResult<()> {
-        self.map_write(|store| store.scim_users.remove(id)).await
-    }
-
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
         let mut store = self.store.write().await;
         super::insert::insert_new(&mut store.scim_groups, group)?;
@@ -146,10 +142,6 @@ impl ScimRepository for FileRepository {
             |a, b| a.id == b.id && a.realm_id == b.realm_id,
         )
         .await
-    }
-
-    async fn delete_scim_group(&self, id: &str) -> QidResult<()> {
-        self.map_write(|store| store.scim_groups.remove(id)).await
     }
 
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()> {

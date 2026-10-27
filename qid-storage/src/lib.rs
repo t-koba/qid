@@ -234,7 +234,7 @@ delegate!(ScimRepository {
     list_scim_users_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::ScimUser>>;
     count_scim_users(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<usize>;
     update_scim_user(&self, user: &qid_core::models::ScimUser) -> QidResult<()>;
-    delete_scim_user(&self, id: &str) -> QidResult<()>;
+    delete_scim_user(&self, id: &str, realm: Option<&str>) -> QidResult<Option<qid_core::models::ScimUser>>;
     mutate_scim_user(&self, id: &str, mutation: ScimMutator<'_, qid_core::models::ScimUser>) -> QidResult<Option<qid_core::models::ScimUser>>;
     create_scim_group(&self, group: &qid_core::models::ScimGroup) -> QidResult<()>;
     list_scim_groups(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::ScimGroup>>;
@@ -242,7 +242,7 @@ delegate!(ScimRepository {
     count_scim_groups(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<usize>;
     get_scim_group(&self, id: &str) -> QidResult<Option<qid_core::models::ScimGroup>>;
     update_scim_group(&self, group: &qid_core::models::ScimGroup) -> QidResult<()>;
-    delete_scim_group(&self, id: &str) -> QidResult<()>;
+    delete_scim_group(&self, id: &str, realm: Option<&str>) -> QidResult<Option<qid_core::models::ScimGroup>>;
     mutate_scim_group(&self, id: &str, mutation: ScimMutator<'_, qid_core::models::ScimGroup>) -> QidResult<Option<qid_core::models::ScimGroup>>;
     upsert_scim_device(&self, device: &crate::traits::ScimDeviceRecord) -> QidResult<()>;
     get_scim_device(&self, id: &str) -> QidResult<Option<crate::traits::ScimDeviceRecord>>;

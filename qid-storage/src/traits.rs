@@ -407,7 +407,19 @@ pub trait ScimRepository: Send + Sync + 'static {
         Ok(self.list_scim_users(realm_id).await?.len())
     }
     async fn update_scim_user(&self, user: &ScimUser) -> QidResult<()>;
-    async fn delete_scim_user(&self, id: &str) -> QidResult<()>;
+    /// Delete only within the expected realm, or unrestricted when absent. Missing/mismatched rows return None.
+    async fn delete_scim_user(&self, id: &str, realm: Option<&str>) -> QidResult<Option<ScimUser>> {
+        self.mutate_scim_user(
+            id,
+            Box::new(|current| {
+                Ok(match realm {
+                    Some(r) if r != current.realm_id => ScimMutation::Reject,
+                    _ => ScimMutation::Delete,
+                })
+            }),
+        )
+        .await
+    }
     /// Evaluate against the current row under the storage lock/transaction.
     /// Missing/rejected rows return None; replacement returns the new row,
     /// deletion the removed row. Callbacks must not re-enter storage and must
@@ -440,7 +452,23 @@ pub trait ScimRepository: Send + Sync + 'static {
     }
     async fn get_scim_group(&self, id: &str) -> QidResult<Option<ScimGroup>>;
     async fn update_scim_group(&self, group: &ScimGroup) -> QidResult<()>;
-    async fn delete_scim_group(&self, id: &str) -> QidResult<()>;
+    /// Delete only within the expected realm, or unrestricted when absent. Missing/mismatched rows return None.
+    async fn delete_scim_group(
+        &self,
+        id: &str,
+        realm: Option<&str>,
+    ) -> QidResult<Option<ScimGroup>> {
+        self.mutate_scim_group(
+            id,
+            Box::new(|current| {
+                Ok(match realm {
+                    Some(r) if r != current.realm_id => ScimMutation::Reject,
+                    _ => ScimMutation::Delete,
+                })
+            }),
+        )
+        .await
+    }
     /// Group counterpart of `mutate_scim_user`.
     async fn mutate_scim_group(
         &self,

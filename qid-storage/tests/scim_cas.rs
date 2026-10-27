@@ -31,6 +31,40 @@ async fn exercise_cas(repo: &AnyRepository) {
         active: true,
     };
     repo.create_scim_user(&user).await.unwrap();
+    assert!(
+        repo.delete_scim_user(&user.id, Some("other"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_user(&user.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&user)).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(repo.delete_scim_user(&user.id, Some("corp")).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&user)).unwrap()
+    );
+    assert!(
+        repo.delete_scim_user(&user.id, Some("corp"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.delete_scim_user(&user.id, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    repo.create_scim_user(&user).await.unwrap();
+    assert!(
+        repo.delete_scim_user(&user.id, None)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    repo.create_scim_user(&user).await.unwrap();
     let mut wrong_owner = user.clone();
     wrong_owner.realm_id = "other".into();
     wrong_owner.user_name = "intruder".into();
@@ -118,7 +152,7 @@ async fn exercise_cas(repo: &AnyRepository) {
                 user.user_name
             );
         }
-        repo.delete_scim_user(&occupied.id).await.unwrap();
+        repo.delete_scim_user(&occupied.id, None).await.unwrap();
     }
     let mut first = repo.get_scim_user(&user.id).await.unwrap().unwrap();
     let mut second = repo.get_scim_user(&user.id).await.unwrap().unwrap();
@@ -186,6 +220,45 @@ async fn exercise_cas(repo: &AnyRepository) {
         members_json: serde_json::json!([]),
     };
     repo.create_scim_group(&group).await.unwrap();
+    assert!(
+        repo.delete_scim_group(&group.id, Some("other"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_group(&group.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&group)).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(
+            repo.delete_scim_group(&group.id, Some("corp"))
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(Some(&group)).unwrap()
+    );
+    assert!(
+        repo.delete_scim_group(&group.id, Some("corp"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.delete_scim_group(&group.id, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    repo.create_scim_group(&group).await.unwrap();
+    assert!(
+        repo.delete_scim_group(&group.id, None)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    repo.create_scim_group(&group).await.unwrap();
     let mut wrong_owner = group.clone();
     wrong_owner.realm_id = "other".into();
     wrong_owner.display_name = "intruder".into();
@@ -233,7 +306,7 @@ async fn exercise_cas(repo: &AnyRepository) {
                 group.display_name
             );
         }
-        repo.delete_scim_group(&occupied.id).await.unwrap();
+        repo.delete_scim_group(&occupied.id, None).await.unwrap();
     }
     let mut first = repo.get_scim_group(&group.id).await.unwrap().unwrap();
     let mut second = repo.get_scim_group(&group.id).await.unwrap().unwrap();

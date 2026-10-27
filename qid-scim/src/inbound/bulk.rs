@@ -284,7 +284,7 @@ async fn apply_bulk_operation<R: Repository>(
                     }
                 };
             let hard_delete = query.as_deref() == Some("hard_delete=true");
-            match delete_user_record(state, id, hard_delete, expected).await {
+            match delete_user_record(state, id, hard_delete, expected, context_realm).await {
                 Ok(()) => bulk_success(method, op.bulk_id, "204", None, None),
                 Err(e) => bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message()),
             }
@@ -300,7 +300,7 @@ async fn apply_bulk_operation<R: Repository>(
                         return bulk_error(op.bulk_id, &status.to_string(), &detail);
                     }
                 };
-            match delete_group_record(state, id, expected).await {
+            match delete_group_record(state, id, expected, context_realm).await {
                 Ok(()) => bulk_success(method, op.bulk_id, "204", None, None),
                 Err(e) => bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message()),
             }

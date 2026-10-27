@@ -156,8 +156,8 @@ impl UserRepository for SqlRepository {
         Ok(())
     }
 
-    async fn update_user(&self, user: &User) -> QidResult<()> {
-        sqlx::query("UPDATE users SET email = ?, email_verified = ?, display_name = ?, failed_login_attempts = ?, locked_until = ?, org = ?, updated_at = strftime('%s', 'now') WHERE id = ?")
+    async fn update_user(&self, user: &User, realm: Option<&str>) -> QidResult<()> {
+        let result = sqlx::query("UPDATE users SET email = ?, email_verified = ?, display_name = ?, failed_login_attempts = ?, locked_until = ?, org = ?, updated_at = strftime('%s', 'now') WHERE id = ? AND realm_id = COALESCE(?, realm_id)")
             .bind(&user.email)
             .bind(user.email_verified as i64)
             .bind(&user.display_name)
@@ -165,6 +165,7 @@ impl UserRepository for SqlRepository {
             .bind(user.locked_until.map(|v| v as i64))
             .bind(&user.org)
             .bind(&user.id)
+            .bind(realm)
             .execute(&self.pool)
             .await
             .map_err(|error| match &error {
@@ -176,6 +177,11 @@ impl UserRepository for SqlRepository {
                 }
                 _ => storage_to_qid_error(error),
             })?;
+        if realm.is_some() {
+            crate::ownership::ensure_row_present(result.rows_affected(), || {
+                format!("user {}", user.id)
+            })?;
+        }
         Ok(())
     }
 }

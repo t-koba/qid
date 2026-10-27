@@ -1901,3 +1901,146 @@ async fn directory_delete_is_bound_to_the_path_realm() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn directory_update_is_bound_to_the_path_realm() {
+    let (app, state) = setup().await;
+    seed_saas_realm_client(&state).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-saas".into(),
+            &"realm-other".into(),
+            "https://other.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+    let now = qid_core::util::now_seconds();
+    state
+        .repo
+        .upsert_admin(&Admin {
+            id: "admin-directory".into(),
+            tenant_id: "tenant-saas".into(),
+            subject: "directory@example.com".into(),
+            roles: vec!["directory.admin".into()],
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .store_admin_elevation(&AdminElevation {
+            id: "directory-session".into(),
+            tenant_id: "tenant-saas".into(),
+            admin_id: "admin-directory".into(),
+            acr: Some("urn:qid:acr:phishing-resistant".into()),
+            amr: vec!["pwd".into(), "hwk".into()],
+            elevation_expires_at: now + 120,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "directory-user".into(),
+            realm_id: "realm-other".into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let request = |realm: &str, id: &str| {
+        Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/admin/api/v1/{realm}/users/{id}"))
+            .header("content-type", "application/json")
+            .header("x-qid-admin-reason", "test")
+            .header("x-qid-admin-actor", "directory@example.com")
+            .header("x-qid-admin-session-id", "directory-session")
+            .body(Body::from(
+                r#"{"email":"updated@example.com","display_name":"Updated","email_verified":true}"#,
+            ))
+            .unwrap()
+    };
+    let foreign = app
+        .clone()
+        .oneshot(request("realm-saas", "directory-user"))
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    let foreign_body = response_json(foreign).await;
+    let missing = app
+        .clone()
+        .oneshot(request("realm-saas", "missing"))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(missing).await,
+        serde_json::json!({"error":"user not found"})
+    );
+    assert_eq!(
+        foreign_body,
+        serde_json::json!({"error":"user directory-user not found"})
+    );
+    let unchanged = state
+        .repo
+        .get_user_by_id("directory-user")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.email, None);
+    assert_eq!(unchanged.display_name, None);
+    assert!(!unchanged.email_verified);
+    assert!(
+        !state
+            .repo
+            .list_audit_events(None, 100)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.action == "user.update")
+    );
+    let success = app
+        .oneshot(request("realm-other", "directory-user"))
+        .await
+        .unwrap();
+    assert_eq!(success.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(success).await,
+        serde_json::json!({"id":"directory-user", "realm_id":"realm-other", "email":"updated@example.com", "display_name":"Updated", "email_verified":true})
+    );
+    let stored = state
+        .repo
+        .get_user_by_id("directory-user")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.email.as_deref(), Some("updated@example.com"));
+    assert_eq!(stored.display_name.as_deref(), Some("Updated"));
+    assert!(stored.email_verified);
+    let audit = state.repo.list_audit_events(None, 100).await.unwrap();
+    let event = audit
+        .iter()
+        .find(|event| event.action == "user.update")
+        .unwrap();
+    assert_eq!(event.realm_id.as_deref(), Some("realm-other"));
+    assert_eq!(event.target_type, "user");
+    assert_eq!(event.target_id, "directory-user");
+    assert_eq!(event.actor, "directory@example.com");
+    assert_eq!(event.metadata_json["operation"]["email_changed"], true);
+    assert_eq!(
+        event.metadata_json["operation"]["display_name_changed"],
+        true
+    );
+    assert_eq!(
+        event.metadata_json["operation"]["email_verified_changed"],
+        true
+    );
+}

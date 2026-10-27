@@ -189,7 +189,7 @@ async fn fedcm_token_is_signed_for_approved_client() {
         .unwrap();
     account.email = Some("alice@example.com".to_string());
     account.email_verified = true;
-    state.repo.update_user(&account).await.unwrap();
+    state.repo.update_user(&account, None).await.unwrap();
 
     let create_request = with_cookie(
         Request::builder()
@@ -260,7 +260,7 @@ async fn fedcm_token_omits_unverified_or_absent_account_email() {
             .unwrap();
         account.email = email.map(str::to_string);
         account.email_verified = false;
-        state.repo.update_user(&account).await.unwrap();
+        state.repo.update_user(&account, None).await.unwrap();
 
         let create_request = with_cookie(
             Request::builder()

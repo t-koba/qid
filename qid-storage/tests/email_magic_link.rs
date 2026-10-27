@@ -95,7 +95,7 @@ async fn contract(repo: &impl Repository) {
     }
     let mut unverified = repo.get_user_by_id("owner").await.unwrap().unwrap();
     unverified.email_verified = false;
-    repo.update_user(&unverified).await.unwrap();
+    repo.update_user(&unverified, None).await.unwrap();
     let mut ineligible = base.clone();
     ineligible.id = "unverified-owner".into();
     assert!(
@@ -111,7 +111,7 @@ async fn contract(repo: &impl Repository) {
             .is_none()
     );
     unverified.email_verified = true;
-    repo.update_user(&unverified).await.unwrap();
+    repo.update_user(&unverified, None).await.unwrap();
     // Unrelated purposes, owners and realms do not spend this account's budget.
     for kind in ["purpose", "user", "realm"] {
         let mut c = base.clone();
@@ -359,12 +359,12 @@ async fn contract(repo: &impl Repository) {
     ] {
         owner.email = email;
         owner.email_verified = owner.email.as_deref() != Some(base.address.as_str());
-        repo.update_user(&owner).await.unwrap();
+        repo.update_user(&owner, None).await.unwrap();
         assert!(redeem(repo, &base, &base.code_hash, 150, 3).await.is_none());
         assert_eq!(row(repo, &base.id).await, base);
     }
     owner.email_verified = true;
-    repo.update_user(&owner).await.unwrap();
+    repo.update_user(&owner, None).await.unwrap();
     // Wrong/missing/malformed binding proofs never spend attempts, even beyond the cap.
     for _ in 0..4 {
         for candidate in [

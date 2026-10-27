@@ -271,7 +271,7 @@ where
     let mut renamed = bob.clone();
     renamed.email = Some("alice@example.com".to_string());
     let err = repo
-        .update_user(&renamed)
+        .update_user(&renamed, None)
         .await
         .expect_err("an update that takes another user's email must fail");
     assert!(
@@ -298,7 +298,7 @@ where
     // A user may keep its own email.
     let mut unchanged = user.clone();
     unchanged.display_name = Some("Alice (renamed)".to_string());
-    repo.update_user(&unchanged)
+    repo.update_user(&unchanged, None)
         .await
         .expect("a user keeping its own email must be allowed");
     let stored = repo
@@ -314,7 +314,7 @@ where
     let mut moved = user.clone();
     moved.realm_id = other_realm.0.clone();
     moved.display_name = Some("moved".to_string());
-    repo.update_user(&moved)
+    repo.update_user(&moved, None)
         .await
         .expect("an update may not change the owner, but must still apply");
     let stored = repo

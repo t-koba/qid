@@ -126,7 +126,7 @@ async fn contract(repo: &impl Repository) {
     let mut user = repo.get_user_by_id("owner").await.unwrap().unwrap();
     user.email_verified = false;
     user.email = Some("OWNER@example.com".into()); // exact, not case-folded equality
-    repo.update_user(&user).await.unwrap();
+    repo.update_user(&user, None).await.unwrap();
     assert!(!confirm(repo, "test", &stale.id, "owner", &stale.code_hash, 150, 5).await);
     assert_eq!(row(repo, &stale.id).await, stale);
     assert!(
@@ -138,10 +138,10 @@ async fn contract(repo: &impl Repository) {
             .email_verified
     );
     user.email = None;
-    repo.update_user(&user).await.unwrap();
+    repo.update_user(&user, None).await.unwrap();
     assert!(!confirm(repo, "test", &stale.id, "owner", &stale.code_hash, 150, 5).await);
     user.email = Some(stale.address.clone());
-    repo.update_user(&user).await.unwrap();
+    repo.update_user(&user, None).await.unwrap();
     // Competing valid requests: exactly one consumes and verifies.
     let (a, b) = tokio::join!(
         confirm(repo, "test", &stale.id, "owner", &stale.code_hash, 150, 5),
@@ -179,11 +179,11 @@ async fn contract(repo: &impl Repository) {
     race.id = "contact-race".into();
     repo.store_ciam_verification_challenge(&race).await.unwrap();
     user.email_verified = false;
-    repo.update_user(&user).await.unwrap();
+    repo.update_user(&user, None).await.unwrap();
     user.email = Some("replacement@example.com".into());
     let (verified, updated) = tokio::join!(
         confirm(repo, "test", &race.id, "owner", &race.code_hash, 150, 5),
-        repo.update_user(&user),
+        repo.update_user(&user, None),
     );
     updated.unwrap();
     let final_user = repo.get_user_by_id("owner").await.unwrap().unwrap();
@@ -376,12 +376,12 @@ async fn issuance_contract(repo: &impl Repository) {
     assert!(!issue(repo, &foreign, 1, 10).await);
     let mut verified = repo.get_user_by_id("owner").await.unwrap().unwrap();
     verified.email_verified = true;
-    repo.update_user(&verified).await.unwrap();
+    repo.update_user(&verified, None).await.unwrap();
     let ineligible = issuance("test", "owner", "owner@example.com", "verified-owner", 100);
     assert!(!issue(repo, &ineligible, 1, 10).await);
     assert!(missing(repo, &ineligible.id).await);
     verified.email_verified = false;
-    repo.update_user(&verified).await.unwrap();
+    repo.update_user(&verified, None).await.unwrap();
     // Stored records of another purpose, owner or realm do not spend this
     // account's email-verification budget.
     repo.create_realm(
@@ -480,7 +480,7 @@ async fn issuance_contract(repo: &impl Repository) {
     );
     verified.email_verified = false;
     verified.email = Some("replacement@example.com".into());
-    repo.update_user(&verified).await.unwrap();
+    repo.update_user(&verified, None).await.unwrap();
     let changed_address = issuance(
         "test",
         "owner",
@@ -490,7 +490,7 @@ async fn issuance_contract(repo: &impl Repository) {
     );
     assert!(!issue(repo, &changed_address, 1, 10).await);
     verified.email = Some("owner@example.com".into());
-    repo.update_user(&verified).await.unwrap();
+    repo.update_user(&verified, None).await.unwrap();
     // Window [100,109]: the old record still counts at equality.
     let next = issuance("test", "owner", "owner@example.com", "not-delivered", 109);
     assert!(!issue(repo, &next, 1, 10).await);

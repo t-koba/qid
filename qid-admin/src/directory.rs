@@ -308,7 +308,7 @@ pub(crate) async fn update_user<R: Repository>(
     };
     let target_realm = realm.clone();
 
-    match state.repo.update_user(&updated).await {
+    match state.repo.update_user(&updated, Some(&realm)).await {
         Ok(()) => {
             if let Err(e) = append_admin_audit(
                 &state,

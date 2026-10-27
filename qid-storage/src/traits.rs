@@ -116,7 +116,7 @@ pub trait UserRepository: Send + Sync + 'static {
     /// A supplied realm must own the current user or this returns NotFound without mutation;
     /// None permits unrestricted, idempotent cleanup, including orphaned state.
     async fn delete_user(&self, id: &str, realm: Option<&str>) -> QidResult<()>;
-    async fn update_user(&self, user: &User) -> QidResult<()>;
+    async fn update_user(&self, user: &User, realm: Option<&str>) -> QidResult<()>;
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()>;
     async fn get_password_credential(&self, user_id: &str)
     -> QidResult<Option<PasswordCredential>>;

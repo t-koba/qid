@@ -372,7 +372,7 @@ async fn send_is_generic_with_stable_binding_across_all_suppressions() {
     assert_eq!(same_cookie, cookie);
     let mut unverified = user();
     unverified.email_verified = false;
-    f.state.repo.update_user(&unverified).await.unwrap();
+    f.state.repo.update_user(&unverified, None).await.unwrap();
     for (realm, email) in [
         ("test", "Stored.Address@example.com"),
         ("test", "unknown@example.com"),
@@ -391,7 +391,7 @@ async fn send_is_generic_with_stable_binding_across_all_suppressions() {
     }
     unverified.email_verified = true;
     unverified.email = None;
-    f.state.repo.update_user(&unverified).await.unwrap();
+    f.state.repo.update_user(&unverified, None).await.unwrap();
     let response = post(
         &f.app,
         "/api/v1/test/auth/email-magic-link/send",
@@ -579,7 +579,7 @@ async fn stale_unverified_expired_and_foreign_purpose_credentials_fail() {
             } else {
                 user.email_verified = false;
             }
-            f.state.repo.update_user(&user).await.unwrap();
+            f.state.repo.update_user(&user, None).await.unwrap();
         } else {
             let mut record = row(&*f.state.repo, &credential).await;
             record.id = random_secret();

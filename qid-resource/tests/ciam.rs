@@ -766,7 +766,7 @@ async fn ciam_password_reset_issue_is_generic_for_unknown_ineligible_and_unconfi
         .unwrap()
         .unwrap();
     user.email = None;
-    state.repo.update_user(&user).await.unwrap();
+    state.repo.update_user(&user, None).await.unwrap();
     let ineligible = post_password_reset_issue(&app, "test", "user-ciam").await;
     assert_eq!(ineligible.status(), StatusCode::ACCEPTED);
     assert_eq!(json(ineligible).await, unknown_body);
@@ -1646,7 +1646,7 @@ async fn email_verification_bounds_attempts_rejects_stale_email_and_expiry() {
         .unwrap()
         .unwrap();
     user.email = Some("new@example.com".into());
-    state.repo.update_user(&user).await.unwrap();
+    state.repo.update_user(&user, None).await.unwrap();
     assert_eq!(
         verification_post(
             &app,
@@ -2016,7 +2016,7 @@ async fn email_verification_issue_requires_current_unverified_owner() {
         .unwrap()
         .unwrap();
     user.email_verified = true;
-    state.repo.update_user(&user).await.unwrap();
+    state.repo.update_user(&user, None).await.unwrap();
     let response =
         verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -2024,7 +2024,7 @@ async fn email_verification_issue_requires_current_unverified_owner() {
     // A changed stored address is the only destination, still unverified.
     user.email_verified = false;
     user.email = Some("new-address@example.com".into());
-    state.repo.update_user(&user).await.unwrap();
+    state.repo.update_user(&user, None).await.unwrap();
     let response =
         verification_post(&app, "test", "issue", Some(&cookie), serde_json::json!({})).await;
     assert_eq!(response.status(), StatusCode::OK);

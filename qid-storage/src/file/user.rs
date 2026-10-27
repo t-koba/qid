@@ -20,12 +20,10 @@ impl UserRepository for FileRepository {
         realm_id: &RealmId,
         id: &str,
     ) -> QidResult<Option<User>> {
-        let store = self.store.read().await;
-        Ok(store
-            .users
-            .get(id)
-            .filter(|user| user.realm_id == realm_id.0)
-            .cloned())
+        Ok(self
+            .get_user_by_id(id)
+            .await?
+            .filter(|user| user.realm_id == realm_id.0))
     }
 
     async fn get_user_by_email(&self, realm_id: &RealmId, email: &str) -> QidResult<Option<User>> {
@@ -66,22 +64,21 @@ impl UserRepository for FileRepository {
         self.save().await
     }
 
-    async fn update_user(&self, user: &User) -> QidResult<()> {
+    async fn update_user(&self, user: &User, realm: Option<&str>) -> QidResult<()> {
         let mut store = self.store.write().await;
-        // The owner (realm) of a user does not change on update, so keep the
-        // incumbent's realm and check the email against it, matching the SQL
-        // backend which does not update realm_id.
-        let realm_id = store
-            .users
-            .get(&user.id)
-            .map(|stored| stored.realm_id.clone())
-            .unwrap_or_else(|| user.realm_id.clone());
-        let mut user = user.clone();
-        user.realm_id = realm_id.clone();
-        if let Some(email) = email_held_by_another(&store, &user) {
-            return Err(crate::ownership::user_email_conflict(email, &realm_id));
+        let incumbent = store.users.get(&user.id);
+        if realm.is_some_and(|realm| incumbent.is_none_or(|stored| stored.realm_id != realm)) {
+            return Err(QidError::NotFound {
+                resource: format!("user {}", user.id),
+            });
         }
-        store.users.insert(user.id.clone(), user.clone());
+        // Preserve the incumbent realm, as SQL does.
+        let mut user = user.clone();
+        user.realm_id = incumbent.map_or(user.realm_id, |stored| stored.realm_id.clone());
+        if let Some(email) = email_held_by_another(&store, &user) {
+            return Err(crate::ownership::user_email_conflict(email, &user.realm_id));
+        }
+        store.users.insert(user.id.clone(), user);
         drop(store);
         self.save().await
     }

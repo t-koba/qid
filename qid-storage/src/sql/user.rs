@@ -122,46 +122,36 @@ impl UserRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn delete_user(&self, id: &str) -> QidResult<()> {
+    async fn delete_user(&self, id: &str, realm: Option<&str>) -> QidResult<()> {
         let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
-        // Session links need not have the same direct owner. Remove their children
-        // before the user cascade removes the sessions, in the same transaction.
-        sqlx::query("DELETE FROM authorization_codes WHERE user_id = ? OR session_id IN (SELECT id FROM sessions WHERE user_id = ?)")
-            .bind(id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
-        // Access-token subjects deliberately have no user FK: service/workload
-        // subjects survive, unless their token belongs to a removed refresh family.
-        sqlx::query("DELETE FROM access_tokens WHERE user_id = ? OR family_id IN (SELECT id FROM token_families WHERE user_id = ? OR session_id IN (SELECT id FROM sessions WHERE user_id = ?))")
-            .bind(id)
-            .bind(id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
-        sqlx::query("DELETE FROM token_families WHERE user_id = ? OR session_id IN (SELECT id FROM sessions WHERE user_id = ?)")
-            .bind(id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
-        sqlx::query("DELETE FROM device_authorization_grants WHERE user_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
-        sqlx::query("DELETE FROM backchannel_authentication_grants WHERE user_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
-        sqlx::query("DELETE FROM users WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
+        if let Some(realm) = realm {
+            let result = sqlx::query("UPDATE users SET id = id WHERE id = $1 AND realm_id = $2")
+                .bind(id)
+                .bind(realm)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+            if result.rows_affected() == 0 {
+                return Err(QidError::NotFound {
+                    resource: format!("user {id}"),
+                });
+            }
+        }
+        // Hold the owner lock while removing session/family children before parents.
+        for statement in [
+            "DELETE FROM authorization_codes WHERE user_id = $1 OR session_id IN (SELECT id FROM sessions WHERE user_id = $1)",
+            "DELETE FROM access_tokens WHERE user_id = $1 OR family_id IN (SELECT id FROM token_families WHERE user_id = $1 OR session_id IN (SELECT id FROM sessions WHERE user_id = $1))",
+            "DELETE FROM token_families WHERE user_id = $1 OR session_id IN (SELECT id FROM sessions WHERE user_id = $1)",
+            "DELETE FROM device_authorization_grants WHERE user_id = $1",
+            "DELETE FROM backchannel_authentication_grants WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+        }
         tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(())
     }

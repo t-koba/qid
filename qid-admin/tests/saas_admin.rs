@@ -1791,3 +1791,113 @@ async fn a_json_array_body_is_rejected_on_a_non_identity_admin_route() {
         "unexpected body: {body}"
     );
 }
+
+#[tokio::test]
+async fn directory_delete_is_bound_to_the_path_realm() {
+    let (app, state) = setup().await;
+    seed_saas_realm_client(&state).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-saas".into(),
+            &"realm-other".into(),
+            "https://other.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+    let now = qid_core::util::now_seconds();
+    state
+        .repo
+        .upsert_admin(&Admin {
+            id: "admin-directory".into(),
+            tenant_id: "tenant-saas".into(),
+            subject: "directory@example.com".into(),
+            roles: vec!["directory.admin".into()],
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .store_admin_elevation(&AdminElevation {
+            id: "directory-session".into(),
+            tenant_id: "tenant-saas".into(),
+            admin_id: "admin-directory".into(),
+            acr: Some("urn:qid:acr:phishing-resistant".into()),
+            amr: vec!["pwd".into(), "hwk".into()],
+            elevation_expires_at: now + 120,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "directory-user".into(),
+            realm_id: "realm-other".into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let request = |realm: &str, id: &str| {
+        Request::builder()
+            .method(Method::DELETE)
+            .uri(format!("/admin/api/v1/{realm}/users/{id}"))
+            .header("x-qid-admin-reason", "test")
+            .header("x-qid-admin-actor", "directory@example.com")
+            .header("x-qid-admin-session-id", "directory-session")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = app
+        .clone()
+        .oneshot(request("realm-saas", "directory-user"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        state
+            .repo
+            .get_user_by_id("directory-user")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(request("realm-saas", "missing"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(request("realm-other", "directory-user"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        state
+            .repo
+            .get_user_by_id("directory-user")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        app.oneshot(request("realm-other", "directory-user"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}

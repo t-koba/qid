@@ -798,7 +798,7 @@ async fn contract(repo: &impl FixtureRepository) {
     );
 
     // Deletion cascades pending/enrolled lifecycles and logins, without factor authority.
-    repo.delete_user("owner").await.unwrap();
+    repo.delete_user("owner", None).await.unwrap();
     assert!(
         repo.get_push_registration(&realm, "owner", "device")
             .await

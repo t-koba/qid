@@ -329,13 +329,13 @@ async fn sql_user_deletion_cleans_only_owned_authentication_state() {
     repo.migrate().await.unwrap();
     seed(&repo).await;
     let audit = repo.list_audit_events(None, 10).await.unwrap();
-    repo.delete_user("target").await.unwrap();
+    repo.delete_user("target", None).await.unwrap();
     assert_deleted(&repo).await;
     assert_eq!(
         serde_json::to_value(repo.list_audit_events(None, 10).await.unwrap()).unwrap(),
         serde_json::to_value(audit).unwrap()
     );
-    repo.delete_user("target").await.unwrap();
+    repo.delete_user("target", None).await.unwrap();
     assert_deleted(&repo).await;
     repo.close().await;
     std::fs::remove_file(path).unwrap();
@@ -347,7 +347,7 @@ async fn file_user_deletion_persists_only_owned_authentication_cleanup() {
     let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
     seed(&repo).await;
     let audit = repo.list_audit_events(None, 10).await.unwrap();
-    repo.delete_user("target").await.unwrap();
+    repo.delete_user("target", None).await.unwrap();
     assert_deleted(&repo).await;
     drop(repo);
     let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
@@ -356,7 +356,7 @@ async fn file_user_deletion_persists_only_owned_authentication_cleanup() {
         serde_json::to_value(repo.list_audit_events(None, 10).await.unwrap()).unwrap(),
         serde_json::to_value(audit).unwrap()
     );
-    repo.delete_user("target").await.unwrap();
+    repo.delete_user("target", None).await.unwrap();
     assert_deleted(&repo).await;
     drop(repo);
     std::fs::remove_file(path).unwrap();
@@ -541,7 +541,7 @@ async fn sql_failed_user_deletion_rolls_back_authentication_cleanup() {
     let pool = sqlx::AnyPool::connect(&url).await.unwrap();
     sqlx::raw_sql("CREATE TRIGGER block_deletion BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT, 'test failure'); END;")
         .execute(&pool).await.unwrap();
-    assert!(repo.delete_user("target").await.is_err());
+    assert!(repo.delete_user("target", None).await.is_err());
     assert!(repo.get_user_by_id("target").await.unwrap().is_some());
     assert!(repo.get_session("target").await.unwrap().is_some());
     for id in ["direct", "session-linked", "survivor"] {
@@ -580,6 +580,168 @@ async fn sql_failed_user_deletion_rolls_back_authentication_cleanup() {
     assert!(repo.get_totp_credential("target").await.unwrap().is_some());
     assert!(repo.get_device("target").await.unwrap().is_some());
     pool.close().await;
+    repo.close().await;
+    std::fs::remove_file(path).unwrap();
+}
+
+async fn scoped_user_delete(repo: &impl Repository) {
+    use qid_core::error::QidError;
+    seed(repo).await;
+    repo.create_realm(
+        &"tenant".into(),
+        &"other".into(),
+        "https://other.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    for (id, realm) in [("target", "other"), ("missing", "realm")] {
+        assert!(matches!(
+            repo.delete_user(id, Some(realm)).await,
+            Err(QidError::NotFound { .. })
+        ));
+    }
+    // Check direct and indirectly linked dependents before any authorized deletion.
+    assert!(repo.get_user_by_id("target").await.unwrap().is_some());
+    assert!(
+        repo.get_password_credential("target")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(repo.get_session("target").await.unwrap().is_some());
+    assert!(
+        !repo
+            .get_webauthn_credentials("target")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(repo.get_totp_credential("target").await.unwrap().is_some());
+    assert!(repo.get_device("target").await.unwrap().is_some());
+    assert!(
+        repo.get_authorization_code("session-linked")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.get_token_family("session-linked")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.get_access_token("session-family-linked")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.get_device_authorization_grant("target")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.get_backchannel_authentication_grant("target")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // A pre-read of the original owner followed by replacement must not authorize deletion.
+    let old = repo.get_user_by_id("target").await.unwrap().unwrap();
+    repo.delete_user("target", Some("realm")).await.unwrap();
+    assert_deleted(repo).await;
+    let mut replacement = old;
+    replacement.realm_id = "other".into();
+    repo.create_user(&replacement).await.unwrap();
+    repo.store_password_credential(&PasswordCredential {
+        user_id: "target".into(),
+        hash: "new-hash".into(),
+        algorithm: "argon2id".into(),
+    })
+    .await
+    .unwrap();
+    repo.create_session(&Session {
+        id: "replacement-session".into(),
+        realm_id: "other".into(),
+        user_id: "target".into(),
+        auth_time: 100,
+        acr: None,
+        amr: vec!["pwd".into()],
+        idle_expires_at: 1000,
+        absolute_expires_at: 1000,
+        revoked: false,
+        created_at: 100,
+        cnf: None,
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        repo.delete_user("target", Some("realm")).await,
+        Err(QidError::NotFound { .. })
+    ));
+    assert_eq!(
+        repo.get_user_by_id("target")
+            .await
+            .unwrap()
+            .unwrap()
+            .realm_id,
+        "other"
+    );
+    assert_eq!(
+        repo.get_password_credential("target")
+            .await
+            .unwrap()
+            .unwrap()
+            .hash,
+        "new-hash"
+    );
+    assert!(
+        repo.get_session("replacement-session")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    repo.delete_user("target", Some("other")).await.unwrap();
+    assert!(repo.get_user_by_id("target").await.unwrap().is_none());
+    assert!(
+        repo.get_password_credential("target")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.get_session("replacement-session")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        repo.delete_user("target", Some("other")).await,
+        Err(QidError::NotFound { .. })
+    ));
+    repo.delete_user("target", None).await.unwrap();
+}
+
+#[tokio::test]
+async fn scoped_user_delete_file() {
+    let path = std::env::temp_dir().join(format!("qid-user-owner-{}.json", ulid::Ulid::new()));
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    scoped_user_delete(&repo).await;
+    drop(repo);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn scoped_user_delete_sqlite() {
+    let path = std::env::temp_dir().join(format!("qid-user-owner-{}.db", ulid::Ulid::new()));
+    let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+        .await
+        .unwrap();
+    repo.migrate().await.unwrap();
+    scoped_user_delete(&repo).await;
     repo.close().await;
     std::fs::remove_file(path).unwrap();
 }

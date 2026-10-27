@@ -1239,7 +1239,7 @@ async fn assert_ciam_user_deletion(
     .unwrap();
     let audit_before = repo.list_audit_events(Some(&realm), 10).await.unwrap();
 
-    repo.delete_user(&victim.user.id).await.unwrap();
+    repo.delete_user(&victim.user.id, None).await.unwrap();
     victim.assert_deleted(repo).await;
     survivor.assert_present(repo).await;
     assert!(

@@ -54,8 +54,13 @@ impl UserRepository for FileRepository {
         Ok(users.into_iter().skip(offset).take(limit).collect())
     }
 
-    async fn delete_user(&self, id: &str) -> QidResult<()> {
+    async fn delete_user(&self, id: &str, realm: Option<&str>) -> QidResult<()> {
         let mut store = self.store.write().await;
+        if realm.is_some_and(|realm| store.users.get(id).is_none_or(|u| u.realm_id != realm)) {
+            return Err(QidError::NotFound {
+                resource: format!("user {id}"),
+            });
+        }
         store.remove_auth_state(&std::collections::HashSet::from([id.to_string()]), None);
         drop(store);
         self.save().await

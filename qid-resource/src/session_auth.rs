@@ -156,7 +156,7 @@ mod tests {
             require_any_session(&target, &state, "test").await.unwrap(),
             "target"
         );
-        repo.delete_user("target").await.unwrap();
+        repo.delete_user("target", None).await.unwrap();
         assert_eq!(
             require_any_session(&target, &state, "test")
                 .await

@@ -126,7 +126,7 @@ delegate!(UserRepository {
     get_user_by_email(&self, realm_id: &qid_core::tenant::RealmId, email: &str) -> QidResult<Option<qid_core::models::User>>;
     list_users(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::User>>;
     list_users_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::User>>;
-    delete_user(&self, id: &str) -> QidResult<()>;
+    delete_user(&self, id: &str, realm: Option<&str>) -> QidResult<()>;
     update_user(&self, user: &qid_core::models::User) -> QidResult<()>;
     store_password_credential(&self, cred: &qid_core::models::PasswordCredential) -> QidResult<()>;
     get_password_credential(&self, user_id: &str) -> QidResult<Option<qid_core::models::PasswordCredential>>;

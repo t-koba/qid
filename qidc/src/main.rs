@@ -778,7 +778,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 UserCommand::Delete(args) => {
-                    repo.delete_user(&args.id).await?;
+                    repo.delete_user(&args.id, None).await?;
                     println!("user deleted: {}", args.id);
                 }
             }

@@ -352,7 +352,7 @@ pub(crate) async fn delete_user<R: Repository>(
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::DirectoryAdmin, Some(&realm));
     let existing = match state.repo.get_user_by_id(&user_id).await {
-        Ok(Some(u)) => u,
+        Ok(Some(user)) => user,
         Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
@@ -360,7 +360,7 @@ pub(crate) async fn delete_user<R: Repository>(
             )
                 .into_response();
         }
-        Err(e) => return qid_http::error_response(e),
+        Err(error) => return qid_http::error_response(error),
     };
     if existing.realm_id != realm {
         return qid_http::error_response(QidError::NotFound {
@@ -368,7 +368,7 @@ pub(crate) async fn delete_user<R: Repository>(
         });
     }
     audit_no_content(
-        state.repo.delete_user(&user_id).await,
+        state.repo.delete_user(&user_id, Some(&realm)).await,
         &state,
         &headers,
         &_admin,

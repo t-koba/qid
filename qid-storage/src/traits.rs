@@ -113,7 +113,9 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Delete a user and their live authentication state atomically, including
     /// codes/families bound to their sessions and tokens in those families.
     /// Preserve unrelated subjects, pending unowned grants and audit history.
-    async fn delete_user(&self, id: &str) -> QidResult<()>;
+    /// A supplied realm must own the current user or this returns NotFound without mutation;
+    /// None permits unrestricted, idempotent cleanup, including orphaned state.
+    async fn delete_user(&self, id: &str, realm: Option<&str>) -> QidResult<()>;
     async fn update_user(&self, user: &User) -> QidResult<()>;
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()>;
     async fn get_password_credential(&self, user_id: &str)

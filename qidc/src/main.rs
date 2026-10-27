@@ -709,7 +709,8 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 ClientCommand::Delete(args) => {
-                    repo.delete_client(&args.id).await?;
+                    repo.delete_client(&RealmId::from(args.realm.clone()), &args.id)
+                        .await?;
                     println!("client deleted: {}", args.id);
                 }
             }

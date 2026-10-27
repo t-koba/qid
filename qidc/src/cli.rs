@@ -323,6 +323,8 @@ pub(crate) struct ListClients {
 #[derive(Args)]
 pub(crate) struct DeleteClient {
     #[arg(long)]
+    pub(crate) realm: String,
+    #[arg(long)]
     pub(crate) id: String,
 }
 

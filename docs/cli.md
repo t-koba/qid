@@ -79,9 +79,11 @@ A realm the configuration declares belongs to the configuration: the daemon serv
 | --- | --- |
 | `create` | `--realm`, `--client-id`, `--secret`, `--redirect-uri`, `--client-type confidential|public` |
 | `list` | `--realm` |
-| `delete` | `--id` |
+| `delete` | `--realm`, `--id` |
 
 `create` writes the client to the repository. The realm must be in the repository, and a client id the configuration declares belongs to the configuration - the daemon serves that client from the configuration and refuses to start when the stored record differs - so the command refuses such a client id, and it refuses a client id the realm already holds.
+
+`delete` requires both `--realm` and the internal client `--id`. Storage deletes only when both match; a missing ID or a client in another realm remains a no-op.
 
 ### qidc user
 

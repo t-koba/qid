@@ -162,7 +162,8 @@ pub trait ClientRepository: Send + Sync + 'static {
         offset: usize,
         limit: usize,
     ) -> QidResult<Vec<Client>>;
-    async fn delete_client(&self, id: &str) -> QidResult<()>;
+    /// Delete only a client in this realm; a missing or foreign ID is a no-op.
+    async fn delete_client(&self, realm_id: &RealmId, id: &str) -> QidResult<()>;
 }
 
 #[async_trait]

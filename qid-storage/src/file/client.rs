@@ -62,7 +62,14 @@ impl ClientRepository for FileRepository {
         Ok(clients.into_iter().skip(offset).take(limit).collect())
     }
 
-    async fn delete_client(&self, id: &str) -> QidResult<()> {
-        self.map_write(|store| store.clients.remove(id)).await
+    async fn delete_client(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
+        self.map_write(|store| {
+            store
+                .clients
+                .get(id)
+                .filter(|client| client.realm_id.as_str() == realm_id.as_str())?;
+            store.clients.remove(id)
+        })
+        .await
     }
 }

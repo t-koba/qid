@@ -540,7 +540,10 @@ pub(crate) async fn delete_client<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
     audit_no_content(
-        state.repo.delete_client(&client.id).await,
+        state
+            .repo
+            .delete_client(&RealmId::from(realm.clone()), &client.id)
+            .await,
         &state,
         &headers,
         &_admin,

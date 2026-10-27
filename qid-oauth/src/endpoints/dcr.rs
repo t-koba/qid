@@ -880,10 +880,11 @@ pub async fn dynamic_client_registration_delete<R: Repository>(
     super::error_response_or_return!(
         authenticate_dcr_management_client(&state, &headers, &realm_id, &client_id).await
     );
+    let client_realm_id = RealmId::from(realm_id);
     let client = match super::error_response_or_return!(
         state
             .repo
-            .get_client_by_client_id(&RealmId::from(realm_id), &client_id)
+            .get_client_by_client_id(&client_realm_id, &client_id)
             .await
     ) {
         Some(client) => client,
@@ -893,7 +894,7 @@ pub async fn dynamic_client_registration_delete<R: Repository>(
             });
         }
     };
-    match state.repo.delete_client(&client.id).await {
+    match state.repo.delete_client(&client_realm_id, &client.id).await {
         Ok(()) => axum::http::StatusCode::NO_CONTENT.into_response(),
         Err(e) => qid_http::error_response(e),
     }

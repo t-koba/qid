@@ -177,8 +177,9 @@ impl ClientRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn delete_client(&self, id: &str) -> QidResult<()> {
-        sqlx::query("DELETE FROM clients WHERE id = ?")
+    async fn delete_client(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
+        sqlx::query("DELETE FROM clients WHERE realm_id = ? AND id = ?")
+            .bind(realm_id.as_str())
             .bind(id)
             .execute(&self.pool)
             .await

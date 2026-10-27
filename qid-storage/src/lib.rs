@@ -138,7 +138,7 @@ delegate!(ClientRepository {
     find_clients_by_client_id(&self, realm_ids: &[qid_core::tenant::RealmId], client_id: &str) -> QidResult<Vec<qid_core::models::Client>>;
     list_clients(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<qid_core::models::Client>>;
     list_clients_page(&self, realm_id: &qid_core::tenant::RealmId, offset: usize, limit: usize) -> QidResult<Vec<qid_core::models::Client>>;
-    delete_client(&self, id: &str) -> QidResult<()>;
+    delete_client(&self, realm_id: &qid_core::tenant::RealmId, id: &str) -> QidResult<()>;
 });
 
 delegate!(SessionRepository {

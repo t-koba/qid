@@ -234,6 +234,14 @@ async fn policy_bundle_foreign_key_failure_remains_storage_error() {
 }
 
 #[tokio::test]
+async fn client_delete_realm_scope_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_client_delete_realm_scope(&sql).await;
+    let file = support::file_repo("ownership-contract-client-delete").await;
+    support::assert_client_delete_realm_scope(&file).await;
+}
+
+#[tokio::test]
 async fn client_update_identity_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_client_update_identity(&sql).await;

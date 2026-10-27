@@ -2847,6 +2847,74 @@ where
     }
 }
 
+pub async fn assert_client_delete_realm_scope<R>(repo: &R)
+where
+    R: RealmRepository + ClientRepository,
+{
+    let realm = RealmId::from("realm-client-delete");
+    repo.create_realm(
+        &TenantId::from("tenant-client-delete"),
+        &realm,
+        "https://client-delete.example.com",
+        Some("Client Delete Realm"),
+    )
+    .await
+    .expect("create client delete realm failed");
+    let other_realm = RealmId::from("realm-client-delete-other");
+    repo.create_realm(
+        &TenantId::from("tenant-client-delete-other"),
+        &other_realm,
+        "https://client-delete-other.example.com",
+        Some("Other Client Delete Realm"),
+    )
+    .await
+    .expect("create other client delete realm failed");
+
+    let client = sample_cross_realm_client("client-delete-a", realm.as_str(), "delete-app");
+    repo.create_client(&client)
+        .await
+        .expect("create client for delete contract failed");
+
+    repo.delete_client(&other_realm, &client.id)
+        .await
+        .expect("foreign-realm client delete must be a no-op");
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_client_by_client_id(&realm, "delete-app")
+                .await
+                .expect("get client after foreign delete failed"),
+        )
+        .expect("serialize client after foreign delete failed"),
+        serde_json::to_value(Some(client.clone())).expect("serialize expected client failed"),
+        "a foreign-realm delete must leave the incumbent unchanged"
+    );
+
+    repo.delete_client(&realm, "missing-client-delete-id")
+        .await
+        .expect("missing client delete must be a no-op");
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_client_by_client_id(&realm, "delete-app")
+                .await
+                .expect("get client after missing delete failed"),
+        )
+        .expect("serialize client after missing delete failed"),
+        serde_json::to_value(Some(client.clone())).expect("serialize expected client failed"),
+        "a missing-ID delete must leave the incumbent unchanged"
+    );
+
+    repo.delete_client(&realm, &client.id)
+        .await
+        .expect("same-realm client delete failed");
+    assert!(
+        repo.get_client_by_client_id(&realm, "delete-app")
+            .await
+            .expect("get client after authorized delete failed")
+            .is_none(),
+        "a same-realm delete must remove the client"
+    );
+}
+
 /// The stable update identity of a client: an existing record ID accepts only
 /// the same `(realm_id, client_id)` binding, and a mismatched binding is a
 /// conflict that changes no field.

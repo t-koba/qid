@@ -77,9 +77,11 @@ lets the table's primary key and unique indexes refuse the duplicate inside
 the statement, so no read precedes the write and no duplicate can slip
 between a check and an insert. The two idioms differ; the outcome does not.
 
-The shared helpers in `qid-storage/src/ownership.rs` carry the outcome so
-both backends state it once. The typed contract they implement is
-`OwnershipContract` (owner key, identity key, collision rule):
+Selected helpers in `qid-storage/src/ownership.rs` standardize common error
+outcomes. `OwnershipContract` is typed inventory metadata (owner key, identity
+key, collision rule), not a generic operation that automatically enforces a
+write. The concrete File and SQL methods enforce the recorded semantics through
+lock-protected checks or atomic statements:
 
 - `ensure_same_binding` - the file path, under the write lock, refuses a
   write whose identity key is bound to another owner; the SQL client update
@@ -107,13 +109,14 @@ both backends state it once. The typed contract they implement is
   `qid-storage/src/ownership.rs:102`) and the `update_client` trait contract
   (`qid-storage/src/traits.rs:131`).
 
-Migrated writes document their keys and collision rules in `OwnershipContract`
-or, for these create-only records, the typed `InsertIdentity` projection and
-repository trait contract; the client update documents its stable binding in
+The `OwnershipContract` constants record keys and collision rules for migrated
+writes; they are not runtime-linked to the backend methods. For create-only
+records, the typed `InsertIdentity` projection and repository trait contract
+state the operation, and the client update documents its stable binding in
 `StableUpdateIdentity` and the `update_client` trait contract. Backend code
-enforces them under the file store's write lock or in static SQL. Replacement,
-append-only and lifecycle operations remain separate; the create-only primitive
-does not apply to them.
+enforces the contracts under the file store's write lock or in static SQL.
+Replacement, append-only and lifecycle operations remain separate; the
+create-only primitive does not apply to them.
 
 The migrated families are the workload identity, the client, the CIAM
 consent grant, the user, the realm, the device, the FedCM identity, the service

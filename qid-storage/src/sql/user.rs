@@ -104,10 +104,6 @@ impl UserRepository for SqlRepository {
         }))
     }
 
-    async fn list_users(&self, realm_id: &RealmId) -> QidResult<Vec<User>> {
-        self.list_users_page(realm_id, 0, usize::MAX).await
-    }
-
     async fn list_users_page(
         &self,
         realm_id: &RealmId,

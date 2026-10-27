@@ -159,10 +159,6 @@ impl ClientRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn list_clients(&self, realm_id: &RealmId) -> QidResult<Vec<Client>> {
-        self.list_clients_page(realm_id, 0, usize::MAX).await
-    }
-
     async fn list_clients_page(
         &self,
         realm_id: &RealmId,

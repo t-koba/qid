@@ -593,7 +593,7 @@ fn valid_private_key_jwt_succeeds() {
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": now + 3600,
         "iat": now,
         "jti": "client-jti-1",
@@ -602,7 +602,7 @@ fn valid_private_key_jwt_succeeds() {
     let result = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         now,
@@ -620,14 +620,14 @@ fn private_key_jwt_wrong_iss_fails() {
     let payload = serde_json::json!({
         "iss": "wrong-client",
         "sub": "wrong-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": now + 3600,
     });
     let jwt = build_jwt(&private_key_jwt_header(), &payload);
     let result = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         now,
@@ -641,14 +641,14 @@ fn private_key_jwt_wrong_sub_fails() {
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "other-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": now + 3600,
     });
     let jwt = build_jwt(&private_key_jwt_header(), &payload);
     let result = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         now,
@@ -669,7 +669,7 @@ fn private_key_jwt_wrong_aud_fails() {
     let result = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         now,
@@ -684,14 +684,14 @@ fn private_key_jwt_expired_fails() {
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": old_exp,
     });
     let jwt = build_jwt(&private_key_jwt_header(), &payload);
     let result = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         now,
@@ -704,14 +704,14 @@ fn private_key_jwt_missing_iss_fails() {
     let now = qid_core::util::now_seconds();
     let payload = serde_json::json!({
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": now + 3600,
     });
     let jwt = build_jwt(&private_key_jwt_header(), &payload);
     let result = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         now,
@@ -725,7 +725,7 @@ fn private_key_jwt_tampered_payload_signature_fails() {
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": now + 3600,
     });
     let jwt = build_jwt(&private_key_jwt_header(), &payload);
@@ -738,7 +738,7 @@ fn private_key_jwt_tampered_payload_signature_fails() {
     let tampered_payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": now + 3600,
         "scope": "admin",
     });
@@ -749,7 +749,7 @@ fn private_key_jwt_tampered_payload_signature_fails() {
     let result = extract_private_key_jwt(
         &tampered,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         now,
@@ -766,7 +766,7 @@ fn private_key_jwt_jti_replay_detected() {
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": now + 3600,
         "iat": now,
         "jti": "unique-client-jti",
@@ -777,7 +777,7 @@ fn private_key_jwt_jti_replay_detected() {
     let r1 = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &state,
         now,
@@ -787,7 +787,7 @@ fn private_key_jwt_jti_replay_detected() {
     let r2 = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &state,
         now,
@@ -889,7 +889,7 @@ fn private_key_jwt_replay_lives_until_verified_exp() {
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": EXP,
         "iat": T,
         "jti": "exp-scoped-jti-1",
@@ -901,7 +901,7 @@ fn private_key_jwt_replay_lives_until_verified_exp() {
     let first = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &state,
         T,
@@ -919,7 +919,7 @@ fn private_key_jwt_replay_lives_until_verified_exp() {
     let replay = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &state,
         T + 61,
@@ -933,7 +933,7 @@ fn private_key_jwt_replay_lives_until_verified_exp() {
     let other_payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": EXP,
         "iat": T,
         "jti": "exp-scoped-jti-2",
@@ -942,7 +942,7 @@ fn private_key_jwt_replay_lives_until_verified_exp() {
     let other = extract_private_key_jwt(
         &other_jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &state,
         T + 61,
@@ -959,7 +959,7 @@ fn private_key_jwt_rejects_exp_at_now_boundary() {
     let payload = serde_json::json!({
         "iss": "my-client",
         "sub": "my-client",
-        "aud": "https://id.example.com/token",
+        "aud": "https://id.example.com",
         "exp": T,
         "iat": T,
         "jti": "boundary-jti",
@@ -968,10 +968,39 @@ fn private_key_jwt_rejects_exp_at_now_boundary() {
     let result = extract_private_key_jwt(
         &jwt,
         "my-client",
-        "https://id.example.com/token",
+        "https://id.example.com",
         &private_key_jwt_jwks(),
         &DpopState::new(),
         T,
     );
     assert!(result.is_err(), "exp == now must be rejected");
+}
+
+#[test]
+fn private_key_jwt_accepts_only_one_exact_issuer_audience() {
+    let now = qid_core::util::now_seconds();
+    for (aud, expected) in [
+        (serde_json::json!("https://id.example.com"), true),
+        (serde_json::json!(["https://id.example.com"]), true),
+        (serde_json::json!([]), false),
+        (serde_json::json!([1]), false),
+        (
+            serde_json::json!(["https://id.example.com", "https://other.example.com"]),
+            false,
+        ),
+        (serde_json::json!("https://id.example.com/token"), false),
+        (serde_json::Value::Null, false),
+    ] {
+        let payload = serde_json::json!({"iss":"my-client", "sub":"my-client", "aud":aud, "exp":now+60, "jti":"aud-test"});
+        let jwt = build_jwt(&private_key_jwt_header(), &payload);
+        let result = extract_private_key_jwt(
+            &jwt,
+            "my-client",
+            "https://id.example.com",
+            &private_key_jwt_jwks(),
+            &DpopState::new(),
+            now,
+        );
+        assert_eq!(result.is_ok(), expected, "aud={aud}");
+    }
 }

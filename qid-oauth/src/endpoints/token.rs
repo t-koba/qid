@@ -1009,7 +1009,7 @@ async fn validate_client_auth_method<R: Repository>(
                 crate::dpop::extract_private_key_jwt(
                     assertion,
                     &client.client_id,
-                    &token_endpoint_url_for_realm(state, &client.realm_id),
+                    &oauth_realm_config(state, &client.realm_id)?.issuer,
                     &client.jwks,
                     &state.assertion_replay_cache,
                 )?;

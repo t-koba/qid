@@ -30,6 +30,7 @@ rcgen.workspace = true
 time.workspace = true
 
 [dev-dependencies]
+p256 = { workspace = true }
 async-trait.workspace = true
 tracing-subscriber.workspace = true
 http-body-util = { workspace = true }

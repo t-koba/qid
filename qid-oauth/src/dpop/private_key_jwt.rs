@@ -11,20 +11,20 @@ use super::parse_jwt_unverified;
 ///
 /// `client_assertion` - the JWT sent as `client_assertion` parameter.
 /// `client_id` - the expected client identifier.
-/// `token_url` - the token endpoint URL (expected `aud` claim).
+/// `issuer` - the client's realm issuer (sole expected `aud` claim).
 /// `client_jwks` - the client's registered public JWK set.
 /// `replay_cache` - assertion replay cache (kept separate from DPoP proofs).
 pub fn extract_private_key_jwt(
     client_assertion: &str,
     client_id: &str,
-    token_url: &str,
+    issuer: &str,
     client_jwks: &serde_json::Value,
     replay_cache: &DpopState,
 ) -> QidResult<()> {
     extract_private_key_jwt_at(
         client_assertion,
         client_id,
-        token_url,
+        issuer,
         client_jwks,
         replay_cache,
         now_seconds(),
@@ -34,7 +34,7 @@ pub fn extract_private_key_jwt(
 pub(crate) fn extract_private_key_jwt_at(
     client_assertion: &str,
     client_id: &str,
-    token_url: &str,
+    issuer: &str,
     client_jwks: &serde_json::Value,
     replay_cache: &DpopState,
     now: u64,
@@ -68,10 +68,10 @@ pub(crate) fn extract_private_key_jwt_at(
         });
     }
 
-    // Validate aud == token_url
-    if !audience_matches(payload.get("aud"), token_url) {
+    // Validate aud == issuer
+    if !audience_matches(payload.get("aud"), issuer) {
         return Err(QidError::BadRequest {
-            message: format!("client_assertion aud mismatch: expected '{token_url}'"),
+            message: format!("client_assertion aud mismatch: expected '{issuer}'"),
         });
     }
 
@@ -109,11 +109,11 @@ pub(crate) fn extract_private_key_jwt_at(
     Ok(())
 }
 
-fn audience_matches(aud: Option<&serde_json::Value>, token_url: &str) -> bool {
+fn audience_matches(aud: Option<&serde_json::Value>, issuer: &str) -> bool {
     match aud {
-        Some(serde_json::Value::String(value)) => value == token_url,
+        Some(serde_json::Value::String(value)) => value == issuer,
         Some(serde_json::Value::Array(values)) => {
-            values.iter().any(|value| value.as_str() == Some(token_url))
+            values.len() == 1 && values[0].as_str() == Some(issuer)
         }
         _ => false,
     }

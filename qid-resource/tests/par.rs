@@ -39,6 +39,10 @@ fn db_url() -> String {
 async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.par.enabled = true;
+    let mut other = config.realms[0].clone();
+    other.id = "other".into();
+    other.issuer = "https://other.example.com/realm/".into();
+    config.realms.push(other);
     let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
     repo.migrate().await.unwrap();
     repo.create_realm(
@@ -150,4 +154,108 @@ async fn par_rejects_invalid_authorization_details() {
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn par_private_key_jwt_requires_only_the_client_realm_issuer() {
+    use p256::{
+        ecdsa::{Signature, SigningKey, signature::Signer},
+        pkcs8::DecodePrivateKey,
+    };
+    let (app, state) = setup().await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &"other".into(),
+            "https://other.example.com/realm/",
+            None,
+        )
+        .await
+        .unwrap();
+    let key = qid_crypto::jwk::generate_es256("par-key").unwrap();
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.token_endpoint_auth_method = "private_key_jwt".into();
+    client.jwks = serde_json::json!({"keys": [key.public_jwk]});
+    for (id, realm) in [("jwt-client", "test"), ("other-jwt-client", "other")] {
+        client.id = format!("id-{id}");
+        client.client_id = id.into();
+        client.realm_id = realm.into();
+        state.repo.create_client(&client).await.unwrap();
+    }
+    for (i, (client_id, aud, status)) in [
+        (
+            "jwt-client",
+            serde_json::json!("https://id.example.com"),
+            StatusCode::CREATED,
+        ),
+        (
+            "jwt-client",
+            serde_json::json!(["https://id.example.com"]),
+            StatusCode::CREATED,
+        ),
+        (
+            "jwt-client",
+            serde_json::json!("https://id.example.com/oauth2/par"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "jwt-client",
+            serde_json::json!(["https://id.example.com", "https://attacker.example"]),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "jwt-client",
+            serde_json::json!(["https://id.example.com", "https://id.example.com"]),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "other-jwt-client",
+            serde_json::json!("https://id.example.com"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "other-jwt-client",
+            serde_json::json!("https://other.example.com/realm/"),
+            StatusCode::CREATED,
+        ),
+        (
+            "other-jwt-client",
+            serde_json::json!("https://other.example.com/realm"),
+            StatusCode::UNAUTHORIZED,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256"}"#);
+        let payload = serde_json::json!({"iss":client_id,"sub":client_id,"aud":aud,"exp":qid_core::util::now_seconds()+300,"jti":format!("par-aud-{i}")});
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        let input = format!("{header}.{payload}");
+        let signature: Signature = SigningKey::from_pkcs8_pem(&key.private_pem)
+            .unwrap()
+            .sign(input.as_bytes());
+        let assertion = format!(
+            "{input}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        );
+        let body = serde_json::json!({"client_id":client_id,"client_assertion":assertion,"response_type":"code","redirect_uri":"https://app.example.com/callback"});
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/oauth2/par")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            status,
+            "case {i}"
+        );
+    }
 }

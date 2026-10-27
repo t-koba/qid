@@ -258,13 +258,33 @@ fn build_client_assertion(client_id: &str, jti: &str) -> String {
     let payload = serde_json::json!({
         "iss": client_id,
         "sub": client_id,
-        "aud": "https://id.example.com/oauth2/token",
+        "aud": "https://id.example.com",
         "exp": now + 300,
         "iat": now,
         "jti": jti,
     });
     sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "JWT", &payload)
         .expect("client assertion signing failed")
+}
+
+fn build_audience_assertion(client_id: &str, jti: &str, audience: serde_json::Value) -> String {
+    use p256::{
+        ecdsa::{Signature, SigningKey, signature::Signer},
+        pkcs8::DecodePrivateKey,
+    };
+    let (pem, _) = dpop_private_pem_and_jwk();
+    let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256"}"#);
+    let payload = serde_json::json!({"iss":client_id,"sub":client_id,"aud":audience,"exp":util::now_seconds()+300,"jti":jti});
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&payload).unwrap());
+    let input = format!("{header}.{payload}");
+    let signature: Signature = SigningKey::from_pkcs8_pem(&pem)
+        .unwrap()
+        .sign(input.as_bytes());
+    format!(
+        "{input}.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    )
 }
 
 fn build_adapter_auth_token(
@@ -583,6 +603,85 @@ async fn client_credentials_grant_accepts_private_key_jwt() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn private_key_jwt_requires_only_the_client_realm_issuer() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.private_key_jwt.enabled = true;
+    let mut other = config.realms[0].clone();
+    other.id = "other".into();
+    other.issuer = "https://other.example.com/realm/".into();
+    config.realms.push(other);
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &"other".into(),
+            "https://other.example.com/realm/",
+            None,
+        )
+        .await
+        .unwrap();
+    let mut client = private_key_jwt_client("other-pkjwt");
+    client.realm_id = "other".into();
+    state.repo.create_client(&client).await.unwrap();
+    for (i, (client, aud, status)) in [
+        (
+            "pkjwt-client",
+            serde_json::json!("https://id.example.com"),
+            StatusCode::OK,
+        ),
+        (
+            "pkjwt-client",
+            serde_json::json!(["https://id.example.com"]),
+            StatusCode::OK,
+        ),
+        (
+            "pkjwt-client",
+            serde_json::json!("https://id.example.com/oauth2/token"),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "pkjwt-client",
+            serde_json::json!(["https://id.example.com", "https://attacker.example"]),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "pkjwt-client",
+            serde_json::json!(["https://id.example.com", "https://id.example.com"]),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "other-pkjwt",
+            serde_json::json!("https://id.example.com"),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "other-pkjwt",
+            serde_json::json!("https://other.example.com/realm/"),
+            StatusCode::OK,
+        ),
+        (
+            "other-pkjwt",
+            serde_json::json!("https://other.example.com/realm"),
+            StatusCode::BAD_REQUEST,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let assertion = build_audience_assertion(client, &format!("aud-{i}"), aud);
+        let body = format!(
+            "grant_type=client_credentials&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}&scope=api"
+        );
+        assert_eq!(
+            post_form(app.clone(), &token_path, body).await.status(),
+            status,
+            "case {i}"
+        );
+    }
 }
 
 #[tokio::test]

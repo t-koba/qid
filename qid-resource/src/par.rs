@@ -345,12 +345,10 @@ fn verify_par_private_key_jwt<R: Repository>(
             });
         }
     }
-    let par_url = format!(
-        "{}{}",
-        state.plan.public_base_url.trim_end_matches('/'),
-        state.paths.par
-    );
-    if !audience_matches(payload.get("aud"), &par_url) {
+    if !state
+        .realm(&client.realm_id)
+        .is_some_and(|realm| audience_matches(payload.get("aud"), &realm.issuer))
+    {
         return Err(QidError::Unauthorized {
             message: "PAR client_assertion audience mismatch".to_string(),
         });
@@ -486,7 +484,7 @@ fn audience_matches(aud: Option<&serde_json::Value>, expected: &str) -> bool {
     match aud {
         Some(serde_json::Value::String(value)) => value == expected,
         Some(serde_json::Value::Array(values)) => {
-            values.iter().any(|value| value.as_str() == Some(expected))
+            values.len() == 1 && values[0].as_str() == Some(expected)
         }
         _ => false,
     }

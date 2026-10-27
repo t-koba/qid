@@ -247,11 +247,11 @@ delegate!(ScimRepository {
     upsert_scim_device(&self, device: &crate::traits::ScimDeviceRecord) -> QidResult<()>;
     get_scim_device(&self, id: &str) -> QidResult<Option<crate::traits::ScimDeviceRecord>>;
     list_scim_devices(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<crate::traits::ScimDeviceRecord>>;
-    delete_scim_device(&self, id: &str) -> QidResult<bool>;
+    delete_scim_device(&self, id: &str, realm: Option<&str>) -> QidResult<bool>;
     upsert_scim_event_subscription(&self, subscription: &crate::traits::ScimEventSubscriptionRecord) -> QidResult<()>;
     get_scim_event_subscription(&self, id: &str) -> QidResult<Option<crate::traits::ScimEventSubscriptionRecord>>;
     list_scim_event_subscriptions(&self, realm_id: &qid_core::tenant::RealmId) -> QidResult<Vec<crate::traits::ScimEventSubscriptionRecord>>;
-    delete_scim_event_subscription(&self, id: &str) -> QidResult<bool>;
+    delete_scim_event_subscription(&self, id: &str, realm: Option<&str>) -> QidResult<bool>;
 });
 
 delegate!(FedCmRepository {

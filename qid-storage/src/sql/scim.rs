@@ -358,12 +358,15 @@ impl ScimRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn delete_scim_device(&self, id: &str) -> QidResult<bool> {
-        let result = sqlx::query("DELETE FROM scim_devices WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
+    async fn delete_scim_device(&self, id: &str, realm: Option<&str>) -> QidResult<bool> {
+        let result = sqlx::query(
+            "DELETE FROM scim_devices WHERE id = ? AND realm_id = COALESCE(?, realm_id)",
+        )
+        .bind(id)
+        .bind(realm)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -416,12 +419,19 @@ impl ScimRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn delete_scim_event_subscription(&self, id: &str) -> QidResult<bool> {
-        let result = sqlx::query("DELETE FROM scim_event_subscriptions WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
+    async fn delete_scim_event_subscription(
+        &self,
+        id: &str,
+        realm: Option<&str>,
+    ) -> QidResult<bool> {
+        let result = sqlx::query(
+            "DELETE FROM scim_event_subscriptions WHERE id = ? AND realm_id = COALESCE(?, realm_id)",
+        )
+        .bind(id)
+        .bind(realm)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
         Ok(result.rows_affected() == 1)
     }
 }

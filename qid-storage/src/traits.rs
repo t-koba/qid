@@ -480,7 +480,7 @@ pub trait ScimRepository: Send + Sync + 'static {
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()>;
     async fn get_scim_device(&self, id: &str) -> QidResult<Option<ScimDeviceRecord>>;
     async fn list_scim_devices(&self, realm_id: &RealmId) -> QidResult<Vec<ScimDeviceRecord>>;
-    async fn delete_scim_device(&self, id: &str) -> QidResult<bool>;
+    async fn delete_scim_device(&self, id: &str, realm: Option<&str>) -> QidResult<bool>;
     /// Insert or update within the owning realm, with the same atomic ID ownership
     /// contract as `upsert_scim_device`.
     async fn upsert_scim_event_subscription(
@@ -495,7 +495,11 @@ pub trait ScimRepository: Send + Sync + 'static {
         &self,
         realm_id: &RealmId,
     ) -> QidResult<Vec<ScimEventSubscriptionRecord>>;
-    async fn delete_scim_event_subscription(&self, id: &str) -> QidResult<bool>;
+    async fn delete_scim_event_subscription(
+        &self,
+        id: &str,
+        realm: Option<&str>,
+    ) -> QidResult<bool>;
 }
 
 #[async_trait]

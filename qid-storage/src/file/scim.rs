@@ -175,9 +175,11 @@ impl ScimRepository for FileRepository {
         Ok(devices)
     }
 
-    async fn delete_scim_device(&self, id: &str) -> QidResult<bool> {
+    async fn delete_scim_device(&self, id: &str, realm: Option<&str>) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        let removed = store.scim_devices.remove(id).is_some();
+        let in_scope =
+            realm.is_none_or(|r| store.scim_devices.get(id).is_some_and(|d| d.realm_id == r));
+        let removed = in_scope && store.scim_devices.remove(id).is_some();
         drop(store);
         if removed {
             self.save().await?;
@@ -228,9 +230,15 @@ impl ScimRepository for FileRepository {
         Ok(subscriptions)
     }
 
-    async fn delete_scim_event_subscription(&self, id: &str) -> QidResult<bool> {
+    async fn delete_scim_event_subscription(
+        &self,
+        id: &str,
+        realm: Option<&str>,
+    ) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        let removed = store.scim_event_subscriptions.remove(id).is_some();
+        let existing = store.scim_event_subscriptions.get(id);
+        let in_scope = realm.is_none_or(|r| existing.is_some_and(|d| d.realm_id == r));
+        let removed = in_scope && store.scim_event_subscriptions.remove(id).is_some();
         drop(store);
         if removed {
             self.save().await?;

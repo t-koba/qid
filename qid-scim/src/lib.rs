@@ -237,18 +237,8 @@ async fn delete_device<R: Repository>(
     context: Option<Extension<ScimRequestContext>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(ctx) = context.as_ref() {
-        match state.repo.get_scim_device(&id).await {
-            Ok(Some(device)) if device.realm_id == ctx.realm_id => {}
-            Ok(Some(_)) | Ok(None) => {
-                return qid_http::error_response(qid_core::error::QidError::NotFound {
-                    resource: format!("scim device {id}"),
-                });
-            }
-            Err(error) => return qid_http::error_response(error),
-        }
-    }
-    match state.repo.delete_scim_device(&id).await {
+    let realm = context.as_ref().map(|ext| ext.0.realm_id.as_str());
+    match state.repo.delete_scim_device(&id, realm).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => qid_http::error_response(qid_core::error::QidError::NotFound {
             resource: format!("scim device {id}"),
@@ -389,18 +379,8 @@ async fn delete_event_subscription<R: Repository>(
     context: Option<Extension<ScimRequestContext>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(ctx) = context.as_ref() {
-        match state.repo.get_scim_event_subscription(&id).await {
-            Ok(Some(sub)) if sub.realm_id == ctx.realm_id => {}
-            Ok(Some(_)) | Ok(None) => {
-                return qid_http::error_response(qid_core::error::QidError::NotFound {
-                    resource: format!("event subscription {id}"),
-                });
-            }
-            Err(error) => return qid_http::error_response(error),
-        }
-    }
-    match state.repo.delete_scim_event_subscription(&id).await {
+    let realm = context.as_ref().map(|ext| ext.0.realm_id.as_str());
+    match state.repo.delete_scim_event_subscription(&id, realm).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => qid_http::error_response(qid_core::error::QidError::NotFound {
             resource: format!("event subscription {id}"),

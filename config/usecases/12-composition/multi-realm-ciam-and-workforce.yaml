@@ -62,7 +62,6 @@ realms:
               base_dn: "dc=example,dc=com"
             sync:
               user_search_filter: "(objectClass=inetOrgPerson)"
-              sync_interval_minutes: 30
     authentication:
       passkeys:
         enabled: true

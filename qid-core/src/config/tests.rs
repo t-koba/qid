@@ -2054,37 +2054,10 @@ fn the_decision_cache_lifetime_follows_the_class_of_the_decision() {
 }
 
 #[test]
-fn directory_sync_interval_keeps_its_existing_section_defaults() {
-    let provider: DirectoryProviderConfig =
-        serde_json::from_str(r#"{"id":"corp-ad","type":"ldap"}"#)
-            .expect("provider without a sync section parses");
-    assert_eq!(provider.sync.sync_interval_minutes, Some(60));
-
-    let partial: DirectorySyncConfig =
-        serde_json::from_str(r#"{"user_search_filter":"(objectClass=person)"}"#)
-            .expect("partial sync config parses");
-    assert_eq!(partial.sync_interval_minutes, None);
-
-    let opted_out: DirectorySyncConfig =
-        serde_json::from_str(r#"{"sync_interval_minutes":null}"#).expect("null cadence parses");
-    assert_eq!(opted_out.sync_interval_minutes, None);
-}
-
-#[test]
-fn an_enabled_csv_provider_rejects_a_zero_sync_interval() {
-    let mut provider = csv_provider("/var/lib/qid/hr/workforce.csv");
-    provider.sync.sync_interval_minutes = Some(0);
-    let mut config = minimal_config();
-    config.realms[0].protocols.directory.providers = vec![provider];
-
-    let err = config
-        .validate()
-        .expect_err("zero is not a useful requested cadence");
-    assert!(
-        err.message().contains("sync.sync_interval_minutes"),
-        "the error names the invalid cadence: {}",
-        err.message()
-    );
+fn directory_sync_rejects_the_removed_interval_setting() {
+    let error = serde_json::from_str::<DirectorySyncConfig>(r#"{"sync_interval_minutes":60}"#)
+        .expect_err("unsupported settings must not be silently ignored");
+    assert!(error.to_string().contains("unknown field"));
 }
 
 fn csv_provider(url: &str) -> DirectoryProviderConfig {

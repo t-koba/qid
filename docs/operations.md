@@ -321,17 +321,12 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml push-cleanup --limit 10
 
 ## Directory Synchronization
 
-`sync_interval_minutes` is a requested per-provider cadence for an operator-owned
-scheduler, not a QID timer. The supported scheduler runs in the deployment's
-operator-controlled environment, reads the same current QID configuration that
-`qid-worker` will use, and reconciles its schedule whenever that configuration
-changes. Schedule only enabled pull providers with a positive interval; if the
-field is `null`, do not schedule that provider. If the entire `sync` section is
-omitted, its existing default cadence is 60 minutes. The provider list/detail
-HTTP routes also expose this configuration, but require an already authorized
-administrator elevation; a scheduler does not need to call them or obtain a
-separate API credential. A hard-coded cron interval cannot honor per-provider
-changes. QID does not enqueue, track, or lock periodic jobs; HTTP `/sync` and
+`qid-worker directory-sync` performs a one-shot sync. For periodic sync, a
+deployment-owned scheduler selects its own interval and invokes the worker with
+the current deployed QID configuration for enabled pull providers. The provider
+list/detail HTTP routes require an already authorized administrator elevation;
+the scheduler does not need to call them or obtain a separate API credential.
+QID does not enqueue, track, or lock periodic jobs; HTTP `/sync` and
 `/sync/status` remain unsupported. The external scheduler must enforce
 single-flight per `(realm, provider_id)`, including across scheduler instances.
 

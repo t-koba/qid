@@ -933,9 +933,6 @@ impl Default for DirectoryConnectionConfig {
 pub struct DirectorySyncConfig {
     #[serde(default)]
     pub user_search_filter: Option<String>,
-    /// Requested cadence for an operator-owned scheduler; QID does not enforce it.
-    #[serde(default)]
-    pub sync_interval_minutes: Option<u64>,
     /// Unset keeps the LDAP/AD snapshot default enabled; CSV accepts only unset or false.
     #[serde(default)]
     pub deactivate_missing: Option<bool>,
@@ -945,7 +942,6 @@ impl Default for DirectorySyncConfig {
     fn default() -> Self {
         Self {
             user_search_filter: Some("(objectClass=user)".to_string()),
-            sync_interval_minutes: Some(60),
             deactivate_missing: None,
         }
     }

@@ -50,7 +50,6 @@ realms:
               tls_insecure_skip_verify: false
             sync:
               user_search_filter: "(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
-              sync_interval_minutes: 15
               deactivate_missing: true
             attribute_mapping:
               uid: sAMAccountName

@@ -98,7 +98,6 @@ realms:
               tls_insecure_skip_verify: false
             sync:
               user_search_filter: "(objectClass=user)"
-              sync_interval_minutes: 5
               deactivate_missing: true
     authentication:
       passkeys:

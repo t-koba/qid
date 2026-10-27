@@ -108,7 +108,6 @@ async fn get_provider<R: Repository>(
                 "syncable": qid_core::config::DIRECTORY_SYNC_PROVIDER_TYPES.contains(&p.provider_type.as_str()),
                 "url": p.connection.url,
                 "base_dn": p.connection.base_dn,
-                "sync_interval_minutes": p.sync.sync_interval_minutes,
                 "deactivate_missing": deactivate_missing,
                 "user_search_filter": p.sync.user_search_filter,
             }))

@@ -49,7 +49,6 @@ realms:
               tls_insecure_skip_verify: false
             sync:
               user_search_filter: "(objectClass=user)"
-              sync_interval_minutes: 10
               deactivate_missing: true
           - id: acquired-ldap
             type: ldap
@@ -62,7 +61,6 @@ realms:
               tls_insecure_skip_verify: false
             sync:
               user_search_filter: "(objectClass=person)"
-              sync_interval_minutes: 30
               deactivate_missing: false
     authentication:
       passkeys:

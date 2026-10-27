@@ -419,14 +419,6 @@ fn validate_directory_providers(config: &QidConfig) -> QidResult<()> {
             if provider.provider_type == "webhook" {
                 continue;
             }
-            if provider.sync.sync_interval_minutes == Some(0) {
-                return Err(QidError::Config {
-                    message: format!(
-                        "provider {} of realm {} sync.sync_interval_minutes must be positive",
-                        provider.id, realm.id
-                    ),
-                });
-            }
             if provider.provider_type == "csv" {
                 validate_csv_directory_provider(provider, &realm.id)?;
                 continue;

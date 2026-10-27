@@ -181,8 +181,8 @@ exclude = ["vendor/rustls"]
 # Per-registration PEP failure policy adds 60 measured product-source lines
 # (109192 -> 109252): only post-auth internal/storage fallback with audit,
 # noncacheable response, and strict configuration validation; tests are uncapped.
-# The directory-sync cadence contract adds 9 measured product-source lines
-# (109252 -> 109261) for the field policy and positive-interval validation.
+# The since-removed directory-sync cadence contract added 9 measured product-source
+# lines (109252 -> 109261) for the field policy and positive-interval validation.
 # Realm VC key isolation, HTTPS issuer binding, OID4VCI path-correct metadata,
 # and separate deployment signing add 266 measured source lines (109261 ->
 # 109527); the additions preserve issuer trust and deployment token keys.

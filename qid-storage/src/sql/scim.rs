@@ -277,14 +277,12 @@ impl ScimRepository for SqlRepository {
     }
 
     async fn update_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
-        sqlx::query("UPDATE scim_groups SET display_name = ?, members_json = ?, updated_at = strftime('%s', 'now') WHERE id = ?")
-            .bind(&group.display_name)
-            .bind(group.members_json.to_string())
-            .bind(&group.id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
-        Ok(())
+        self.mutate_scim_group(
+            &group.id,
+            Box::new(|_| Ok(ScimMutation::Replace(group.clone()))),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn mutate_scim_group(

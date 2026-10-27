@@ -186,6 +186,26 @@ async fn exercise_cas(repo: &AnyRepository) {
         members_json: serde_json::json!([]),
     };
     repo.create_scim_group(&group).await.unwrap();
+    let mut wrong_owner = group.clone();
+    wrong_owner.realm_id = "other".into();
+    wrong_owner.display_name = "intruder".into();
+    wrong_owner.members_json = serde_json::json!([{"value": "intruder"}]);
+    assert!(matches!(
+        repo.update_scim_group(&wrong_owner).await,
+        Err(QidError::BadRequest { .. })
+    ));
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_group(&group.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&group)).unwrap()
+    );
+    let mut group = group;
+    group.display_name = "Updated Team".into();
+    group.members_json = serde_json::json!([{"value": "member", "type": "User"}]);
+    repo.update_scim_group(&group).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(repo.get_scim_group(&group.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&group)).unwrap()
+    );
     if matches!(repo, AnyRepository::Sql(_)) {
         let mut occupied = group.clone();
         occupied.id = "occupied".into();
@@ -248,6 +268,8 @@ async fn exercise_cas(repo: &AnyRepository) {
         assert!(cas_group(repo, &changed, None).await.unwrap());
     }
     assert!(!cas_group(repo, &winner, Some(&winner)).await.unwrap());
+    assert!(repo.get_scim_group(&group.id).await.unwrap().is_none());
+    repo.update_scim_group(&winner).await.unwrap();
     assert!(repo.get_scim_group(&group.id).await.unwrap().is_none());
 }
 

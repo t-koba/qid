@@ -126,8 +126,12 @@ impl ScimRepository for FileRepository {
     }
 
     async fn update_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
-        self.map_write(|store| store.scim_groups.insert(group.id.clone(), group.clone()))
-            .await
+        self.mutate_scim_group(
+            &group.id,
+            Box::new(|_| Ok(ScimMutation::Replace(group.clone()))),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn mutate_scim_group(

@@ -1038,6 +1038,30 @@ where
             .expect("list duplicate user's WebAuthn credentials failed")
             .is_empty()
     );
+
+    repo.update_webauthn_credential_counter(&other_user.id, &credential.id, 7)
+        .await
+        .expect("wrong-owner counter update should be a no-op");
+    let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        stored[0].counter, 1,
+        "wrong owner changed incumbent counter"
+    );
+
+    repo.update_webauthn_credential_counter(&user.id, &credential.id, 8)
+        .await
+        .expect("owner counter update failed");
+    let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].counter, 8, "owner update did not persist");
+
+    repo.update_webauthn_credential_counter(&user.id, "unknown-credential", 9)
+        .await
+        .expect("unknown credential update should be a no-op");
+    let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].counter, 8, "unknown ID changed incumbent counter");
 }
 
 /// The owner-bound contract of a service account: a record ID names one

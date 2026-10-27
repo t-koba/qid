@@ -34,13 +34,19 @@ impl CredentialRepository for FileRepository {
         self.save().await
     }
 
-    async fn update_webauthn_credential_counter(&self, id: &str, counter: u64) -> QidResult<()> {
+    async fn update_webauthn_credential_counter(
+        &self,
+        user_id: &str,
+        id: &str,
+        counter: u64,
+    ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        for creds in store.webauthn_credentials.values_mut() {
-            if let Some(cred) = creds.iter_mut().find(|c| c.id == id) {
-                cred.counter = counter;
-                break;
-            }
+        if let Some(cred) = store
+            .webauthn_credentials
+            .get_mut(user_id)
+            .and_then(|creds| creds.iter_mut().find(|c| c.id == id))
+        {
+            cred.counter = counter;
         }
         drop(store);
         self.save().await

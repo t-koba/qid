@@ -41,9 +41,15 @@ impl CredentialRepository for SqlRepository {
         Ok(())
     }
 
-    async fn update_webauthn_credential_counter(&self, id: &str, counter: u64) -> QidResult<()> {
-        sqlx::query("UPDATE credentials_webauthn SET counter = ? WHERE id = ?")
+    async fn update_webauthn_credential_counter(
+        &self,
+        user_id: &str,
+        id: &str,
+        counter: u64,
+    ) -> QidResult<()> {
+        sqlx::query("UPDATE credentials_webauthn SET counter = ? WHERE user_id = ? AND id = ?")
             .bind(counter as i64)
+            .bind(user_id)
             .bind(id)
             .execute(&self.pool)
             .await

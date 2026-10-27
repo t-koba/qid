@@ -328,7 +328,7 @@ pub async fn webauthn_auth_finish<R: Repository>(
         }
         if let Err(e) = state
             .repo
-            .update_webauthn_credential_counter(&cred.id, new_counter)
+            .update_webauthn_credential_counter(&user.id, &cred.id, new_counter)
             .await
         {
             return qid_http::error_response(e);
@@ -485,7 +485,7 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
         }
         if let Err(e) = state
             .repo
-            .update_webauthn_credential_counter(&cred.id, new_counter)
+            .update_webauthn_credential_counter(&user.id, &cred.id, new_counter)
             .await
         {
             return qid_http::error_response(e);

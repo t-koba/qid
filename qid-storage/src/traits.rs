@@ -275,7 +275,9 @@ pub trait CredentialRepository: Send + Sync + 'static {
     async fn store_webauthn_credential(&self, cred: &WebAuthnCredential) -> QidResult<()>;
     async fn update_webauthn_credential_counter(&self, id: &str, counter: u64) -> QidResult<()>;
     async fn delete_webauthn_credential(&self, id: &str) -> QidResult<()>;
-    async fn list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>>;
+    async fn list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>> {
+        self.get_webauthn_credentials(user_id).await
+    }
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()>;
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>>;
     /// Atomically advance `last_used_step` to `candidate_step` when it is still

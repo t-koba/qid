@@ -101,17 +101,4 @@ impl CredentialRepository for SqlRepository {
             .map_err(storage_to_qid_error)?;
         Ok(())
     }
-
-    async fn list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>> {
-        let rows: Vec<WebAuthnCredentialRow> =
-            sqlx::query_as("SELECT * FROM credentials_webauthn WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?;
-        rows.into_iter()
-            .map(TryInto::try_into)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| QidError::Storage { message: e })
-    }
 }

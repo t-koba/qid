@@ -55,15 +55,6 @@ impl CredentialRepository for FileRepository {
         self.save().await
     }
 
-    async fn list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>> {
-        let store = self.store.read().await;
-        Ok(store
-            .webauthn_credentials
-            .get(user_id)
-            .cloned()
-            .unwrap_or_default())
-    }
-
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()> {
         self.map_write(|store| store.totp_credentials.insert(cred.id.clone(), cred.clone()))
             .await

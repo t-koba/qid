@@ -1017,6 +1017,21 @@ where
     assert_eq!(stored[0].credential_id, credential.credential_id);
     assert_eq!(stored[0].public_key, credential.public_key);
     assert_eq!(stored[0].device_name, credential.device_name);
+    let listed = repo
+        .list_webauthn_credentials(&user.id)
+        .await
+        .expect("list incumbent WebAuthn credentials failed");
+    assert_eq!(
+        serde_json::to_value(&listed).unwrap(),
+        serde_json::to_value(&stored).unwrap(),
+        "list and get must return identical owner-scoped credentials"
+    );
+    assert!(
+        repo.list_webauthn_credentials(&other_user.id)
+            .await
+            .expect("list duplicate user's WebAuthn credentials failed")
+            .is_empty()
+    );
     assert!(
         repo.get_webauthn_credentials(&other_user.id)
             .await

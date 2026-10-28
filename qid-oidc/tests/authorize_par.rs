@@ -2990,7 +2990,7 @@ async fn rp_logout_ignores_foreign_session_identity_sid_and_shared_cookie() {
         .unwrap();
     state.session_cache_put(same.id.clone(), own_cache.value, own_cache.ttl_seconds);
     let response = post_logout(
-        app,
+        app.clone(),
         state.paths.logout.clone(),
         &format!("{cookie_name}={}", same.id),
         "client_id=notify-test",
@@ -3035,10 +3035,79 @@ async fn rp_logout_ignores_foreign_session_identity_sid_and_shared_cookie() {
             .revoked
     );
     assert_eq!(state.session_cache_get(&same.id), None);
-    assert_eq!(state.session_cache_get(&foreign.id), Some(cache.value));
+    assert_eq!(
+        state.session_cache_get(&foreign.id),
+        Some(cache.value.clone())
+    );
     assert_eq!(
         serde_json::to_value(state.repo.get_session(&foreign.id).await.unwrap().unwrap()).unwrap(),
         serde_json::to_value(&foreign).unwrap()
     );
+
+    let sign_sid = |sid: &str| {
+        let now = util::now_seconds();
+        state
+            .signer
+            .sign(&JwtClaims {
+                iss: Some(state.realm("test").unwrap().issuer.clone()),
+                sub: None,
+                aud: Some(Audience::single("notify-test")),
+                exp: Some((now + 300) as usize),
+                nbf: None,
+                iat: Some(now as usize),
+                jti: Some(format!("logout-{sid}")),
+                extra: HashMap::from([
+                    ("sid".to_string(), serde_json::json!(sid)),
+                    (
+                        "events".to_string(),
+                        serde_json::json!({"http://schemas.openid.net/event/backchannel-logout": {}}),
+                    ),
+                ]),
+            })
+            .unwrap()
+    };
+    let foreign_token = sign_sid(&foreign.id);
+    let response = post_form(
+        app.clone(),
+        state.paths.backchannel_logout.clone(),
+        &format!("logout_token={}", urlencoding::encode(&foreign_token)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        serde_json::to_value(state.repo.get_session(&foreign.id).await.unwrap().unwrap()).unwrap(),
+        serde_json::to_value(&foreign).unwrap()
+    );
+    assert_eq!(state.session_cache_get(&foreign.id), Some(cache.value));
+
+    let mut same_backchannel = same.clone();
+    same_backchannel.id = "same-realm-backchannel-sid".into();
+    state.repo.create_session(&same_backchannel).await.unwrap();
+    let own_cache = qid_session::browser::session_cache_put(&same_backchannel, util::now_seconds())
+        .unwrap()
+        .unwrap();
+    state.session_cache_put(
+        same_backchannel.id.clone(),
+        own_cache.value,
+        own_cache.ttl_seconds,
+    );
+    let same_token = sign_sid(&same_backchannel.id);
+    let response = post_form(
+        app,
+        state.paths.backchannel_logout.clone(),
+        &format!("logout_token={}", urlencoding::encode(&same_token)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        state
+            .repo
+            .get_session(&same_backchannel.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked
+    );
+    assert_eq!(state.session_cache_get(&same_backchannel.id), None);
     server.abort();
 }

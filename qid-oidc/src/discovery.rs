@@ -1222,10 +1222,25 @@ async fn backchannel_logout<R: Repository>(
         return qid_http::error_response(bad_request("logout_token must contain sid or sub"));
     }
 
-    // Revoke matching sessions across all realms
     if let Some(sid_val) = sid {
-        match state.repo.revoke_session(sid_val, None).await {
-            Ok(_) => state.session_cache_delete(sid_val),
+        match state
+            .repo
+            .revoke_session(sid_val, Some(logout_realm.id.as_str()))
+            .await
+        {
+            Ok(true) => state.session_cache_delete(sid_val),
+            Ok(false) => {
+                if state
+                    .repo
+                    .get_session(sid_val)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|session| session.realm_id == logout_realm.id)
+                {
+                    state.session_cache_delete(sid_val);
+                }
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {sid_val}");
             }

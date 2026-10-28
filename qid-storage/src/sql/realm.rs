@@ -23,8 +23,7 @@ impl RealmRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "realm ID or issuer already exists".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_realm_issuer(&self, id: &RealmId) -> QidResult<Option<String>> {

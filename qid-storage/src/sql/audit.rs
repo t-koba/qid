@@ -42,8 +42,7 @@ impl AuditRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("Audit event ID {} already exists", event.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_audit_events(

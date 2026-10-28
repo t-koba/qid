@@ -62,8 +62,7 @@ impl TokenRepository for SqlRepository {
                 .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "authorization code already consumed".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()> {
@@ -300,8 +299,7 @@ impl TokenRepository for SqlRepository {
                 .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "PAR request already consumed".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn store_device_authorization_grant(
@@ -408,8 +406,7 @@ impl TokenRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "device authorization grant already consumed".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn store_backchannel_authentication_grant(
@@ -511,7 +508,6 @@ impl TokenRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "backchannel authentication grant already consumed".to_string()
-        })?;
-        Ok(())
+        })
     }
 }

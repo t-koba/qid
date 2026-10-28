@@ -62,8 +62,18 @@ impl CredentialRepository for FileRepository {
     }
 
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()> {
-        self.map_write(|store| store.totp_credentials.insert(cred.id.clone(), cred.clone()))
-            .await
+        let mut store = self.store.write().await;
+        crate::ownership::ensure_same_binding(
+            store
+                .totp_credentials
+                .get(&cred.id)
+                .map(|stored| stored.user_id.as_str()),
+            cred.user_id.as_str(),
+            || format!("TOTP credential ID {} belongs to another user", cred.id),
+        )?;
+        store.totp_credentials.insert(cred.id.clone(), cred.clone());
+        drop(store);
+        self.save().await
     }
 
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>> {

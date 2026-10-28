@@ -66,8 +66,7 @@ impl AdminRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("Admin elevation ID {} already exists", elevation.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {
@@ -97,8 +96,7 @@ impl AdminRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("Admin approval ID {} already exists", approval.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool> {

@@ -93,8 +93,7 @@ impl CiamRepository for SqlRepository {
                 "CIAM verification challenge ID {} already exists",
                 challenge.id
             )
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_ciam_verification_challenge(
@@ -491,8 +490,7 @@ impl CiamRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("Password reset token ID {} already exists", token.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn try_issue_password_reset_token(

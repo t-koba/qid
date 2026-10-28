@@ -24,8 +24,7 @@ impl DeviceRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("device record ID {} already exists", device.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_device(&self, device_id: &str) -> QidResult<Option<Device>> {

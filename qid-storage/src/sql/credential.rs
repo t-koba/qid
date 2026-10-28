@@ -37,8 +37,7 @@ impl CredentialRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("WebAuthn credential record ID {} already exists", cred.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn update_webauthn_credential_counter(
@@ -58,8 +57,8 @@ impl CredentialRepository for SqlRepository {
     }
 
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()> {
-        sqlx::query(
-            "INSERT INTO credentials_totp (id, user_id, secret, algorithm, digits, period, enabled, last_used_step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, algorithm = excluded.algorithm, digits = excluded.digits, period = excluded.period, enabled = excluded.enabled, last_used_step = excluded.last_used_step, created_at = excluded.created_at",
+        let result = sqlx::query(
+            "INSERT INTO credentials_totp (id, user_id, secret, algorithm, digits, period, enabled, last_used_step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, algorithm = excluded.algorithm, digits = excluded.digits, period = excluded.period, enabled = excluded.enabled, last_used_step = excluded.last_used_step, created_at = excluded.created_at WHERE credentials_totp.user_id = excluded.user_id",
         )
         .bind(&cred.id)
         .bind(&cred.user_id)
@@ -73,7 +72,9 @@ impl CredentialRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
+            format!("TOTP credential ID {} belongs to another user", cred.id)
+        })
     }
 
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>> {

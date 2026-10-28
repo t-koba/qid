@@ -231,7 +231,7 @@ Model types: `WebAuthnCredential`, `TotpCredential`. The owner is the user
 | `store_webauthn_credential` - `WebAuthnCredential` | user (`user_id`) | record `id` | credential data, counter, device name | File: a credential record ID already in any user's list is refused with `Conflict` under the exclusive write lock (`qid-storage/src/file/credential.rs:20`, `qid-storage/src/file/credential.rs:25`). SQL: `ON CONFLICT(id) DO NOTHING` and `ensure_upsert_applied` turns a zero-row result into `Conflict` (`qid-storage/src/sql/credential.rs:25`, `qid-storage/src/sql/credential.rs:38`). Both refuse a duplicate record ID, including one presented for another user. | file `qid-storage/src/file/credential.rs:20`, `qid-storage/src/file/credential.rs:25`; sql `qid-storage/src/sql/credential.rs:25`, `qid-storage/src/sql/credential.rs:38` |
 | `update_webauthn_credential_counter` - `WebAuthnCredential` | user (`user_id`) | record `id` | counter | File: only the specified user's credential list is inspected and updated under the write lock. SQL: `UPDATE ... WHERE user_id = ? AND id = ?`. Both silently leave the counter unchanged for a wrong owner or unknown ID. | file `qid-storage/src/file/credential.rs:43`, `qid-storage/src/file/credential.rs:46`; sql `qid-storage/src/sql/credential.rs:50` |
 | `delete_webauthn_credential` (delete) | user (`user_id`) | record `id` | none, removal | File: only the specified user's list is modified under the write lock. SQL: `DELETE FROM credentials_webauthn WHERE user_id = ? AND id = ?`. Both silently leave credentials unchanged for a wrong owner or unknown ID. | file `qid-storage/src/file/credential.rs:55`; sql `qid-storage/src/sql/credential.rs:102` |
-| `store_totp_credential` - `TotpCredential` | user (`user_id`) | record `id` | secret, algorithm, digits, period, `enabled`, `last_used_step` | File: overwrites the whole map entry, including `user_id`, without error (`qid-storage/src/file/credential.rs:64-67`). SQL: `ON CONFLICT(id) DO UPDATE` replaces secret and mutable fields but not `user_id` (`qid-storage/src/sql/credential.rs:60-76`). Same-owner IDs replace; on a cross-user ID collision File reassigns the owner while SQL preserves the incumbent owner but overwrites its secret. **Backends disagree.** | file `qid-storage/src/file/credential.rs:64-67`; sql `qid-storage/src/sql/credential.rs:60-76` |
+| `store_totp_credential` - `TotpCredential` | user (`user_id`) | record `id` | secret, algorithm, digits, period, `enabled`, `last_used_step` | File: checks the existing record owner under the exclusive write lock before replacing the whole record; SQL: the static `ON CONFLICT(id) DO UPDATE` includes `credentials_totp.user_id = excluded.user_id` and maps a zero-row result to `Conflict`. Both refuse a cross-user ID collision without changing the incumbent; same-owner IDs replace. | file `qid-storage/src/file/credential.rs:64-76`; sql `qid-storage/src/sql/credential.rs:59-78` |
 | `consume_totp_step` - `TotpCredential` | user (`user_id`) + record `id`, supplied together as the credential identity | record `id` | `last_used_step` (monotonic) | File: under the write lock, a missing ID, owner mismatch or non-newer step returns `false` without mutation (`qid-storage/src/file/credential.rs:80`, `qid-storage/src/file/credential.rs:83`). SQL: one static atomic update predicates on both `user_id` and `id` plus the monotonic-step condition; the affected-row count decides the answer (`qid-storage/src/sql/credential.rs:91`, `qid-storage/src/sql/credential.rs:99`). Both refuse wrong-owner, unknown and replayed claims. | file `qid-storage/src/file/credential.rs:80`, `qid-storage/src/file/credential.rs:83`; sql `qid-storage/src/sql/credential.rs:91`, `qid-storage/src/sql/credential.rs:99` |
 
 Call-site review at source commit `24414a5bce345a2fec01acc84595231431390695`:
@@ -242,12 +242,13 @@ credential's user+ID, then stores the enabled snapshot
 (`qid-session/src/totp_api.rs:95-150,153-227`). Authentication also checks the
 user's path realm, reads the user-owned credential and claims its step through
 the same owner-bound operation (`qid-session/src/totp_api.rs:235-315`). These
-routes do not accept a TOTP credential ID from the caller; the storage
-cross-owner collision difference is a contract gap, not a demonstrated
-production exploit. A candidate fix is to reject a mismatched `user_id` on
-same-ID replacement in both backends, preserving same-owner replacement and
-adding parity tests. `qid-storage` has no source headroom, so measure in-cap
-simplification first. WebAuthn registration binds the session to the same user
+routes do not accept a TOTP credential ID from the caller; the historical
+cross-owner collision behavior was a storage-contract gap, not a demonstrated
+production exploit. Same-ID replacement now rejects a mismatched `user_id`
+atomically in both backends while preserving same-owner replacement; the shared
+cross-backend contract test checks refusal and verifies every incumbent field
+remains unchanged (`qid-storage/tests/support/mod.rs`). WebAuthn registration
+binds the session to the same user
 and realm before storing; authentication updates counters with both user ID and
 credential ID. No production caller of `delete_webauthn_credential` was found
 (`qid-session/src/api/webauthn.rs:121-170,296-335,457-492`).

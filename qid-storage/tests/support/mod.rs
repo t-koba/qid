@@ -3521,6 +3521,18 @@ where
     })
     .await
     .expect("create TOTP owner user failed");
+    repo.create_user(&User {
+        id: "user-totp-other".to_string(),
+        realm_id: "realm-totp-owner".to_string(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .expect("create second TOTP user failed");
     let credential = TotpCredential {
         id: "totp-owner-credential".to_string(),
         user_id: "user-totp-owner".to_string(),
@@ -3535,6 +3547,43 @@ where
     repo.store_totp_credential(&credential)
         .await
         .expect("store TOTP owner credential failed");
+    let replacement = TotpCredential {
+        secret: "MFRGGZDFMZTWQ2LK".to_string(),
+        created_at: 2,
+        ..credential.clone()
+    };
+    repo.store_totp_credential(&replacement)
+        .await
+        .expect("same-owner TOTP replacement failed");
+    let foreign_replacement = TotpCredential {
+        user_id: "user-totp-other".to_string(),
+        secret: "GEZDGNBVGY3TQOJQ".to_string(),
+        algorithm: "SHA256".to_string(),
+        digits: 8,
+        period: 60,
+        enabled: false,
+        last_used_step: Some(99),
+        created_at: 3,
+        ..replacement.clone()
+    };
+    assert!(matches!(
+        repo.store_totp_credential(&foreign_replacement).await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
+    let stored = repo
+        .get_totp_credential(&credential.user_id)
+        .await
+        .expect("get TOTP owner credential failed")
+        .expect("TOTP owner credential missing after collision");
+    assert_eq!(stored.id, replacement.id);
+    assert_eq!(stored.user_id, replacement.user_id);
+    assert_eq!(stored.secret, replacement.secret);
+    assert_eq!(stored.algorithm, replacement.algorithm);
+    assert_eq!(stored.digits, replacement.digits);
+    assert_eq!(stored.period, replacement.period);
+    assert_eq!(stored.enabled, replacement.enabled);
+    assert_eq!(stored.last_used_step, replacement.last_used_step);
+    assert_eq!(stored.created_at, replacement.created_at);
 
     let wrong_owner = TotpCredential {
         user_id: "user-totp-other".to_string(),

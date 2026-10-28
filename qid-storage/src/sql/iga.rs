@@ -106,8 +106,7 @@ impl IgaRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("IGA access request ID {} already exists", request.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_iga_access_request(
@@ -174,8 +173,7 @@ impl IgaRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("IGA approval ID {} already exists", approval.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_iga_approvals(
@@ -211,8 +209,7 @@ impl IgaRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        crate::ownership::ensure_upsert_applied(result.rows_affected(), || "IGA grant ID".into())?;
-        Ok(())
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), || "IGA grant ID".into())
     }
 
     async fn ensure_iga_access_grants(
@@ -382,8 +379,7 @@ impl IgaRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "IGA JIT privilege grant ID already exists".into()
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_iga_jit_privilege_grants(
@@ -447,8 +443,7 @@ impl IgaRepository for SqlRepository {
                 "IGA access review campaign ID {} already exists",
                 campaign.id
             )
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_iga_access_review_campaign(
@@ -517,8 +512,7 @@ impl IgaRepository for SqlRepository {
                 "IGA access review decision ID {} already exists",
                 decision.id
             )
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_iga_access_review_decisions(
@@ -561,8 +555,7 @@ impl IgaRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("IGA certification ID {} already exists", certification.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_iga_certifications(
@@ -609,8 +602,7 @@ impl IgaRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("IGA finding ID {} already exists", finding.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_iga_findings(

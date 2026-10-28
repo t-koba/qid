@@ -286,8 +286,7 @@ impl SaasRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "marketplace connector ID already exists".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_marketplace_connectors(
@@ -344,8 +343,7 @@ impl SaasRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "usage billing event ID already exists".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_usage_billing_events(
@@ -382,8 +380,7 @@ impl SaasRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "compliance evidence pack ID already exists".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_compliance_evidence_packs(

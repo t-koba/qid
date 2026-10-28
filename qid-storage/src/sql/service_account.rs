@@ -18,8 +18,7 @@ impl ServiceAccountRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("service account record ID {} already exists", sa.id)
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_service_account_by_client_id(

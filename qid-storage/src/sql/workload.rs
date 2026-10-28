@@ -32,8 +32,7 @@ impl WorkloadRepository for SqlRepository {
         })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "workload identity ID belongs to another identity".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn get_workload_identity_by_spiffe(
@@ -133,8 +132,7 @@ impl WorkloadRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "workload certificate ID belongs to another identity".to_string()
-        })?;
-        Ok(())
+        })
     }
 
     async fn list_workload_certificates(

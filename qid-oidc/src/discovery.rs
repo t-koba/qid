@@ -1199,13 +1199,8 @@ async fn backchannel_logout<R: Repository>(
     let events_valid = claims
         .extra
         .get("events")
-        .and_then(|v| v.as_object())
-        .map(|events| {
-            events
-                .keys()
-                .any(|k| k == "http://schemas.openid.net/event/backchannel-logout")
-        })
-        .unwrap_or(false);
+        .and_then(|events| events.get("http://schemas.openid.net/event/backchannel-logout"))
+        .is_some();
     if !events_valid {
         return qid_http::oauth_error_response_with_description(
             axum::http::StatusCode::BAD_REQUEST,
@@ -1252,13 +1247,15 @@ async fn backchannel_logout<R: Repository>(
             .list_sessions(&logout_realm.id, Some(sub_val))
             .await
             .unwrap_or_default();
-        for session in &sessions {
-            if !session.revoked {
-                if let Err(e) = state.repo.revoke_session(&session.id, None).await {
-                    tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {}", session.id);
-                } else {
-                    state.session_cache_delete(&session.id);
-                }
+        let repo = &*state.repo;
+        #[cfg(test)]
+        let repo = logout_tests::ObservedSessions(repo);
+        let realm_scope = Some(logout_realm.id.as_str());
+        for session in sessions.iter().filter(|session| !session.revoked) {
+            if let Err(e) = repo.revoke_session(&session.id, realm_scope).await {
+                tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {}", session.id);
+            } else {
+                state.session_cache_delete(&session.id);
             }
         }
     }
@@ -1530,3 +1527,6 @@ fn check_session_iframe_response<R: Repository>(
     );
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
+
+#[cfg(test)]
+mod logout_tests;

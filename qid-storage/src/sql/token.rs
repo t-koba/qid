@@ -1,3 +1,4 @@
+use crate::domain::validate_token_family_rotation;
 use async_trait::async_trait;
 
 use super::*;
@@ -110,22 +111,19 @@ impl TokenRepository for SqlRepository {
     async fn update_token_family_refresh_hash(
         &self,
         id: &str,
+        realm_id: &str,
         expected_refresh_hash: &str,
         refresh_hash: &str,
         refresh_expires_at: u64,
     ) -> QidResult<()> {
-        if expected_refresh_hash == refresh_hash {
-            return Err(QidError::Conflict {
-                message: format!("token family {id} refresh hash reuse detected"),
-            });
-        }
         let result = sqlx::query(
-            "UPDATE token_families SET current_refresh_hash = $1, refresh_expires_at = $2 WHERE id = $3 AND current_refresh_hash = $4 AND revoked = 0",
+            "UPDATE token_families SET current_refresh_hash = $1, refresh_expires_at = $2 WHERE id = $3 AND realm_id = $5 AND current_refresh_hash = $4 AND revoked = 0 AND $1 <> $4",
         )
         .bind(refresh_hash)
         .bind(refresh_expires_at as i64)
         .bind(id)
         .bind(expected_refresh_hash)
+        .bind(realm_id)
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
@@ -135,14 +133,11 @@ impl TokenRepository for SqlRepository {
         let family = self
             .get_token_family(id)
             .await?
+            .filter(|family| family.realm_id == realm_id)
             .ok_or_else(|| QidError::NotFound {
                 resource: format!("token family {id}"),
             })?;
-        crate::domain::validate_token_family_rotation(
-            &family,
-            expected_refresh_hash,
-            refresh_hash,
-        )?;
+        validate_token_family_rotation(&family, expected_refresh_hash, refresh_hash)?;
         // Predicate missed but validation passed (unreachable under the
         // conditional update); fail closed.
         Err(QidError::Conflict {

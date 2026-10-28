@@ -198,9 +198,11 @@ pub trait TokenRepository: Send + Sync + 'static {
     async fn mark_authorization_code_used(&self, code_hash: &str) -> QidResult<()>;
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()>;
     async fn get_token_family(&self, id: &str) -> QidResult<Option<TokenFamily>>;
+    /// Rotate only an owned family; missing/foreign IDs are NotFound, never reuse conflicts.
     async fn update_token_family_refresh_hash(
         &self,
         id: &str,
+        realm_id: &str,
         expected_refresh_hash: &str,
         refresh_hash: &str,
         refresh_expires_at: u64,

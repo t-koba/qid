@@ -184,7 +184,7 @@ async fn file_token_family_reuse_detected() {
     assert_eq!(fetched.refresh_expires_at, family.refresh_expires_at);
     // Same hash presented twice must be detected
     let result = repo
-        .update_token_family_refresh_hash("tf-1", "hash-v1", "hash-v1", 7200)
+        .update_token_family_refresh_hash("tf-1", "test", "hash-v1", "hash-v1", 7200)
         .await;
     assert!(
         result.is_err(),
@@ -406,8 +406,8 @@ async fn file_refresh_rotation_single_winner() {
     let family = test_family("tf-race", "hash-v0", now, None);
     repo.create_token_family(&family).await.unwrap();
     // Both requests read "hash-v0" before either update (barrier after read).
-    let r1 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v1", 7000);
-    let r2 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v2", 7000);
+    let r1 = repo.update_token_family_refresh_hash("tf-race", "test", "hash-v0", "hash-v1", 7000);
+    let r2 = repo.update_token_family_refresh_hash("tf-race", "test", "hash-v0", "hash-v2", 7000);
     let (r1, r2) = tokio::join!(r1, r2);
     assert!(
         r1.is_ok() ^ r2.is_ok(),
@@ -431,7 +431,7 @@ async fn file_refresh_rotation_single_winner() {
     );
     // Stale expected hash must not rotate again.
     let stale = repo
-        .update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v3", 7000)
+        .update_token_family_refresh_hash("tf-race", "test", "hash-v0", "hash-v3", 7000)
         .await;
     assert!(stale.is_err(), "stale expected hash must be rejected");
 }
@@ -446,7 +446,7 @@ async fn file_refresh_rotation_revoked_stays_revoked() {
         .await
         .unwrap();
     let result = repo
-        .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1", 7000)
+        .update_token_family_refresh_hash("tf-revoked", "test", "hash-v0", "hash-v1", 7000)
         .await;
     assert!(
         result.is_err(),

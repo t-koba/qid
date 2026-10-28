@@ -507,9 +507,17 @@ pub async fn refresh_token_grant<R: Repository>(
     // Atomically consume the presented refresh hash before issuing anything:
     // only one overlapping redemption can win; the loser is handled as reuse
     // below and leaves no usable access token behind.
-    if let Err(rotate_err) = state
-        .repo
-        .update_token_family_refresh_hash(&family.id, &expected_hash, &new_hash, refresh_deadline)
+    let repo = &*state.repo;
+    #[cfg(test)]
+    let repo = tests::ObservedRotation(repo);
+    if let Err(rotate_err) = repo
+        .update_token_family_refresh_hash(
+            &family.id,
+            &authenticated_client.realm_id,
+            &expected_hash,
+            &new_hash,
+            refresh_deadline,
+        )
         .await
     {
         match rotate_err {
@@ -615,6 +623,7 @@ fn log_token_issued(realm_id: &str, subject_id: &str) {
 
 #[cfg(test)]
 mod tests {
+    include!("token_grant_rotation_tests.rs");
     use std::collections::HashMap;
     use std::sync::Arc;
 

@@ -235,7 +235,8 @@ async fn failed_rotation_cannot_leak_into_another_save() {
         let first_save = repo.revoke_token_family("saved-first", "test");
         tokio::pin!(first_save);
         assert_pending(first_save.as_mut()).await;
-        let rotation = repo.update_token_family_refresh_hash("rotating", "old", "tentative", 300);
+        let rotation =
+            repo.update_token_family_refresh_hash("rotating", "test", "old", "tentative", 300);
         tokio::pin!(rotation);
         assert_pending(rotation.as_mut()).await;
         drop(guard);
@@ -346,7 +347,8 @@ async fn same_id_replacement_waits_for_rotation_rollback() {
     replacement.user_id = "replacement-user".to_string();
     {
         let (reached, resume) = fail_next_flush(&repo);
-        let rotation = repo.update_token_family_refresh_hash("same", "old", "tentative", 300);
+        let rotation =
+            repo.update_token_family_refresh_hash("same", "test", "old", "tentative", 300);
         tokio::pin!(rotation);
         assert_pending(rotation.as_mut()).await;
         reached.await.unwrap();
@@ -362,7 +364,7 @@ async fn same_id_replacement_waits_for_rotation_rollback() {
     assert_family(&repo, "same", "replacement", Some(900)).await;
     // Rotation must validate against the replacement, not stale pre-lock state.
     assert!(
-        repo.update_token_family_refresh_hash("same", "old", "stale", 400)
+        repo.update_token_family_refresh_hash("same", "test", "old", "stale", 400)
             .await
             .is_err()
     );
@@ -396,9 +398,15 @@ async fn interval_rotation_marks_dirty_and_survives_flush_failure() {
         complete(repo.create_token_family(&family("interval", "replacement", Some(200))))
             .await
             .unwrap();
-        complete(repo.update_token_family_refresh_hash("interval", "replacement", "new", 300))
-            .await
-            .unwrap();
+        complete(repo.update_token_family_refresh_hash(
+            "interval",
+            "test",
+            "replacement",
+            "new",
+            300,
+        ))
+        .await
+        .unwrap();
     }
     assert!(repo.dirty.load(Ordering::Acquire));
     assert_family(&repo, "interval", "new", Some(300)).await;

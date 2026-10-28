@@ -2486,7 +2486,7 @@ async fn test_token_family_crud() {
         fetched.sender_constraint,
         Some(serde_json::json!({"jkt":"refresh-thumbprint"}))
     );
-    repo.update_token_family_refresh_hash("tf-1", "hash1", "hash2", 4600)
+    repo.update_token_family_refresh_hash("tf-1", "realm-tf", "hash1", "hash2", 4600)
         .await
         .unwrap();
     let updated = repo.get_token_family("tf-1").await.unwrap().unwrap();
@@ -4031,8 +4031,10 @@ async fn sql_refresh_rotation_single_winner() {
     let family = test_family("tf-race", "user-race", "realm-race", "hash-v0", now, None);
     repo.create_token_family(&family).await.unwrap();
     // Both requests read "hash-v0" before either update (barrier after read).
-    let r1 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v1", 7000);
-    let r2 = repo.update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v2", 7000);
+    let r1 =
+        repo.update_token_family_refresh_hash("tf-race", "realm-race", "hash-v0", "hash-v1", 7000);
+    let r2 =
+        repo.update_token_family_refresh_hash("tf-race", "realm-race", "hash-v0", "hash-v2", 7000);
     let (r1, r2) = tokio::join!(r1, r2);
     assert!(
         r1.is_ok() ^ r2.is_ok(),
@@ -4040,7 +4042,7 @@ async fn sql_refresh_rotation_single_winner() {
     );
     // Stale expected hash must not rotate again.
     let stale = repo
-        .update_token_family_refresh_hash("tf-race", "hash-v0", "hash-v3", 7000)
+        .update_token_family_refresh_hash("tf-race", "realm-race", "hash-v0", "hash-v3", 7000)
         .await;
     assert!(stale.is_err(), "stale expected hash must be rejected");
     let stored = repo.get_token_family("tf-race").await.unwrap().unwrap();
@@ -4085,7 +4087,7 @@ async fn sql_refresh_rotation_revoked_stays_revoked() {
         .await
         .unwrap();
     let result = repo
-        .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1", 7000)
+        .update_token_family_refresh_hash("tf-revoked", "realm-rev", "hash-v0", "hash-v1", 7000)
         .await;
     assert!(
         result.is_err(),

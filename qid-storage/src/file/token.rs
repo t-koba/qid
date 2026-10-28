@@ -65,6 +65,7 @@ impl TokenRepository for FileRepository {
     async fn update_token_family_refresh_hash(
         &self,
         id: &str,
+        realm_id: &str,
         expected_refresh_hash: &str,
         refresh_hash: &str,
         refresh_expires_at: u64,
@@ -80,6 +81,7 @@ impl TokenRepository for FileRepository {
         let family = store
             .token_families
             .get_mut(id)
+            .filter(|family| family.realm_id == realm_id)
             .ok_or_else(|| QidError::NotFound {
                 resource: format!("token family {id}"),
             })?;

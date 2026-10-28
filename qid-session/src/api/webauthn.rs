@@ -262,6 +262,54 @@ fn webauthn_session_amr() -> Vec<String> {
     vec!["webauthn".to_string()]
 }
 
+async fn complete_webauthn_authentication<R: Repository>(
+    state: &Arc<SharedState<R>>,
+    realm: &str,
+    user_id: &str,
+    session_config: &qid_core::config::BrowserSessionConfig,
+    headers: &HeaderMap,
+    creds: &[qid_core::models::WebAuthnCredential],
+    auth_result: &crate::webauthn::WebAuthnAuthOutcome,
+) -> qid_core::error::QidResult<(HeaderMap, qid_core::models::Session)> {
+    // Verify signCount monotonicity (credential cloning detection)
+    if let Some(cred) = creds
+        .iter()
+        .find(|c| c.credential_id.as_slice() == auth_result.credential_id.as_slice())
+    {
+        // WebAuthn L3 §6.1.1: authenticators that do not implement a
+        // signature counter always return 0.  Allow 0→0 transitions.
+        if (auth_result.counter != 0 || cred.counter != 0) && auth_result.counter <= cred.counter {
+            return Err(QidError::Crypto {
+                message: "credential cloning detected: signCount did not increase".to_string(),
+            });
+        }
+        state
+            .repo
+            .update_webauthn_credential_counter(user_id, &cred.id, auth_result.counter)
+            .await?;
+    }
+
+    let session = SessionManager::from_browser_session_config(state.repo.clone(), session_config)
+        .create_with_regeneration(
+            realm,
+            user_id,
+            "phr", // ACR = phishing-resistant
+            &webauthn_session_amr(),
+            extract_cookie(headers, &session_config.cookie_name).as_deref(),
+        )
+        .await?;
+
+    let mut headers = HeaderMap::new();
+    super::set_session_cookie(
+        &mut headers,
+        session_config,
+        &session.id,
+        "failed to build session cookie header",
+    )?;
+
+    Ok((headers, session))
+}
+
 pub async fn webauthn_auth_finish<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Extension(webauthn_state): Extension<Arc<WebAuthnState>>,
@@ -312,56 +360,20 @@ pub async fn webauthn_auth_finish<R: Repository>(
         Err(e) => return qid_http::error_response(e),
     };
 
-    // Verify signCount monotonicity (credential cloning detection)
-    let used_cred_id = auth_result.credential_id.as_slice();
-    if let Some(cred) = creds
-        .iter()
-        .find(|c| c.credential_id.as_slice() == used_cred_id)
+    let (headers, session) = match complete_webauthn_authentication(
+        &state,
+        &realm,
+        &user.id,
+        &realm_config.browser_session,
+        &headers,
+        &creds,
+        &auth_result,
+    )
+    .await
     {
-        let new_counter = auth_result.counter;
-        // WebAuthn L3 §6.1.1: authenticators that do not implement a
-        // signature counter always return 0.  Allow 0→0 transitions.
-        if (new_counter != 0 || cred.counter != 0) && new_counter <= cred.counter {
-            return qid_http::error_response(QidError::Crypto {
-                message: "credential cloning detected: signCount did not increase".to_string(),
-            });
-        }
-        if let Err(e) = state
-            .repo
-            .update_webauthn_credential_counter(&user.id, &cred.id, new_counter)
-            .await
-        {
-            return qid_http::error_response(e);
-        }
-    }
-
-    let session_config = &realm_config.browser_session;
-    let old_session_id = super::extract_cookie(&headers, &session_config.cookie_name);
-    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
-
-    let session = match manager
-        .create_with_regeneration(
-            &realm,
-            &user.id,
-            "phr", // ACR = phishing-resistant
-            &webauthn_session_amr(),
-            old_session_id.as_deref(),
-        )
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => return qid_http::error_response(e),
+        Ok(result) => result,
+        Err(error) => return qid_http::error_response(error),
     };
-
-    let mut headers = HeaderMap::new();
-    if let Err(error) = super::set_session_cookie(
-        &mut headers,
-        session_config,
-        &session.id,
-        "failed to build session cookie header",
-    ) {
-        return qid_http::error_response(error);
-    }
 
     let body = Json(serde_json::json!({
         "session": session.id,
@@ -469,56 +481,20 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
             Err(e) => return qid_http::error_response(e),
         };
 
-    // Verify signCount monotonicity (credential cloning detection)
-    let used_cred_id = auth_result.credential_id.as_slice();
-    if let Some(cred) = creds
-        .iter()
-        .find(|c| c.credential_id.as_slice() == used_cred_id)
+    let (resp_headers, session) = match complete_webauthn_authentication(
+        &state,
+        &realm,
+        &user.id,
+        &realm_config.browser_session,
+        &headers,
+        &creds,
+        &auth_result,
+    )
+    .await
     {
-        let new_counter = auth_result.counter;
-        // WebAuthn L3 §6.1.1: authenticators that do not implement a
-        // signature counter always return 0.  Allow 0→0 transitions.
-        if (new_counter != 0 || cred.counter != 0) && new_counter <= cred.counter {
-            return qid_http::error_response(QidError::Crypto {
-                message: "credential cloning detected: signCount did not increase".to_string(),
-            });
-        }
-        if let Err(e) = state
-            .repo
-            .update_webauthn_credential_counter(&user.id, &cred.id, new_counter)
-            .await
-        {
-            return qid_http::error_response(e);
-        }
-    }
-
-    let session_config = &realm_config.browser_session;
-    let old_session_id = super::extract_cookie(&headers, &session_config.cookie_name);
-    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
-
-    let session = match manager
-        .create_with_regeneration(
-            &realm,
-            &user.id,
-            "phr",
-            &webauthn_session_amr(),
-            old_session_id.as_deref(),
-        )
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => return qid_http::error_response(e),
+        Ok(result) => result,
+        Err(error) => return qid_http::error_response(error),
     };
-
-    let mut resp_headers = HeaderMap::new();
-    if let Err(error) = super::set_session_cookie(
-        &mut resp_headers,
-        session_config,
-        &session.id,
-        "failed to build session cookie header",
-    ) {
-        return qid_http::error_response(error);
-    }
 
     let body = Json(WebAuthnDiscoverableFinishResponse {
         session: session.id,

@@ -317,7 +317,7 @@ pub trait ServiceAccountRepository: Send + Sync + 'static {
         client_id: &str,
     ) -> QidResult<Option<ServiceAccount>>;
     async fn list_service_accounts(&self, realm_id: &str) -> QidResult<Vec<ServiceAccount>>;
-    async fn delete_service_account(&self, id: &str) -> QidResult<()>;
+    async fn delete_service_account(&self, realm: Option<&str>, id: &str) -> QidResult<()>;
 }
 
 #[async_trait]

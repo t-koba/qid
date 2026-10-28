@@ -46,12 +46,19 @@ impl ServiceAccountRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn delete_service_account(&self, id: &str) -> QidResult<()> {
-        sqlx::query("DELETE FROM service_accounts WHERE id = ?")
+    async fn delete_service_account(&self, realm: Option<&str>, id: &str) -> QidResult<()> {
+        let query = "DELETE FROM service_accounts WHERE id = $1 AND (realm_id = $2 OR $2 IS NULL)";
+        let result = sqlx::query(query)
             .bind(id)
+            .bind(realm)
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
-        Ok(())
+        if realm.is_none() {
+            return Ok(());
+        }
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            format!("service account {id}")
+        })
     }
 }

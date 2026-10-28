@@ -1181,6 +1181,91 @@ where
     );
 }
 
+/// Scoped service-account deletes refuse missing/foreign rows atomically,
+/// while context-free deletes retain their idempotent ID-only behavior.
+pub async fn assert_service_account_realm_delete<R>(repo: &R)
+where
+    R: ServiceAccountRepository,
+{
+    let account = ServiceAccount {
+        id: "service-account-delete".to_string(),
+        client_id: "client-service-account-delete".to_string(),
+        realm_id: "realm-service-account-delete".to_string(),
+        description: Some("Account to delete".to_string()),
+        created_at: 1,
+    };
+    repo.create_service_account(&account)
+        .await
+        .expect("create service account failed");
+
+    let foreign = repo
+        .delete_service_account(Some("another-realm"), &account.id)
+        .await
+        .expect_err("a foreign realm must not delete the service account");
+    assert!(matches!(
+        foreign,
+        qid_core::error::QidError::NotFound { .. }
+    ));
+    let missing = repo
+        .delete_service_account(Some(&account.realm_id), "missing-service-account")
+        .await
+        .expect_err("a scoped missing account must be not found");
+    assert!(matches!(
+        missing,
+        qid_core::error::QidError::NotFound { .. }
+    ));
+    let stored = repo
+        .get_service_account_by_client_id(&account.realm_id, &account.client_id)
+        .await
+        .expect("read the incumbent service account")
+        .expect("a foreign delete must leave the account unchanged");
+    assert_eq!(stored.realm_id, account.realm_id);
+    assert_eq!(stored.client_id, account.client_id);
+
+    repo.delete_service_account(Some(&account.realm_id), &account.id)
+        .await
+        .expect("the owning realm should delete its account");
+    assert!(
+        repo.get_service_account_by_client_id(&account.realm_id, &account.client_id)
+            .await
+            .expect("read deleted service account")
+            .is_none()
+    );
+
+    repo.create_service_account(&account)
+        .await
+        .expect("recreate service account for ID-reuse test");
+    repo.delete_service_account(None, &account.id)
+        .await
+        .expect("unscoped delete should retain ID-only behavior");
+    let replacement = ServiceAccount {
+        realm_id: "replacement-realm".to_string(),
+        client_id: "replacement-client".to_string(),
+        ..account.clone()
+    };
+    repo.create_service_account(&replacement)
+        .await
+        .expect("create replacement using the released ID");
+    let stale = repo
+        .delete_service_account(Some(&account.realm_id), &account.id)
+        .await
+        .expect_err("a stale realm must not delete a replacement account");
+    assert!(matches!(stale, qid_core::error::QidError::NotFound { .. }));
+    let stored = repo
+        .get_service_account_by_client_id(&replacement.realm_id, &replacement.client_id)
+        .await
+        .expect("read replacement service account")
+        .expect("stale scoped deletion must preserve the replacement");
+    assert_eq!(stored.id, replacement.id);
+    assert_eq!(stored.realm_id, replacement.realm_id);
+    repo.delete_service_account(None, &replacement.id)
+        .await
+        .expect("unscoped deletion should remove a replacement");
+    repo.delete_service_account(None, &replacement.id)
+        .await
+        .expect("repeated unscoped missing deletion should be a no-op");
+}
+
 /// The owner-bound contract of a device: a record ID names one device, so a
 /// second device that carries the same ID is refused and the incumbent is
 /// left unchanged.

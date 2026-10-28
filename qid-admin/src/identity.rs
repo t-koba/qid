@@ -337,7 +337,11 @@ pub(crate) async fn delete_service_account_handler<R: Repository>(
             resource: format!("service account {sa_id}"),
         });
     }
-    match state.repo.delete_service_account(&sa_id).await {
+    match state
+        .repo
+        .delete_service_account(Some(realm.as_str()), &sa_id)
+        .await
+    {
         Ok(_) => {
             if let Err(e) = record_admin_audit_or_warn(
                 &state,

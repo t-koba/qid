@@ -8,7 +8,8 @@ use qid_core::{
     config::{SamlProtocolConfig, SamlServiceProviderConfig},
     models::{
         Admin, AdminApproval, AdminElevation, AuditEvent, Client, ClientType, CustomDomain,
-        PolicyBundle, Session, User, default_client_jwks, default_token_endpoint_auth_method,
+        PolicyBundle, ServiceAccount, Session, User, default_client_jwks,
+        default_token_endpoint_auth_method,
     },
     state::SharedState,
     tenant::{RealmId, TenantId},
@@ -1900,6 +1901,134 @@ async fn directory_delete_is_bound_to_the_path_realm() {
             .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn service_account_delete_is_bound_to_the_path_realm_and_audits_success() {
+    let (app, state) = setup().await;
+    seed_saas_realm_client(&state).await;
+    state
+        .repo
+        .create_realm(
+            &TenantId::from("tenant-saas"),
+            &RealmId::from("realm-other"),
+            "https://other.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+    let now = qid_core::util::now_seconds();
+    state
+        .repo
+        .upsert_admin(&Admin {
+            id: "admin-service-account".into(),
+            tenant_id: "tenant-saas".into(),
+            subject: "service-account-admin@example.com".into(),
+            roles: vec!["app.admin".into()],
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    state
+        .repo
+        .store_admin_elevation(&AdminElevation {
+            id: "service-account-session".into(),
+            tenant_id: "tenant-saas".into(),
+            admin_id: "admin-service-account".into(),
+            acr: Some("urn:qid:acr:phishing-resistant".into()),
+            amr: vec!["pwd".into(), "hwk".into()],
+            elevation_expires_at: now + 120,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    let foreign = ServiceAccount {
+        id: "foreign-service-account".into(),
+        client_id: "foreign-client".into(),
+        realm_id: "realm-other".into(),
+        description: None,
+        created_at: now,
+    };
+    let local = ServiceAccount {
+        id: "local-service-account".into(),
+        client_id: "local-client".into(),
+        realm_id: "realm-saas".into(),
+        description: None,
+        created_at: now,
+    };
+    state.repo.create_service_account(&foreign).await.unwrap();
+    state.repo.create_service_account(&local).await.unwrap();
+    let request = |realm: &str, id: &str| {
+        Request::builder()
+            .method(Method::DELETE)
+            .uri(format!("/admin/api/v1/{realm}/service-accounts/{id}"))
+            .header("x-qid-admin-reason", "test")
+            .header("x-qid-admin-actor", "service-account-admin@example.com")
+            .header("x-qid-admin-session-id", "service-account-session")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let foreign_response = app
+        .clone()
+        .oneshot(request("realm-saas", &foreign.id))
+        .await
+        .unwrap();
+    assert_eq!(foreign_response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(foreign_response).await,
+        serde_json::json!({"error":"service account foreign-service-account not found"})
+    );
+    let missing_response = app
+        .clone()
+        .oneshot(request("realm-saas", "missing-service-account"))
+        .await
+        .unwrap();
+    assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(missing_response).await,
+        serde_json::json!({"error":"service account missing-service-account not found"})
+    );
+    assert!(
+        state
+            .repo
+            .get_service_account_by_client_id(&foreign.realm_id, &foreign.client_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        !state
+            .repo
+            .list_audit_events(None, 100)
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| event.action == "admin.service_account_delete")
+    );
+
+    let success = app
+        .clone()
+        .oneshot(request("realm-saas", &local.id))
+        .await
+        .unwrap();
+    assert_eq!(success.status(), StatusCode::NO_CONTENT);
+    assert!(
+        state
+            .repo
+            .get_service_account_by_client_id(&local.realm_id, &local.client_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let audit = state.repo.list_audit_events(None, 100).await.unwrap();
+    let event = audit
+        .iter()
+        .find(|event| event.action == "admin.service_account_delete")
+        .expect("successful deletion must be audited");
+    assert_eq!(event.realm_id.as_deref(), Some("realm-saas"));
+    assert_eq!(event.target_type, "service_account");
+    assert_eq!(event.target_id, local.id);
 }
 
 #[tokio::test]

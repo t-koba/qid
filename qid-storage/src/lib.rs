@@ -199,7 +199,7 @@ delegate!(ServiceAccountRepository {
     create_service_account(&self, sa: &qid_core::models::ServiceAccount) -> QidResult<()>;
     get_service_account_by_client_id(&self, realm_id: &str, client_id: &str) -> QidResult<Option<qid_core::models::ServiceAccount>>;
     list_service_accounts(&self, realm_id: &str) -> QidResult<Vec<qid_core::models::ServiceAccount>>;
-    delete_service_account(&self, id: &str) -> QidResult<()>;
+    delete_service_account(&self, realm: Option<&str>, id: &str) -> QidResult<()>;
 });
 
 delegate!(PolicyRepository {

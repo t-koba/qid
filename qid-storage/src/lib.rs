@@ -157,7 +157,7 @@ delegate!(TokenRepository {
     create_token_family(&self, family: &qid_core::models::TokenFamily) -> QidResult<()>;
     get_token_family(&self, id: &str) -> QidResult<Option<qid_core::models::TokenFamily>>;
     update_token_family_refresh_hash(&self, id: &str, expected_refresh_hash: &str, refresh_hash: &str, refresh_expires_at: u64) -> QidResult<()>;
-    revoke_token_family(&self, id: &str) -> QidResult<()>;
+    revoke_token_family(&self, id: &str, realm_id: &str) -> QidResult<()>;
     list_token_families(&self, realm_id: &str, user_id: Option<&str>, client_id: Option<&str>) -> QidResult<Vec<qid_core::models::TokenFamily>>;
     create_access_token(&self, token: &qid_core::models::AccessToken) -> QidResult<()>;
     get_access_token(&self, jti: &str) -> QidResult<Option<qid_core::models::AccessToken>>;

@@ -78,3 +78,5 @@ fn audit_export_options_default_to_metadata() {
 }
 
 pub(crate) mod session_scope;
+
+pub(crate) mod token_family_scope;

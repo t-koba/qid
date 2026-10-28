@@ -141,8 +141,9 @@ foreign-realm records and `Conflict` for repeated consumption by the owner.
 For `consume_password_reset_token`, SQL now classifies a zero-row update with
 a post-write existence lookup, matching the file path's `NotFound` for an
 unknown ID and `Conflict` for an already consumed token.
-The reverse shape is there too: `revoke_token_family` is a silent no-op in the
-file path and `NotFound` in the SQL path.
+The reverse shape is there too: `revoke_token_family(id, realm_id)` leaves a
+missing or foreign-realm family unchanged, with a silent no-op in the file
+path and `NotFound` in the SQL path. Both accept repeated same-realm revocation.
 
 ## admin
 
@@ -553,7 +554,7 @@ record is bound to, and the identity is the opaque handle the caller presents.
 | `mark_authorization_code_used` - `AuthorizationCode` | realm + client + user | `code_hash` | `used` (one-shot) | File: an unknown code is `NotFound` (`qid-storage/src/file/token.rs:29`) and an already used code is `Conflict` (`qid-storage/src/file/token.rs:33`). SQL: the row is read first, so an unknown code is `NotFound` (`qid-storage/src/sql/token.rs:53`) and an already used code is `BadRequest` from `validate_authz_code_reuse` (`qid-storage/src/sql/token.rs:56`, `qid-storage/src/domain/mod.rs:55`); the `rows_affected` check answers `Conflict` only when a concurrent mark wins between the read and the update (`qid-storage/src/sql/token.rs:63`). The unknown-code case agrees; the already-used case differs (`Conflict` against `BadRequest`). **Backends disagree.** | file `qid-storage/src/file/token.rs:29`, `qid-storage/src/file/token.rs:33`; sql `qid-storage/src/sql/token.rs:53`, `qid-storage/src/sql/token.rs:56` |
 | `create_token_family` - `TokenFamily` | realm + client + user (`realm_id`, `client_id`, `user_id`) | record `id` (primary key, `qid-storage/migrations/20250101000001_initial_schema.sql:104`) | `current_refresh_hash`, scopes, `revoked` | File: the operation replaces an existing ID, as its own comment states, and never errors (`qid-storage/src/file/token.rs:43`, `qid-storage/src/file/token.rs:53`). SQL: plain `INSERT` with `id` as primary key, so a repeated ID is a unique violation surfaced as `Storage` (`qid-storage/src/sql/token.rs:71`). **Backends disagree:** the file path replaces, the SQL path refuses. | file `qid-storage/src/file/token.rs:43`, `qid-storage/src/file/token.rs:53`; sql `qid-storage/src/sql/token.rs:71` (not enforced as a conflict in SQL) |
 | `update_token_family_refresh_hash` - `TokenFamily` | realm + client + user | record `id` | `current_refresh_hash`, `refresh_expires_at` | File: an unknown family is `NotFound` (`qid-storage/src/file/token.rs:83`); `validate_token_family_rotation` refuses a revoked family, a hash that is not the expected one and a reused hash with `Conflict` (`qid-storage/src/domain/mod.rs:36`, `qid-storage/src/domain/mod.rs:41`, `qid-storage/src/domain/mod.rs:47`). SQL: the same hash reuse is refused with `Conflict` before the statement runs (`qid-storage/src/sql/token.rs:119`); the conditional update names the family, the expected hash and `revoked = 0`, and a family that is gone is `NotFound` (`qid-storage/src/sql/token.rs:124`, `qid-storage/src/sql/token.rs:139`). Both refuse the same cases with the same errors. | file `qid-storage/src/file/token.rs:83`; sql `qid-storage/src/sql/token.rs:139` |
-| `revoke_token_family` - `TokenFamily` | realm + client + user | record `id` | `revoked` | File: the family is revoked when it exists, and an unknown ID is a silent no-op (`qid-storage/src/file/token.rs:120`, `qid-storage/src/file/token.rs:121`). SQL: `UPDATE token_families SET revoked = 1 WHERE id = ?` and no affected row is `NotFound` (`qid-storage/src/sql/token.rs:155`, `qid-storage/src/sql/token.rs:160`). The unknown-ID case differs (`Ok` against `NotFound`). **Backends disagree.** | file `qid-storage/src/file/token.rs:120`; sql `qid-storage/src/sql/token.rs:160` |
+| `revoke_token_family(id, realm_id)` - `TokenFamily` | required realm at mutation; family also binds client + user | record `id` + matching `realm_id` | `revoked` (monotonic) | File: `map_write` checks the realm under its exclusive store lock, preserves every foreign-realm field, and saves as before; missing/foreign records are successful no-ops. SQL: static `UPDATE token_families SET revoked = 1 WHERE id = $1 AND realm_id = $2`; zero affected rows is `NotFound`. Both accept repeated same-realm revocation without changing other fields. **Backends retain their missing/foreign-result difference** (`Ok` against `NotFound`), but neither can revoke another realm's family. | file `qid-storage/src/file/token.rs::revoke_token_family`, `qid-storage/src/file/mod.rs::map_write`; sql `qid-storage/src/sql/token.rs::revoke_token_family`; contract `qid-storage/tests/token_family_scope.rs` |
 | `create_access_token` - `AccessToken` | realm + client + user + family (`realm_id`, `client_id`, `user_id`, `family_id`) | `jti` (primary key, `qid-storage/migrations/20250101000001_initial_schema.sql:116`) | `revoked` | File: overwrite of the map entry, no error (`qid-storage/src/file/token.rs:148`). SQL: plain `INSERT` with `jti` as primary key, so a repeated JTI is a unique violation surfaced as `Storage` (`qid-storage/src/sql/token.rs:219`). **Backends disagree.** | file `qid-storage/src/file/token.rs:148`; sql `qid-storage/src/sql/token.rs:219` (not enforced as a conflict in SQL) |
 | `revoke_access_token` - `AccessToken` | realm + client + user + family | `jti` | `revoked` | File: the token is revoked when it exists, and an unknown JTI is a silent no-op (`qid-storage/src/file/token.rs:159`, `qid-storage/src/file/token.rs:160`). SQL: `UPDATE access_tokens SET revoked = 1 WHERE jti = ?` and no affected row is not an error (`qid-storage/src/sql/token.rs:257`). Both are silent no-ops for an unknown JTI. | file `qid-storage/src/file/token.rs:159`; sql `qid-storage/src/sql/token.rs:257` |
 | `store_par_request` - `ParRequest` | realm + client (`realm_id`, `client_id`) | `request_uri` (primary key, `qid-storage/migrations/20250101000001_initial_schema.sql:163`) | `used`, `expires_at` | File: `insert_new` refuses a taken URI under the exclusive lock with `Conflict` (`qid-storage/src/file/token.rs:168`, `qid-storage/src/file/insert.rs:71`, `qid-storage/src/file/insert.rs:128`). SQL: static `ON CONFLICT (request_uri) DO NOTHING`; `ensure_upsert_applied` returns `Conflict` without changing the incumbent (`qid-storage/src/sql/token.rs:267`, `qid-storage/src/sql/token.rs:279`). Both preserve the original owner, payload and consumed state. | file `qid-storage/src/file/token.rs:168`; sql `qid-storage/src/sql/token.rs:279` |
@@ -567,20 +568,31 @@ record is bound to, and the identity is the opaque handle the caller presents.
 | `approve_backchannel_authentication_grant` - `BackchannelAuthenticationGrant` | realm + client (+ user once approved) | `auth_req_id_hash` | `user_id`, `approved_at` | File: the grant is looked up by `auth_req_id_hash`, and an unknown hash is `NotFound` (`qid-storage/src/file/token.rs:316`); an approval replaces the earlier one. SQL: `UPDATE backchannel_authentication_grants SET user_id = ?, approved_at = ? WHERE auth_req_id_hash = ?` and no affected row is `NotFound` (`qid-storage/src/sql/token.rs:465`, `qid-storage/src/sql/token.rs:473`). Both agree. | file `qid-storage/src/file/token.rs:316`; sql `qid-storage/src/sql/token.rs:473` |
 | `record_backchannel_authentication_poll` - `BackchannelAuthenticationGrant` | realm + client (+ user once approved) | `auth_req_id_hash` | `last_poll_at`, `poll_interval_seconds` | File: the grant is updated when it exists, and an unknown hash is a silent no-op (`qid-storage/src/file/token.rs:332`, `qid-storage/src/file/token.rs:336`). SQL: `UPDATE backchannel_authentication_grants SET ... WHERE auth_req_id_hash = ?` and no affected row is not an error (`qid-storage/src/sql/token.rs:486`). Both are silent no-ops for an unknown hash. | file `qid-storage/src/file/token.rs:332`; sql `qid-storage/src/sql/token.rs:486` |
 
-Call-site review at commit `24414a5bce345a2fec01acc84595231431390695`:
-the OAuth revocation endpoint authenticates its client, loads an access token
-by JTI, checks the stored client and realm, then calls the ID-only revoke. Its
-refresh-token path checks the signed token audience and the loaded family's
-client and realm before revoking by ID (`qid-oauth/src/endpoints/revoke.rs:36-84,156-213`).
-The admin route likewise checks the loaded family against the path realm
-before its ID-only revoke and audit (`qid-admin/src/identity.rs:213-248`).
-Refresh-token rotation checks the authenticated client, family realm/client
-and expected refresh hash; the reuse branch revokes that loaded family
-(`qid-oauth/src/endpoints/token_grant.rs:305-347,388-396,503-526`). These are
-caller-side owner checks, not owner predicates in the storage writes. New
-access-token JTIs and family IDs are generated with `generate_jti` (ULIDs),
-not supplied by these routes (`qid-oauth/src/endpoints/token_issue.rs:52-54,141-143`);
-this makes stale-ID reuse conditional, not a demonstrated production exploit.
+Current revocation call-site inventory:
+- The OAuth revocation endpoint authenticates its client, loads an access token
+  by JTI, checks the stored client and realm, then calls the unchanged ID-only
+  access-token revoke (`qid-oauth/src/endpoints/revoke.rs`).
+- Its refresh-token helper `revoke_refresh_token_family_if_owned` checks the
+  signed audience and the loaded family's client and realm, then passes that
+  client-validated `family.realm_id` to the required-realm family revoke.
+- The actual admin route `revoke_token_family_handler` checks the loaded family
+  against its path realm, then passes that path realm into storage before its
+  existing audit (`qid-admin/src/identity.rs`). The route-observation test in
+  `qid-admin/src/tests/token_family_scope.rs` checks exact write arguments,
+  refused requests, repeated same-realm 204 responses and audit entries.
+- Refresh-token rotation checks the authenticated client, family realm/client
+  and expected refresh hash. Both reuse paths (a mismatched loaded refresh hash
+  and an atomic rotation conflict) call `revoke_reused_family`, which passes
+  the loaded `family.realm_id` to storage, retaining the reuse metric, warning
+  on storage failure and unauthorized response
+  (`qid-oauth/src/endpoints/token_grant.rs`).
+
+Family revocation therefore enforces ID plus realm at mutation, not just in
+caller pre-reads; it has no optional or unscoped storage mode. Other token
+operations are unchanged. New access-token JTIs and family IDs are generated
+with `generate_jti` (ULIDs), not supplied by these routes
+(`qid-oauth/src/endpoints/token_issue.rs`); this is a storage-contract hardening
+slice, not a demonstrated production exploit.
 
 The one-use redemption writes are reached through handle lookups and
 validation: authorization-code redemption checks expiry, use, redirect, client,
@@ -590,14 +602,15 @@ device approval checks the approving user's realm, and device and CIBA
 redemption check client, grant/user realm and target before consuming them
 (`qid-oauth/src/endpoints/token_grant.rs:21-68`,
 `qid-oidc/src/provider.rs:589-654`, `qid-oauth/src/endpoints/device_flow.rs:280-314,329-406`,
-`qid-oauth/src/endpoints/ciba.rs:366-444`). A focused future owner-bound slice
-is to add optional expected-owner predicates to reachable access-token and
-family revocation writes; the change must preserve each caller's current
-responses and audit, and account for the File/SQL missing-ID difference above.
-No change is proposed here: at this snapshot `qid-storage` is already
-15,990/15,990 source lines and the workspace is 113,959/113,985, so such a
-slice needs measured in-cap simplification for its storage code and required
-tests, not a cap change.
+`qid-oauth/src/endpoints/ciba.rs:366-444`). The remaining ID-only write in
+this inventory is OAuth access-token revocation: its caller checks the stored
+client and realm, but the storage mutation does not yet include an owner
+predicate. A separate owner-bound slice should require the validated realm at
+mutation while preserving revocation responses and the File/SQL missing-ID
+behavior. Family revocation already requires and atomically checks its realm
+as described above. `qid-storage` is 15,990/15,990 source lines and the
+workspace is 113,982/113,985, so any further storage source growth needs
+measured in-cap simplification, not a cap change.
 
 ## user
 

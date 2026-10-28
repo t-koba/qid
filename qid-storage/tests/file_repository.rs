@@ -442,7 +442,9 @@ async fn file_refresh_rotation_revoked_stays_revoked() {
     let now = qid_core::util::now_seconds();
     let family = test_family("tf-revoked", "hash-v0", now, None);
     repo.create_token_family(&family).await.unwrap();
-    repo.revoke_token_family("tf-revoked").await.unwrap();
+    repo.revoke_token_family("tf-revoked", &family.realm_id)
+        .await
+        .unwrap();
     let result = repo
         .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1", 7000)
         .await;

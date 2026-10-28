@@ -115,13 +115,14 @@ impl TokenRepository for FileRepository {
         Ok(())
     }
 
-    async fn revoke_token_family(&self, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if let Some(family) = store.token_families.get_mut(id) {
-            family.revoked = true;
-        }
-        drop(store);
-        self.save().await
+    async fn revoke_token_family(&self, id: &str, realm_id: &str) -> QidResult<()> {
+        self.map_write(|store| {
+            let family = store.token_families.get_mut(id)?;
+            // Revocation is monotonic; foreign realms leave the state unchanged.
+            family.revoked |= family.realm_id == realm_id;
+            Some(())
+        })
+        .await
     }
 
     async fn list_token_families(

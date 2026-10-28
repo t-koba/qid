@@ -232,7 +232,7 @@ async fn failed_rotation_cannot_leak_into_another_save() {
         // Tokio's mutex is FIFO: queue an unrelated writer's save first, then
         // poll rotation. Correct rotation waits before mutating; the old order
         // would already mutate and enter the rotation hook while guard is held.
-        let first_save = repo.revoke_token_family("saved-first");
+        let first_save = repo.revoke_token_family("saved-first", "test");
         tokio::pin!(first_save);
         assert_pending(first_save.as_mut()).await;
         let rotation = repo.update_token_family_refresh_hash("rotating", "old", "tentative", 300);
@@ -262,8 +262,8 @@ async fn failed_rotation_cannot_leak_into_another_save() {
         // Reads are not isolated from tentative state; only persistence is.
         assert_family(&repo, "rotating", "tentative", Some(300)).await;
 
-        let unrelated = repo.revoke_token_family("unrelated");
-        let revocation = repo.revoke_token_family("rotating");
+        let unrelated = repo.revoke_token_family("unrelated", "test");
+        let revocation = repo.revoke_token_family("rotating", "test");
         tokio::pin!(unrelated, revocation);
         assert_pending(unrelated.as_mut()).await;
         assert_pending(revocation.as_mut()).await;

@@ -2,7 +2,7 @@
 
 use qid_core::{
     error::{QidError, QidResult},
-    models::{AccessToken, Client, ClientType, ServiceAccount, User},
+    models::{AccessToken, Client, ClientType, ServiceAccount, TokenFamily, User},
     pkce::verify_code_verifier,
     state::SharedState,
     tenant::RealmId,
@@ -281,6 +281,16 @@ pub async fn client_credentials_grant<R: Repository>(
     })
 }
 
+async fn revoke_reused_family(repo: &impl TokenRepository, family: &TokenFamily) -> QidError {
+    metrics::counter!("qid_refresh_reuse_detected_total").increment(1);
+    if let Err(err) = repo.revoke_token_family(&family.id, &family.realm_id).await {
+        tracing::warn!(error = %err, family_id = %family.id, "revoke_token_family failed after refresh reuse detection");
+    }
+    QidError::Unauthorized {
+        message: "invalid refresh token".to_string(),
+    }
+}
+
 pub async fn refresh_token_grant<R: Repository>(
     state: &SharedState<R>,
     req: &TokenRequest,
@@ -388,13 +398,7 @@ pub async fn refresh_token_grant<R: Repository>(
     let expected_hash = qid_core::util::sha256_base64url(&refresh_jti);
     if family.current_refresh_hash != expected_hash {
         // Token theft detected: revoke the entire family to contain the breach.
-        metrics::counter!("qid_refresh_reuse_detected_total").increment(1);
-        if let Err(revoke_err) = state.repo.revoke_token_family(&family.id).await {
-            tracing::warn!(error = %revoke_err, family_id = %family.id, "revoke_token_family failed after refresh reuse detection");
-        }
-        return Err(QidError::Unauthorized {
-            message: "invalid refresh token".to_string(),
-        });
+        return Err(revoke_reused_family(&*state.repo, &family).await);
     }
 
     let user = state
@@ -515,13 +519,7 @@ pub async fn refresh_token_grant<R: Repository>(
                 });
             }
             QidError::Conflict { .. } => {
-                metrics::counter!("qid_refresh_reuse_detected_total").increment(1);
-                if let Err(revoke_err) = state.repo.revoke_token_family(&family.id).await {
-                    tracing::warn!(error = %revoke_err, family_id = %family.id, "revoke_token_family failed after refresh reuse detection");
-                }
-                return Err(QidError::Unauthorized {
-                    message: "invalid refresh token".to_string(),
-                });
+                return Err(revoke_reused_family(&*state.repo, &family).await);
             }
             other => return Err(other),
         }

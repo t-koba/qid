@@ -214,21 +214,19 @@ pub(crate) async fn revoke_token_family_handler<R: Repository>(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::SecurityAdmin, Some(&realm));
-    let family = match state.repo.get_token_family(&family_id).await {
-        Ok(Some(family)) => family,
-        Ok(None) => {
+    match state.repo.get_token_family(&family_id).await {
+        Ok(Some(family)) if family.realm_id == realm => (),
+        Ok(_) => {
             return qid_http::error_response(QidError::NotFound {
                 resource: format!("token family {family_id}"),
             });
         }
         Err(e) => return qid_http::error_response(e),
     };
-    if family.realm_id != realm {
-        return qid_http::error_response(QidError::NotFound {
-            resource: format!("token family {family_id}"),
-        });
-    }
-    match state.repo.revoke_token_family(&family_id).await {
+    let repo = &*state.repo;
+    #[cfg(test)]
+    let repo = crate::tests::token_family_scope::ObservedFamilies(repo);
+    match repo.revoke_token_family(&family_id, &realm).await {
         Ok(_) => {
             if let Err(e) = record_admin_audit_or_warn(
                 &state,

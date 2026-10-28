@@ -2492,7 +2492,9 @@ async fn test_token_family_crud() {
     let updated = repo.get_token_family("tf-1").await.unwrap().unwrap();
     assert_eq!(updated.current_refresh_hash, "hash2");
     assert_eq!(updated.refresh_expires_at, Some(4600));
-    repo.revoke_token_family("tf-1").await.unwrap();
+    repo.revoke_token_family("tf-1", &family.realm_id)
+        .await
+        .unwrap();
     let revoked = repo.get_token_family("tf-1").await.unwrap().unwrap();
     assert!(revoked.revoked);
 }
@@ -4075,9 +4077,13 @@ async fn sql_refresh_rotation_revoked_stays_revoked() {
     let now = qid_core::util::now_seconds();
     let family = test_family("tf-revoked", "user-rev", "realm-rev", "hash-v0", now, None);
     repo.create_token_family(&family).await.unwrap();
-    repo.revoke_token_family("tf-revoked").await.unwrap();
+    repo.revoke_token_family("tf-revoked", &family.realm_id)
+        .await
+        .unwrap();
     // Revoking twice stays idempotent for concurrent reuse handling.
-    repo.revoke_token_family("tf-revoked").await.unwrap();
+    repo.revoke_token_family("tf-revoked", &family.realm_id)
+        .await
+        .unwrap();
     let result = repo
         .update_token_family_refresh_hash("tf-revoked", "hash-v0", "hash-v1", 7000)
         .await;

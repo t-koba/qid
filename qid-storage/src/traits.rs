@@ -205,7 +205,7 @@ pub trait TokenRepository: Send + Sync + 'static {
         refresh_hash: &str,
         refresh_expires_at: u64,
     ) -> QidResult<()>;
-    async fn revoke_token_family(&self, id: &str) -> QidResult<()>;
+    async fn revoke_token_family(&self, id: &str, realm_id: &str) -> QidResult<()>;
     async fn list_token_families(
         &self,
         realm_id: &str,

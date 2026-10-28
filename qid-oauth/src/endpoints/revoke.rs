@@ -209,6 +209,9 @@ async fn revoke_refresh_token_family_if_owned<R: Repository>(
     if family.client_id != client.client_id || family.realm_id != client.realm_id {
         return Ok(false);
     }
-    state.repo.revoke_token_family(family_id).await?;
+    state
+        .repo
+        .revoke_token_family(family_id, &family.realm_id)
+        .await?;
     Ok(true)
 }

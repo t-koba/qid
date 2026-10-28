@@ -36,11 +36,8 @@ pub(crate) async fn breakglass_revoke_session<R: Repository>(
         }
         Err(e) => return qid_http::error_response(e),
     };
-    let session_tenant = match state
-        .repo
-        .get_realm_tenant(&RealmId(session.realm_id.clone()))
-        .await
-    {
+    let realm = RealmId(session.realm_id.clone());
+    let session_tenant = match state.repo.get_realm_tenant(&realm).await {
         Ok(Some(tenant)) => tenant,
         Ok(None) => {
             return qid_http::error_response(QidError::Unauthorized {
@@ -54,7 +51,10 @@ pub(crate) async fn breakglass_revoke_session<R: Repository>(
             message: "admin tenant does not match session realm tenant".to_string(),
         });
     }
-    if let Err(e) = state.repo.revoke_session(&session_id, None).await {
+    let repo = &*state.repo;
+    #[cfg(test)]
+    let repo = crate::tests::session_scope::ObservedSessions(repo);
+    if let Err(e) = repo.revoke_session(&session_id, Some(realm.as_str())).await {
         return qid_http::error_response(e);
     }
     state.session_cache_delete(&session_id);

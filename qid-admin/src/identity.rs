@@ -172,21 +172,19 @@ pub(crate) async fn revoke_session_handler<R: Repository>(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::SecurityAdmin, Some(&realm));
-    let session = match state.repo.get_session(&session_id).await {
-        Ok(Some(session)) => session,
-        Ok(None) => {
+    match state.repo.get_session(&session_id).await {
+        Ok(Some(session)) if session.realm_id == realm => (),
+        Ok(_) => {
             return qid_http::error_response(QidError::NotFound {
                 resource: format!("session {session_id}"),
             });
         }
         Err(e) => return qid_http::error_response(e),
     };
-    if session.realm_id != realm {
-        return qid_http::error_response(QidError::NotFound {
-            resource: format!("session {session_id}"),
-        });
-    }
-    match state.repo.revoke_session(&session_id, None).await {
+    let repo = &*state.repo;
+    #[cfg(test)]
+    let repo = crate::tests::session_scope::ObservedSessions(repo);
+    match repo.revoke_session(&session_id, Some(&realm)).await {
         Ok(_) => {
             state.session_cache_delete(&session_id);
             if let Err(e) = record_admin_audit_or_warn(

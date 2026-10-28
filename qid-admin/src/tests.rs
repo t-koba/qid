@@ -76,3 +76,5 @@ fn audit_export_options_default_to_metadata() {
     assert_eq!(options.traceparent.as_deref(), Some("trace"));
     assert_eq!(options.audit_correlation_id.as_deref(), Some("corr"));
 }
+
+pub(crate) mod session_scope;

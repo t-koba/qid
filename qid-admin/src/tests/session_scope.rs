@@ -199,7 +199,8 @@ async fn exercise_route(breakglass: bool) {
         ));
     }
     let response = app
-        .oneshot(request(&path("target"), admin, body))
+        .clone()
+        .oneshot(request(&path("target"), admin, body.clone()))
         .await
         .unwrap();
     assert_eq!(
@@ -233,6 +234,40 @@ async fn exercise_route(breakglass: bool) {
     }
     assert!(repo.get_session("target").await.unwrap().unwrap().revoked);
     assert!(state.session_cache_get("target").is_none());
+    let repeat = app
+        .oneshot(request(&path("target"), admin, body))
+        .await
+        .unwrap();
+    assert_eq!(
+        repeat.status(),
+        if breakglass {
+            StatusCode::OK
+        } else {
+            StatusCode::NO_CONTENT
+        }
+    );
+    assert_eq!(
+        take_revokes(),
+        vec![("target".into(), Some("target-realm".into()))]
+    );
+    if breakglass {
+        assert_eq!(
+            response_json(repeat).await,
+            serde_json::json!({
+                "session_id": "target", "revoked": true, "incident_id": "inc-1",
+                "realm_id": "target-realm", "user_id": "user",
+            })
+        );
+    } else {
+        assert!(
+            axum::body::to_bytes(repeat.into_body(), 4096)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(repo.get_session("target").await.unwrap().unwrap().revoked);
+    assert!(state.session_cache_get("target").is_none());
     for (id, before) in unchanged {
         assert_eq!(
             serde_json::to_value(repo.get_session(id).await.unwrap()).unwrap(),
@@ -244,18 +279,18 @@ async fn exercise_route(breakglass: bool) {
         .list_audit_events(Some(&"target-realm".into()), 10)
         .await
         .unwrap();
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 2, "each authorized request is audited");
+    let action = if breakglass {
+        "breakglass.session_revoke"
+    } else {
+        "admin.session_revoke"
+    };
+    assert!(events.iter().all(|event| {
+        event.action == action
+            && event.actor == format!("{admin}@example.com")
+            && event.reason == "scope-test"
+    }));
     let event = &events[0];
-    assert_eq!(
-        event.action,
-        if breakglass {
-            "breakglass.session_revoke"
-        } else {
-            "admin.session_revoke"
-        }
-    );
-    assert_eq!(event.actor, format!("{admin}@example.com"));
-    assert_eq!(event.reason, "scope-test");
     assert_eq!(
         event.metadata_json["admin_session"]["admin_session_id"],
         admin

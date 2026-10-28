@@ -5,11 +5,9 @@ use super::*;
 #[async_trait]
 impl CredentialRepository for FileRepository {
     async fn get_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>> {
-        let store = self.store.read().await;
-        Ok(store
-            .webauthn_credentials
-            .get(user_id)
-            .cloned()
+        Ok(self
+            .map_get(|s| s.webauthn_credentials.get(user_id))
+            .await
             .unwrap_or_default())
     }
 
@@ -77,12 +75,9 @@ impl CredentialRepository for FileRepository {
     }
 
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>> {
-        let store = self.store.read().await;
-        Ok(store
-            .totp_credentials
-            .values()
-            .find(|c| c.user_id == user_id)
-            .cloned())
+        Ok(self
+            .map_get(|s| s.totp_credentials.values().find(|c| c.user_id == user_id))
+            .await)
     }
 
     async fn consume_totp_step(&self, cred: &TotpCredential, step: u64) -> QidResult<bool> {

@@ -5,20 +5,18 @@ use super::*;
 #[async_trait]
 impl TokenRepository for FileRepository {
     async fn create_authorization_code(&self, code: &AuthorizationCode) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store
-            .authorization_codes
-            .insert(code.code_hash.clone(), code.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|s| {
+            s.authorization_codes
+                .insert(code.code_hash.clone(), code.clone())
+        })
+        .await
     }
 
     async fn get_authorization_code(
         &self,
         code_hash: &str,
     ) -> QidResult<Option<AuthorizationCode>> {
-        let store = self.store.read().await;
-        Ok(store.authorization_codes.get(code_hash).cloned())
+        Ok(self.map_get(|s| s.authorization_codes.get(code_hash)).await)
     }
 
     async fn mark_authorization_code_used(&self, code_hash: &str) -> QidResult<()> {
@@ -147,10 +145,8 @@ impl TokenRepository for FileRepository {
     }
 
     async fn create_access_token(&self, token: &AccessToken) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        store.access_tokens.insert(token.jti.clone(), token.clone());
-        drop(store);
-        self.save().await
+        self.map_write(|s| s.access_tokens.insert(token.jti.clone(), token.clone()))
+            .await
     }
 
     async fn get_access_token(&self, jti: &str) -> QidResult<Option<AccessToken>> {
@@ -210,11 +206,9 @@ impl TokenRepository for FileRepository {
         &self,
         device_code_hash: &str,
     ) -> QidResult<Option<DeviceAuthorizationGrant>> {
-        let store = self.store.read().await;
-        Ok(store
-            .device_authorization_grants
-            .get(device_code_hash)
-            .cloned())
+        Ok(self
+            .map_get(|s| s.device_authorization_grants.get(device_code_hash))
+            .await)
     }
 
     async fn get_device_authorization_grant_by_user_code(
@@ -257,13 +251,13 @@ impl TokenRepository for FileRepository {
         polled_at: u64,
         poll_interval_seconds: u64,
     ) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if let Some(grant) = store.device_authorization_grants.get_mut(device_code_hash) {
+        self.map_write(|s| {
+            let grant = s.device_authorization_grants.get_mut(device_code_hash)?;
             grant.last_poll_at = Some(polled_at);
             grant.poll_interval_seconds = poll_interval_seconds;
-        }
-        drop(store);
-        self.save().await
+            Some(())
+        })
+        .await
     }
 
     async fn consume_device_authorization_grant(&self, device_code_hash: &str) -> QidResult<()> {
@@ -298,11 +292,9 @@ impl TokenRepository for FileRepository {
         &self,
         auth_req_id_hash: &str,
     ) -> QidResult<Option<BackchannelAuthenticationGrant>> {
-        let store = self.store.read().await;
-        Ok(store
-            .backchannel_authentication_grants
-            .get(auth_req_id_hash)
-            .cloned())
+        Ok(self
+            .map_get(|s| s.backchannel_authentication_grants.get(auth_req_id_hash))
+            .await)
     }
 
     async fn approve_backchannel_authentication_grant(
@@ -330,16 +322,15 @@ impl TokenRepository for FileRepository {
         polled_at: u64,
         poll_interval_seconds: u64,
     ) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if let Some(grant) = store
-            .backchannel_authentication_grants
-            .get_mut(auth_req_id_hash)
-        {
+        self.map_write(|s| {
+            let grant = s
+                .backchannel_authentication_grants
+                .get_mut(auth_req_id_hash)?;
             grant.last_poll_at = Some(polled_at);
             grant.poll_interval_seconds = poll_interval_seconds;
-        }
-        drop(store);
-        self.save().await
+            Some(())
+        })
+        .await
     }
 
     async fn consume_backchannel_authentication_grant(

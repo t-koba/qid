@@ -161,7 +161,7 @@ delegate!(TokenRepository {
     list_token_families(&self, realm_id: &str, user_id: Option<&str>, client_id: Option<&str>) -> QidResult<Vec<qid_core::models::TokenFamily>>;
     create_access_token(&self, token: &qid_core::models::AccessToken) -> QidResult<()>;
     get_access_token(&self, jti: &str) -> QidResult<Option<qid_core::models::AccessToken>>;
-    revoke_access_token(&self, jti: &str) -> QidResult<()>;
+    revoke_access_token(&self, jti: &str, realm_id: &str) -> QidResult<()>;
     store_par_request(&self, req: &qid_core::models::ParRequest) -> QidResult<()>;
     get_par_request(&self, request_uri: &str) -> QidResult<Option<qid_core::models::ParRequest>>;
     mark_par_request_used(&self, request_uri: &str) -> QidResult<()>;

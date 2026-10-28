@@ -155,13 +155,12 @@ impl TokenRepository for FileRepository {
         Ok(self.map_get(|store| store.access_tokens.get(jti)).await)
     }
 
-    async fn revoke_access_token(&self, jti: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if let Some(token) = store.access_tokens.get_mut(jti) {
-            token.revoked = true;
-        }
-        drop(store);
-        self.save().await
+    async fn revoke_access_token(&self, jti: &str, realm_id: &str) -> QidResult<()> {
+        self.map_write(|store| {
+            let token = store.access_tokens.get_mut(jti)?;
+            (token.realm_id == realm_id).then(|| token.revoked = true)
+        })
+        .await
     }
 
     async fn store_par_request(&self, req: &ParRequest) -> QidResult<()> {

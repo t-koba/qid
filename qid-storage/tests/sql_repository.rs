@@ -2571,7 +2571,7 @@ async fn test_access_token_crud() {
         Some(serde_json::json!({"jkt":"thumbprint"}))
     );
     assert_eq!(fetched.token_format, qid_core::models::TokenFormat::Jwt);
-    repo.revoke_access_token("jti-1").await.unwrap();
+    repo.revoke_access_token("jti-1", "realm-at").await.unwrap();
     let revoked = repo.get_access_token("jti-1").await.unwrap().unwrap();
     assert!(revoked.revoked);
 }

@@ -236,9 +236,10 @@ impl TokenRepository for SqlRepository {
         Ok(row.map(Into::into))
     }
 
-    async fn revoke_access_token(&self, jti: &str) -> QidResult<()> {
-        sqlx::query("UPDATE access_tokens SET revoked = 1 WHERE jti = ?")
+    async fn revoke_access_token(&self, jti: &str, realm_id: &str) -> QidResult<()> {
+        sqlx::query("UPDATE access_tokens SET revoked = 1 WHERE jti = $1 AND realm_id = $2")
             .bind(jti)
+            .bind(realm_id)
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;

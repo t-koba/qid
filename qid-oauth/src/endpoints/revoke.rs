@@ -72,7 +72,8 @@ async fn handle_revoke<R: Repository>(
         Err(_) => return Ok(false),
     };
     if req.token_type_hint.as_deref() != Some("refresh_token")
-        && revoke_jwt_access_token_if_owned(state, &data.claims, &client).await?
+        && let Some(jti) = data.claims.jti.as_deref()
+        && revoke_access_token_if_owned(state, jti, &client).await?
     {
         return Ok(true);
     }
@@ -173,19 +174,11 @@ async fn revoke_access_token_if_owned<R: Repository>(
         );
         return Ok(false);
     }
-    state.repo.revoke_access_token(jti).await?;
+    let repo = &*state.repo;
+    #[cfg(test)]
+    let repo = tests::ObservedTokens(repo);
+    repo.revoke_access_token(jti, &client.realm_id).await?;
     Ok(true)
-}
-
-async fn revoke_jwt_access_token_if_owned<R: Repository>(
-    state: &SharedState<R>,
-    claims: &JwtClaims,
-    client: &Client,
-) -> QidResult<bool> {
-    let Some(jti) = claims.jti.as_deref() else {
-        return Ok(false);
-    };
-    revoke_access_token_if_owned(state, jti, client).await
 }
 
 async fn revoke_refresh_token_family_if_owned<R: Repository>(
@@ -215,3 +208,6 @@ async fn revoke_refresh_token_family_if_owned<R: Repository>(
         .await?;
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests;

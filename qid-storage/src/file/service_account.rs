@@ -42,7 +42,7 @@ impl ServiceAccountRepository for FileRepository {
     async fn delete_service_account(&self, realm: Option<&str>, id: &str) -> QidResult<()> {
         let mut store = self.store.write().await;
         let accounts = &store.service_accounts;
-        if realm.is_some_and(|r| !accounts.get(id).is_some_and(|a| a.realm_id == r)) {
+        if realm.is_some_and(|r| accounts.get(id).is_none_or(|a| a.realm_id != r)) {
             return crate::ownership::ensure_row_present(0, || format!("service account {id}"));
         }
         store.service_accounts.remove(id);

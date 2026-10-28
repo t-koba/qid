@@ -129,3 +129,56 @@ async fn logout_routes_preserve_same_realm_and_ignore_foreign_or_missing_session
     );
     assert!(repo.get_session("missing").await.unwrap().is_none());
 }
+
+#[derive(Default)]
+struct ScopeRecordingRepository {
+    scopes: std::sync::Mutex<Vec<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl qid_storage::SessionRepository for ScopeRecordingRepository {
+    async fn create_session(&self, _session: &Session) -> qid_core::error::QidResult<()> {
+        Ok(())
+    }
+
+    async fn get_session(&self, _id: &str) -> qid_core::error::QidResult<Option<Session>> {
+        Ok(None)
+    }
+
+    async fn update_session_idle_expiry(
+        &self,
+        _id: &str,
+        _idle_expires_at: u64,
+        _realm_scope: Option<&str>,
+    ) -> qid_core::error::QidResult<bool> {
+        Ok(false)
+    }
+
+    async fn revoke_session(
+        &self,
+        _id: &str,
+        realm_scope: Option<&str>,
+    ) -> qid_core::error::QidResult<bool> {
+        self.scopes
+            .lock()
+            .unwrap()
+            .push(realm_scope.map(str::to_owned));
+        Ok(true)
+    }
+}
+
+#[tokio::test]
+async fn both_logout_write_callers_forward_the_validated_realm_scope() {
+    let repo = ScopeRecordingRepository::default();
+    for session_id in ["sp-session", "browser-session"] {
+        assert!(
+            revoke_logout_session(&repo, session_id, "test")
+                .await
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        *repo.scopes.lock().unwrap(),
+        vec![Some("test".into()), Some("test".into())],
+    );
+}

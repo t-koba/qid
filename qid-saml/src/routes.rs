@@ -29,6 +29,14 @@ pub fn saml_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
         .route("/saml/:realm/artifact", post(artifact_resolve::<R>))
 }
 
+async fn revoke_logout_session<R: SessionRepository>(
+    repo: &R,
+    session_id: &str,
+    validated_realm: &str,
+) -> qid_core::error::QidResult<bool> {
+    repo.revoke_session(session_id, Some(validated_realm)).await
+}
+
 async fn metadata<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
@@ -536,7 +544,9 @@ async fn slo<R: Repository>(
     for session_index in &req.session_indexes {
         match state.repo.get_session(session_index).await {
             Ok(Some(session)) if session.realm_id == realm => {
-                if let Err(err) = state.repo.revoke_session(session_index, Some(&realm)).await {
+                if let Err(err) =
+                    revoke_logout_session(state.repo.as_ref(), session_index, &realm).await
+                {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({
@@ -697,7 +707,7 @@ async fn slo_initiate<R: Repository>(
                 .into_response();
         }
     };
-    if let Err(err) = state.repo.revoke_session(&session.id, Some(&realm)).await {
+    if let Err(err) = revoke_logout_session(state.repo.as_ref(), &session.id, &realm).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({

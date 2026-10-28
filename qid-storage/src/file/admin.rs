@@ -62,20 +62,12 @@ impl AdminRepository for FileRepository {
 
     async fn consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        let consumed = if let Some(approval) = store.admin_approvals.get_mut(id) {
-            if approval.consumed {
-                false
-            } else {
-                approval.consumed = true;
-                true
-            }
-        } else {
-            false
+        let Some(approval) = store.admin_approvals.get_mut(id).filter(|a| !a.consumed) else {
+            return Ok(false);
         };
+        approval.consumed = true;
         drop(store);
-        if consumed {
-            self.save().await?;
-        }
-        Ok(consumed)
+        self.save().await?;
+        Ok(true)
     }
 }

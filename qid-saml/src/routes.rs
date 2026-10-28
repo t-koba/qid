@@ -536,7 +536,7 @@ async fn slo<R: Repository>(
     for session_index in &req.session_indexes {
         match state.repo.get_session(session_index).await {
             Ok(Some(session)) if session.realm_id == realm => {
-                if let Err(err) = state.repo.revoke_session(session_index, None).await {
+                if let Err(err) = state.repo.revoke_session(session_index, Some(&realm)).await {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({
@@ -697,7 +697,7 @@ async fn slo_initiate<R: Repository>(
                 .into_response();
         }
     };
-    if let Err(err) = state.repo.revoke_session(&session.id, None).await {
+    if let Err(err) = state.repo.revoke_session(&session.id, Some(&realm)).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -963,3 +963,6 @@ mod attribute_query_tests;
 
 #[cfg(test)]
 mod artifact_tests;
+
+#[cfg(test)]
+mod logout_tests;

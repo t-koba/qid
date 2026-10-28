@@ -34,7 +34,10 @@ async fn revoke_logout_session<R: SessionRepository>(
     session_id: &str,
     validated_realm: &str,
 ) -> qid_core::error::QidResult<bool> {
-    repo.revoke_session(session_id, Some(validated_realm)).await
+    let realm_scope = Some(validated_realm);
+    #[cfg(test)]
+    logout_tests::record_revoke_scope(realm_scope);
+    repo.revoke_session(session_id, realm_scope).await
 }
 
 async fn metadata<R: Repository>(

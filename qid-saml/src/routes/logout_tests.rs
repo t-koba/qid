@@ -85,6 +85,7 @@ async fn logout_routes_preserve_same_realm_and_ignore_foreign_or_missing_session
         assert_eq!(json["result"], "logout_received");
         assert_eq!(json["revoked_sessions"], serde_json::json!(["sp-local"]));
         assert!(repo.get_session("sp-local").await.unwrap().unwrap().revoked);
+        assert_eq!(take_logout_revoke_scopes(), vec![Some("test".to_owned())],);
     }
 
     for (id, expected) in [
@@ -128,57 +129,18 @@ async fn logout_routes_preserve_same_realm_and_ignore_foreign_or_missing_session
         foreign_before,
     );
     assert!(repo.get_session("missing").await.unwrap().is_none());
+    assert_eq!(take_logout_revoke_scopes(), vec![Some("test".to_owned())],);
 }
 
-#[derive(Default)]
-struct ScopeRecordingRepository {
-    scopes: std::sync::Mutex<Vec<Option<String>>>,
+thread_local! {
+    static LOGOUT_REVOKE_SCOPES: std::cell::RefCell<Vec<Option<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-#[async_trait::async_trait]
-impl qid_storage::SessionRepository for ScopeRecordingRepository {
-    async fn create_session(&self, _session: &Session) -> qid_core::error::QidResult<()> {
-        Ok(())
-    }
-
-    async fn get_session(&self, _id: &str) -> qid_core::error::QidResult<Option<Session>> {
-        Ok(None)
-    }
-
-    async fn update_session_idle_expiry(
-        &self,
-        _id: &str,
-        _idle_expires_at: u64,
-        _realm_scope: Option<&str>,
-    ) -> qid_core::error::QidResult<bool> {
-        Ok(false)
-    }
-
-    async fn revoke_session(
-        &self,
-        _id: &str,
-        realm_scope: Option<&str>,
-    ) -> qid_core::error::QidResult<bool> {
-        self.scopes
-            .lock()
-            .unwrap()
-            .push(realm_scope.map(str::to_owned));
-        Ok(true)
-    }
+pub(super) fn record_revoke_scope(scope: Option<&str>) {
+    LOGOUT_REVOKE_SCOPES.with(|scopes| scopes.borrow_mut().push(scope.map(str::to_owned)));
 }
 
-#[tokio::test]
-async fn both_logout_write_callers_forward_the_validated_realm_scope() {
-    let repo = ScopeRecordingRepository::default();
-    for session_id in ["sp-session", "browser-session"] {
-        assert!(
-            revoke_logout_session(&repo, session_id, "test")
-                .await
-                .unwrap()
-        );
-    }
-    assert_eq!(
-        *repo.scopes.lock().unwrap(),
-        vec![Some("test".into()), Some("test".into())],
-    );
+fn take_logout_revoke_scopes() -> Vec<Option<String>> {
+    LOGOUT_REVOKE_SCOPES.with(|scopes| std::mem::take(&mut *scopes.borrow_mut()))
 }

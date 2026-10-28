@@ -179,7 +179,7 @@ async fn password_login_session_and_revoke_propagate_through_shared_cache() -> a
     );
 
     sessions
-        .revoke(&session.id)
+        .revoke(&session.id, None)
         .await
         .context("failed to revoke browser session")?;
     first.session_cache_delete(&session.id);
@@ -187,5 +187,185 @@ async fn password_login_session_and_revoke_propagate_through_shared_cache() -> a
     assert!(sessions.get(&session.id).await?.is_none());
     assert_eq!(second.session_cache_get(&session.id), None);
 
+    Ok(())
+}
+
+async fn session_owner_fixture() -> anyhow::Result<(tempfile::TempDir, Arc<FileRepository>)> {
+    let tmp = tempfile::tempdir()?;
+    let repo = Arc::new(
+        FileRepository::new(
+            tmp.path()
+                .join("sessions.json")
+                .to_str()
+                .context("store path must be UTF-8")?,
+        )
+        .await?,
+    );
+    repo.migrate().await?;
+    for realm in ["corp", "other"] {
+        repo.create_realm(
+            &"tenant".into(),
+            &realm.into(),
+            &format!("https://id.example.com/realms/{realm}"),
+            None,
+        )
+        .await?;
+        repo.create_user(&User {
+            id: format!("user-{realm}"),
+            realm_id: realm.into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await?;
+    }
+    Ok((tmp, repo))
+}
+
+#[tokio::test]
+async fn regeneration_revokes_only_old_sessions_in_the_login_realm() -> anyhow::Result<()> {
+    let (_tmp, repo) = session_owner_fixture().await?;
+    let manager = SessionManager::new(repo.clone(), 30, 8);
+    let amr = vec!["pwd".into()];
+    let foreign = manager
+        .create("other", "user-other", "password", &amr)
+        .await?;
+    let fresh = manager
+        .create_with_regeneration("corp", "user-corp", "password", &amr, Some(&foreign.id))
+        .await?;
+    assert_ne!(fresh.id, foreign.id);
+    assert_eq!(fresh.realm_id, "corp");
+    assert_eq!(fresh.user_id, "user-corp");
+    assert!(!fresh.revoked);
+    assert_eq!(
+        serde_json::to_value(repo.get_session(&foreign.id).await?.unwrap())?,
+        serde_json::to_value(&foreign)?
+    );
+    assert!(manager.get(&fresh.id).await?.is_some());
+
+    // Same-realm regeneration still prevents fixation.
+    let replacement = manager
+        .create_with_regeneration("corp", "user-corp", "password", &amr, Some(&fresh.id))
+        .await?;
+    assert_ne!(replacement.id, fresh.id);
+    assert_ne!(replacement.id, foreign.id);
+    assert_eq!(replacement.realm_id, "corp");
+    assert_eq!(replacement.user_id, "user-corp");
+    assert!(repo.get_session(&fresh.id).await?.unwrap().revoked);
+    assert!(manager.get(&fresh.id).await?.is_none());
+    assert!(manager.get(&replacement.id).await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_routes_preserve_foreign_rows_cookies_and_cache() -> anyhow::Result<()> {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use qid_core::state::SharedState;
+    use tower::ServiceExt;
+
+    let (_tmp, repo) = session_owner_fixture().await?;
+    let mut cfg = config();
+    let mut other = cfg.realms[0].clone();
+    other.id = "other".into();
+    other.issuer = "https://id.example.com/realms/other".into();
+    cfg.realms.push(other);
+    let state = Arc::new(
+        SharedState::new(cfg, repo.clone(), Arc::new(TestSigner), json!({"keys": []}))?
+            .with_shared_cache(Arc::new(MemoryCache::new())),
+    );
+    let manager = SessionManager::new(repo.clone(), 5, 8);
+    let session = manager
+        .create("other", "user-other", "password", &["pwd".into()])
+        .await?;
+    let cache = session_cache_put(&session, qid_core::util::now_seconds())?.unwrap();
+    state.session_cache_put(session.id.clone(), cache.value.clone(), cache.ttl_seconds);
+    let app = qid_session::auth_routes(&state.paths).with_state(state.clone());
+    let cookie = format!(
+        "{}={}",
+        state.realm("other").unwrap().browser_session.cookie_name,
+        session.id
+    );
+    assert_eq!(
+        state.realm("corp").unwrap().browser_session.cookie_name,
+        state.realm("other").unwrap().browser_session.cookie_name
+    );
+
+    for operation in ["refresh", "revoke"] {
+        for cookie_value in [cookie.as_str(), "__Host-qid=missing"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/v1/corp/auth/session/{operation}"))
+                        .header("cookie", cookie_value)
+                        .body(Body::empty())?,
+                )
+                .await?;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert!(!response.headers().contains_key("set-cookie"));
+            assert_eq!(
+                serde_json::to_value(repo.get_session(&session.id).await?.unwrap())?,
+                serde_json::to_value(&session)?
+            );
+            assert_eq!(
+                state.session_cache_get(&session.id),
+                Some(cache.value.clone())
+            );
+        }
+    }
+
+    let mut expected = session.clone();
+    for operation in ["refresh", "revoke"] {
+        // Successful same-realm writes, unlike the refusals above, evict stale cache.
+        state.session_cache_put(session.id.clone(), cache.value.clone(), cache.ttl_seconds);
+        let before = qid_core::util::now_seconds();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/other/auth/session/{operation}"))
+                    .header("cookie", &cookie)
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.session_cache_get(&session.id), None);
+        let stored = repo.get_session(&session.id).await?.unwrap();
+        if operation == "refresh" {
+            let timeout = state
+                .realm("other")
+                .unwrap()
+                .browser_session
+                .idle_timeout_minutes
+                * 60;
+            assert!(stored.idle_expires_at >= before + timeout);
+            assert!(stored.idle_expires_at <= qid_core::util::now_seconds() + timeout);
+            assert_ne!(stored.idle_expires_at, session.idle_expires_at);
+            expected.idle_expires_at = stored.idle_expires_at;
+            assert!(!response.headers().contains_key("set-cookie"));
+        } else {
+            expected.revoked = true;
+            assert!(
+                response
+                    .headers()
+                    .get("set-cookie")
+                    .unwrap()
+                    .to_str()?
+                    .contains("Max-Age=0")
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(stored)?,
+            serde_json::to_value(&expected)?
+        );
+    }
     Ok(())
 }

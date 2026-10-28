@@ -77,7 +77,7 @@ impl<R: Repository> SessionManager<R> {
         old_session_id: Option<&str>,
     ) -> QidResult<Session> {
         if let Some(old_id) = old_session_id {
-            let _ = self.repo.revoke_session(old_id).await;
+            let _ = self.repo.revoke_session(old_id, Some(realm_id)).await;
         }
         self.create(realm_id, user_id, acr, amr).await
     }
@@ -92,8 +92,8 @@ impl<R: Repository> SessionManager<R> {
         Ok(session)
     }
 
-    pub async fn revoke(&self, id: &str) -> QidResult<()> {
-        self.repo.revoke_session(id).await
+    pub async fn revoke(&self, id: &str, realm_scope: Option<&str>) -> QidResult<bool> {
+        self.repo.revoke_session(id, realm_scope).await
     }
 }
 

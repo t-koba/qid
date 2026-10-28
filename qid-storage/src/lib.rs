@@ -145,8 +145,8 @@ delegate!(ClientRepository {
 delegate!(SessionRepository {
     create_session(&self, session: &qid_core::models::Session) -> QidResult<()>;
     get_session(&self, id: &str) -> QidResult<Option<qid_core::models::Session>>;
-    update_session_idle_expiry(&self, id: &str, idle_expires_at: u64) -> QidResult<()>;
-    revoke_session(&self, id: &str) -> QidResult<()>;
+    update_session_idle_expiry(&self, id: &str, idle_expires_at: u64, realm_scope: Option<&str>) -> QidResult<bool>;
+    revoke_session(&self, id: &str, realm_scope: Option<&str>) -> QidResult<bool>;
     list_sessions(&self, realm_id: &str, user_id: Option<&str>) -> QidResult<Vec<qid_core::models::Session>>;
 });
 

@@ -2087,7 +2087,7 @@ async fn test_session_crud() {
         .unwrap()
         .expect("session not found");
     assert_eq!(fetched.user_id, "user-sess");
-    repo.revoke_session("sess-1").await.unwrap();
+    repo.revoke_session("sess-1", None).await.unwrap();
     let after_revoke = repo.get_session("sess-1").await.unwrap().unwrap();
     assert!(after_revoke.revoked);
 }

@@ -257,7 +257,7 @@ async fn start_requires_active_recent_same_realm_account_authentication() {
     let cookie = password_cookie(&f).await;
     f.state
         .repo
-        .revoke_session(cookie.split_once('=').unwrap().1)
+        .revoke_session(cookie.split_once('=').unwrap().1, None)
         .await
         .unwrap();
     rejected(post(&f, START, Some(&cookie), start_body(&key)).await, None).await;
@@ -297,7 +297,7 @@ async fn finish_rechecks_owner_realm_exact_session_and_revocation_without_spendi
     assert_eq!(attempts(&f, &c).await, 0);
     f.state
         .repo
-        .revoke_session(cookie.split_once('=').unwrap().1)
+        .revoke_session(cookie.split_once('=').unwrap().1, None)
         .await
         .unwrap();
     rejected(post(&f, FINISH, Some(&cookie), req).await, Some(&nonce)).await;

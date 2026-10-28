@@ -54,7 +54,7 @@ pub(crate) async fn breakglass_revoke_session<R: Repository>(
             message: "admin tenant does not match session realm tenant".to_string(),
         });
     }
-    if let Err(e) = state.repo.revoke_session(&session_id).await {
+    if let Err(e) = state.repo.revoke_session(&session_id, None).await {
         return qid_http::error_response(e);
     }
     state.session_cache_delete(&session_id);

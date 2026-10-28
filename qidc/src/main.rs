@@ -806,7 +806,7 @@ async fn main() -> anyhow::Result<()> {
                     println!("session created: {}", session.id);
                 }
                 SessionCommand::Revoke(args) => {
-                    repo.revoke_session(&args.session_id).await?;
+                    repo.revoke_session(&args.session_id, None).await?;
                     println!("session revoked: {}", args.session_id);
                 }
             }

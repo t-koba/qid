@@ -957,14 +957,27 @@ async fn logout<R: Repository>(
         Err(error) => return qid_http::error_response(error),
     };
 
-    let session_id = cookie_header.and_then(|c| parse_cookie(c, &cookie_name));
+    let mut session_id = cookie_header.and_then(|c| parse_cookie(c, &cookie_name));
+    let mut foreign_session = false;
 
     let user_id = if let Some(sid) = session_id {
         if let Ok(Some(session)) = state.repo.get_session(sid).await {
-            if state.repo.revoke_session(sid).await.is_ok() {
-                state.session_cache_delete(sid);
+            if Some(session.realm_id.as_str()) != logout_realm_id.as_deref() {
+                foreign_session = true;
+                session_id = None;
+                None
+            } else {
+                if matches!(
+                    state
+                        .repo
+                        .revoke_session(sid, Some(session.realm_id.as_str()))
+                        .await,
+                    Ok(true)
+                ) {
+                    state.session_cache_delete(sid);
+                }
+                Some(session.user_id)
             }
-            Some(session.user_id)
         } else {
             None
         }
@@ -1095,7 +1108,9 @@ async fn logout<R: Repository>(
         );
         ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
     };
-    resp.headers_mut().insert(header::SET_COOKIE, clear_cookie);
+    if !foreign_session {
+        resp.headers_mut().insert(header::SET_COOKIE, clear_cookie);
+    }
     resp
 }
 
@@ -1209,8 +1224,8 @@ async fn backchannel_logout<R: Repository>(
 
     // Revoke matching sessions across all realms
     if let Some(sid_val) = sid {
-        match state.repo.revoke_session(sid_val).await {
-            Ok(()) => state.session_cache_delete(sid_val),
+        match state.repo.revoke_session(sid_val, None).await {
+            Ok(_) => state.session_cache_delete(sid_val),
             Err(e) => {
                 tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {sid_val}");
             }
@@ -1224,7 +1239,7 @@ async fn backchannel_logout<R: Repository>(
             .unwrap_or_default();
         for session in &sessions {
             if !session.revoked {
-                if let Err(e) = state.repo.revoke_session(&session.id).await {
+                if let Err(e) = state.repo.revoke_session(&session.id, None).await {
                     tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {}", session.id);
                 } else {
                     state.session_cache_delete(&session.id);

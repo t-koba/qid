@@ -1561,7 +1561,7 @@ mod tests {
 
         let (state, repo, client, family, token) =
             setup_refresh_case("idle", now, Some(now + 86_400), Some(now + 3600)).await;
-        repo.update_session_idle_expiry("idle-session", now - 10)
+        repo.update_session_idle_expiry("idle-session", now - 10, None)
             .await
             .unwrap();
         let before = family.current_refresh_hash.clone();
@@ -1617,7 +1617,7 @@ mod tests {
         let token_1 = signed_refresh(&state, &first, "s1-jti").await;
         let token_2 = signed_refresh(&state, &second, "s2-jti").await;
 
-        repo.revoke_session("s1-session").await.unwrap();
+        repo.revoke_session("s1-session", None).await.unwrap();
         let err = grant_refresh(&state, token_1, &client, None, None)
             .await
             .unwrap_err();

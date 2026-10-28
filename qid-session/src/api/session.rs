@@ -27,14 +27,15 @@ pub async fn session_refresh<R: Repository>(
 
     let new_idle =
         qid_core::util::now_seconds() + realm_config.browser_session.idle_timeout_minutes * 60;
-    if let Err(e) = state
+    match state
         .repo
-        .update_session_idle_expiry(&session_id, new_idle)
+        .update_session_idle_expiry(&session_id, new_idle, Some(realm.as_str()))
         .await
     {
-        return qid_http::error_response(e);
+        Ok(true) => state.session_cache_delete(&session_id),
+        Ok(false) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return qid_http::error_response(e),
     }
-    state.session_cache_delete(&session_id);
 
     StatusCode::OK.into_response()
 }
@@ -55,10 +56,11 @@ pub async fn session_revoke<R: Repository>(
     };
     let cookie_name = &realm_config.browser_session.cookie_name;
 
-    if let Err(e) = manager.revoke(&session_id).await {
-        return qid_http::error_response(e);
+    match manager.revoke(&session_id, Some(realm.as_str())).await {
+        Ok(true) => state.session_cache_delete(&session_id),
+        Ok(false) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => return qid_http::error_response(e),
     }
-    state.session_cache_delete(&session_id);
 
     let clear_cookie = format!(
         "{}={}; HttpOnly; Secure; Path=/; SameSite={}; Max-Age=0",

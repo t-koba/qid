@@ -97,6 +97,20 @@ At the token and PAR endpoints, set `aud` to the exact issuer identifier adverti
 | `POST` | `/api/v1/:realm/auth/totp/verify` | Verify enrolled TOTP. |
 | `POST` | `/api/v1/:realm/auth/totp/authenticate` | TOTP authentication. |
 
+Browser session cookies may share a name across realms (the default is
+`__Host-qid`). A successful login in realm A creates a fresh random A session
+and may replace that shared cookie, but regeneration only revokes an old
+session owned by A. A stored realm-B session is left unchanged. Session refresh
+and revoke require a session in the path realm: missing or foreign sessions
+return `401`, without clearing the cookie or evicting a foreign cache entry.
+RP logout selects its realm from the validated hint/client, not from the cookie;
+a foreign session supplies neither user identity nor `sid` for notifications,
+is not revoked or evicted, and its shared cookie is preserved. The selected
+realm's sid-less frontchannel notifications can still be rendered; backchannel
+notifications require a same-realm session identity. Same-realm logout still
+revokes, evicts the session cache entry, and clears the cookie. Context-free
+administrative/CLI session operations remain unscoped.
+
 The magic-link send and verify POSTs are not CSRF-exempt. Browser initiation must
 be same-origin with qid so the binding cookie is set; an external application
 needs a same-origin proxy until qid defines a registered-client flow.

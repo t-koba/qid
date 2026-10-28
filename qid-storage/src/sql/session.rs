@@ -49,23 +49,38 @@ impl SessionRepository for SqlRepository {
         Ok(row.map(Into::into))
     }
 
-    async fn update_session_idle_expiry(&self, id: &str, idle_expires_at: u64) -> QidResult<()> {
-        sqlx::query("UPDATE sessions SET idle_expires_at = ? WHERE id = ?")
-            .bind(idle_expires_at as i64)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
-        Ok(())
+    async fn update_session_idle_expiry(
+        &self,
+        id: &str,
+        idle_expires_at: u64,
+        realm_scope: Option<&str>,
+    ) -> QidResult<bool> {
+        let rows = sqlx::query(
+            "UPDATE sessions SET idle_expires_at = ? WHERE id = ? AND (? IS NULL OR realm_id = ?)",
+        )
+        .bind(idle_expires_at as i64)
+        .bind(id)
+        .bind(realm_scope)
+        .bind(realm_scope)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?
+        .rows_affected();
+        Ok(rows > 0)
     }
 
-    async fn revoke_session(&self, id: &str) -> QidResult<()> {
-        sqlx::query("UPDATE sessions SET revoked = 1 WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
-        Ok(())
+    async fn revoke_session(&self, id: &str, realm_scope: Option<&str>) -> QidResult<bool> {
+        let rows = sqlx::query(
+            "UPDATE sessions SET revoked = 1 WHERE id = ? AND (? IS NULL OR (realm_id = ? AND revoked = 0))",
+        )
+        .bind(id)
+        .bind(realm_scope)
+        .bind(realm_scope)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?
+        .rows_affected();
+        Ok(rows > 0)
     }
 
     async fn list_sessions(

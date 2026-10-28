@@ -16,23 +16,43 @@ impl SessionRepository for FileRepository {
         Ok(self.map_get(|store| store.sessions.get(id)).await)
     }
 
-    async fn update_session_idle_expiry(&self, id: &str, idle_expires_at: u64) -> QidResult<()> {
+    async fn update_session_idle_expiry(
+        &self,
+        id: &str,
+        idle_expires_at: u64,
+        realm_scope: Option<&str>,
+    ) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        if let Some(session) = store.sessions.get_mut(id) {
-            session.idle_expires_at = idle_expires_at;
-        }
+        let Some(session) = store
+            .sessions
+            .get_mut(id)
+            .filter(|s| realm_scope.is_none_or(|realm| s.realm_id == realm))
+        else {
+            return Ok(false);
+        };
+        session.idle_expires_at = idle_expires_at;
         drop(store);
-        self.save().await
+        self.save().await?;
+        Ok(true)
     }
 
-    async fn revoke_session(&self, id: &str) -> QidResult<()> {
+    async fn revoke_session(&self, id: &str, realm_scope: Option<&str>) -> QidResult<bool> {
         let mut store = self.store.write().await;
-        if let Some(session) = store.sessions.get_mut(id) {
-            crate::domain::validate_session_revocation(session)?;
-            session.revoked = true;
+        let Some(session) = store
+            .sessions
+            .get_mut(id)
+            .filter(|s| realm_scope.is_none_or(|realm| s.realm_id == realm))
+        else {
+            return Ok(false);
+        };
+        if session.revoked && realm_scope.is_some() {
+            return Ok(false);
         }
+        crate::domain::validate_session_revocation(session)?;
+        session.revoked = true;
         drop(store);
-        self.save().await
+        self.save().await?;
+        Ok(true)
     }
 
     async fn list_sessions(

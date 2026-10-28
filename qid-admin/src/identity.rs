@@ -186,7 +186,7 @@ pub(crate) async fn revoke_session_handler<R: Repository>(
             resource: format!("session {session_id}"),
         });
     }
-    match state.repo.revoke_session(&session_id).await {
+    match state.repo.revoke_session(&session_id, None).await {
         Ok(_) => {
             state.session_cache_delete(&session_id);
             if let Err(e) = record_admin_audit_or_warn(

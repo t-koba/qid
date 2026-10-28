@@ -2849,3 +2849,196 @@ async fn the_realm_wide_par_requirement_still_binds_unmarked_clients() {
 
 #[path = "authorize_par/push.rs"]
 mod push;
+
+#[tokio::test]
+async fn rp_logout_ignores_foreign_session_identity_sid_and_shared_cookie() {
+    let mut config = test_helpers::test_config();
+    let mut other = config.realms[0].clone();
+    other.id = "other".into();
+    other.issuer = "https://other.example.com".into();
+    config.realms.push(other);
+    let (app, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &"other".into(),
+            "https://other.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "other-user".into(),
+            realm_id: "other".into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let capture_state = captured.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let capture_app = Router::new().route(
+        "/bc",
+        axum::routing::post(move |body: String| async move {
+            capture_state.lock().unwrap().push(body);
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, capture_app).await.unwrap();
+    });
+    let template = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    for realm in ["test", "other"] {
+        let mut client = template.clone();
+        client.id = format!("notify-{realm}-id");
+        client.client_id = format!("notify-{realm}");
+        client.realm_id = realm.into();
+        client.frontchannel_logout_uri = Some(format!("https://{realm}.example.com/frontchannel"));
+        client.backchannel_logout_uri = Some(format!("http://127.0.0.1:{port}/bc"));
+        state.repo.create_client(&client).await.unwrap();
+    }
+    create_browser_session(&state, "same-realm-sid").await;
+    let same = state
+        .repo
+        .get_session("same-realm-sid")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut foreign = same.clone();
+    foreign.id = "foreign-realm-sid".into();
+    foreign.realm_id = "other".into();
+    foreign.user_id = "other-user".into();
+    state.repo.create_session(&foreign).await.unwrap();
+    let cache = qid_session::browser::session_cache_put(&foreign, util::now_seconds())
+        .unwrap()
+        .unwrap();
+    state.session_cache_put(foreign.id.clone(), cache.value.clone(), cache.ttl_seconds);
+    assert_eq!(
+        state.realm("test").unwrap().browser_session.cookie_name,
+        state.realm("other").unwrap().browser_session.cookie_name
+    );
+    let cookie_name = &state.realm("test").unwrap().browser_session.cookie_name;
+
+    let response = post_logout(
+        app.clone(),
+        state.paths.logout.clone(),
+        &format!("{cookie_name}={}", foreign.id),
+        "client_id=notify-test",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !response.headers().contains_key("set-cookie"),
+        "a foreign shared cookie is preserved"
+    );
+    let html = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    // Realm-A can still emit its sid-less frontchannel page. Neither the foreign
+    // identity nor its sid may enter that realm's notifications.
+    assert!(html.contains("https://test.example.com/frontchannel?iss="));
+    assert!(!html.contains("sid="));
+    assert!(!html.contains(&foreign.id));
+    assert!(!html.contains(&foreign.user_id));
+    assert!(!html.contains("https://other.example.com/frontchannel"));
+    assert!(
+        captured.lock().unwrap().is_empty(),
+        "no foreign identity may produce a backchannel token"
+    );
+    assert_eq!(
+        serde_json::to_value(state.repo.get_session(&foreign.id).await.unwrap().unwrap()).unwrap(),
+        serde_json::to_value(&foreign).unwrap()
+    );
+    assert_eq!(
+        state.session_cache_get(&foreign.id),
+        Some(cache.value.clone())
+    );
+    assert!(
+        !state
+            .repo
+            .get_session(&same.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked
+    );
+
+    // The same route still revokes and notifies for its own realm's session.
+    let own_cache = qid_session::browser::session_cache_put(&same, util::now_seconds())
+        .unwrap()
+        .unwrap();
+    state.session_cache_put(same.id.clone(), own_cache.value, own_cache.ttl_seconds);
+    let response = post_logout(
+        app,
+        state.paths.logout.clone(),
+        &format!("{cookie_name}={}", same.id),
+        "client_id=notify-test",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
+    let html = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("sid=same-realm-sid"));
+    assert!(!html.contains("https://other.example.com/frontchannel"));
+    assert_eq!(captured.lock().unwrap().len(), 1);
+    let notification = captured.lock().unwrap()[0].clone();
+    let token = urlencoding::decode(notification.strip_prefix("logout_token=").unwrap()).unwrap();
+    let claims = state.signer.decode_signature_only(&token).unwrap().claims;
+    assert_eq!(claims.sub.as_deref(), Some("par-user"));
+    assert_eq!(claims.extra["sid"], "same-realm-sid");
+    assert_eq!(claims.aud, Some(Audience::single("notify-test")));
+    assert!(
+        state
+            .repo
+            .get_session(&same.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked
+    );
+    assert_eq!(state.session_cache_get(&same.id), None);
+    assert_eq!(state.session_cache_get(&foreign.id), Some(cache.value));
+    assert_eq!(
+        serde_json::to_value(state.repo.get_session(&foreign.id).await.unwrap().unwrap()).unwrap(),
+        serde_json::to_value(&foreign).unwrap()
+    );
+    server.abort();
+}

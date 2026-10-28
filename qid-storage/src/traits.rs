@@ -172,8 +172,13 @@ pub trait ClientRepository: Send + Sync + 'static {
 pub trait SessionRepository: Send + Sync + 'static {
     async fn create_session(&self, session: &Session) -> QidResult<()>;
     async fn get_session(&self, id: &str) -> QidResult<Option<Session>>;
-    async fn update_session_idle_expiry(&self, id: &str, idle_expires_at: u64) -> QidResult<()>;
-    async fn revoke_session(&self, id: &str) -> QidResult<()>;
+    async fn update_session_idle_expiry(
+        &self,
+        id: &str,
+        idle_expires_at: u64,
+        realm_scope: Option<&str>,
+    ) -> QidResult<bool>;
+    async fn revoke_session(&self, id: &str, realm_scope: Option<&str>) -> QidResult<bool>;
     async fn list_sessions(
         &self,
         realm_id: &str,

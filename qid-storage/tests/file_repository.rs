@@ -50,7 +50,7 @@ async fn file_session_crud() {
     let loaded = repo.get_session("session-1").await.unwrap().unwrap();
     assert_eq!(loaded.user_id, "user-1");
     assert!(!loaded.revoked);
-    repo.revoke_session("session-1").await.unwrap();
+    repo.revoke_session("session-1", None).await.unwrap();
     let after_revoke = repo.get_session("session-1").await.unwrap().unwrap();
     assert!(after_revoke.revoked);
 }

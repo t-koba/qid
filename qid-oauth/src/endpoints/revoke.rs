@@ -50,38 +50,24 @@ async fn handle_revoke<R: Repository>(
             message: "revocation is disabled".to_string(),
         });
     }
-    if let Some(hint) = req.token_type_hint.as_deref() {
-        match hint {
-            "access_token" | "refresh_token" => {}
-            _ => {
-                return Err(QidError::BadRequest {
-                    message: "unsupported token_type_hint".to_string(),
-                });
-            }
-        }
-    }
-
-    if req.token_type_hint.as_deref() != Some("refresh_token")
-        && let Some(jti) = decode_opaque_access_token(&req.token)
+    // RFC 7009: hints are optional optimizations, never token-type restrictions.
+    // Use the same lookup order for every hint, including unrecognized values.
+    if let Some(jti) = decode_opaque_access_token(&req.token)
+        && revoke_access_token_if_owned(state, jti, &client).await?
     {
-        return revoke_access_token_if_owned(state, jti, &client).await;
+        return Ok(true);
     }
 
     let data = match state.signer.decode_signature_only(&req.token) {
         Ok(data) => data,
         Err(_) => return Ok(false),
     };
-    if req.token_type_hint.as_deref() != Some("refresh_token")
-        && let Some(jti) = data.claims.jti.as_deref()
+    if let Some(jti) = data.claims.jti.as_deref()
         && revoke_access_token_if_owned(state, jti, &client).await?
     {
         return Ok(true);
     }
-    if req.token_type_hint.as_deref() == Some("access_token") {
-        return Ok(false);
-    }
-    let revoked = revoke_refresh_token_family_if_owned(state, &data.claims, &client).await?;
-    Ok(revoked)
+    revoke_refresh_token_family_if_owned(state, &data.claims, &client).await
 }
 
 async fn authenticate_revocation_client<R: Repository>(
@@ -202,9 +188,10 @@ async fn revoke_refresh_token_family_if_owned<R: Repository>(
     if family.client_id != client.client_id || family.realm_id != client.realm_id {
         return Ok(false);
     }
-    state
-        .repo
-        .revoke_token_family(family_id, &family.realm_id)
+    let repo = &*state.repo;
+    #[cfg(test)]
+    let repo = tests::ObservedTokens(repo);
+    repo.revoke_token_family(family_id, &family.realm_id)
         .await?;
     Ok(true)
 }

@@ -168,48 +168,32 @@ impl TokenRepository for SqlRepository {
         user_id: Option<&str>,
         client_id: Option<&str>,
     ) -> QidResult<Vec<TokenFamily>> {
-        let rows: Vec<TokenFamilyRow> = match (user_id, client_id) {
-            (Some(uid), Some(cid)) => {
-                sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = $1 AND user_id = $2 AND client_id = $3 ORDER BY issued_at DESC",
-                )
-                .bind(realm_id)
-                .bind(uid)
-                .bind(cid)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
-            }
-            (Some(uid), None) => {
-                sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = $1 AND user_id = $2 ORDER BY issued_at DESC",
-                )
-                .bind(realm_id)
-                .bind(uid)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
-            }
-            (None, Some(cid)) => {
-                sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = $1 AND client_id = $2 ORDER BY issued_at DESC",
-                )
-                .bind(realm_id)
-                .bind(cid)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
-            }
-            (None, None) => {
-                sqlx::query_as(
-                    "SELECT * FROM token_families WHERE realm_id = $1 ORDER BY issued_at DESC",
-                )
-                .bind(realm_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
-            }
+        let (statement, filters) = match (user_id, client_id) {
+            (Some(uid), Some(cid)) => (
+                "SELECT * FROM token_families WHERE realm_id = $1 AND user_id = $2 AND client_id = $3 ORDER BY issued_at DESC",
+                [Some(uid), Some(cid)],
+            ),
+            (Some(uid), None) => (
+                "SELECT * FROM token_families WHERE realm_id = $1 AND user_id = $2 ORDER BY issued_at DESC",
+                [Some(uid), None],
+            ),
+            (None, Some(cid)) => (
+                "SELECT * FROM token_families WHERE realm_id = $1 AND client_id = $2 ORDER BY issued_at DESC",
+                [Some(cid), None],
+            ),
+            (None, None) => (
+                "SELECT * FROM token_families WHERE realm_id = $1 ORDER BY issued_at DESC",
+                [None, None],
+            ),
         };
+        let mut query = sqlx::query_as(statement).bind(realm_id);
+        for filter in filters.into_iter().flatten() {
+            query = query.bind(filter);
+        }
+        let rows: Vec<TokenFamilyRow> = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 

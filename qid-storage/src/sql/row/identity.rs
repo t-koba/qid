@@ -75,10 +75,7 @@ impl From<ClientRow> for Client {
                 _ => qid_core::models::default_token_endpoint_auth_method(),
             }),
             client_secret_hash: row.client_secret_hash,
-            mtls_certificate_thumbprints: row
-                .mtls_certificate_thumbprints
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            mtls_certificate_thumbprints: json_string_vec(row.mtls_certificate_thumbprints),
             jwks: serde_json::from_str(&row.jwks)
                 .unwrap_or_else(|_| qid_core::models::default_client_jwks()),
             redirect_uris: serde_json::from_str(&row.redirect_uris).unwrap_or_default(),
@@ -86,14 +83,8 @@ impl From<ClientRow> for Client {
             client_name: row.client_name,
             client_uri: row.client_uri,
             logo_uri: row.logo_uri,
-            contacts: row
-                .contacts
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
-            post_logout_redirect_uris: row
-                .post_logout_redirect_uris
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            contacts: json_string_vec(row.contacts),
+            post_logout_redirect_uris: json_string_vec(row.post_logout_redirect_uris),
             default_max_age: row.default_max_age.map(|v| v as u64),
             require_auth_time: row.require_auth_time != 0,
             sector_identifier_uri: row.sector_identifier_uri,
@@ -174,17 +165,11 @@ impl From<AuthCodeRow> for AuthorizationCode {
             nonce: row.nonce,
             auth_time: row.auth_time.map(|value| value as u64),
             acr: row.acr,
-            amr: row
-                .amr
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            amr: json_string_vec(row.amr),
             code_challenge: row.code_challenge,
             code_challenge_method: row.code_challenge_method,
             scopes: serde_json::from_str(&row.scopes).unwrap_or_default(),
-            resource: row
-                .resource
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            resource: json_string_vec(row.resource),
             authorization_details: row
                 .authorization_details
                 .and_then(|value| serde_json::from_str(&value).ok()),
@@ -283,24 +268,15 @@ impl From<AccessTokenRow> for AccessToken {
             client_id: row.client_id,
             realm_id: row.realm_id,
             scopes: serde_json::from_str(&row.scopes).unwrap_or_default(),
-            audience: row
-                .audience
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
-            resource: row
-                .resource
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            audience: json_string_vec(row.audience),
+            resource: json_string_vec(row.resource),
             authorization_details: row
                 .authorization_details
                 .and_then(|value| serde_json::from_str(&value).ok()),
             cnf: row.cnf.and_then(|value| serde_json::from_str(&value).ok()),
             auth_time: row.auth_time.map(|value| value as u64),
             acr: row.acr,
-            amr: row
-                .amr
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
+            amr: json_string_vec(row.amr),
             nonce: row.nonce,
             sender_constraint: row
                 .sender_constraint

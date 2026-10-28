@@ -161,5 +161,7 @@ async fn scim_aux_deletes_enforce_realm() {
         StatusCode::NO_CONTENT
     );
 
+    drop(app);
+    drop(repo);
     std::fs::remove_dir_all(dir).unwrap();
 }

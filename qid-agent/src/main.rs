@@ -138,10 +138,8 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             let Some(mut device) = repo.get_device(&device_id).await? else {
                 bail!("device not found: {device_id}");
             };
-            let last_seen_at = last_seen_at.unwrap_or_else(now_seconds);
-            repo.update_device_last_seen(&device_id, last_seen_at)
-                .await?;
-            device.last_seen_at = last_seen_at;
+            device.last_seen_at = last_seen_at.unwrap_or_else(now_seconds);
+            repo.update_device_last_seen(&device).await?;
             Ok(serde_json::json!({
                 "command": "device_heartbeat",
                 "device": device,

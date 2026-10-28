@@ -34,10 +34,13 @@ impl DeviceRepository for FileRepository {
         Ok(devices)
     }
 
-    async fn update_device_last_seen(&self, device_id: &str, last_seen_at: u64) -> QidResult<()> {
+    async fn update_device_last_seen(&self, device: &Device) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if let Some(device) = store.devices.get_mut(device_id) {
-            device.last_seen_at = last_seen_at;
+        if let Some(stored) = store.devices.get_mut(&device.id)
+            && stored.realm_id == device.realm_id
+            && stored.user_id == device.user_id
+        {
+            stored.last_seen_at = device.last_seen_at;
         }
         drop(store);
         self.save().await

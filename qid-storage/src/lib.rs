@@ -222,7 +222,7 @@ delegate!(DeviceRepository {
     register_device(&self, device: &qid_core::models::Device) -> QidResult<()>;
     get_device(&self, device_id: &str) -> QidResult<Option<qid_core::models::Device>>;
     get_user_devices(&self, user_id: &str) -> QidResult<Vec<qid_core::models::Device>>;
-    update_device_last_seen(&self, device_id: &str, last_seen_at: u64) -> QidResult<()>;
+    update_device_last_seen(&self, device: &qid_core::models::Device) -> QidResult<()>;
 });
 
 delegate!(ScimRepository {

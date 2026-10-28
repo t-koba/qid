@@ -71,6 +71,14 @@ async fn device_identity_ownership_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn device_heartbeat_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_device_heartbeat_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-device-heartbeat").await;
+    support::assert_device_heartbeat_ownership(&file).await;
+}
+
+#[tokio::test]
 async fn fedcm_identity_ownership_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_fedcm_identity_ownership(&sql).await;

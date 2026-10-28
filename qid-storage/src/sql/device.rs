@@ -45,13 +45,17 @@ impl DeviceRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    async fn update_device_last_seen(&self, device_id: &str, last_seen_at: u64) -> QidResult<()> {
-        sqlx::query("UPDATE devices SET last_seen_at = ? WHERE id = ?")
-            .bind(last_seen_at as i64)
-            .bind(device_id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
+    async fn update_device_last_seen(&self, device: &Device) -> QidResult<()> {
+        sqlx::query(
+            "UPDATE devices SET last_seen_at = ? WHERE id = ? AND realm_id = ? AND user_id = ?",
+        )
+        .bind(device.last_seen_at as i64)
+        .bind(&device.id)
+        .bind(&device.realm_id)
+        .bind(&device.user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
         Ok(())
     }
 }

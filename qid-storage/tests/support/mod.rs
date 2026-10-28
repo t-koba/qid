@@ -1336,6 +1336,97 @@ where
     );
 }
 
+/// Heartbeats bind the timestamp write to the existing device's realm and user.
+pub async fn assert_device_heartbeat_ownership<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + DeviceRepository,
+{
+    let realm = RealmId("realm-device-heartbeat".to_string());
+    repo.create_realm(
+        &TenantId("tenant-device-heartbeat".to_string()),
+        &realm,
+        "https://device-heartbeat.example.com",
+        None,
+    )
+    .await
+    .expect("create heartbeat realm");
+    let user = User {
+        id: "user-device-heartbeat".to_string(),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create heartbeat user");
+    let mut device = Device {
+        id: "device-heartbeat".to_string(),
+        realm_id: realm.0,
+        user_id: user.id,
+        device_name: Some("Heartbeat device".to_string()),
+        device_type: "browser".to_string(),
+        posture: vec!["managed".to_string()],
+        registered_at: 1,
+        last_seen_at: 1,
+    };
+    repo.register_device(&device)
+        .await
+        .expect("register device");
+    device.last_seen_at = 2;
+    repo.update_device_last_seen(&device)
+        .await
+        .expect("same-owner heartbeat succeeds");
+    let stored = repo.get_device(&device.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.last_seen_at, 2,
+        "same-owner heartbeat updates timestamp"
+    );
+    assert_eq!(
+        serde_json::to_value(&stored).unwrap(),
+        serde_json::to_value(&device).unwrap()
+    );
+
+    let foreign_realm = Device {
+        realm_id: "foreign-realm".to_string(),
+        last_seen_at: 3,
+        ..device.clone()
+    };
+    let foreign_user = Device {
+        user_id: "foreign-user".to_string(),
+        last_seen_at: 4,
+        ..device.clone()
+    };
+    for attempt in [foreign_realm, foreign_user] {
+        repo.update_device_last_seen(&attempt)
+            .await
+            .expect("foreign-owner heartbeat is a silent no-op");
+        let incumbent = repo.get_device(&device.id).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&incumbent).unwrap(),
+            serde_json::to_value(&device).unwrap(),
+            "foreign-owner heartbeat must leave the entire incumbent unchanged"
+        );
+    }
+    let missing = Device {
+        id: "missing-device-heartbeat".to_string(),
+        last_seen_at: 5,
+        ..device.clone()
+    };
+    repo.update_device_last_seen(&missing)
+        .await
+        .expect("missing heartbeat is a silent no-op");
+    assert!(repo.get_device(&missing.id).await.unwrap().is_none());
+    let incumbent = repo.get_device(&device.id).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&incumbent).unwrap(),
+        serde_json::to_value(&device).unwrap()
+    );
+}
+
 /// The owner-bound contract of a FedCM identity: a record ID names one
 /// identity, so a second identity that carries the same ID is refused and
 /// the incumbent is left unchanged.

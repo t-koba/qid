@@ -82,7 +82,7 @@ pub async fn device_heartbeat<R: Repository>(
     Path((realm, device_id)): Path<(String, String)>,
 ) -> Response {
     // Look up the device to find its owner, then verify the session.
-    let device = match state.repo.get_device(&device_id).await {
+    let mut device = match state.repo.get_device(&device_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             return qid_http::error_response(QidError::NotFound {
@@ -99,8 +99,8 @@ pub async fn device_heartbeat<R: Repository>(
     if let Err(e) = session_auth::require_session(&headers, &state, &realm, &device.user_id).await {
         return e;
     }
-    let now = qid_core::util::now_seconds();
-    match state.repo.update_device_last_seen(&device_id, now).await {
+    device.last_seen_at = qid_core::util::now_seconds();
+    match state.repo.update_device_last_seen(&device).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response(),
         Err(e) => qid_http::error_response(e),
     }

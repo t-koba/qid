@@ -118,6 +118,14 @@ pub trait UserRepository: Send + Sync + 'static {
     async fn delete_user(&self, id: &str, realm: Option<&str>) -> QidResult<()>;
     async fn update_user(&self, user: &User, realm: Option<&str>) -> QidResult<()>;
     async fn store_password_credential(&self, cred: &PasswordCredential) -> QidResult<()>;
+    /// Update an existing credential only while its user belongs to the expected realm.
+    /// Missing/foreign users or missing credentials return NotFound without mutation.
+    /// This rehash operation is not a same-realm credential compare-and-swap.
+    async fn update_password_credential_in_realm(
+        &self,
+        cred: &PasswordCredential,
+        realm: &str,
+    ) -> QidResult<()>;
     async fn get_password_credential(&self, user_id: &str)
     -> QidResult<Option<PasswordCredential>>;
 }

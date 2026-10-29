@@ -86,6 +86,28 @@ impl UserRepository for SqlRepository {
         Ok(())
     }
 
+    async fn update_password_credential_in_realm(
+        &self,
+        cred: &PasswordCredential,
+        realm: &str,
+    ) -> QidResult<()> {
+        let result = sqlx::query(
+            "UPDATE credentials_password SET hash = ?, algorithm = ? WHERE user_id = ? \
+             AND EXISTS (SELECT 1 FROM users WHERE id = ? AND realm_id = ?)",
+        )
+        .bind(&cred.hash)
+        .bind(&cred.algorithm)
+        .bind(&cred.user_id)
+        .bind(&cred.user_id)
+        .bind(realm)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
+        crate::ownership::ensure_row_present(result.rows_affected(), || {
+            format!("password credential {}", cred.user_id)
+        })
+    }
+
     async fn get_password_credential(
         &self,
         user_id: &str,

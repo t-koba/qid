@@ -213,11 +213,14 @@ impl<R: Repository> Authenticator<R> {
         if rehash_required {
             let hash = credentials.hash(password)?;
             self.repo
-                .store_password_credential(&PasswordCredential {
-                    user_id: user.id.clone(),
-                    hash,
-                    algorithm: ARGON2ID_ALGORITHM.to_string(),
-                })
+                .update_password_credential_in_realm(
+                    &PasswordCredential {
+                        user_id: user.id.clone(),
+                        hash,
+                        algorithm: ARGON2ID_ALGORITHM.to_string(),
+                    },
+                    realm_id.as_str(),
+                )
                 .await?;
         }
 

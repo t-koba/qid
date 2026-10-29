@@ -92,6 +92,29 @@ impl UserRepository for FileRepository {
         self.save().await
     }
 
+    async fn update_password_credential_in_realm(
+        &self,
+        cred: &PasswordCredential,
+        realm: &str,
+    ) -> QidResult<()> {
+        let mut store = self.store.write().await;
+        if store
+            .users
+            .get(&cred.user_id)
+            .is_none_or(|user| user.realm_id != realm)
+            || !store.credentials_password.contains_key(&cred.user_id)
+        {
+            return Err(QidError::NotFound {
+                resource: format!("password credential {}", cred.user_id),
+            });
+        }
+        store
+            .credentials_password
+            .insert(cred.user_id.clone(), cred.clone());
+        drop(store);
+        self.save().await
+    }
+
     async fn get_password_credential(
         &self,
         user_id: &str,

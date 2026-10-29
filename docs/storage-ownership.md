@@ -648,6 +648,23 @@ password credential table is keyed by `user_id`
 | `update_user` - `User` | optional expected realm; record owner `realm_id` remains immutable | record `id` | email, `email_verified`, display name, `failed_login_attempts`, `locked_until`, `org`, `updated_at` | With an expected realm, File checks the incumbent under its write lock and SQL filters the atomic update by realm; missing or foreign users return `NotFound` unchanged. Without one, File retains its missing-user upsert and SQL its missing-user no-op. Both preserve the incumbent realm and refuse same-realm email conflicts. The admin directory supplies its authorized path realm; password authentication supplies the realm used for credential lookup; context-free callers use `None`. | file `qid-storage/src/file/user.rs:67-83`; sql `qid-storage/src/sql/user.rs:159-185`; trait `qid-storage/src/traits.rs:119`; admin route `qid-admin/src/directory.rs:311`; password auth `qid-session/src/auth.rs:172`, `qid-session/src/auth.rs:229`, `qid-session/src/auth.rs:255` |
 | `delete_user` (delete) | optional expected realm (`realm_id`) | record `id` | removal of the user and live authentication state | A supplied realm must match the current owner; missing and wrong-owner users return `NotFound` without mutation. File checks before removing the user and its sessions, codes, families, tokens, credentials, devices, push and CIAM state under the write lock. SQL uses a predicate-checked no-op `UPDATE` to hold the matching user row/write lock in the transaction, then removes direct and session/family-linked codes, tokens and families and approved grants before deleting the user and cascading its other owned rows. Pending unowned grants, unrelated token subjects and audit history survive. `None` remains unrestricted and idempotently cleans orphaned state. | file `qid-storage/src/file/user.rs:57`, `qid-storage/src/file/user.rs:64`, `qid-storage/src/file/user.rs:110`; sql `qid-storage/src/sql/user.rs:125`, `qid-storage/src/sql/user.rs:128`, `qid-storage/src/sql/user.rs:140`, `qid-storage/src/sql/user.rs:147`; migration `qid-storage/migrations/20250630000012_user_authentication_lifecycle.sql` |
 | `store_password_credential` - `PasswordCredential` | user (`user_id`) | `user_id` (primary key) | hash, algorithm | File: overwrite of the map entry, no error (`qid-storage/src/file/user.rs:91`). SQL: `ON CONFLICT(user_id) DO UPDATE`, an upsert that never errors (`qid-storage/src/sql/user.rs:75`). Both replace. | file `qid-storage/src/file/user.rs:91`; sql `qid-storage/src/sql/user.rs:75` |
+| `update_password_credential_in_realm` - `PasswordCredential` | expected realm through current user (`realm_id`, `user_id`) | existing credential `user_id` | hash, algorithm | Update-only rehash: File checks the current user's realm and incumbent credential under one exclusive write lock before replacement. SQL uses one static `UPDATE` with a user/realm `EXISTS` predicate; zero affected rows is `NotFound`. Both refuse missing/foreign users or missing credentials without insertion or mutation. | file `qid-storage/src/file/user.rs` (`update_password_credential_in_realm`); sql `qid-storage/src/sql/user.rs` (same method); trait `qid-storage/src/traits.rs` (`UserRepository`) |
+
+Password authentication rehash calls `update_password_credential_in_realm` with
+the realm used to select the user. The unscoped `store_password_credential`
+upsert remains unchanged for setup/CLI and fixtures; it is not used by rehash.
+The SQL cross-realm delete/recreate boundary depends on the existing credential
+foreign key's `ON DELETE CASCADE`
+(`qid-storage/migrations/20250101000001_initial_schema.sql:25`) and the immutable
+incumbent realm in `update_user`. A rehash that updates before deletion is
+removed with the old user; one that reaches the replacement cannot update its
+credential with the old realm. File checks the same boundary under its write
+lock. This is not general authentication linearizability or a same-realm
+credential compare-and-swap: same-realm password replacement or ID reuse is
+outside this guard. File/SQLite contract coverage is in
+`qid-storage/tests/password_credential_scope.rs`; normal progressive rehash
+remains covered in `qid-session/src/auth.rs`.
+
 
 ## vc
 

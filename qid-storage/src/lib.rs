@@ -129,6 +129,7 @@ delegate!(UserRepository {
     delete_user(&self, id: &str, realm: Option<&str>) -> QidResult<()>;
     update_user(&self, user: &qid_core::models::User, realm: Option<&str>) -> QidResult<()>;
     store_password_credential(&self, cred: &qid_core::models::PasswordCredential) -> QidResult<()>;
+    update_password_credential_in_realm(&self, cred: &qid_core::models::PasswordCredential, realm: &str) -> QidResult<()>;
     get_password_credential(&self, user_id: &str) -> QidResult<Option<qid_core::models::PasswordCredential>>;
 });
 

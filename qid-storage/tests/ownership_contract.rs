@@ -352,3 +352,11 @@ async fn marketplace_connector_tenant_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-marketplace-connector").await;
     support::assert_marketplace_connector_tenant_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn usage_billing_event_tenant_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_usage_billing_event_tenant_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-usage-billing-event").await;
+    support::assert_usage_billing_event_tenant_ownership(&file).await;
+}

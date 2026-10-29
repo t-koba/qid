@@ -7,7 +7,7 @@ use qid_core::models::{
     IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
     IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, MarketplaceConnector,
     MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
-    ServiceAccount, TotpCredential, User, WebAuthnCredential, WorkloadIdentity,
+    ServiceAccount, TotpCredential, UsageBillingEvent, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -4278,5 +4278,127 @@ pub async fn assert_marketplace_connector_tenant_ownership<R: SaasRepository>(re
             .await
             .expect("list incumbent after foreign-tenant connector delete failed"),
         vec![connector]
+    );
+}
+
+/// Usage event IDs are globally create-only; idempotency keys are tenant-scoped.
+pub async fn assert_usage_billing_event_tenant_ownership<R: SaasRepository>(repo: &R) {
+    let suffix = ulid::Ulid::new();
+    let tenant_a = format!("tenant-usage-event-a-{suffix}");
+    let tenant_b = format!("tenant-usage-event-b-{suffix}");
+    let sample_event = |name: &str, occurred_at| UsageBillingEvent {
+        id: format!("usage-{name}-{suffix}"),
+        tenant_id: tenant_a.clone(),
+        meter: "active_users".to_string(),
+        quantity: 42,
+        occurred_at,
+        idempotency_key: format!("{tenant_a}:{name}:{suffix}"),
+        dimensions: std::collections::BTreeMap::from([(
+            "realm".to_string(),
+            "realm-saas".to_string(),
+        )]),
+    };
+    let older = sample_event("a-older", 100);
+    let newer = sample_event("z-newer", 200);
+    repo.store_usage_billing_event(&older)
+        .await
+        .expect("store older usage billing event failed");
+    repo.store_usage_billing_event(&newer)
+        .await
+        .expect("store newer usage billing event failed");
+    let history = vec![newer.clone(), older];
+    assert_eq!(
+        repo.list_usage_billing_events(&tenant_a, 10)
+            .await
+            .expect("list ordered usage history failed"),
+        history
+    );
+
+    let duplicate_key = UsageBillingEvent {
+        idempotency_key: newer.idempotency_key.clone(),
+        ..sample_event("duplicate-key", 300)
+    };
+    let error = repo
+        .store_usage_billing_event(&duplicate_key)
+        .await
+        .expect_err("duplicate tenant idempotency key must be rejected");
+    assert!(
+        matches!(error, qid_core::error::QidError::Storage { .. }),
+        "duplicate tenant idempotency key must return Storage, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_usage_billing_events(&tenant_a, 10)
+            .await
+            .expect("list usage history after idempotency key reuse failed"),
+        history
+    );
+
+    let cross_tenant_same_key = UsageBillingEvent {
+        id: format!("usage-cross-tenant-same-key-{suffix}"),
+        tenant_id: tenant_b.clone(),
+        idempotency_key: newer.idempotency_key.clone(),
+        occurred_at: 150,
+        ..newer.clone()
+    };
+    repo.store_usage_billing_event(&cross_tenant_same_key)
+        .await
+        .expect("the same idempotency key should be reusable in another tenant");
+    let tenant_b_history = vec![cross_tenant_same_key.clone()];
+    assert_eq!(
+        repo.list_usage_billing_events(&tenant_a, 10)
+            .await
+            .expect("list tenant-A history after cross-tenant key reuse failed"),
+        history
+    );
+    assert_eq!(
+        repo.list_usage_billing_events(&tenant_b, 10)
+            .await
+            .expect("list tenant-B history after cross-tenant key reuse failed"),
+        tenant_b_history
+    );
+
+    let same_tenant_duplicate = UsageBillingEvent {
+        quantity: 999,
+        ..newer.clone()
+    };
+    let error = repo
+        .store_usage_billing_event(&same_tenant_duplicate)
+        .await
+        .expect_err("same-tenant usage billing event ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "same-tenant usage billing event ID reuse must return Conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_usage_billing_events(&tenant_a, 10)
+            .await
+            .expect("list usage history after same-tenant ID reuse failed"),
+        history
+    );
+
+    let cross_tenant_collision = UsageBillingEvent {
+        tenant_id: tenant_b.clone(),
+        idempotency_key: format!("{tenant_b}:collision:{suffix}"),
+        ..same_tenant_duplicate
+    };
+    let error = repo
+        .store_usage_billing_event(&cross_tenant_collision)
+        .await
+        .expect_err("cross-tenant usage billing event ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-tenant usage billing event ID reuse must return Conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_usage_billing_events(&tenant_a, 10)
+            .await
+            .expect("list incumbent usage history after cross-tenant ID reuse failed"),
+        history
+    );
+    assert_eq!(
+        repo.list_usage_billing_events(&tenant_b, 10)
+            .await
+            .expect("list foreign tenant usage history failed"),
+        tenant_b_history
     );
 }

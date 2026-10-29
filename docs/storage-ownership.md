@@ -673,7 +673,7 @@ device approval checks the approving user's realm, and device and CIBA
 redemption check client, grant/user realm and target before consuming them
 (`qid-oauth/src/endpoints/token_grant.rs:21-68`,
 `qid-oidc/src/provider.rs:589-654`, `qid-oauth/src/endpoints/device_flow.rs:280-314,329-406`,
-`qid-oauth/src/endpoints/ciba.rs:366-444`). These token operations preserve their existing owner validation and one-use behavior. At source commit `f896fcb30e752538175cf89bff072c9a2572fb20` (digest `5e4be4937bba4a594bb261adc03f0b4c1d3ea1e0aa7330b4e03960e1d3b0e369`), `cargo run --locked --offline -p xtask -- budget` measured 113,983/113,985 workspace lines and 15,989/15,990 qid-storage lines. Caps remain unchanged; later source changes require a fresh measurement.
+`qid-oauth/src/endpoints/ciba.rs:366-444`). These token operations preserve their existing owner validation and one-use behavior. At reviewed source commit `3df7d9bd344a1852d246011a21bf674d5a55ae46` (digest `c932137a39e2be7a09b981ef8d4975fb8fef0c9ed01360bc1e0556f93105205c`), `cargo run --locked --offline -p xtask -- budget` measured 113,985/113,985 total product source lines and 15,956/15,990 qid-storage lines. Caps and classifier remain unchanged; this measurement applies to that exact source, and later product-source changes require a fresh measurement.
 
 ## user
 

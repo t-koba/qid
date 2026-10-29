@@ -312,3 +312,11 @@ async fn totp_step_claim_is_user_bound_in_both_backends() {
     let file = support::file_repo("ownership-contract-totp-step").await;
     support::assert_totp_step_owner_bound(&file).await;
 }
+
+#[tokio::test]
+async fn ssf_stream_realm_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_ssf_stream_realm_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-ssf-stream").await;
+    support::assert_ssf_stream_realm_ownership(&file).await;
+}

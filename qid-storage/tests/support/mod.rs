@@ -10,7 +10,7 @@ use qid_core::models::{
     WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
-use qid_storage::{FileRepository, SqlRepository, prelude::*};
+use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -3842,5 +3842,115 @@ where
         repo.consume_totp_step(&credential, 101)
             .await
             .expect("later TOTP step claim failed")
+    );
+}
+
+/// SSF stream IDs are namespaced by realm: same-realm upserts replace the
+/// incumbent, while updates and deletes in one realm leave another realm's
+/// stream with the same ID unchanged.
+pub async fn assert_ssf_stream_realm_ownership<R>(repo: &R)
+where
+    R: RealmRepository + SsfRepository,
+{
+    let realm_a = RealmId("realm-ssf-stream-owner-a".to_string());
+    repo.create_realm(
+        &TenantId("tenant-ssf-stream-owner-a".to_string()),
+        &realm_a,
+        "https://ssf-stream-owner-a.example.com",
+        Some("SSF stream owner A"),
+    )
+    .await
+    .expect("create SSF stream owner A realm failed");
+    let realm_b = RealmId("realm-ssf-stream-owner-b".to_string());
+    repo.create_realm(
+        &TenantId("tenant-ssf-stream-owner-b".to_string()),
+        &realm_b,
+        "https://ssf-stream-owner-b.example.com",
+        Some("SSF stream owner B"),
+    )
+    .await
+    .expect("create SSF stream owner B realm failed");
+
+    let stream_a = SsfStreamRecord {
+        realm_id: realm_a.0.clone(),
+        stream_id: "shared-stream-id".to_string(),
+        delivery_json: serde_json::json!({"url": "https://owner-a.example.com/ssf"}),
+        events_requested: vec!["session-revoked".to_string()],
+        transmitter_issuer: "https://transmitter.example.com".to_string(),
+        transmitter_jwks_json: serde_json::json!({"keys": []}),
+        transmitter_alg: "ES256".to_string(),
+        audience: "owner-a".to_string(),
+        status: "active".to_string(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    let stream_b = SsfStreamRecord {
+        realm_id: realm_b.0.clone(),
+        delivery_json: serde_json::json!({"url": "https://owner-b.example.com/ssf"}),
+        audience: "owner-b".to_string(),
+        ..stream_a.clone()
+    };
+    repo.upsert_ssf_stream(&stream_a)
+        .await
+        .expect("create SSF stream for owner A failed");
+    repo.upsert_ssf_stream(&stream_b)
+        .await
+        .expect("same stream ID in owner B must be independent");
+
+    assert_eq!(
+        repo.get_ssf_stream(&realm_a.0, &stream_a.stream_id)
+            .await
+            .expect("get SSF stream for owner A failed"),
+        Some(stream_a.clone()),
+        "creating owner B's same-ID stream changed owner A's stream"
+    );
+    assert_eq!(
+        repo.get_ssf_stream(&realm_b.0, &stream_b.stream_id)
+            .await
+            .expect("get SSF stream for owner B failed"),
+        Some(stream_b.clone())
+    );
+
+    let updated_a = SsfStreamRecord {
+        audience: "owner-a-updated".to_string(),
+        status: "disabled".to_string(),
+        updated_at: 2,
+        ..stream_a.clone()
+    };
+    repo.upsert_ssf_stream(&updated_a)
+        .await
+        .expect("same-owner SSF stream upsert failed");
+    assert_eq!(
+        repo.get_ssf_stream(&realm_a.0, &stream_a.stream_id)
+            .await
+            .expect("get updated SSF stream for owner A failed"),
+        Some(updated_a)
+    );
+    assert_eq!(
+        repo.get_ssf_stream(&realm_b.0, &stream_b.stream_id)
+            .await
+            .expect("get SSF stream for owner B after owner A update failed"),
+        Some(stream_b.clone()),
+        "owner A's upsert changed owner B's stream"
+    );
+
+    assert!(
+        repo.delete_ssf_stream(&realm_a.0, &stream_a.stream_id)
+            .await
+            .expect("delete SSF stream for owner A failed"),
+        "owner A's stream should be deleted"
+    );
+    assert_eq!(
+        repo.get_ssf_stream(&realm_a.0, &stream_a.stream_id)
+            .await
+            .expect("get deleted SSF stream for owner A failed"),
+        None
+    );
+    assert_eq!(
+        repo.get_ssf_stream(&realm_b.0, &stream_b.stream_id)
+            .await
+            .expect("get SSF stream for owner B after owner A deletion failed"),
+        Some(stream_b),
+        "owner A's delete removed owner B's stream"
     );
 }

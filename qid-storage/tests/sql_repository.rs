@@ -3887,23 +3887,77 @@ async fn assert_iga_repository_round_trip(repo: &impl IgaRepository) {
         .expect("list IGA dormant findings after resolve failed");
     assert!(dormant_findings[0].resolved);
 
+    let mut other_entitlement = entitlement.clone();
+    other_entitlement.tenant_id = "tenant-iga-other".to_string();
+    repo.store_iga_entitlement(&other_entitlement)
+        .await
+        .expect("store same-ID IGA entitlement for another tenant");
+    assert_eq!(
+        repo.list_iga_entitlements("tenant-iga")
+            .await
+            .expect("list incumbent IGA entitlement after foreign insert"),
+        vec![entitlement.clone()]
+    );
+    repo.delete_iga_entitlement("tenant-iga-other", "crm:admin")
+        .await
+        .expect("delete foreign-tenant IGA entitlement");
+    assert_eq!(
+        repo.list_iga_entitlements("tenant-iga")
+            .await
+            .expect("list incumbent IGA entitlement after foreign delete"),
+        vec![entitlement.clone()],
+        "foreign-tenant deletion must preserve the incumbent entitlement"
+    );
+    assert!(
+        repo.list_iga_entitlements("tenant-iga-other")
+            .await
+            .expect("list foreign-tenant IGA entitlements after deletion")
+            .is_empty()
+    );
     repo.delete_iga_entitlement("tenant-iga", "crm:admin")
         .await
-        .expect("delete IGA entitlement failed");
+        .expect("delete owning-tenant IGA entitlement");
     assert!(
         repo.list_iga_entitlements("tenant-iga")
             .await
-            .expect("list IGA entitlements after delete failed")
+            .expect("list IGA entitlements after owner delete failed")
             .is_empty()
     );
 
+    let mut other_package = package.clone();
+    other_package.tenant_id = "tenant-iga-other".to_string();
+    repo.store_iga_access_package(&other_package)
+        .await
+        .expect("store same-ID IGA access package for another tenant");
+    assert_eq!(
+        repo.list_iga_access_packages("tenant-iga")
+            .await
+            .expect("list incumbent IGA access package after foreign insert"),
+        vec![package.clone()]
+    );
+    repo.delete_iga_access_package("tenant-iga-other", "pkg-admin")
+        .await
+        .expect("delete foreign-tenant IGA access package");
+    assert_eq!(
+        repo.list_iga_access_packages("tenant-iga")
+            .await
+            .expect("list incumbent IGA access package after foreign delete"),
+        vec![package.clone()],
+        "foreign-tenant deletion must preserve the incumbent access package"
+    );
+    assert!(
+        repo.list_iga_access_packages("tenant-iga-other")
+            .await
+            .expect("list foreign-tenant IGA access packages after deletion")
+            .is_empty()
+    );
     repo.delete_iga_access_package("tenant-iga", "pkg-admin")
         .await
-        .expect("delete IGA access package failed");
+        .expect("delete owning-tenant IGA access package");
     assert!(
         repo.list_iga_access_packages("tenant-iga")
             .await
-            .expect("list IGA access packages after delete failed")
+            .expect("list IGA access packages after owner delete failed")
             .is_empty()
     );
 }

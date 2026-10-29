@@ -3954,3 +3954,67 @@ where
         "owner A's delete removed owner B's stream"
     );
 }
+
+/// SSF SET replay identity is scoped by realm and stream, with entries
+/// becoming reusable at their expiry boundary.
+pub async fn assert_ssf_set_jti_replay_key<R>(repo: &R)
+where
+    R: RealmRepository + SsfRepository,
+{
+    let realm_a = RealmId("realm-ssf-jti-owner-a".to_string());
+    repo.create_realm(
+        &TenantId("tenant-ssf-jti-owner-a".to_string()),
+        &realm_a,
+        "https://ssf-jti-owner-a.example.com",
+        Some("SSF JTI owner A"),
+    )
+    .await
+    .expect("create SSF JTI owner A realm failed");
+    let realm_b = RealmId("realm-ssf-jti-owner-b".to_string());
+    repo.create_realm(
+        &TenantId("tenant-ssf-jti-owner-b".to_string()),
+        &realm_b,
+        "https://ssf-jti-owner-b.example.com",
+        Some("SSF JTI owner B"),
+    )
+    .await
+    .expect("create SSF JTI owner B realm failed");
+
+    let issuer = "https://transmitter.example.com";
+    let stream_id = "shared-stream";
+    let jti = "shared-jti";
+    assert!(
+        repo.record_ssf_set_jti(&realm_a.0, issuer, stream_id, jti, 10, 1)
+            .await
+            .expect("admit initial SSF SET JTI failed")
+    );
+    assert!(
+        !repo
+            .record_ssf_set_jti(&realm_a.0, issuer, stream_id, jti, 10, 2)
+            .await
+            .expect("check exact SSF SET JTI replay failed")
+    );
+
+    assert!(
+        repo.record_ssf_set_jti(&realm_b.0, issuer, stream_id, jti, 10, 2)
+            .await
+            .expect("same SSF SET JTI in another realm must be independent")
+    );
+    assert!(
+        repo.record_ssf_set_jti(&realm_a.0, issuer, "other-stream", jti, 10, 2)
+            .await
+            .expect("same SSF SET JTI in another stream must be independent")
+    );
+
+    assert!(
+        repo.record_ssf_set_jti(&realm_a.0, issuer, stream_id, jti, 20, 10)
+            .await
+            .expect("expired SSF SET JTI must be reusable at its expiry boundary")
+    );
+    assert!(
+        !repo
+            .record_ssf_set_jti(&realm_a.0, issuer, stream_id, jti, 20, 10)
+            .await
+            .expect("check replay after SSF SET JTI renewal failed")
+    );
+}

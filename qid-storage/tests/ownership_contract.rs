@@ -344,3 +344,11 @@ async fn ciam_brand_tenant_ownership_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-ciam-brand").await;
     support::assert_ciam_brand_tenant_ownership(&file).await;
 }
+
+#[tokio::test]
+async fn marketplace_connector_tenant_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_marketplace_connector_tenant_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-marketplace-connector").await;
+    support::assert_marketplace_connector_tenant_ownership(&file).await;
+}

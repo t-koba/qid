@@ -5,9 +5,9 @@ use qid_core::models::{
     CiamConsentGrant, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain, Device,
     DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
     IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
-    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, ParRequest,
-    PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, TotpCredential, User,
-    WebAuthnCredential, WorkloadIdentity,
+    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, MarketplaceConnector,
+    MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
+    ServiceAccount, TotpCredential, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -4208,5 +4208,75 @@ where
             .await
             .expect("list incumbent after foreign-tenant delete failed"),
         vec![updated]
+    );
+}
+
+/// Marketplace connector IDs are create-only and remain tenant-owned on delete.
+pub async fn assert_marketplace_connector_tenant_ownership<R: SaasRepository>(repo: &R) {
+    let suffix = ulid::Ulid::new();
+    let tenant_a = format!("tenant-marketplace-connector-a-{suffix}");
+    let tenant_b = format!("tenant-marketplace-connector-b-{suffix}");
+    let connector = MarketplaceConnector {
+        id: format!("marketplace-connector-shared-{suffix}"),
+        tenant_id: tenant_a.clone(),
+        provider: "example-crm".to_string(),
+        connector_type: MarketplaceConnectorType::Scim,
+        config_json: serde_json::json!({
+            "base_url": "https://crm.example.com/scim/v2",
+            "token_ref": "kms://secrets/crm-scim-token"
+        }),
+        enabled: true,
+    };
+    repo.store_marketplace_connector(&connector)
+        .await
+        .expect("store marketplace connector failed");
+    assert_eq!(
+        repo.list_marketplace_connectors(&tenant_a)
+            .await
+            .expect("list created marketplace connector failed"),
+        vec![connector.clone()]
+    );
+
+    for tenant in [&tenant_a, &tenant_b] {
+        let duplicate = MarketplaceConnector {
+            tenant_id: tenant.clone(),
+            provider: "changed-crm".to_string(),
+            config_json: serde_json::json!({
+                "base_url": "https://changed.example.com/scim/v2",
+                "token_ref": "kms://secrets/changed-scim-token"
+            }),
+            enabled: false,
+            ..connector.clone()
+        };
+        let error = repo
+            .store_marketplace_connector(&duplicate)
+            .await
+            .expect_err("same-tenant or cross-tenant marketplace connector ID reuse must conflict");
+        assert!(
+            matches!(error, qid_core::error::QidError::Conflict { .. }),
+            "marketplace connector ID reuse for {tenant} must return Conflict, got {error:?}"
+        );
+        assert_eq!(
+            repo.list_marketplace_connectors(&tenant_a)
+                .await
+                .expect("list incumbent after connector ID reuse failed"),
+            vec![connector.clone()]
+        );
+        assert!(
+            repo.list_marketplace_connectors(&tenant_b)
+                .await
+                .expect("list foreign tenant marketplace connectors failed")
+                .is_empty()
+        );
+    }
+
+    repo.delete_marketplace_connector(&tenant_b, &connector.id)
+        .await
+        .expect("foreign-tenant marketplace connector delete failed");
+    assert_eq!(
+        repo.list_marketplace_connectors(&tenant_a)
+            .await
+            .expect("list incumbent after foreign-tenant connector delete failed"),
+        vec![connector]
     );
 }

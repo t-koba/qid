@@ -583,7 +583,7 @@ async fn postgres_realm_deletion_is_tenant_bound_across_locked_id_reuse() {
     // outside this realm-deletion slice; root/user setup uses Repository APIs.
     sqlx::query("INSERT INTO service_accounts (id, client_id, realm_id, description, created_at) VALUES ($1, $2, $3, $4, $5)")
         .bind(&account.id).bind(&account.client_id).bind(&account.realm_id)
-        .bind(&account.description).bind(account.created_at as i64)
+        .bind(&account.description).bind(account.created_at as i32)
         .execute(&pool).await.unwrap();
     // Also cover a request whose authorization preceded a fully committed B.
     repo.delete_realm(&id, &tenant_a).await.unwrap();
@@ -596,7 +596,7 @@ async fn postgres_realm_deletion_is_tenant_bound_across_locked_id_reuse() {
         serde_json::to_value(repo.get_user_by_id(&user.id).await.unwrap().unwrap()).unwrap(),
         serde_json::to_value(&user).unwrap()
     );
-    let stored: (String, String, String, Option<String>, i64) = sqlx::query_as(
+    let stored: (String, String, String, Option<String>, i32) = sqlx::query_as(
         "SELECT id, client_id, realm_id, description, created_at FROM service_accounts WHERE id = $1",
     ).bind(&account.id).fetch_one(&pool).await.unwrap();
     assert_eq!(
@@ -606,7 +606,7 @@ async fn postgres_realm_deletion_is_tenant_bound_across_locked_id_reuse() {
             account.client_id.clone(),
             realm.clone(),
             account.description.clone(),
-            account.created_at as i64
+            account.created_at as i32
         )
     );
     repo.delete_realm(&id, &tenant_b).await.unwrap();

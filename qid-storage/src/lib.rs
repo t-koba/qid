@@ -153,7 +153,7 @@ delegate!(SessionRepository {
 delegate!(TokenRepository {
     create_authorization_code(&self, code: &qid_core::models::AuthorizationCode) -> QidResult<()>;
     get_authorization_code(&self, code_hash: &str) -> QidResult<Option<qid_core::models::AuthorizationCode>>;
-    mark_authorization_code_used(&self, code_hash: &str) -> QidResult<()>;
+    mark_authorization_code_used(&self, code: &qid_core::models::AuthorizationCode) -> QidResult<()>;
     create_token_family(&self, family: &qid_core::models::TokenFamily) -> QidResult<()>;
     get_token_family(&self, id: &str) -> QidResult<Option<qid_core::models::TokenFamily>>;
     update_token_family_refresh_hash(&self, id: &str, realm_id: &str, expected_refresh_hash: &str, refresh_hash: &str, refresh_expires_at: u64) -> QidResult<()>;

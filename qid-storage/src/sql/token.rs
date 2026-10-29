@@ -3,6 +3,15 @@ use async_trait::async_trait;
 
 use super::*;
 
+async fn owned_code(db: &SqlRepository, code: &AuthorizationCode) -> QidResult<AuthorizationCode> {
+    db.get_authorization_code(&code.code_hash)
+        .await?
+        .filter(|stored| crate::domain::auth_code_owner_matches(stored, code))
+        .ok_or_else(|| QidError::NotFound {
+            resource: format!("authorization code {}", code.code_hash),
+        })
+}
+
 #[async_trait]
 impl TokenRepository for SqlRepository {
     async fn create_authorization_code(&self, code: &AuthorizationCode) -> QidResult<()> {
@@ -47,22 +56,22 @@ impl TokenRepository for SqlRepository {
         Ok(row.map(Into::into))
     }
 
-    async fn mark_authorization_code_used(&self, code_hash: &str) -> QidResult<()> {
-        let code = self
-            .get_authorization_code(code_hash)
-            .await?
-            .ok_or_else(|| QidError::NotFound {
-                resource: format!("authorization code {code_hash}"),
-            })?;
-        crate::domain::validate_authz_code_reuse(&code)?;
+    async fn mark_authorization_code_used(&self, code: &AuthorizationCode) -> QidResult<()> {
+        let stored = owned_code(self, code).await?;
+        crate::domain::validate_authz_code_reuse(&stored)?;
         let result =
-            sqlx::query("UPDATE authorization_codes SET used = 1 WHERE code_hash = ? AND used = 0")
-                .bind(code_hash)
+            sqlx::query("UPDATE authorization_codes SET used = 1 WHERE code_hash = ? AND realm_id = ? AND client_id = ? AND user_id = ? AND used = 0")
+                .bind(&code.code_hash).bind(&code.realm_id)
+                .bind(&code.client_id).bind(&code.user_id)
                 .execute(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
-        crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
-            "authorization code already consumed".to_string()
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
+        owned_code(self, code).await?;
+        Err(QidError::Conflict {
+            message: "authorization code already consumed".to_string(),
         })
     }
 

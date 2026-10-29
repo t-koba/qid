@@ -2155,7 +2155,7 @@ async fn test_authorization_code_crud() {
         fetched.authorization_details,
         Some(serde_json::json!([{"type":"payment"}]))
     );
-    repo.mark_authorization_code_used("abc123").await.unwrap();
+    repo.mark_authorization_code_used(&code).await.unwrap();
     let used = repo
         .get_authorization_code("abc123")
         .await

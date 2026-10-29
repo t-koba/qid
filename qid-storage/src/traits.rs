@@ -195,7 +195,7 @@ pub trait TokenRepository: Send + Sync + 'static {
     async fn create_authorization_code(&self, code: &AuthorizationCode) -> QidResult<()>;
     async fn get_authorization_code(&self, code_hash: &str)
     -> QidResult<Option<AuthorizationCode>>;
-    async fn mark_authorization_code_used(&self, code_hash: &str) -> QidResult<()>;
+    async fn mark_authorization_code_used(&self, code: &AuthorizationCode) -> QidResult<()>;
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()>;
     async fn get_token_family(&self, id: &str) -> QidResult<Option<TokenFamily>>;
     /// Rotate only an owned family; missing/foreign IDs are NotFound, never reuse conflicts.

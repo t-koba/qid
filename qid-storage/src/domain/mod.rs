@@ -61,6 +61,10 @@ pub fn validate_authz_code_reuse(code: &AuthorizationCode) -> QidResult<()> {
     Ok(())
 }
 
+pub fn auth_code_owner_matches(cur: &AuthorizationCode, exp: &AuthorizationCode) -> bool {
+    cur.realm_id == exp.realm_id && cur.client_id == exp.client_id && cur.user_id == exp.user_id
+}
+
 /// Validate consent grant state validity (must not be revoked when storing).
 pub fn validate_ciam_consent_grant_state(grant: &CiamConsentGrant) -> QidResult<()> {
     if grant.revoked {

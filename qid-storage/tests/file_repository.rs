@@ -145,10 +145,8 @@ async fn file_authorization_code_single_use() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded.client_id, "client-1");
-    repo.mark_authorization_code_used("code-hash-1")
-        .await
-        .unwrap();
-    let second_use = repo.mark_authorization_code_used("code-hash-1").await;
+    repo.mark_authorization_code_used(&code).await.unwrap();
+    let second_use = repo.mark_authorization_code_used(&code).await;
     assert!(second_use.is_err(), "second use must be rejected");
 }
 

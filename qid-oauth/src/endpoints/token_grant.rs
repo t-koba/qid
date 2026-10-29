@@ -64,7 +64,10 @@ pub async fn authorization_code_grant<R: Repository>(
         });
     }
 
-    state.repo.mark_authorization_code_used(&code_hash).await?;
+    let repo = &*state.repo;
+    #[cfg(test)]
+    let repo = tests::ObservedAuthCode(repo);
+    repo.mark_authorization_code_used(&auth_code).await?;
 
     let user = state
         .repo
@@ -624,6 +627,7 @@ fn log_token_issued(realm_id: &str, subject_id: &str) {
 #[cfg(test)]
 mod tests {
     include!("token_grant_rotation_tests.rs");
+    include!("token_grant_auth_code_tests.rs");
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -907,8 +911,8 @@ mod tests {
         };
         repo.create_authorization_code(&auth_code).await.unwrap();
 
-        let r1 = repo.mark_authorization_code_used(code_hash);
-        let r2 = repo.mark_authorization_code_used(code_hash);
+        let r1 = repo.mark_authorization_code_used(&auth_code);
+        let r2 = repo.mark_authorization_code_used(&auth_code);
         let (r1, r2) = tokio::join!(r1, r2);
 
         assert!(r1.is_ok() || r2.is_ok(), "at least one call must succeed");

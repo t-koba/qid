@@ -19,20 +19,21 @@ impl TokenRepository for FileRepository {
         Ok(self.map_get(|s| s.authorization_codes.get(code_hash)).await)
     }
 
-    async fn mark_authorization_code_used(&self, code_hash: &str) -> QidResult<()> {
+    async fn mark_authorization_code_used(&self, code: &AuthorizationCode) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let code = store
+        let stored = store
             .authorization_codes
-            .get_mut(code_hash)
+            .get_mut(&code.code_hash)
+            .filter(|stored| crate::domain::auth_code_owner_matches(stored, code))
             .ok_or_else(|| QidError::NotFound {
-                resource: format!("authorization code {code_hash}"),
+                resource: format!("authorization code {}", code.code_hash),
             })?;
-        if code.used {
+        if stored.used {
             return Err(QidError::Conflict {
                 message: "authorization code already consumed".to_string(),
             });
         }
-        code.used = true;
+        stored.used = true;
         drop(store);
         self.save().await
     }

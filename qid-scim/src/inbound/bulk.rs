@@ -144,7 +144,7 @@ async fn apply_bulk_operation<R: Repository>(
                 req.realm = Some(realm_id.to_string());
             }
             let result = if let Some(id) = id {
-                replace_user_record(state, id, req, expected).await
+                replace_user_record(state, id, req, expected, context_realm).await
             } else {
                 create_user_record(state, req)
                     .await
@@ -182,7 +182,7 @@ async fn apply_bulk_operation<R: Repository>(
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
                 }
             };
-            match patch_user_record(state, id, req, expected).await {
+            match patch_user_record(state, id, req, expected, context_realm).await {
                 Ok(user) => bulk_success(
                     method,
                     op.bulk_id,
@@ -223,7 +223,7 @@ async fn apply_bulk_operation<R: Repository>(
                 req.realm = Some(realm_id.to_string());
             }
             let result = if let Some(id) = id {
-                replace_group_record(state, id, req, expected).await
+                replace_group_record(state, id, req, expected, context_realm).await
             } else {
                 create_group_record(state, req)
                     .await
@@ -261,7 +261,7 @@ async fn apply_bulk_operation<R: Repository>(
                     return bulk_error(op.bulk_id, &e.status_code().to_string(), &e.message());
                 }
             };
-            match patch_group_record(state, id, req, expected).await {
+            match patch_group_record(state, id, req, expected, context_realm).await {
                 Ok(group) => bulk_success(
                     method,
                     op.bulk_id,

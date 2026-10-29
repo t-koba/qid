@@ -213,8 +213,8 @@ pub(crate) async fn replace_user<R: Repository>(
     };
     let mut req = parse_body!(raw, super::parse_create_user);
     req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
-    let expected = Condition::from_headers(existing.realm_id, &headers);
-    match replace_user_record(&state, &id, req, expected).await {
+    let expected = Condition::from_headers(existing.realm_id.clone(), &headers);
+    match replace_user_record(&state, &id, req, expected, Some(&existing.realm_id)).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
         Err(e) => e.into_response(),
     }
@@ -258,8 +258,9 @@ pub(crate) async fn replace_user_record<R: Repository>(
     id: &str,
     req: CreateUser,
     expected: Option<Condition>,
+    realm: Option<&str>,
 ) -> WriteResult<ScimUser> {
-    let user = write_user(state, id, expected, move |current, conditional| {
+    let user = write_user(state, id, expected, realm, move |current, conditional| {
         let mut req = req;
         if conditional {
             req.realm.get_or_insert(current.realm_id.clone());
@@ -294,8 +295,8 @@ pub(crate) async fn patch_user<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(user.realm_id, &headers);
-    match patch_user_record(&state, &id, req, expected).await {
+    let expected = Condition::from_headers(user.realm_id.clone(), &headers);
+    match patch_user_record(&state, &id, req, expected, Some(&user.realm_id)).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
         Err(e) => e.into_response(),
     }
@@ -306,9 +307,10 @@ pub(crate) async fn patch_user_record<R: Repository>(
     id: &str,
     req: PatchRequest,
     expected: Option<Condition>,
+    realm: Option<&str>,
 ) -> WriteResult<ScimUser> {
     // PATCH preserves stored directory ownership; enterprise edits stay informational.
-    let user = write_user(state, id, expected, move |current, _| {
+    let user = write_user(state, id, expected, realm, move |current, _| {
         let mut user = current;
         let trusted_deprovisioned_at = user.deprovisioned_at;
         for op in req.operations {
@@ -509,7 +511,7 @@ pub(crate) async fn delete_user_record<R: Repository>(
         let user = state.repo.delete_scim_user(id, realm).await?;
         user.map(|u| u.realm_id)
     } else {
-        let user = write_user(state, id, None, |mut user, _| {
+        let user = write_user(state, id, None, realm, |mut user, _| {
             user.active = false;
             Ok(user)
         })
@@ -529,39 +531,40 @@ pub(crate) async fn delete_user_record<R: Repository>(
     Ok(())
 }
 
-/// Transform the locked row conditionally, or retain ordinary read/update behavior.
+/// Transform the locked row, retaining the realm pinned by request validation.
 async fn write_user<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     expected: Option<Condition>,
+    realm: Option<&str>,
     transform: impl FnOnce(ScimUser, bool) -> QidResult<ScimUser> + Send,
 ) -> WriteResult<ScimUser> {
-    if let Some(condition) = expected {
-        state
-            .repo
-            .mutate_scim_user(
-                id,
-                Box::new(move |current| {
-                    if !condition.matches_user(current) {
-                        return Ok(ScimMutation::Reject);
-                    }
-                    Ok(ScimMutation::Replace(transform(current.clone(), true)?))
-                }),
-            )
-            .await?
-            .ok_or(WriteError::PreconditionFailed)
-    } else {
-        let current = state
-            .repo
-            .get_scim_user(id)
-            .await?
-            .ok_or_else(|| QidError::NotFound {
-                resource: "scim user".to_string(),
-            })?;
-        let value = transform(current, false)?;
-        state.repo.update_scim_user(&value).await?;
-        Ok(value)
-    }
+    let conditional = expected.is_some();
+    state
+        .repo
+        .mutate_scim_user(
+            id,
+            Box::new(move |current| {
+                if expected.as_ref().is_some_and(|c| !c.matches_user(current))
+                    || (!conditional && realm.is_some_and(|r| r != current.realm_id))
+                {
+                    return Ok(ScimMutation::Reject);
+                }
+                let value = transform(current.clone(), conditional)?;
+                Ok(ScimMutation::Replace(value))
+            }),
+        )
+        .await?
+        .ok_or_else(|| {
+            if conditional {
+                WriteError::PreconditionFailed
+            } else {
+                QidError::NotFound {
+                    resource: "scim user".to_string(),
+                }
+                .into()
+            }
+        })
 }
 
 fn publish_user_write(user: &ScimUser, operation: &str) {

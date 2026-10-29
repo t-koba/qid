@@ -89,6 +89,7 @@ async fn conditions_match_current_resources_on_both_backends() {
         };
         repo.create_scim_user(&user).await.unwrap();
         repo.create_scim_group(&group).await.unwrap();
+        exercise_unconditional_realms(&state, &user, &group).await;
         exercise_current_conditions(&state, &user, &group).await;
         // A specific stale condition (including a list with no current match)
         // must reject every mutation after an intervening write or deletion.
@@ -106,6 +107,7 @@ async fn conditions_match_current_resources_on_both_backends() {
             &user.id,
             patch("userName", "winner"),
             checked_user.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -114,6 +116,7 @@ async fn conditions_match_current_resources_on_both_backends() {
             &group.id,
             patch("displayName", "winner"),
             checked_group.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -131,7 +134,7 @@ async fn conditions_match_current_resources_on_both_backends() {
             )
             .unwrap();
             assert_stale(
-                replace_user_record(&state, &user.id, put_user, checked_user.clone()).await,
+                replace_user_record(&state, &user.id, put_user, checked_user.clone(), None).await,
             );
             assert_stale(
                 patch_user_record(
@@ -139,6 +142,7 @@ async fn conditions_match_current_resources_on_both_backends() {
                     &user.id,
                     patch("userName", "loser"),
                     checked_user.clone(),
+                    None,
                 )
                 .await,
             );
@@ -149,7 +153,8 @@ async fn conditions_match_current_resources_on_both_backends() {
                 delete_user_record(&state, &user.id, true, checked_user.clone(), None).await,
             );
             assert_stale(
-                replace_group_record(&state, &group.id, put_group, checked_group.clone()).await,
+                replace_group_record(&state, &group.id, put_group, checked_group.clone(), None)
+                    .await,
             );
             assert_stale(
                 patch_group_record(
@@ -157,6 +162,7 @@ async fn conditions_match_current_resources_on_both_backends() {
                     &group.id,
                     patch("displayName", "loser"),
                     checked_group.clone(),
+                    None,
                 )
                 .await,
             );
@@ -239,7 +245,7 @@ async fn exercise_current_conditions(
                 state.repo.update_scim_group(&g2).await.unwrap();
                 let ur = match operation {
                     "patch" => {
-                        patch_user_record(state, &user.id, patch("userName", "requested"), uc)
+                        patch_user_record(state, &user.id, patch("userName", "requested"), uc, None)
                             .await
                             .map(Some)
                     }
@@ -251,6 +257,7 @@ async fn exercise_current_conditions(
                         )
                         .unwrap(),
                         uc,
+                        None,
                     )
                     .await
                     .map(Some),
@@ -259,11 +266,15 @@ async fn exercise_current_conditions(
                         .map(|_| None),
                 };
                 let gr = match operation {
-                    "patch" => {
-                        patch_group_record(state, &group.id, patch("displayName", "requested"), gc)
-                            .await
-                            .map(Some)
-                    }
+                    "patch" => patch_group_record(
+                        state,
+                        &group.id,
+                        patch("displayName", "requested"),
+                        gc,
+                        None,
+                    )
+                    .await
+                    .map(Some),
                     "put" => replace_group_record(
                         state,
                         &group.id,
@@ -272,6 +283,7 @@ async fn exercise_current_conditions(
                         )
                         .unwrap(),
                         gc,
+                        None,
                     )
                     .await
                     .map(Some),
@@ -355,10 +367,17 @@ async fn exercise_current_conditions(
         state.repo.update_scim_user(user).await.unwrap();
         assert_eq!(version, crate::response::scim_user_version(user));
         let result = if operation == "patch" {
-            patch_user_record(state, &user.id, patch("externalId", "client"), condition).await
+            patch_user_record(
+                state,
+                &user.id,
+                patch("externalId", "client"),
+                condition,
+                None,
+            )
+            .await
         } else {
             replace_user_record(state, &user.id, super::super::parse_create_user(
-                serde_json::json!({"realm": "corp", "userName": "requested", "externalId": "client"})).unwrap(), condition).await
+                serde_json::json!({"realm": "corp", "userName": "requested", "externalId": "client"})).unwrap(), condition, None).await
         };
         assert_eq!(result.unwrap_err().status_code(), 409);
         assert_eq!(
@@ -460,7 +479,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             )
             .unwrap();
             assert_eq!(
-                replace_user_record(&state, &user.id, explicit, expected)
+                replace_user_record(&state, &user.id, explicit, expected, None)
                     .await
                     .unwrap_err()
                     .status_code(),
@@ -482,7 +501,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             let omitted =
                 super::super::parse_create_user(serde_json::json!({"userName": "kept"})).unwrap();
             assert!(omitted.realm.is_none());
-            let kept = replace_user_record(&state, &user.id, omitted, expected)
+            let kept = replace_user_record(&state, &user.id, omitted, expected, None)
                 .await
                 .unwrap();
             assert_eq!(kept.realm_id, "other");
@@ -503,7 +522,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             )
             .unwrap();
             assert_eq!(
-                replace_group_record(&state, &group.id, explicit, expected)
+                replace_group_record(&state, &group.id, explicit, expected, None)
                     .await
                     .unwrap_err()
                     .status_code(),
@@ -527,7 +546,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             )
             .unwrap();
             assert!(omitted.realm.is_none());
-            let kept = replace_group_record(&state, &group.id, omitted, expected)
+            let kept = replace_group_record(&state, &group.id, omitted, expected, None)
                 .await
                 .unwrap();
             assert_eq!(kept.realm_id, "other");
@@ -549,7 +568,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             )
             .unwrap();
             req.realm = Some("other".to_string());
-            let kept = replace_user_record(&state, &user.id, req, expected)
+            let kept = replace_user_record(&state, &user.id, req, expected, None)
                 .await
                 .unwrap();
             assert_eq!(kept.realm_id, "other");
@@ -568,7 +587,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             )
             .unwrap();
             req.realm = Some("other".to_string());
-            let kept = replace_group_record(&state, &group.id, req, expected)
+            let kept = replace_group_record(&state, &group.id, req, expected, None)
                 .await
                 .unwrap();
             assert_eq!(kept.realm_id, "other");
@@ -577,5 +596,157 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
         drop(state);
         close_repository_for_cleanup(repo).await;
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+// Capture the request's successful visibility check, then replace the ID before
+// mutation. This is an artificial interleaving, not a claim about generated IDs.
+async fn exercise_unconditional_realms(
+    state: &SharedState<AnyRepository>,
+    user: &ScimUser,
+    group: &ScimGroup,
+) {
+    use crate::inbound::write::{Condition, checked_resource};
+    let repo = &state.repo;
+    repo.create_realm(
+        &TenantId::from("tenant"),
+        &RealmId::from("replacement"),
+        "https://replacement.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    for same_realm in [false, true] {
+        for operation in ["put", "patch", "soft_delete", "hard_delete"] {
+            let headers = axum::http::HeaderMap::new();
+            let checked_user = checked_resource(
+                repo.get_scim_user(&user.id).await,
+                Some(&user.realm_id),
+                Some(&headers),
+                "scim user",
+                |u| &u.realm_id,
+                crate::response::scim_user_version,
+            )
+            .unwrap();
+            let checked_group = checked_resource(
+                repo.get_scim_group(&group.id).await,
+                None,
+                Some(&headers),
+                "scim group",
+                |g| &g.realm_id,
+                crate::response::scim_group_version,
+            )
+            .unwrap();
+            let uc = Condition::from_headers(checked_user.realm_id.clone(), &headers);
+            let gc = Condition::from_headers(checked_group.realm_id.clone(), &headers);
+            assert!(uc.is_none() && gc.is_none());
+            repo.delete_scim_user(&user.id, None).await.unwrap();
+            repo.delete_scim_group(&group.id, None).await.unwrap();
+            let mut replacement_user = user.clone();
+            let mut replacement_group = group.clone();
+            if !same_realm {
+                replacement_user.realm_id = "replacement".into();
+                replacement_group.realm_id = "replacement".into();
+            }
+            replacement_user.name_json = serde_json::json!({"familyName": "latest"});
+            replacement_group.members_json = serde_json::json!([{"value": "latest"}]);
+            repo.create_scim_user(&replacement_user).await.unwrap();
+            repo.create_scim_group(&replacement_group).await.unwrap();
+            let realm = Some(checked_user.realm_id.as_str());
+            let ur = match operation {
+                "put" => replace_user_record(
+                    state,
+                    &user.id,
+                    super::super::parse_create_user(serde_json::json!({
+                        "realm": "corp", "userName": "requested"
+                    }))
+                    .unwrap(),
+                    uc,
+                    realm,
+                )
+                .await
+                .map(|_| ()),
+                "patch" => {
+                    patch_user_record(state, &user.id, patch("userName", "requested"), uc, realm)
+                        .await
+                        .map(|_| ())
+                }
+                _ => {
+                    delete_user_record(state, &user.id, operation == "hard_delete", uc, realm).await
+                }
+            };
+            let realm = Some(checked_group.realm_id.as_str());
+            let gr = match operation {
+                "put" => replace_group_record(
+                    state,
+                    &group.id,
+                    serde_json::from_value(serde_json::json!({
+                        "realm": "corp", "displayName": "requested"
+                    }))
+                    .unwrap(),
+                    gc,
+                    realm,
+                )
+                .await
+                .map(|_| ()),
+                "patch" => patch_group_record(
+                    state,
+                    &group.id,
+                    patch("displayName", "requested"),
+                    gc,
+                    realm,
+                )
+                .await
+                .map(|_| ()),
+                _ => delete_group_record(state, &group.id, gc, realm).await,
+            };
+            if same_realm {
+                ur.unwrap();
+                gr.unwrap();
+                let stored = repo.get_scim_user(&user.id).await.unwrap();
+                if operation == "hard_delete" {
+                    assert!(stored.is_none());
+                } else {
+                    let stored = stored.unwrap();
+                    assert_eq!(stored.name_json, replacement_user.name_json);
+                    assert_eq!(stored.active, operation != "soft_delete");
+                    if operation != "soft_delete" {
+                        assert_eq!(stored.user_name, "requested");
+                    }
+                }
+                let stored = repo.get_scim_group(&group.id).await.unwrap();
+                if matches!(operation, "put" | "patch") {
+                    let stored = stored.unwrap();
+                    assert_eq!(stored.display_name, "requested");
+                    assert_eq!(stored.members_json, replacement_group.members_json);
+                } else {
+                    assert!(stored.is_none());
+                }
+            } else {
+                // Unconditional hard deletes retain their idempotent no-op result.
+                if operation == "hard_delete" {
+                    ur.unwrap();
+                } else {
+                    assert_eq!(ur.unwrap_err().status_code(), 404);
+                }
+                if matches!(operation, "put" | "patch") {
+                    assert_eq!(gr.unwrap_err().status_code(), 404);
+                } else {
+                    gr.unwrap();
+                }
+                assert_eq!(
+                    serde_json::to_value(repo.get_scim_user(&user.id).await.unwrap()).unwrap(),
+                    serde_json::to_value(Some(&replacement_user)).unwrap()
+                );
+                assert_eq!(
+                    serde_json::to_value(repo.get_scim_group(&group.id).await.unwrap()).unwrap(),
+                    serde_json::to_value(Some(&replacement_group)).unwrap()
+                );
+            }
+            repo.delete_scim_user(&user.id, None).await.unwrap();
+            repo.delete_scim_group(&group.id, None).await.unwrap();
+            repo.create_scim_user(user).await.unwrap();
+            repo.create_scim_group(group).await.unwrap();
+        }
     }
 }

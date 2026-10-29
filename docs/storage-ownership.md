@@ -461,6 +461,16 @@ also require the referenced realm to belong to that tenant.
 
 ## scim
 
+Inbound user/group PUT and PATCH, and user soft-delete, carry the realm from the
+initial visibility check into `mutate_scim_user` / `mutate_scim_group`, including
+requests without `If-Match`. The callback checks that realm under File's exclusive
+lock or SQL's row transaction before transforming the current row. A missing or
+cross-realm replacement returns 404 for unconditional writes; conditional writes
+retain their ETag/realm checks and 412 result. Bulk writes with a realm context
+carry that validated context realm into the same callback. Hard deletes retain
+the existing realm-bound atomic deletion and idempotent no-op semantics.
+
+
 Model types: `ScimUser`, `ScimGroup`, `ScimDeviceRecord`,
 `ScimEventSubscriptionRecord`. Owner: realm (`realm_id`). The tables also
 declare `UNIQUE(realm_id, user_name)` and `UNIQUE(realm_id, display_name)`

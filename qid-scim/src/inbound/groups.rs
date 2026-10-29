@@ -141,8 +141,8 @@ pub(crate) async fn replace_group<R: Repository>(
         Err(response) => return *response,
     };
     req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
-    let expected = Condition::from_headers(existing.realm_id, &headers);
-    match replace_group_record(&state, &id, req, expected).await {
+    let expected = Condition::from_headers(existing.realm_id.clone(), &headers);
+    match replace_group_record(&state, &id, req, expected, Some(&existing.realm_id)).await {
         Ok(group) => crate::response::scim_group_response(StatusCode::OK, group),
         Err(e) => e.into_response(),
     }
@@ -163,8 +163,9 @@ pub(crate) async fn replace_group_record<R: Repository>(
     id: &str,
     req: CreateGroup,
     expected: Option<Condition>,
+    realm: Option<&str>,
 ) -> WriteResult<ScimGroup> {
-    write_group(state, id, expected, move |current, conditional| {
+    write_group(state, id, expected, realm, move |current, conditional| {
         let mut req = req;
         if conditional {
             req.realm.get_or_insert(current.realm_id.clone());
@@ -197,8 +198,8 @@ pub(crate) async fn patch_group<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(group.realm_id, &headers);
-    match patch_group_record(&state, &id, req, expected).await {
+    let expected = Condition::from_headers(group.realm_id.clone(), &headers);
+    match patch_group_record(&state, &id, req, expected, Some(&group.realm_id)).await {
         Ok(group) => crate::response::scim_group_response(StatusCode::OK, group),
         Err(e) => e.into_response(),
     }
@@ -209,8 +210,9 @@ pub(crate) async fn patch_group_record<R: Repository>(
     id: &str,
     req: PatchRequest,
     expected: Option<Condition>,
+    realm: Option<&str>,
 ) -> WriteResult<ScimGroup> {
-    write_group(state, id, expected, move |current, _| {
+    write_group(state, id, expected, realm, move |current, _| {
         let mut group = current;
         for op in req.operations {
             apply_group_patch(&mut group, op)?;
@@ -307,37 +309,38 @@ pub(crate) async fn delete_group_record<R: Repository>(
     Ok(())
 }
 
-/// Transform the locked row conditionally, or retain ordinary read/update behavior.
+/// Transform the locked row, retaining the realm pinned by request validation.
 async fn write_group<R: Repository>(
     state: &SharedState<R>,
     id: &str,
     expected: Option<Condition>,
+    realm: Option<&str>,
     transform: impl FnOnce(ScimGroup, bool) -> QidResult<ScimGroup> + Send,
 ) -> WriteResult<ScimGroup> {
-    if let Some(condition) = expected {
-        state
-            .repo
-            .mutate_scim_group(
-                id,
-                Box::new(move |current| {
-                    if !condition.matches_group(current) {
-                        return Ok(ScimMutation::Reject);
-                    }
-                    Ok(ScimMutation::Replace(transform(current.clone(), true)?))
-                }),
-            )
-            .await?
-            .ok_or(WriteError::PreconditionFailed)
-    } else {
-        let current = state
-            .repo
-            .get_scim_group(id)
-            .await?
-            .ok_or_else(|| QidError::NotFound {
-                resource: "scim group".to_string(),
-            })?;
-        let value = transform(current, false)?;
-        state.repo.update_scim_group(&value).await?;
-        Ok(value)
-    }
+    let conditional = expected.is_some();
+    state
+        .repo
+        .mutate_scim_group(
+            id,
+            Box::new(move |current| {
+                if expected.as_ref().is_some_and(|c| !c.matches_group(current))
+                    || (!conditional && realm.is_some_and(|r| r != current.realm_id))
+                {
+                    return Ok(ScimMutation::Reject);
+                }
+                let value = transform(current.clone(), conditional)?;
+                Ok(ScimMutation::Replace(value))
+            }),
+        )
+        .await?
+        .ok_or_else(|| {
+            if conditional {
+                WriteError::PreconditionFailed
+            } else {
+                QidError::NotFound {
+                    resource: "scim group".to_string(),
+                }
+                .into()
+            }
+        })
 }

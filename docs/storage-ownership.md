@@ -103,21 +103,22 @@ lock-protected checks or atomic statements:
   device user codes are globally unique. `User.email=None` has no identity key,
   matching SQL's multiple-NULL behavior. ID conflicts take precedence on the
   file path and retain the resource's existing messages.
-- `file::insert::replace_guarded` - a typed stable-update operation, called
-  under the exclusive store lock, reads the `(realm_id, client_id)` binding
-  through the `StableUpdateIdentity` projection itself and refuses a binding
-  change before mutation; a missing ID inserts. `User.email` is mutable
-  metadata, so it is not a stable binding. The client contract is
-  `OwnershipContract::CLIENT` (`qid-storage/src/ownership.rs:100`,
-  `qid-storage/src/ownership.rs:102`) and the `update_client` trait contract
-  (`qid-storage/src/traits.rs:131`).
+- `ClientRepository::update_client` - the File path checks the incumbent
+  `(realm_id, client_id)` binding with `ensure_same_binding` under the exclusive
+  store lock before replacement; a missing ID still inserts. SQL keeps the same
+  binding in its static atomic update predicate and classifies zero-row results
+  afterward. The client contract is `OwnershipContract::CLIENT`
+  (`qid-storage/src/ownership.rs:100`, `qid-storage/src/ownership.rs:102`),
+  with enforcement in `qid-storage/src/file/client.rs:14` and
+  `qid-storage/src/sql/client.rs:63`; the trait contract is at
+  `qid-storage/src/traits.rs:131`.
 
 The `OwnershipContract` constants record keys and collision rules for migrated
 writes; they are not runtime-linked to the backend methods. For create-only
 records, the typed `InsertIdentity` projection and repository trait contract
-state the operation, and the client update documents its stable binding in
-`StableUpdateIdentity` and the `update_client` trait contract. Backend code
-enforces the contracts under the file store's write lock or in static SQL.
+state the operation, and the client update keeps its stable binding explicit in
+the File check and static SQL predicate. Backend code enforces the contracts
+under the file store's write lock or in static SQL.
 Replacement, append-only and lifecycle operations remain separate; the
 create-only primitive does not apply to them.
 
@@ -210,7 +211,7 @@ inside a realm (`UNIQUE(realm_id, client_id)`,
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
 | `create_client` - `Client` | realm (`realm_id`) | record `id` and `client_id` (unique per realm) | redirect URIs, grant types, secret hash, mTLS thumbprints, jwks, contacts, metadata including `require_pushed_authorization_requests` | File: `insert_new` under the store's exclusive write lock refuses an existing record ID with `Conflict` and an existing `(realm, client_id)` with `Conflict` (`qid-storage/src/file/client.rs:9`, `qid-storage/src/file/insert.rs:71`, `qid-storage/src/file/insert.rs:58`). SQL: `ON CONFLICT DO NOTHING` and `rows_affected() == 0` is turned into `Conflict` with a message naming which key was taken (`qid-storage/src/sql/client.rs:12`, `qid-storage/src/sql/client.rs:43`, `qid-storage/src/sql/client.rs:58`). Both refuse with `Conflict`. | file `qid-storage/src/file/client.rs:9`, `qid-storage/src/file/insert.rs:71`, `qid-storage/src/file/insert.rs:58`; sql `qid-storage/src/sql/client.rs:12`, `qid-storage/src/sql/client.rs:43`, `qid-storage/src/sql/client.rs:58`; schema `qid-storage/migrations/20250101000001_initial_schema.sql:52`, `qid-storage/migrations/20250703000001_clients_require_par.sql:1` |
-| `update_client` - `Client` | realm (`realm_id`) | record `id` plus stable `(realm_id, client_id)` binding | client metadata fields including `require_pushed_authorization_requests` | File: `replace_guarded` under the exclusive write lock refuses a mismatched `(realm_id, client_id)` binding with `Conflict` and leaves the incumbent unchanged; a matching binding, including an identical retry, replaces (`qid-storage/src/file/client.rs:14`, `qid-storage/src/file/insert.rs:119`, `qid-storage/src/file/insert.rs:124`). SQL: static `UPDATE ... WHERE id = ? AND realm_id = ? AND client_id = ?` updates only the same binding; a zero-row result is classified after the write with `ensure_same_binding`, so a present mismatch is `Conflict` and a present match (the identical update) succeeds (`qid-storage/src/sql/client.rs:63`, `qid-storage/src/sql/client.rs:69`, `qid-storage/src/sql/client.rs:100`, `qid-storage/src/sql/client.rs:111`). Both refuse a binding change with `Conflict`. The missing-ID difference is intentional and unchanged: the file backend inserts, the SQL backend is a silent no-op. | file `qid-storage/src/file/client.rs:14`, `qid-storage/src/file/insert.rs:119`, `qid-storage/src/file/insert.rs:124`; sql `qid-storage/src/sql/client.rs:63`, `qid-storage/src/sql/client.rs:69`, `qid-storage/src/sql/client.rs:100`, `qid-storage/src/sql/client.rs:111`, `qid-storage/migrations/20250703000001_clients_require_par.sql:1`; contract `qid-storage/src/ownership.rs:100`, `qid-storage/src/traits.rs:131` |
+| `update_client` - `Client` | realm (`realm_id`) | record `id` plus stable `(realm_id, client_id)` binding | client metadata fields including `require_pushed_authorization_requests` | File: the resource-local `update_client` check calls `ensure_same_binding` under the exclusive write lock and refuses a mismatched `(realm_id, client_id)` binding with `Conflict` before mutation; a matching binding, including an identical retry, replaces, and a missing ID inserts (`qid-storage/src/file/client.rs:14-24`). SQL: static `UPDATE ... WHERE id = ? AND realm_id = ? AND client_id = ?` updates only the same binding; a zero-row result is classified after the write with `ensure_same_binding`, so a present mismatch is `Conflict` and a present match (the identical update) succeeds (`qid-storage/src/sql/client.rs:63`, `qid-storage/src/sql/client.rs:69`, `qid-storage/src/sql/client.rs:100`, `qid-storage/src/sql/client.rs:111`). Both refuse a binding change with `Conflict`. The missing-ID difference is intentional and unchanged: the file backend inserts, the SQL backend is a silent no-op. | file `qid-storage/src/file/client.rs:14-24`; sql `qid-storage/src/sql/client.rs:63`, `qid-storage/src/sql/client.rs:69`, `qid-storage/src/sql/client.rs:100`, `qid-storage/src/sql/client.rs:111`, `qid-storage/migrations/20250703000001_clients_require_par.sql:1`; contract `qid-storage/src/ownership.rs:100`, `qid-storage/src/traits.rs:131` |
 | `delete_client` (delete) | realm (`realm_id`) | internal client record `id` | none, removal | File: under the exclusive write lock, a missing ID or realm mismatch is a no-op; only a matching `(realm_id, id)` is removed (`qid-storage/src/file/client.rs:65`). SQL: static `DELETE FROM clients WHERE realm_id = ? AND id = ?`; foreign and missing IDs are silent no-ops (`qid-storage/src/sql/client.rs:180`). | file `qid-storage/src/file/client.rs:65`; sql `qid-storage/src/sql/client.rs:180`; trait `qid-storage/src/traits.rs:165` |
 
 

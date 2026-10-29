@@ -13,7 +13,15 @@ impl ClientRepository for FileRepository {
 
     async fn update_client(&self, client: &Client) -> QidResult<()> {
         let mut store = self.store.write().await;
-        super::insert::replace_guarded(&mut store.clients, client)?;
+        crate::ownership::ensure_same_binding(
+            store
+                .clients
+                .get(&client.id)
+                .map(|stored| (stored.realm_id.as_str(), stored.client_id.as_str())),
+            (client.realm_id.as_str(), client.client_id.as_str()),
+            || "client ID belongs to another identity".to_string(),
+        )?;
+        store.clients.insert(client.id.clone(), client.clone());
         drop(store);
         self.save().await
     }

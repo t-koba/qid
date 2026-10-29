@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    Admin, AdminApproval, AdminElevation, AuditEvent, BackchannelAuthenticationGrant,
+    Admin, AdminApproval, AdminElevation, AuditEvent, BackchannelAuthenticationGrant, CiamBrand,
     CiamConsentGrant, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain, Device,
     DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
     IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
@@ -4113,6 +4113,98 @@ where
         .expect("foreign-tenant custom-domain delete failed");
     assert_eq!(
         repo.list_custom_domains(tenant_a)
+            .await
+            .expect("list incumbent after foreign-tenant delete failed"),
+        vec![updated]
+    );
+}
+
+/// CIAM brand IDs remain tenant-owned through mutable updates and deletes.
+pub async fn assert_ciam_brand_tenant_ownership<R>(repo: &R)
+where
+    R: SaasRepository + RealmRepository,
+{
+    let suffix = ulid::Ulid::new();
+    let tenant_a = format!("tenant-ciam-brand-a-{suffix}");
+    let tenant_b = format!("tenant-ciam-brand-b-{suffix}");
+    let realm_a = format!("realm-ciam-brand-a-{suffix}");
+    let realm_b = format!("realm-ciam-brand-b-{suffix}");
+    for (tenant, realm, issuer) in [
+        (&tenant_a, &realm_a, "https://brand-a.example.com"),
+        (&tenant_b, &realm_b, "https://brand-b.example.com"),
+    ] {
+        repo.create_realm(
+            &TenantId::from(tenant.as_str()),
+            &RealmId::from(realm.as_str()),
+            issuer,
+            Some("CIAM brand ownership realm"),
+        )
+        .await
+        .expect("create CIAM brand ownership realm failed");
+    }
+
+    let brand = CiamBrand {
+        id: format!("ciam-brand-shared-{suffix}"),
+        tenant_id: tenant_a.clone(),
+        realm_id: realm_a,
+        display_name: "Customer Blue".to_string(),
+        primary_color: "#2f6fed".to_string(),
+        logo_uri: Some("https://cdn.example.com/logo.svg".to_string()),
+        privacy_policy_uri: Some("https://www.example.com/privacy".to_string()),
+        support_uri: Some("https://support.example.com".to_string()),
+        terms_version: Some("2026-06".to_string()),
+        active: true,
+    };
+    repo.store_ciam_brand(&brand)
+        .await
+        .expect("store CIAM brand failed");
+    let mut updated = brand.clone();
+    updated.display_name = "Updated Customer Blue".to_string();
+    updated.primary_color = "#123456".to_string();
+    updated.terms_version = Some("2026-07".to_string());
+    updated.active = false;
+    repo.store_ciam_brand(&updated)
+        .await
+        .expect("same-tenant CIAM brand update failed");
+    assert_eq!(
+        repo.list_ciam_brands(&tenant_a)
+            .await
+            .expect("list updated CIAM brand failed"),
+        vec![updated.clone()]
+    );
+
+    let collision = CiamBrand {
+        tenant_id: tenant_b.clone(),
+        realm_id: realm_b,
+        display_name: "Foreign Customer".to_string(),
+        ..updated.clone()
+    };
+    let error = repo
+        .store_ciam_brand(&collision)
+        .await
+        .expect_err("cross-tenant CIAM brand ID collision must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "CIAM brand ID collision must return Conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_ciam_brands(&tenant_a)
+            .await
+            .expect("list incumbent after collision failed"),
+        vec![updated.clone()]
+    );
+    assert!(
+        repo.list_ciam_brands(&tenant_b)
+            .await
+            .expect("list foreign tenant CIAM brands failed")
+            .is_empty()
+    );
+
+    repo.delete_ciam_brand(&tenant_b, &brand.id)
+        .await
+        .expect("foreign-tenant CIAM brand delete failed");
+    assert_eq!(
+        repo.list_ciam_brands(&tenant_a)
             .await
             .expect("list incumbent after foreign-tenant delete failed"),
         vec![updated]

@@ -11,6 +11,11 @@ impl RealmRepository for FileRepository {
         issuer: &str,
         _display_name: Option<&str>,
     ) -> QidResult<()> {
+        let save_guard = if self.flush_mode == FileFlushMode::Immediate {
+            Some(self.save_lock.lock().await)
+        } else {
+            None
+        };
         let mut store = self.store.write().await;
         reject_duplicate_id(
             store.realm_issuers.contains_key(&realm_id.0)
@@ -21,14 +26,30 @@ impl RealmRepository for FileRepository {
                     .any(|stored_issuer| stored_issuer == issuer),
             || "realm ID or issuer already exists".to_string(),
         )?;
-        store
-            .realm_issuers
-            .insert(realm_id.0.clone(), issuer.to_string());
-        store
-            .realm_tenants
-            .insert(realm_id.0.clone(), tenant.as_str().to_string());
-        drop(store);
-        self.save().await
+        let prepare = |store: &mut Store| {
+            store.remove_realm(realm_id.as_str());
+            store
+                .realm_issuers
+                .insert(realm_id.0.clone(), issuer.to_string());
+            store
+                .realm_tenants
+                .insert(realm_id.0.clone(), tenant.as_str().to_string());
+        };
+        if let Some(guard) = save_guard {
+            let mut candidate = store.clone();
+            prepare(&mut candidate);
+            #[cfg(test)]
+            self.before_flush().await?;
+            let content = serde_json::to_string(&candidate).map_err(|e| QidError::Internal {
+                message: format!("failed to serialize store: {e}"),
+            })?;
+            self.write_store_content_locked(&guard, &content).await?;
+            *store = candidate;
+        } else {
+            prepare(&mut store);
+            self.dirty.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 
     async fn get_realm_issuer(&self, id: &RealmId) -> QidResult<Option<String>> {
@@ -54,8 +75,7 @@ impl RealmRepository for FileRepository {
 
     async fn delete_realm(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()> {
         if self.flush_mode == FileFlushMode::Immediate {
-            // Once started, deletion completes persistence or rollback even if
-            // the request future is cancelled during a filesystem await.
+            // Complete persistence or rollback even if cancelled during I/O.
             let repo = self.clone();
             let id = id.clone();
             let expected_tenant = expected_tenant.clone();
@@ -73,8 +93,7 @@ impl RealmRepository for FileRepository {
 
 impl FileRepository {
     async fn delete_realm_inner(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()> {
-        // Keep both locks through persistence/rollback: no reader can observe a
-        // partial deletion and no concurrent save can publish tentative state.
+        // Hold both locks through persistence; no tentative state is visible.
         let save_guard = if self.flush_mode == FileFlushMode::Immediate {
             Some(self.save_lock.lock().await)
         } else {
@@ -86,28 +105,21 @@ impl FileRepository {
         {
             return Ok(());
         }
-        let previous = save_guard.as_ref().map(|_| store.clone());
-        store.remove_realm(id.as_str());
         if let Some(guard) = save_guard {
-            let result = async {
-                #[cfg(test)]
-                self.before_flush().await?;
-                let content = serde_json::to_string(&*store).map_err(|e| QidError::Internal {
-                    message: format!("failed to serialize store: {e}"),
-                })?;
-                self.write_store_content_locked(&guard, &content).await
-            }
-            .await;
-            if result.is_err() {
-                *store = previous.unwrap();
-            }
-            result
+            let mut candidate = store.clone();
+            candidate.remove_realm(id.as_str());
+            #[cfg(test)]
+            self.before_flush().await?;
+            let content = serde_json::to_string(&candidate).map_err(|e| QidError::Internal {
+                message: format!("failed to serialize store: {e}"),
+            })?;
+            self.write_store_content_locked(&guard, &content).await?;
+            *store = candidate;
         } else {
-            // Interval mode accepts the in-memory deletion; failed background
-            // persistence leaves it dirty for retry, just like other mutations.
+            store.remove_realm(id.as_str());
             self.dirty.store(true, Ordering::Release);
-            Ok(())
         }
+        Ok(())
     }
 }
 
@@ -146,14 +158,11 @@ impl Store {
         self.app_catalog_entries
             .retain(|_, value| value.realm_id != realm);
         self.ssf_streams.retain(|_, value| value.realm_id != realm);
-        // Replay keys start with the complete realm plus the field separator,
-        // not a bare realm prefix (e.g. `corp` must not match `corporate`).
+        // Replay keys use realm plus separator, not bare prefix (corp vs corporate).
         let replay_prefix = format!("{realm}\u{1f}");
         self.ssf_set_replay
             .retain(|key, _| !key.starts_with(&replay_prefix));
         self.realm_issuers.remove(realm);
         self.realm_tenants.remove(realm);
-        // Audit events, retention and SIEM deliveries are independent history.
-        // Tenant-scoped and namespace-scoped records are not owned by a realm.
     }
 }

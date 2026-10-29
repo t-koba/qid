@@ -86,8 +86,8 @@ pub trait RealmRepository: Send + Sync + 'static {
     /// Idempotently remove the realm and its live owned state, including users
     /// and their authentication dependents. Audit/retention/delivery history and
     /// independently tenant/global-scoped records survive. Reusing the realm ID
-    /// does not restore deleted live records. The expected tenant is checked atomically;
-    /// an unknown or foreign-tenant realm is a no-op, including orphaned state.
+    /// Reusing an ID clears orphaned live state before exposure. The expected tenant
+    /// is checked atomically; unknown or foreign-tenant deletes are no-ops, including orphans.
     async fn delete_realm(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()>;
 }
 

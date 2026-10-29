@@ -622,3 +622,157 @@ async fn postgres_realm_deletion_is_tenant_bound_across_locked_id_reuse() {
     repo.close().await;
     pool.close().await;
 }
+
+#[tokio::test]
+async fn postgres_realm_creation_clears_legacy_non_fk_orphans() {
+    let url = match std::env::var("QID_TEST_POSTGRES_URL") {
+        Ok(url) => url,
+        Err(std::env::VarError::NotPresent) => {
+            eprintln!("skipping PostgreSQL realm reuse: QID_TEST_POSTGRES_URL is unset");
+            return;
+        }
+        Err(_) => panic!("QID_TEST_POSTGRES_URL must be valid Unicode"),
+    };
+    let options: PgConnectOptions = url.parse().expect("valid PostgreSQL test URL");
+    let pool = PgPool::connect_with(options.clone()).await.unwrap();
+    let repo = SqlRepository::connect(&repository_url(
+        &options,
+        "qid-realm-reuse",
+        "read committed",
+    ))
+    .await
+    .unwrap();
+    repo.migrate().await.unwrap();
+    let realm = format!("realm-reuse-{}", ulid::Ulid::new());
+    let peer = format!("{realm}-peer");
+    let id = realm.clone().into();
+    let issuer = format!("https://{realm}.example");
+    let peer_issuer = format!("https://{peer}.example");
+    for (scope, issuer) in [(&realm, &issuer), (&peer, &peer_issuer)] {
+        repo.create_realm(&"tenant-a".into(), &scope.clone().into(), issuer, None)
+            .await
+            .unwrap();
+        // Non-FK legacy data/history only. Keep unrelated CRUD placeholder
+        // portability outside this slice; parent creation uses Repository APIs.
+        for statement in include_str!("fixtures/realm_seed.sql").lines().filter(|s| {
+            [
+                "service_accounts",
+                "ciam_brands",
+                "audit_events",
+                "audit_retention_configs",
+                "siem_delivery_queue",
+                "marketplace_connectors",
+                "relationship_tuples",
+            ]
+            .iter()
+            .any(|table| s.starts_with(&format!("INSERT INTO {table} (")))
+        }) {
+            sqlx::raw_sql(&statement.replace("'realm", &format!("'{scope}")))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    let counts_sql = format!(
+        "{} ORDER BY resource",
+        include_str!("fixtures/realm_counts.sql").replace('?', "$1")
+    );
+    let before: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
+        .bind(&peer)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM realms WHERE id = $1")
+        .bind(&realm)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let orphans: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
+        .bind(&realm)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    for table in ["service_accounts", "ciam_brands"] {
+        assert_eq!(orphans.iter().find(|(t, _)| t == table).unwrap().1, 1);
+    }
+    // Unknown deletion is still unauthorized; issuer/ID conflicts must not
+    // clean either the orphaned target or the incumbent peer.
+    repo.delete_realm(&id, &"tenant-a".into()).await.unwrap();
+    for (candidate, candidate_issuer) in [(&id, &peer_issuer), (&peer.clone().into(), &issuer)] {
+        assert!(matches!(
+            repo.create_realm(&"tenant-b".into(), candidate, candidate_issuer, None)
+                .await,
+            Err(qid_core::QidError::Conflict { .. })
+        ));
+        let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
+            .bind(&realm)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, orphans);
+        let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
+            .bind(&peer)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, before);
+    }
+    repo.create_realm(&"tenant-b".into(), &id, &issuer, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_realm_tenant(&id).await.unwrap().as_deref(),
+        Some("tenant-b")
+    );
+    let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
+        .bind(&realm)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    for (table, count) in remaining {
+        assert_eq!(count, i64::from(table == "realms"), "{table}");
+    }
+    let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
+        .bind(&peer)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, before);
+    for scope in [&realm, &peer] {
+        for statement in [
+            "SELECT COUNT(*) FROM audit_events WHERE realm_id = $1",
+            "SELECT COUNT(*) FROM audit_retention_configs WHERE realm_id = $1",
+            "SELECT COUNT(*) FROM siem_delivery_queue WHERE realm_id = $1",
+            "SELECT COUNT(*) FROM marketplace_connectors WHERE id = $1 || '-record'",
+            "SELECT COUNT(*) FROM relationship_tuples WHERE namespace = $1",
+        ] {
+            let count: i64 = sqlx::query_scalar(statement)
+                .bind(scope)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1, "{statement}");
+        }
+    }
+    repo.delete_realm(&id, &"tenant-b".into()).await.unwrap();
+    repo.delete_realm(&peer.clone().into(), &"tenant-a".into())
+        .await
+        .unwrap();
+    for scope in [&realm, &peer] {
+        for statement in [
+            "DELETE FROM audit_events WHERE realm_id = $1",
+            "DELETE FROM audit_retention_configs WHERE realm_id = $1",
+            "DELETE FROM siem_delivery_queue WHERE realm_id = $1",
+            "DELETE FROM marketplace_connectors WHERE id = $1 || '-record'",
+            "DELETE FROM relationship_tuples WHERE namespace = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(scope)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    repo.close().await;
+    pool.close().await;
+}

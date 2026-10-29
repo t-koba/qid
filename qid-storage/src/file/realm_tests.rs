@@ -228,8 +228,8 @@ async fn realm_deletion_interval_keeps_accepted_cleanup_dirty_until_flush_succee
 }
 
 #[tokio::test]
-async fn realm_deletion_preserves_unowned_file_orphans_without_parent() {
-    let (_file, repo) = TestFile::new().await;
+async fn realm_creation_clears_file_orphans_only_after_claiming_absent_id() {
+    let (file, repo) = TestFile::new().await;
     let mut store = seeded_store(false);
     store.realm_issuers.remove("realm");
     store.realm_tenants.remove("realm");
@@ -239,6 +239,111 @@ async fn realm_deletion_preserves_unowned_file_orphans_without_parent() {
         .await
         .unwrap();
     assert_eq!(snapshot(&repo).await, before);
+    assert!(
+        repo.get_service_account_by_client_id("realm", "realm-client")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // Neither a duplicate ID nor a duplicate issuer may clean live records.
+    let peer_issuer = repo
+        .get_realm_issuer(&"realm-peer".into())
+        .await
+        .unwrap()
+        .unwrap();
+    for (id, issuer) in [
+        ("realm-peer", "https://unused.example.com"),
+        ("realm", peer_issuer.as_str()),
+    ] {
+        assert!(matches!(
+            repo.create_realm(&"tenant-b".into(), &id.into(), issuer, None)
+                .await,
+            Err(QidError::Conflict { .. })
+        ));
+        assert_eq!(snapshot(&repo).await, before);
+    }
+    repo.create_realm(
+        &"tenant-b".into(),
+        &"realm".into(),
+        "https://new.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        repo.get_service_account_by_client_id("realm", "realm-client")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut expected = serde_json::to_value(seeded_store(true)).unwrap();
+    expected["realm_tenants"]["realm"] = "tenant-b".into();
+    expected["realm_issuers"]["realm"] = "https://new.example.com".into();
+    // Full snapshot covers all live categories, unrelated realm and history.
+    assert_eq!(snapshot(&repo).await, expected);
+    drop(repo);
+    assert_eq!(snapshot(&file.reopen().await).await, expected);
+}
+
+#[tokio::test]
+async fn realm_creation_immediate_failure_leaves_orphans_untouched_until_retry() {
+    let (file, repo) = TestFile::new().await;
+    let mut store = seeded_store(false);
+    store.realm_issuers.remove("realm");
+    store.realm_tenants.remove("realm");
+    let before = serde_json::to_value(&store).unwrap();
+    *repo.store.write().await = store;
+    repo.save().await.unwrap();
+    assert_eq!(snapshot(&repo).await, before);
+    // Fail persistence while holding both locks; no tentative realm or cleanup
+    // may become visible in memory or on disk.
+    let (reached, resume) = fail_next_flush(&repo);
+    let tenant_b: TenantId = "tenant-b".into();
+    let realm_id: RealmId = "realm".into();
+    let mut creation =
+        Box::pin(repo.create_realm(&tenant_b, &realm_id, "https://new.example.com", None));
+    assert_pending(creation.as_mut()).await;
+    complete(reached).await.unwrap();
+    assert!(repo.store.try_read().is_err());
+    assert!(repo.save_lock.try_lock().is_err());
+    resume.send(()).unwrap();
+    assert!(complete(creation).await.is_err());
+    assert_eq!(snapshot(&repo).await, before);
+    assert!(
+        repo.get_realm_issuer(&"realm".into())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(repo);
+    let repo = file.reopen().await;
+    assert_eq!(snapshot(&repo).await, before);
+    assert!(
+        repo.get_service_account_by_client_id("realm", "realm-client")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    repo.create_realm(
+        &"tenant-b".into(),
+        &"realm".into(),
+        "https://new.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        repo.get_service_account_by_client_id("realm", "realm-client")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut expected = serde_json::to_value(seeded_store(true)).unwrap();
+    expected["realm_tenants"]["realm"] = "tenant-b".into();
+    expected["realm_issuers"]["realm"] = "https://new.example.com".into();
+    assert_eq!(snapshot(&repo).await, expected);
+    drop(repo);
+    assert_eq!(snapshot(&file.reopen().await).await, expected);
 }
 
 #[tokio::test]

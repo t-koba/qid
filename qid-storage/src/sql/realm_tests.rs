@@ -195,7 +195,7 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
 }
 
 #[tokio::test]
-async fn realm_deletion_sql_preserves_unowned_non_fk_orphans_without_parent() {
+async fn realm_creation_sql_clears_orphans_only_after_claiming_absent_id() {
     let db = setup().await;
     let repo = db.repo();
     let peer_before = counts(repo, "realm-peer").await;
@@ -208,6 +208,7 @@ async fn realm_deletion_sql_preserves_unowned_non_fk_orphans_without_parent() {
     let orphaned = counts(repo, "realm").await;
     assert_eq!(orphaned.iter().find(|(t, _)| t == "users").unwrap().1, 0);
     for resource in [
+        "service_accounts",
         "ciam_brands",
         "custom_domains",
         "app_catalog_entries",
@@ -226,6 +227,67 @@ async fn realm_deletion_sql_preserves_unowned_non_fk_orphans_without_parent() {
         .await
         .unwrap();
     assert_eq!(counts(repo, "realm").await, orphaned);
+    assert_eq!(counts(repo, "realm-peer").await, peer_before);
+    assert_history(repo).await;
+    assert!(
+        repo.get_service_account_by_client_id("realm", "realm-client")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    for (id, issuer) in [
+        ("realm-peer", "https://unused.example.com"),
+        ("realm", "https://realm-peer.example.com"),
+    ] {
+        assert!(matches!(
+            repo.create_realm(&"tenant-b".into(), &id.into(), issuer, None)
+                .await,
+            Err(QidError::Conflict { .. })
+        ));
+        assert_eq!(counts(repo, "realm").await, orphaned);
+        assert_eq!(counts(repo, "realm-peer").await, peer_before);
+    }
+    // A late cleanup failure must roll back both earlier deletes and the insert.
+    sqlx::raw_sql("CREATE TRIGGER fail_realm_reuse BEFORE DELETE ON ssf_streams WHEN OLD.realm_id = 'realm' BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;")
+        .execute(&repo.pool).await.unwrap();
+    assert!(
+        repo.create_realm(
+            &"tenant-b".into(),
+            &"realm".into(),
+            "https://new.example.com",
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(counts(repo, "realm").await, orphaned);
+    assert_history(repo).await;
+    sqlx::query("DROP TRIGGER fail_realm_reuse")
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+    repo.create_realm(
+        &"tenant-b".into(),
+        &"realm".into(),
+        "https://new.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.get_realm_tenant(&"realm".into())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("tenant-b")
+    );
+    assert!(
+        repo.get_service_account_by_client_id("realm", "realm-client")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_deleted(repo, true).await;
     assert_eq!(counts(repo, "realm-peer").await, peer_before);
     assert_history(repo).await;
     db.cleanup().await;

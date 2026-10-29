@@ -106,19 +106,15 @@ lock-protected checks or atomic statements:
 - `ClientRepository::update_client` - the File path checks the incumbent
   `(realm_id, client_id)` binding with `ensure_same_binding` under the exclusive
   store lock before replacement; a missing ID still inserts. SQL keeps the same
-  binding in its static atomic update predicate and classifies zero-row results
-  afterward. The client contract is `OwnershipContract::CLIENT`
-  (`qid-storage/src/ownership.rs:100`, `qid-storage/src/ownership.rs:102`),
-  with enforcement in `qid-storage/src/file/client.rs:14` and
-  `qid-storage/src/sql/client.rs:63`; the trait contract is at
-  `qid-storage/src/traits.rs:131`.
+  binding in its static atomic update predicate and classifies zero-row results.
+  File and SQL enforcement are in `qid-storage/src/file/client.rs:14` and
+  `qid-storage/src/sql/client.rs:63`, respectively; the repository trait
+  contract is at `qid-storage/src/traits.rs:131`.
 
-The `OwnershipContract` constants record keys and collision rules for migrated
-writes; they are not runtime-linked to the backend methods. For create-only
-records, the typed `InsertIdentity` projection and repository trait contract
-state the operation, and the client update keeps its stable binding explicit in
-the File check and static SQL predicate. Backend code enforces the contracts
-under the file store's write lock or in static SQL.
+The inventory tables below record owner keys, identity keys, collision rules,
+and backend behavior. Shared helpers standardize error outcomes; they do not
+execute or dispatch resource writes. Each backend retains resource-specific
+enforcement under the File write lock or in its static SQL statement.
 Replacement, append-only and lifecycle operations remain separate; the
 create-only primitive does not apply to them.
 

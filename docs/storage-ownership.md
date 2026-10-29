@@ -95,8 +95,12 @@ lock-protected checks or atomic statements:
 - `file::insert::insert_new` - a typed create-only map operation, called under
   the exclusive store lock, reads the global ID and optional `(owner, identity)`
   projection itself, refuses a taken key before mutation, and inserts only
-  when both keys are clear. Its private `InsertIdentity` implementations cover
-  `PolicyBundle`, `User`, and `Client`; `User.email=None` has no identity key,
+  when both keys are clear. Its private `InsertIdentity` implementations
+  cover `PolicyBundle`, `User`, `ScimUser`, `ScimGroup`, `Client`,
+  `ParRequest`, `DeviceAuthorizationGrant`, and
+  `BackchannelAuthenticationGrant`.
+  `ParRequest` and `BackchannelAuthenticationGrant` use only their record IDs;
+  device user codes are globally unique. `User.email=None` has no identity key,
   matching SQL's multiple-NULL behavior. ID conflicts take precedence on the
   file path and retain the resource's existing messages.
 - `file::insert::replace_guarded` - a typed stable-update operation, called
@@ -127,16 +131,18 @@ backchannel grant) has no owner
 to protect, and a write whose same-owner semantics are
 "replace" (an upsert of a configuration record) states that on purpose.
 
-The rows for the one-shot consumption, revocation, approval, poll, mutation and
-deletion writes record a second class of difference. A write whose identity key
-is a token the product generates, or a record the caller owns, asks the backend
-whether the record is still in play. The SQL statement's WHERE clause cannot
-tell an unknown record from a record that is already in its terminal state, so
-the update matches no row in both cases and the backend answers one error for
-the two unless it classifies the zero-row result with a post-write lookup.
-For `consume_ciam_verification_challenge`, SQL now classifies a zero-row update with
+The rows for one-shot consumption, bounded attempts, revocation, approval, poll,
+mutation and deletion writes record a second class of difference. A write whose
+identity key is a token the product generates, or a record the caller owns, asks
+its backend whether the record is still in play. The SQL statement's WHERE
+clause cannot distinguish an unknown ID from an existing record that no longer
+meets the operation's preconditions, so the update matches no row in both
+cases. The backend may classify the zero-row result with a post-write lookup to
+preserve the intended errors.
+For `attempt_ciam_verification_challenge`, SQL classifies a zero-row update with
 a post-write owner lookup, matching the file path's `NotFound` for missing or
-foreign-realm records and `Conflict` for repeated consumption by the owner.
+foreign-realm records and `Conflict` for an unusable challenge owned by the
+realm (wrong hash, expired, exhausted or already consumed).
 For `consume_password_reset_token`, SQL now classifies a zero-row update with
 a post-write existence lookup, matching the file path's `NotFound` for an
 unknown ID and `Conflict` for an already consumed token.

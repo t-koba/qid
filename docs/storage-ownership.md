@@ -76,11 +76,9 @@ lets the table's primary key and unique indexes refuse the duplicate inside
 the statement, so no read precedes the write and no duplicate can slip
 between a check and an insert. The two idioms differ; the outcome does not.
 
-Selected helpers in `qid-storage/src/ownership.rs` standardize common error
-outcomes. `OwnershipContract` is typed inventory metadata (owner key, identity
-key, collision rule), not a generic operation that automatically enforces a
-write. The concrete File and SQL methods enforce the recorded semantics through
-lock-protected checks or atomic statements:
+Shared helpers in `qid-storage/src/ownership.rs` classify common error
+outcomes, while each concrete File or SQL method enforces the documented
+semantics through lock-protected checks or atomic statements:
 
 - `ensure_same_binding` - the file path, under the write lock, refuses a
   write whose identity key is bound to another owner; the SQL client update

@@ -23,6 +23,14 @@ async fn ciam_consent_grant_owner_conflict_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn ciam_progressive_profile_owner_conflict_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_ciam_progressive_profile_owner_conflict(&sql).await;
+    let file = support::file_repo("ownership-contract-ciam-progressive-profile").await;
+    support::assert_ciam_progressive_profile_owner_conflict(&file).await;
+}
+
+#[tokio::test]
 async fn ciam_consent_grant_revoke_idempotent_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_ciam_consent_grant_revoke_idempotent(&sql).await;

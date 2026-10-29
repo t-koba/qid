@@ -2,13 +2,13 @@
 
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, BackchannelAuthenticationGrant, CiamBrand,
-    CiamConsentGrant, CiamIdentityLink, CiamVerificationChallengeRecord, Client, ClientType,
-    CustomDomain, Device, DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord,
-    IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
-    IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
-    MarketplaceConnector, MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle,
-    RelationshipTuple, ServiceAccount, TotpCredential, UsageBillingEvent, User, WebAuthnCredential,
-    WorkloadIdentity,
+    CiamConsentGrant, CiamIdentityLink, CiamProgressiveProfile, CiamVerificationChallengeRecord,
+    Client, ClientType, CustomDomain, Device, DeviceAuthorizationGrant, FedCmIdentity,
+    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
+    IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
+    IgaJitPrivilegeGrantRecord, MarketplaceConnector, MarketplaceConnectorType, ParRequest,
+    PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, TotpCredential,
+    UsageBillingEvent, User, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -602,6 +602,114 @@ where
         .await
         .expect("list cross-client consent failed")
         .is_empty()
+    );
+}
+
+pub async fn assert_ciam_progressive_profile_owner_conflict<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CiamRepository,
+{
+    let realm = RealmId::from("realm-ciam-profile-owner");
+    repo.create_realm(
+        &TenantId::from("tenant-ciam-profile-owner"),
+        &realm,
+        "https://ciam-profile-owner.example.com",
+        Some("CIAM Profile Owner"),
+    )
+    .await
+    .expect("create CIAM progressive-profile owner realm failed");
+    let user = User {
+        id: "user-ciam-profile-owner".to_string(),
+        realm_id: realm.0.clone(),
+        email: Some("profile-owner@example.com".to_string()),
+        email_verified: false,
+        display_name: Some("Profile Owner".to_string()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create CIAM progressive-profile owner user failed");
+    let other_user = User {
+        id: "user-ciam-profile-other".to_string(),
+        realm_id: realm.0.clone(),
+        email: Some("profile-other@example.com".to_string()),
+        display_name: Some("Other Profile User".to_string()),
+        ..user.clone()
+    };
+    repo.create_user(&other_user)
+        .await
+        .expect("create other CIAM progressive-profile user failed");
+
+    let incumbent = CiamProgressiveProfile {
+        id: "ciam-progressive-profile-shared-id".to_string(),
+        realm_id: realm.0.clone(),
+        user_id: user.id.clone(),
+        profile_json: serde_json::json!({"name": "Original"}),
+        passwordless_migrated_at: None,
+        created_at: 100,
+        updated_at: 100,
+    };
+    repo.store_ciam_progressive_profile(&incumbent)
+        .await
+        .expect("store initial CIAM progressive profile failed");
+
+    let updated = CiamProgressiveProfile {
+        profile_json: serde_json::json!({"name": "Updated"}),
+        updated_at: 200,
+        ..incumbent.clone()
+    };
+    repo.store_ciam_progressive_profile(&updated)
+        .await
+        .expect("same-owner CIAM progressive-profile update failed");
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&realm, &user.id)
+            .await
+            .expect("get same-owner CIAM progressive profile failed"),
+        Some(updated.clone())
+    );
+
+    let changed_identity = CiamProgressiveProfile {
+        id: "replacement-ciam-progressive-profile-id".to_string(),
+        ..updated.clone()
+    };
+    let error = repo
+        .store_ciam_progressive_profile(&changed_identity)
+        .await
+        .expect_err("same-owner progressive-profile identity change must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "same-owner identity change must conflict, got {error:?}"
+    );
+
+    let foreign_owner = CiamProgressiveProfile {
+        realm_id: realm.0.clone(),
+        user_id: other_user.id.clone(),
+        profile_json: serde_json::json!({"name": "Foreign replacement"}),
+        updated_at: 300,
+        ..updated.clone()
+    };
+    let error = repo
+        .store_ciam_progressive_profile(&foreign_owner)
+        .await
+        .expect_err("cross-owner progressive-profile ID reuse must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "cross-owner ID reuse must conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.get_ciam_progressive_profile(&realm, &user.id)
+            .await
+            .expect("get incumbent after refused replacement failed"),
+        Some(updated)
+    );
+    assert!(
+        repo.get_ciam_progressive_profile(&realm, &other_user.id)
+            .await
+            .expect("get foreign profile after refused insert failed")
+            .is_none(),
+        "cross-owner ID reuse must not create a foreign profile"
     );
 }
 

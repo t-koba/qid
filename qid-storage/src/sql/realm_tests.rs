@@ -78,7 +78,11 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
     // run. Every statement and the root/cascade state must roll back together.
     sqlx::raw_sql("CREATE TRIGGER fail_realm_cleanup BEFORE DELETE ON ssf_streams WHEN OLD.realm_id = 'realm' BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;")
         .execute(&repo.pool).await.unwrap();
-    assert!(repo.delete_realm(&"realm".into()).await.is_err());
+    assert!(
+        repo.delete_realm(&"realm".into(), &"tenant".into())
+            .await
+            .is_err()
+    );
     assert_eq!(counts(repo, "realm").await, target_before);
     assert_eq!(counts(repo, "realm-peer").await, peer_before);
     assert_history(repo).await;
@@ -130,7 +134,9 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
         repo.create_access_token(&token).await.unwrap();
     }
     for _ in 0..2 {
-        repo.delete_realm(&"realm".into()).await.unwrap();
+        repo.delete_realm(&"realm".into(), &"tenant".into())
+            .await
+            .unwrap();
         assert_deleted(repo, false).await;
         assert_history(repo).await;
     }
@@ -189,12 +195,12 @@ async fn realm_deletion_sql_rolls_back_then_removes_all_live_state_without_reviv
 }
 
 #[tokio::test]
-async fn realm_deletion_sql_cleans_non_fk_orphans_without_parent() {
+async fn realm_deletion_sql_preserves_unowned_non_fk_orphans_without_parent() {
     let db = setup().await;
     let repo = db.repo();
     let peer_before = counts(repo, "realm-peer").await;
     // Emulate legacy parent-only deletion: cascades happen, non-FK live state
-    // remains. No existence check may skip this cleanup on a repeated delete.
+    // remains. With no tenant-bound parent, deletion cannot authorize cleanup.
     sqlx::query("DELETE FROM realms WHERE id = 'realm'")
         .execute(&repo.pool)
         .await
@@ -216,9 +222,75 @@ async fn realm_deletion_sql_cleans_non_fk_orphans_without_parent() {
             "{resource}"
         );
     }
-    repo.delete_realm(&"realm".into()).await.unwrap();
-    assert_deleted(repo, false).await;
+    repo.delete_realm(&"realm".into(), &"tenant".into())
+        .await
+        .unwrap();
+    assert_eq!(counts(repo, "realm").await, orphaned);
     assert_eq!(counts(repo, "realm-peer").await, peer_before);
+    assert_history(repo).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn realm_deletion_sql_rechecks_tenant_after_id_reuse() {
+    let db = setup().await;
+    let repo = db.repo();
+    repo.delete_realm(&"realm".into(), &"tenant".into())
+        .await
+        .unwrap();
+    // Recreate the full live inventory under B at the same global realm ID.
+    let seed =
+        include_str!("../../tests/fixtures/realm_seed.sql").replace("'tenant'", "'tenant-b'");
+    // History survived A's deletion; avoid reinserting independent history.
+    for statement in seed.lines().filter(|s| s.starts_with("INSERT INTO")) {
+        if [
+            "audit_events",
+            "audit_retention_configs",
+            "siem_delivery_queue",
+            "marketplace_connectors",
+            "relationship_tuples",
+        ]
+        .iter()
+        .any(|table| statement.contains(&format!("INSERT INTO {table} ")))
+        {
+            continue;
+        }
+        sqlx::raw_sql(statement).execute(&repo.pool).await.unwrap();
+    }
+    let before = counts(repo, "realm").await;
+    assert!(before.iter().all(|(_, count)| *count == 1));
+    let peer_before = counts(repo, "realm-peer").await;
+    // A delete trigger makes even a tentative child deletion fail the test.
+    sqlx::raw_sql("CREATE TRIGGER no_foreign_cleanup BEFORE DELETE ON hr_receipts BEGIN SELECT RAISE(ABORT, 'foreign cleanup'); END;")
+        .execute(&repo.pool).await.unwrap();
+    repo.delete_realm(&"realm".into(), &"tenant".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_realm_tenant(&"realm".into())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("tenant-b")
+    );
+    assert_eq!(
+        repo.get_realm_issuer(&"realm".into())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("https://realm.example.com")
+    );
+    assert_eq!(counts(repo, "realm").await, before);
+    assert_eq!(counts(repo, "realm-peer").await, peer_before);
+    assert_history(repo).await;
+    sqlx::query("DROP TRIGGER no_foreign_cleanup")
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+    repo.delete_realm(&"realm".into(), &"tenant-b".into())
+        .await
+        .unwrap();
+    assert_deleted(repo, false).await;
     assert_history(repo).await;
     db.cleanup().await;
 }

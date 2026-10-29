@@ -116,7 +116,7 @@ delegate!(RealmRepository {
     get_realm_issuer(&self, id: &qid_core::tenant::RealmId) -> QidResult<Option<String>>;
     get_realm_tenant(&self, id: &qid_core::tenant::RealmId) -> QidResult<Option<String>>;
     list_realms(&self) -> QidResult<Vec<(String, String)>>;
-    delete_realm(&self, id: &qid_core::tenant::RealmId) -> QidResult<()>;
+    delete_realm(&self, id: &qid_core::tenant::RealmId, expected_tenant: &qid_core::tenant::TenantId) -> QidResult<()>;
 });
 
 delegate!(UserRepository {

@@ -494,3 +494,131 @@ async fn postgres_push_quota_and_row_lock_invariants() {
     second.close().await;
     pool.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_realm_deletion_is_tenant_bound_across_locked_id_reuse() {
+    let url = match std::env::var("QID_TEST_POSTGRES_URL") {
+        Ok(url) => url,
+        Err(std::env::VarError::NotPresent) => {
+            eprintln!("skipping PostgreSQL realm deletion: QID_TEST_POSTGRES_URL is unset");
+            return;
+        }
+        Err(_) => panic!("QID_TEST_POSTGRES_URL must be valid Unicode"),
+    };
+    let options: PgConnectOptions = url.parse().expect("valid PostgreSQL test URL");
+    let pool = PgPool::connect_with(options.clone()).await.unwrap();
+    let app = format!("qid-realm-delete-{}", ulid::Ulid::new());
+    let repo = SqlRepository::connect(&repository_url(&options, &app, "read committed"))
+        .await
+        .unwrap();
+    repo.migrate().await.unwrap();
+    let realm = format!("realm-delete-{}", ulid::Ulid::new());
+    let id = realm.clone().into();
+    let tenant_a = "tenant-a".into();
+    let tenant_b = "tenant-b".into();
+    let issuer = format!("https://{realm}.example");
+    repo.create_realm(&tenant_a, &id, &issuer, None)
+        .await
+        .unwrap();
+    let user = User {
+        id: format!("user-{}", ulid::Ulid::new()),
+        realm_id: realm.clone(),
+        email: None,
+        email_verified: false,
+        display_name: Some("Replacement B".into()),
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user).await.unwrap();
+
+    // Hold the old row while a stale A deletion enters its UPDATE. It must
+    // block before touching any children, then recheck the vanished owner row.
+    let mut lock = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM realms WHERE id = $1 FOR UPDATE")
+        .bind(&realm)
+        .fetch_one(&mut *lock)
+        .await
+        .unwrap();
+    let stale = repo.delete_realm(&id, &tenant_a);
+    let replace = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND query LIKE 'UPDATE realms%'",
+                ).bind(&app).fetch_one(&pool).await.unwrap();
+                if waiting == 1 { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("realm deletion must lock its tenant-qualified parent first");
+        assert!(repo.get_user_by_id(&user.id).await.unwrap().is_some());
+        // Controlled parent deletion while holding its lock makes the waiter
+        // exercise PostgreSQL's READ COMMITTED row recheck (not just a pre-read).
+        sqlx::query("DELETE FROM realms WHERE id = $1")
+            .bind(&realm)
+            .execute(&mut *lock)
+            .await
+            .unwrap();
+        lock.commit().await.unwrap();
+        repo.create_realm(&tenant_b, &id, &issuer, None)
+            .await
+            .unwrap();
+        repo.create_user(&user).await.unwrap();
+    };
+    let (deleted, ()) = tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::join!(stale, replace)
+    })
+    .await
+    .expect("stale deletion and recreation must finish");
+    deleted.unwrap();
+
+    let account = ServiceAccount {
+        id: format!("service-{}", ulid::Ulid::new()),
+        client_id: "replacement-client".into(),
+        realm_id: realm.clone(),
+        description: Some("B non-FK live data".into()),
+        created_at: now_seconds(),
+    };
+    // Fixture SQL keeps unrelated service-account CRUD placeholder portability
+    // outside this realm-deletion slice; root/user setup uses Repository APIs.
+    sqlx::query("INSERT INTO service_accounts (id, client_id, realm_id, description, created_at) VALUES ($1, $2, $3, $4, $5)")
+        .bind(&account.id).bind(&account.client_id).bind(&account.realm_id)
+        .bind(&account.description).bind(account.created_at as i64)
+        .execute(&pool).await.unwrap();
+    // Also cover a request whose authorization preceded a fully committed B.
+    repo.delete_realm(&id, &tenant_a).await.unwrap();
+    assert_eq!(
+        repo.get_realm_tenant(&id).await.unwrap().as_deref(),
+        Some("tenant-b")
+    );
+    assert_eq!(repo.get_realm_issuer(&id).await.unwrap(), Some(issuer));
+    assert_eq!(
+        serde_json::to_value(repo.get_user_by_id(&user.id).await.unwrap().unwrap()).unwrap(),
+        serde_json::to_value(&user).unwrap()
+    );
+    let stored: (String, String, String, Option<String>, i64) = sqlx::query_as(
+        "SELECT id, client_id, realm_id, description, created_at FROM service_accounts WHERE id = $1",
+    ).bind(&account.id).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        stored,
+        (
+            account.id.clone(),
+            account.client_id.clone(),
+            realm.clone(),
+            account.description.clone(),
+            account.created_at as i64
+        )
+    );
+    repo.delete_realm(&id, &tenant_b).await.unwrap();
+    assert!(repo.get_realm_tenant(&id).await.unwrap().is_none());
+    assert!(repo.get_user_by_id(&user.id).await.unwrap().is_none());
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM service_accounts WHERE id = $1")
+        .bind(&account.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+    repo.delete_realm(&id, &tenant_b).await.unwrap();
+    repo.close().await;
+    pool.close().await;
+}

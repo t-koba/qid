@@ -126,7 +126,8 @@ async fn realm_deletion_immediate_is_atomic_and_survives_reopen_and_recreation()
     // nor another save can observe/persist the tentative deletion.
     let (reached, resume) = fail_next_flush(&repo);
     let realm: RealmId = "realm".into();
-    let mut deletion = Box::pin(repo.delete_realm(&realm));
+    let tenant: TenantId = "tenant".into();
+    let mut deletion = Box::pin(repo.delete_realm(&realm, &tenant));
     assert_pending(deletion.as_mut()).await;
     complete(reached).await.unwrap();
     assert!(repo.store.try_read().is_err());
@@ -142,7 +143,7 @@ async fn realm_deletion_immediate_is_atomic_and_survives_reopen_and_recreation()
     tokio::fs::create_dir(file.0.with_extension("tmp"))
         .await
         .unwrap();
-    assert!(repo.delete_realm(&realm).await.is_err());
+    assert!(repo.delete_realm(&realm, &"tenant".into()).await.is_err());
     assert_eq!(snapshot(&repo).await, before);
     tokio::fs::remove_dir(file.0.with_extension("tmp"))
         .await
@@ -151,10 +152,10 @@ async fn realm_deletion_immediate_is_atomic_and_survives_reopen_and_recreation()
     let repo = file.reopen().await;
     assert_eq!(snapshot(&repo).await, before);
 
-    repo.delete_realm(&realm).await.unwrap();
+    repo.delete_realm(&realm, &"tenant".into()).await.unwrap();
     let expected = serde_json::to_value(seeded_store(true)).unwrap();
     assert_eq!(snapshot(&repo).await, expected);
-    repo.delete_realm(&realm).await.unwrap();
+    repo.delete_realm(&realm, &"tenant".into()).await.unwrap();
     assert_eq!(snapshot(&repo).await, expected);
     drop(repo);
     let repo = file.reopen().await;
@@ -188,7 +189,8 @@ async fn realm_deletion_waits_for_save_lock_before_mutating_store() {
     let before = snapshot(&repo).await;
     let guard = repo.save_lock.lock().await;
     let realm: RealmId = "realm".into();
-    let mut deletion = Box::pin(repo.delete_realm(&realm));
+    let tenant: TenantId = "tenant".into();
+    let mut deletion = Box::pin(repo.delete_realm(&realm, &tenant));
     assert_pending(deletion.as_mut()).await;
     assert_eq!(snapshot(&repo).await, before);
     drop(guard);
@@ -203,7 +205,9 @@ async fn realm_deletion_interval_keeps_accepted_cleanup_dirty_until_flush_succee
     *repo.store.write().await = seeded_store(false);
     repo.save().await.unwrap();
     repo.flush_mode = FileFlushMode::Interval(Duration::from_secs(60));
-    repo.delete_realm(&"realm".into()).await.unwrap();
+    repo.delete_realm(&"realm".into(), &"tenant".into())
+        .await
+        .unwrap();
     let expected = serde_json::to_value(seeded_store(true)).unwrap();
     assert_eq!(snapshot(&repo).await, expected);
     assert!(repo.dirty.load(Ordering::Acquire));
@@ -224,17 +228,17 @@ async fn realm_deletion_interval_keeps_accepted_cleanup_dirty_until_flush_succee
 }
 
 #[tokio::test]
-async fn realm_deletion_cleans_legacy_file_orphans_without_parent() {
+async fn realm_deletion_preserves_unowned_file_orphans_without_parent() {
     let (_file, repo) = TestFile::new().await;
     let mut store = seeded_store(false);
     store.realm_issuers.remove("realm");
     store.realm_tenants.remove("realm");
+    let before = serde_json::to_value(&store).unwrap();
     *repo.store.write().await = store;
-    repo.delete_realm(&"realm".into()).await.unwrap();
-    assert_eq!(
-        snapshot(&repo).await,
-        serde_json::to_value(seeded_store(true)).unwrap()
-    );
+    repo.delete_realm(&"realm".into(), &"tenant".into())
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&repo).await, before);
 }
 
 #[tokio::test]
@@ -246,7 +250,8 @@ async fn cancelled_immediate_realm_deletion_finishes_persist_or_rollback() {
         let before = serde_json::to_value(seeded_store(false)).unwrap();
         let (reached, resume) = pause_next_write(&repo, fail);
         let realm: RealmId = "realm".into();
-        let mut deletion = Box::pin(repo.delete_realm(&realm));
+        let tenant: TenantId = "tenant".into();
+        let mut deletion = Box::pin(repo.delete_realm(&realm, &tenant));
         assert_pending(deletion.as_mut()).await;
         complete(reached).await.unwrap();
         let temp: Store =
@@ -271,10 +276,56 @@ async fn cancelled_immediate_realm_deletion_finishes_persist_or_rollback() {
         let repo = file.reopen().await;
         assert_eq!(snapshot(&repo).await, expected);
         if fail {
-            repo.delete_realm(&realm).await.unwrap();
+            repo.delete_realm(&realm, &"tenant".into()).await.unwrap();
             let deleted = serde_json::to_value(seeded_store(true)).unwrap();
             assert_eq!(snapshot(&repo).await, deleted);
         }
         drop(repo);
     }
+}
+
+#[tokio::test]
+async fn realm_deletion_file_rechecks_tenant_under_lock_after_id_reuse() {
+    let (file, repo) = TestFile::new().await;
+    *repo.store.write().await = seeded_store(false);
+    repo.delete_realm(&"realm".into(), &"tenant".into())
+        .await
+        .unwrap();
+    repo.create_realm(
+        &"tenant-b".into(),
+        &"realm".into(),
+        "https://replacement.example",
+        None,
+    )
+    .await
+    .unwrap();
+    // Seed the full live-state inventory for B, not just the replacement root.
+    let mut replacement = seeded_store(false);
+    replacement
+        .realm_tenants
+        .insert("realm".into(), "tenant-b".into());
+    replacement
+        .realm_issuers
+        .insert("realm".into(), "https://replacement.example".into());
+    *repo.store.write().await = replacement;
+    repo.save().await.unwrap();
+    let before = snapshot(&repo).await;
+    // Queue a stale A request behind the exclusive save lock. A must validate
+    // the tenant inside the critical section, before any removal or flush.
+    let guard = repo.save_lock.lock().await;
+    let realm = "realm".into();
+    let tenant = "tenant".into();
+    let mut stale = Box::pin(repo.delete_realm(&realm, &tenant));
+    assert_pending(stale.as_mut()).await;
+    drop(guard);
+    complete(stale).await.unwrap();
+    assert_eq!(snapshot(&repo).await, before);
+    drop(repo);
+    let repo = file.reopen().await;
+    assert_eq!(snapshot(&repo).await, before);
+    repo.delete_realm(&realm, &"tenant-b".into()).await.unwrap();
+    assert_eq!(
+        snapshot(&repo).await,
+        serde_json::to_value(seeded_store(true)).unwrap()
+    );
 }

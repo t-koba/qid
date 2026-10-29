@@ -52,24 +52,27 @@ impl RealmRepository for FileRepository {
         Ok(realms)
     }
 
-    async fn delete_realm(&self, id: &RealmId) -> QidResult<()> {
+    async fn delete_realm(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()> {
         if self.flush_mode == FileFlushMode::Immediate {
             // Once started, deletion completes persistence or rollback even if
             // the request future is cancelled during a filesystem await.
             let repo = self.clone();
             let id = id.clone();
-            return tokio::spawn(async move { repo.delete_realm_inner(&id).await })
-                .await
-                .map_err(|error| QidError::Internal {
-                    message: format!("realm deletion task failed: {error}"),
-                })?;
+            let expected_tenant = expected_tenant.clone();
+            return tokio::spawn(
+                async move { repo.delete_realm_inner(&id, &expected_tenant).await },
+            )
+            .await
+            .map_err(|error| QidError::Internal {
+                message: format!("realm deletion task failed: {error}"),
+            })?;
         }
-        self.delete_realm_inner(id).await
+        self.delete_realm_inner(id, expected_tenant).await
     }
 }
 
 impl FileRepository {
-    async fn delete_realm_inner(&self, id: &RealmId) -> QidResult<()> {
+    async fn delete_realm_inner(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()> {
         // Keep both locks through persistence/rollback: no reader can observe a
         // partial deletion and no concurrent save can publish tentative state.
         let save_guard = if self.flush_mode == FileFlushMode::Immediate {
@@ -78,6 +81,11 @@ impl FileRepository {
             None
         };
         let mut store = self.store.write().await;
+        if store.realm_tenants.get(id.as_str()).map(String::as_str)
+            != Some(expected_tenant.as_str())
+        {
+            return Ok(());
+        }
         let previous = save_guard.as_ref().map(|_| store.clone());
         store.remove_realm(id.as_str());
         if let Some(guard) = save_guard {

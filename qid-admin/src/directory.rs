@@ -109,7 +109,10 @@ pub(crate) async fn delete_realm<R: Repository>(
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::RealmAdmin, Some(&realm));
     audit_no_content(
-        state.repo.delete_realm(&RealmId(realm.clone())).await,
+        state
+            .repo
+            .delete_realm(&RealmId(realm.clone()), &_admin.tenant_id.clone().into())
+            .await,
         &state,
         &headers,
         &_admin,

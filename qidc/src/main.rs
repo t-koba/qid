@@ -595,7 +595,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 RealmCommand::Delete(args) => {
-                    repo.delete_realm(&RealmId::from(args.id.clone())).await?;
+                    let realm = RealmId::from(args.id.clone());
+                    if let Some(tenant) = repo.get_realm_tenant(&realm).await? {
+                        repo.delete_realm(&realm, &tenant.into()).await?;
+                    }
                     println!("realm deleted: {}", args.id);
                 }
             }

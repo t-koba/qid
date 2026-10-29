@@ -425,7 +425,36 @@ tenant (`tenant_id`); the table declares `UNIQUE(issuer)`
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
 | `create_realm` - `realms` row | tenant (`tenant_id`) | globally unique realm `id` and `issuer` | issuer, `display_name` | File: duplicate IDs in either realm map and duplicate issuers return `Conflict` before either map is changed (`qid-storage/src/file/realm.rs:15`, `qid-storage/src/file/realm.rs:23`). SQL: static `ON CONFLICT DO NOTHING`; `ensure_upsert_applied` maps a duplicate ID or issuer to `Conflict` (`qid-storage/src/sql/realm.rs:15`, `qid-storage/src/sql/realm.rs:24`). Both preserve the incumbent realm and tenant binding. | file `qid-storage/src/file/realm.rs:23`; sql `qid-storage/src/sql/realm.rs:24`; schema `qid-storage/migrations/20250101000001_initial_schema.sql:6` |
-| `delete_realm` (delete) | realm (`realm_id`) | realm `id` | none, removal of the realm and the live state it owns | File: `remove_realm` drops the realm's users and their authentication state, then the realm-scoped clients, service accounts, policy bundles, credential statuses, PAR requests, SCIM, FedCM, workload, SaaS and SSF records, and the realm's issuer and tenant bindings (`qid-storage/src/file/realm.rs:99`, `qid-storage/src/file/realm.rs:105`, `qid-storage/src/file/realm.rs:136`); an unknown realm is a silent no-op. SQL: the realm-scoped rows are deleted in one transaction and the realm row is deleted last (`qid-storage/src/sql/realm.rs:56`, `qid-storage/src/sql/realm.rs:93`); an unknown realm is a silent no-op. Both keep the audit, retention and SIEM history. | file `qid-storage/src/file/realm.rs:105`; sql `qid-storage/src/sql/realm.rs:93` |
+| `delete_realm` (delete) | expected tenant (`tenant_id`) | global realm `id` | none, removal of the realm and its live owned state | File: compares `realm_tenants[id]` to the expected tenant under the exclusive write lock before removing any state; immediate persistence/rollback stays inside the critical section. SQL: tenant-qualified no-op `UPDATE` locks the parent in the deletion transaction before any child deletion; zero matched rows return success without cleanup. After the guard, both remove owned live state and keep independent audit/retention/SIEM history. Unknown and foreign-tenant realms are identical no-ops, including orphaned data without a tenant-bound parent. | file `qid-storage/src/file/realm.rs:75`, `qid-storage/src/file/realm.rs:83`, `qid-storage/src/file/realm.rs:115`; sql `qid-storage/src/sql/realm.rs:55`, `qid-storage/src/sql/realm.rs:59`, `qid-storage/src/sql/realm.rs:112` |
+
+The admin handler passes the authenticated admin's tenant to storage while retaining
+its existing no-content/audit path (`qid-admin/src/directory.rs:110`). The local
+CLI snapshots the stored tenant and passes it to deletion rather than bypassing
+the guard (`qidc/src/main.rs:597`). This binds deletion to the expected tenant,
+not to a particular incarnation of a realm within that same tenant.
+
+The shared SQL path uses static numbered parameters for the guard and every
+cleanup statement. The no-op `UPDATE` obtains SQLite's write serialization and
+a PostgreSQL row lock without requiring `FOR UPDATE` in SQLx Any. The lock is
+held through child cleanup and parent deletion, so concurrent delete/recreate
+cannot substitute a foreign-owned root under an authorized cleanup. At
+PostgreSQL READ COMMITTED, a waiter rechecks a changed/deleted row before
+matching; this is not a separate ownership pre-read.
+
+Deterministic stale-owner regressions recreate the same ID for tenant B and
+prove a later tenant A deletion preserves the replacement root, live inventory
+and independent history (`qid-storage/src/file/realm_tests.rs:288`,
+`qid-storage/src/sql/realm_tests.rs:235`). Parent-absent tests now explicitly
+preserve unowned orphans rather than cleaning them through a request with no
+provable tenant binding (`qid-storage/src/file/realm_tests.rs:231`,
+`qid-storage/src/sql/realm_tests.rs:198`). Existing same-tenant deletion,
+rollback, cancellation and persistence tests remain. The opt-in server test
+also queues deletion behind a PostgreSQL parent-row lock, deletes/recreates the
+root, verifies READ COMMITTED rechecking, and checks foreign-tenant preservation
+of FK users and non-FK service-account data before successful B cleanup
+(`qid-storage/tests/postgres_push.rs:499`). It runs in the configured PostgreSQL
+test target and skips locally when `QID_TEST_POSTGRES_URL` is unset; SQLite
+success alone is not PostgreSQL execution evidence.
 
 ## rebac
 

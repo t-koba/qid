@@ -159,7 +159,9 @@ async fn exercise(repo: &AnyRepository) {
             .sequence,
         1
     );
-    repo.delete_realm(&"corp".into()).await.unwrap();
+    repo.delete_realm(&"corp".into(), &"tenant".into())
+        .await
+        .unwrap();
     assert!(repo.get_hr_receipt("corp", "hr").await.unwrap().is_none());
 }
 

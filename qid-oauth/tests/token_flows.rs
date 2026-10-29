@@ -743,23 +743,68 @@ async fn client_credentials_grant_rejects_wrong_client_secret_basic() {
 }
 
 #[tokio::test]
-async fn client_credentials_grant_auto_creates_service_account() {
-    let (app, token_path, state) = setup().await;
+async fn client_credentials_reuses_client_id_after_service_account_outlives_client() {
+    let mut config = test_helpers::test_config();
+    let mut realm_b = config.realms[0].clone();
+    realm_b.id = "realm-b".to_string();
+    realm_b.issuer = "https://id.example.com/realms/realm-b".to_string();
+    config.realms.push(realm_b);
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_realm(
+            &"tenant-1".into(),
+            &RealmId::from("realm-b"),
+            "https://id.example.com/realms/realm-b",
+            Some("Realm B"),
+        )
+        .await
+        .unwrap();
 
     let body =
         "grant_type=client_credentials&client_id=auto-create-test&client_secret=secret&scope=api";
-    let response = post_form(app, &token_path, body).await;
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let sa = state
+    let first = post_token_json(app.clone(), &token_path, body.to_string()).await;
+    assert!(first["access_token"].is_string());
+    let service_a = state
         .repo
         .get_service_account_by_client_id("test", "auto-create-test")
         .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(service_a.id, "service:auto-create-test");
+    let client_a = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "auto-create-test")
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .repo
+        .delete_client(&RealmId::from("test"), &client_a.id)
+        .await
         .unwrap();
     assert!(
-        sa.is_some(),
-        "service account should have been auto-created"
+        state
+            .repo
+            .get_service_account_by_client_id("test", "auto-create-test")
+            .await
+            .unwrap()
+            .is_some()
     );
+
+    let mut client_b = client_credentials_client("auto-create-test", "client_secret_post");
+    client_b.id = "client-auto-create-test-realm-b".to_string();
+    client_b.realm_id = "realm-b".to_string();
+    state.repo.create_client(&client_b).await.unwrap();
+    let second = post_token_json(app, &token_path, body.to_string()).await;
+    assert!(second["access_token"].is_string());
+    let service_b = state
+        .repo
+        .get_service_account_by_client_id("realm-b", "auto-create-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(service_a.id, service_b.id);
 }
 
 #[tokio::test]

@@ -514,6 +514,8 @@ a `client_id`.
 
 The admin handler authorizes for the path realm and retains its realm-list pre-read for the established 404 response, then passes `Some(realm)` to the atomic storage delete (`qid-admin/src/identity.rs:325-343`). If the row is replaced between the pre-read and delete, File/SQL refuse a different realm and the handler returns before emitting a success audit. The create handler uses `Ulid::new()` rather than accepting an account ID (`qid-admin/src/identity.rs:288-296`); stale-ID reuse is conditional and is not claimed as a production exploit.
 
+The `client_credentials` first-use path preserves the established `service:{client_id}` ID when available. If that global ID conflicts but no service account for this realm/client exists, it retries with a deterministic ID derived injectively from both values (`service2:{realm byte length}:{realm_id}:{client_id}`), distinct from legacy IDs and ULID-created admin accounts. This handles a stale account left after its client was removed and the client ID later reused in another realm, without changing ordinary token subjects. Existing persisted accounts are selected by `(realm_id, client_id)` and retain their stored IDs (`qid-oauth/src/endpoints/token_grant.rs:198-217`).
+
 ## session
 
 Model type: `Session`. Owner: realm and user (`realm_id`, `user_id`); the

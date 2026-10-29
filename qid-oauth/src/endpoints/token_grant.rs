@@ -195,15 +195,30 @@ pub async fn client_credentials_grant<R: Repository>(
     {
         Some(sa) => sa,
         None => {
-            let sa = ServiceAccount {
-                id: format!("service:{}", client_id),
+            let mut sa = ServiceAccount {
+                id: format!("service:{client_id}"),
                 client_id: client_id.to_string(),
                 realm_id: realm_id.clone(),
                 description: None,
                 created_at: qid_core::util::now_seconds(),
             };
-            state.repo.create_service_account(&sa).await?;
-            sa
+            match state.repo.create_service_account(&sa).await {
+                Ok(()) => sa,
+                Err(QidError::Conflict { .. }) => {
+                    if let Some(existing) = state
+                        .repo
+                        .get_service_account_by_client_id(&realm_id, client_id)
+                        .await?
+                    {
+                        existing
+                    } else {
+                        sa.id = format!("service2:{}:{}:{}", realm_id.len(), realm_id, client_id);
+                        state.repo.create_service_account(&sa).await?;
+                        sa
+                    }
+                }
+                Err(err) => return Err(err),
+            }
         }
     };
 

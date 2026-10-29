@@ -328,3 +328,11 @@ async fn ssf_set_jti_replay_key_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-ssf-set-jti").await;
     support::assert_ssf_set_jti_replay_key(&file).await;
 }
+
+#[tokio::test]
+async fn custom_domain_tenant_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_custom_domain_tenant_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-custom-domain").await;
+    support::assert_custom_domain_tenant_ownership(&file).await;
+}

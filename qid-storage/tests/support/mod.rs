@@ -2,7 +2,7 @@
 
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, BackchannelAuthenticationGrant,
-    CiamConsentGrant, CiamVerificationChallengeRecord, Client, ClientType, Device,
+    CiamConsentGrant, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain, Device,
     DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
     IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
     IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, ParRequest,
@@ -4016,5 +4016,105 @@ where
             .record_ssf_set_jti(&realm_a.0, issuer, stream_id, jti, 20, 10)
             .await
             .expect("check replay after SSF SET JTI renewal failed")
+    );
+}
+
+/// Custom-domain IDs remain tenant-owned through lifecycle updates and deletes.
+pub async fn assert_custom_domain_tenant_ownership<R>(repo: &R)
+where
+    R: SaasRepository + RealmRepository,
+{
+    let tenant_a = "tenant-custom-domain-owner-a";
+    let tenant_b = "tenant-custom-domain-owner-b";
+    let realm_a = "realm-custom-domain-owner-a";
+    let realm_b = "realm-custom-domain-owner-b";
+    for (tenant, realm, issuer) in [
+        (
+            tenant_a,
+            realm_a,
+            "https://custom-domain-owner-a.example.com",
+        ),
+        (
+            tenant_b,
+            realm_b,
+            "https://custom-domain-owner-b.example.com",
+        ),
+    ] {
+        repo.create_realm(
+            &TenantId::from(tenant),
+            &RealmId::from(realm),
+            issuer,
+            Some("Custom-domain ownership realm"),
+        )
+        .await
+        .expect("create custom-domain ownership realm failed");
+    }
+
+    let domain = CustomDomain {
+        id: "custom-domain-owner-shared-id".to_string(),
+        tenant_id: tenant_a.to_string(),
+        realm_id: realm_a.to_string(),
+        hostname: "login.custom-domain-owner-a.example.com".to_string(),
+        certificate_ref: "kms://certificates/custom-domain-owner-a".to_string(),
+        verified: true,
+        verification_status: "active".to_string(),
+        dns_challenge_name: Some("_qid.login.custom-domain-owner-a.example.com".to_string()),
+        dns_challenge_value: Some("custom-domain-owner-proof".to_string()),
+        certificate_expires_at: Some(1_900_000_000),
+        certificate_renew_after: Some(1_880_000_000),
+        last_verified_at: Some(1_800_000_000),
+    };
+    repo.store_custom_domain(&domain)
+        .await
+        .expect("store custom domain failed");
+    let mut updated = domain.clone();
+    updated.certificate_ref = "kms://certificates/custom-domain-owner-a-renewed".to_string();
+    updated.last_verified_at = Some(1_810_000_000);
+    repo.store_custom_domain(&updated)
+        .await
+        .expect("same-tenant custom-domain update failed");
+    assert_eq!(
+        repo.list_custom_domains(tenant_a)
+            .await
+            .expect("list updated custom domain failed"),
+        vec![updated.clone()]
+    );
+
+    let collision = CustomDomain {
+        tenant_id: tenant_b.to_string(),
+        realm_id: realm_b.to_string(),
+        hostname: "login.custom-domain-owner-b.example.com".to_string(),
+        certificate_ref: "kms://certificates/custom-domain-owner-b".to_string(),
+        ..updated.clone()
+    };
+    let error = repo
+        .store_custom_domain(&collision)
+        .await
+        .expect_err("cross-tenant custom-domain ID collision must conflict");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "custom-domain ID collision must return Conflict, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_custom_domains(tenant_a)
+            .await
+            .expect("list incumbent after collision failed"),
+        vec![updated.clone()]
+    );
+    assert!(
+        repo.list_custom_domains(tenant_b)
+            .await
+            .expect("list foreign tenant custom domains failed")
+            .is_empty()
+    );
+
+    repo.delete_custom_domain(tenant_b, &domain.id)
+        .await
+        .expect("foreign-tenant custom-domain delete failed");
+    assert_eq!(
+        repo.list_custom_domains(tenant_a)
+            .await
+            .expect("list incumbent after foreign-tenant delete failed"),
+        vec![updated]
     );
 }

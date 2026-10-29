@@ -2,12 +2,13 @@
 
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, BackchannelAuthenticationGrant, CiamBrand,
-    CiamConsentGrant, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain, Device,
-    DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
-    IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
-    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, MarketplaceConnector,
-    MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
-    ServiceAccount, TotpCredential, UsageBillingEvent, User, WebAuthnCredential, WorkloadIdentity,
+    CiamConsentGrant, CiamIdentityLink, CiamVerificationChallengeRecord, Client, ClientType,
+    CustomDomain, Device, DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord,
+    IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
+    IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
+    MarketplaceConnector, MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle,
+    RelationshipTuple, ServiceAccount, TotpCredential, UsageBillingEvent, User, WebAuthnCredential,
+    WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -4263,6 +4264,84 @@ where
             .await
             .expect("list incumbent after foreign-tenant delete failed"),
         vec![updated]
+    );
+}
+
+/// Identity-link deletion is scoped to its owning realm in both backends.
+pub async fn assert_ciam_identity_link_delete_scope<R>(repo: &R)
+where
+    R: CiamRepository + RealmRepository + UserRepository,
+{
+    let suffix = ulid::Ulid::new();
+    let tenant = TenantId::from(format!("tenant-ciam-link-delete-{suffix}"));
+    let foreign_tenant = TenantId::from(format!("tenant-ciam-link-foreign-{suffix}"));
+    let realm = RealmId::from(format!("realm-ciam-link-delete-{suffix}"));
+    let foreign_realm = RealmId::from(format!("realm-ciam-link-foreign-{suffix}"));
+    let user_id = format!("user-ciam-link-delete-{suffix}");
+    repo.create_realm(
+        &tenant,
+        &realm,
+        "https://ciam-link-delete.example.com",
+        Some("CIAM identity-link deletion contract"),
+    )
+    .await
+    .expect("create CIAM identity-link realm");
+    repo.create_realm(
+        &foreign_tenant,
+        &foreign_realm,
+        "https://ciam-link-foreign.example.com",
+        Some("Foreign CIAM identity-link deletion realm"),
+    )
+    .await
+    .expect("create foreign CIAM identity-link realm");
+    repo.create_user(&User {
+        id: user_id.clone(),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .expect("create CIAM identity-link user");
+
+    let link = CiamIdentityLink {
+        id: format!("ciam-link-delete-{suffix}"),
+        realm_id: realm.0.clone(),
+        user_id,
+        provider: "example-idp".to_string(),
+        external_subject: format!("subject-{suffix}"),
+        external_email: None,
+        profile_json: serde_json::json!({"name": "CIAM test subject"}),
+        linked_at_epoch_seconds: 100,
+        verified: true,
+    };
+    repo.store_ciam_identity_link(&link)
+        .await
+        .expect("store CIAM identity link");
+
+    repo.delete_ciam_identity_link(&foreign_realm, &link.id)
+        .await
+        .expect("foreign-realm CIAM identity-link delete should be a no-op");
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &link.id)
+            .await
+            .expect("get CIAM identity link after foreign-realm delete"),
+        Some(link.clone()),
+        "foreign-realm delete must preserve the incumbent link"
+    );
+
+    repo.delete_ciam_identity_link(&realm, &link.id)
+        .await
+        .expect("owning-realm CIAM identity-link delete");
+    assert!(
+        repo.get_ciam_identity_link(&realm, &link.id)
+            .await
+            .expect("get CIAM identity link after owner delete")
+            .is_none(),
+        "owning-realm delete must remove the link"
     );
 }
 

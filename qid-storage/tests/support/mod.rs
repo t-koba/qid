@@ -3182,6 +3182,43 @@ where
     );
 }
 
+/// Preserve the backend-specific legacy outcome when updating a missing ID.
+pub async fn assert_client_missing_update_semantics<R>(repo: &R, inserts_missing: bool)
+where
+    R: RealmRepository + ClientRepository,
+{
+    let realm = RealmId("realm-client-missing-update".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-missing-update".to_string()),
+        &realm,
+        "https://client-missing-update.example.com",
+        Some("Client Missing Update Realm"),
+    )
+    .await
+    .expect("create client missing-update realm failed");
+    let client = sample_cross_realm_client("client-missing-update", &realm.0, "missing-update-app");
+
+    repo.update_client(&client)
+        .await
+        .expect("updating a missing client ID must retain the backend's existing result");
+    let stored = repo
+        .get_client_by_client_id(&realm, &client.client_id)
+        .await
+        .expect("get missing-update client failed");
+    assert_eq!(
+        stored.is_some(),
+        inserts_missing,
+        "the missing-ID behavior is backend-specific and must not be normalized"
+    );
+    if let Some(stored) = stored {
+        assert_eq!(
+            serde_json::to_value(stored).expect("serialize inserted client failed"),
+            serde_json::to_value(&client).expect("serialize supplied client failed"),
+            "the File update inserted the supplied client"
+        );
+    }
+}
+
 /// The stable update identity of a client: an existing record ID accepts only
 /// the same `(realm_id, client_id)` binding, and a mismatched binding is a
 /// conflict that changes no field.

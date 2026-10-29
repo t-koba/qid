@@ -258,6 +258,14 @@ async fn client_delete_realm_scope_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn client_update_missing_id_preserves_backend_specific_semantics() {
+    let sql = support::sql_repo().await;
+    support::assert_client_missing_update_semantics(&sql, false).await;
+    let file = support::file_repo("ownership-contract-client-update-missing").await;
+    support::assert_client_missing_update_semantics(&file, true).await;
+}
+
+#[tokio::test]
 async fn client_update_identity_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_client_update_identity(&sql).await;

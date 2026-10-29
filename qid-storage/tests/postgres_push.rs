@@ -210,6 +210,30 @@ async fn postgres_push_quota_and_row_lock_invariants() {
         .await
         .unwrap();
 
+    sqlx::query("INSERT INTO credentials_password (user_id, hash, algorithm) VALUES ($1, $2, $3)")
+        .bind(&user)
+        .bind("disposable-original-hash")
+        .bind("argon2id")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rehashed = PasswordCredential {
+        user_id: user.clone(),
+        hash: "disposable-replacement-hash".into(),
+        algorithm: "argon2id".into(),
+    };
+    first
+        .update_password_credential_in_realm(&rehashed, &realm)
+        .await
+        .unwrap();
+    let stored_hash: String =
+        sqlx::query_scalar("SELECT hash FROM credentials_password WHERE user_id = $1")
+            .bind(&user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_hash, rehashed.hash);
+
     let a = registration(&realm, &user);
     let b = registration(&realm, &user);
     let lock = quota_lock(&pool, &realm, &user, "registration").await;

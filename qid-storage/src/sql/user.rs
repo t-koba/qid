@@ -92,8 +92,8 @@ impl UserRepository for SqlRepository {
         realm: &str,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE credentials_password SET hash = ?, algorithm = ? WHERE user_id = ? \
-             AND EXISTS (SELECT 1 FROM users WHERE id = ? AND realm_id = ?)",
+            "UPDATE credentials_password SET hash = $1, algorithm = $2 WHERE user_id = $3 \
+             AND EXISTS (SELECT 1 FROM users WHERE id = $4 AND realm_id = $5)",
         )
         .bind(&cred.hash)
         .bind(&cred.algorithm)

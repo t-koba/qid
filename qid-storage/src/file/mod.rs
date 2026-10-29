@@ -179,8 +179,7 @@ impl Store {
 pub struct FileRepository {
     store: Arc<tokio::sync::RwLock<Store>>,
     path: PathBuf,
-    // When both locks are needed, acquire save_lock before store. Ordinary
-    // writers must release store before calling save()/waiting for save_lock.
+    // Acquire save_lock before store; writers release store before calling save().
     save_lock: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)]
     flush_hook: Arc<std::sync::Mutex<Option<persistence_tests::FlushHook>>>,
@@ -333,13 +332,12 @@ impl FileRepository {
         Ok(())
     }
 
-    async fn write_store_content_locked(
+    async fn write_store_content_locked<G: Sync>(
         &self,
-        _save_guard: &tokio::sync::MutexGuard<'_, ()>,
+        _save_guard: &G,
         content: &str,
     ) -> QidResult<()> {
-        // Atomic replacement: fsync the temporary file, then rename it in place.
-        // Parent-directory fsync below is best-effort for platform compatibility.
+        // Fsync the temporary store before atomic replacement; sync its parent below.
         let tmp_path = self.path.with_extension("tmp");
         tokio::fs::write(&tmp_path, content)
             .await
@@ -347,13 +345,7 @@ impl FileRepository {
                 message: format!("failed to write temp store file: {e}"),
             })?;
         #[cfg(test)]
-        {
-            // Pause inside the filesystem sequence, not just before persistence.
-            let hook = self.write_hook.lock().unwrap().take();
-            if let Some(hook) = hook {
-                hook.run().await?;
-            }
-        }
+        self.run_write_hook(false).await?;
         // fsync the file and the directory for durability
         let file = tokio::fs::OpenOptions::new()
             .read(true)
@@ -372,9 +364,10 @@ impl FileRepository {
             .map_err(|e| QidError::Internal {
                 message: format!("failed to rename store file: {e}"),
             })?;
-        // Best-effort directory fsync: some supported platforms/filesystems do
-        // not permit opening or syncing a directory. Success guarantees the file
-        // data sync and atomic rename, but not power-loss durability of the entry.
+        #[cfg(test)]
+        self.run_write_hook(true).await?;
+        // Best-effort parent fsync: some platforms forbid it, so only file data and
+        // rename are guaranteed, not power-loss durability of the directory entry.
         if let Some(parent) = self.path.parent()
             && let Ok(dir) = tokio::fs::File::open(parent).await
         {

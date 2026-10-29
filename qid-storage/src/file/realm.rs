@@ -12,11 +12,11 @@ impl RealmRepository for FileRepository {
         _display_name: Option<&str>,
     ) -> QidResult<()> {
         let save_guard = if self.flush_mode == FileFlushMode::Immediate {
-            Some(self.save_lock.lock().await)
+            Some(self.save_lock.clone().lock_owned().await)
         } else {
             None
         };
-        let mut store = self.store.write().await;
+        let mut store = self.store.clone().write_owned().await;
         reject_duplicate_id(
             store.realm_issuers.contains_key(&realm_id.0)
                 || store.realm_tenants.contains_key(&realm_id.0)
@@ -38,13 +38,14 @@ impl RealmRepository for FileRepository {
         if let Some(guard) = save_guard {
             let mut candidate = store.clone();
             prepare(&mut candidate);
-            #[cfg(test)]
-            self.before_flush().await?;
-            let content = serde_json::to_string(&candidate).map_err(|e| QidError::Internal {
-                message: format!("failed to serialize store: {e}"),
-            })?;
-            self.write_store_content_locked(&guard, &content).await?;
-            *store = candidate;
+            let repo = self.clone();
+            tokio::spawn(
+                async move { repo.persist_candidate(&guard, &mut store, candidate).await },
+            )
+            .await
+            .map_err(|error| QidError::Internal {
+                message: format!("realm creation task failed: {error}"),
+            })??;
         } else {
             prepare(&mut store);
             self.dirty.store(true, Ordering::Release);
@@ -92,6 +93,22 @@ impl RealmRepository for FileRepository {
 }
 
 impl FileRepository {
+    async fn persist_candidate<G: Sync>(
+        &self,
+        guard: &G,
+        store: &mut Store,
+        candidate: Store,
+    ) -> QidResult<()> {
+        #[cfg(test)]
+        self.before_flush().await?;
+        let content = serde_json::to_string(&candidate).map_err(|e| QidError::Internal {
+            message: format!("failed to serialize store: {e}"),
+        })?;
+        self.write_store_content_locked(guard, &content).await?;
+        *store = candidate;
+        Ok(())
+    }
+
     async fn delete_realm_inner(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()> {
         // Hold both locks through persistence; no tentative state is visible.
         let save_guard = if self.flush_mode == FileFlushMode::Immediate {
@@ -108,13 +125,8 @@ impl FileRepository {
         if let Some(guard) = save_guard {
             let mut candidate = store.clone();
             candidate.remove_realm(id.as_str());
-            #[cfg(test)]
-            self.before_flush().await?;
-            let content = serde_json::to_string(&candidate).map_err(|e| QidError::Internal {
-                message: format!("failed to serialize store: {e}"),
-            })?;
-            self.write_store_content_locked(&guard, &content).await?;
-            *store = candidate;
+            self.persist_candidate(&guard, &mut store, candidate)
+                .await?;
         } else {
             store.remove_realm(id.as_str());
             self.dirty.store(true, Ordering::Release);

@@ -1,5 +1,5 @@
 use super::persistence_tests::{
-    TestFile, assert_pending, complete, fail_next_flush, pause_next_write,
+    TestFile, assert_pending, complete, fail_next_flush, pause_after_rename, pause_next_write,
 };
 use super::*;
 use serde_json::Value;
@@ -342,6 +342,37 @@ async fn realm_creation_immediate_failure_leaves_orphans_untouched_until_retry()
     expected["realm_tenants"]["realm"] = "tenant-b".into();
     expected["realm_issuers"]["realm"] = "https://new.example.com".into();
     assert_eq!(snapshot(&repo).await, expected);
+    drop(repo);
+    assert_eq!(snapshot(&file.reopen().await).await, expected);
+}
+
+#[tokio::test]
+async fn cancelled_immediate_realm_creation_finishes_persist_and_commit() {
+    let (file, repo) = TestFile::new().await;
+    let mut store = seeded_store(false);
+    store.realm_issuers.remove("realm");
+    store.realm_tenants.remove("realm");
+    *repo.store.write().await = store;
+    repo.save().await.unwrap();
+    let (reached, resume) = pause_after_rename(&repo);
+    let tenant: TenantId = "tenant-b".into();
+    let realm: RealmId = "realm".into();
+    let mut creation =
+        Box::pin(repo.create_realm(&tenant, &realm, "https://new.example.com", None));
+    assert_pending(creation.as_mut()).await;
+    complete(reached).await.unwrap();
+    assert!(repo.store.try_read().is_err());
+    assert!(repo.save_lock.try_lock().is_err());
+    let disk: Store = serde_json::from_slice(&tokio::fs::read(&file.0).await.unwrap()).unwrap();
+    let mut expected = serde_json::to_value(seeded_store(true)).unwrap();
+    expected["realm_tenants"]["realm"] = "tenant-b".into();
+    expected["realm_issuers"]["realm"] = "https://new.example.com".into();
+    assert_eq!(serde_json::to_value(disk).unwrap(), expected);
+    drop(creation);
+    resume.send(()).unwrap();
+    drop(complete(repo.save_lock.lock()).await);
+    assert_eq!(snapshot(&repo).await, expected);
+    repo.save().await.unwrap();
     drop(repo);
     assert_eq!(snapshot(&file.reopen().await).await, expected);
 }

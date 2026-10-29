@@ -9,6 +9,7 @@ use tokio::sync::oneshot;
 #[derive(Debug)]
 pub(super) struct FlushHook {
     fail: bool,
+    after_rename: bool,
     entered: oneshot::Sender<()>,
     resume: oneshot::Receiver<()>,
 }
@@ -34,10 +35,39 @@ pub(super) fn fail_next_flush(
     let (resume, paused) = oneshot::channel();
     *repo.flush_hook.lock().unwrap() = Some(FlushHook {
         fail: true,
+        after_rename: false,
         entered,
         resume: paused,
     });
     (reached, resume)
+}
+
+pub(super) fn pause_after_rename(
+    repo: &FileRepository,
+) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    let (entered, reached) = oneshot::channel();
+    let (resume, paused) = oneshot::channel();
+    *repo.write_hook.lock().unwrap() = Some(FlushHook {
+        fail: false,
+        after_rename: true,
+        entered,
+        resume: paused,
+    });
+    (reached, resume)
+}
+
+impl FileRepository {
+    pub(super) async fn run_write_hook(&self, after_rename: bool) -> QidResult<()> {
+        let hook = self.write_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            if hook.after_rename == after_rename {
+                hook.run().await?;
+            } else {
+                *self.write_hook.lock().unwrap() = Some(hook);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn pause_next_write(
@@ -48,6 +78,7 @@ pub(super) fn pause_next_write(
     let (resume, paused) = oneshot::channel();
     *repo.write_hook.lock().unwrap() = Some(FlushHook {
         fail,
+        after_rename: false,
         entered,
         resume: paused,
     });
@@ -567,6 +598,7 @@ async fn cancelled_immediate_password_reset_finishes_persistence_or_rollback() {
         let (resume, paused) = oneshot::channel();
         *repo.write_hook.lock().unwrap() = Some(FlushHook {
             fail,
+            after_rename: false,
             entered,
             resume: paused,
         });

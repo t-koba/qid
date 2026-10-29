@@ -57,8 +57,7 @@ impl RealmRepository for SqlRepository {
 
     async fn delete_realm(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()> {
         let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
-        // A conditional no-op UPDATE locks the owner row on both backends.
-        // Recheck ownership after a concurrent delete; hold the lock until commit.
+        // Conditional no-op update rechecks ownership and locks the parent until commit.
         let matched = sqlx::query("UPDATE realms SET id = id WHERE id = $1 AND tenant_id = $2")
             .bind(id.as_str())
             .bind(expected_tenant.as_str())
@@ -70,8 +69,7 @@ impl RealmRepository for SqlRepository {
             return Ok(());
         }
         remove_realm_children(&mut tx, id).await?;
-        // Existing realm/user FKs cascade the remaining live records. Audit,
-        // retention, SIEM delivery history and tenant/global state are independent.
+        // Parent/user FKs cascade; audit/retention/SIEM history and tenant/global state survive.
         sqlx::query("DELETE FROM realms WHERE id = $1")
             .bind(id.as_str())
             .execute(&mut *tx)
@@ -91,9 +89,8 @@ async fn remove_realm_children(
         .execute(&mut **tx)
         .await
         .map_err(storage_to_qid_error)?;
-    // Walk session/family ownership before cascades remove the parents.
-    // Token subjects have no user FK, intentionally: only subjects belonging
-    // to removed users (or tokens in this realm/removed families) are deleted.
+    // Delete session/family-linked credentials before cascades remove parents.
+    // Token subjects omit a user FK, so restrict deletion to realm/linked ownership.
     sqlx::query("DELETE FROM authorization_codes WHERE realm_id = $1 OR session_id IN (SELECT id FROM sessions WHERE realm_id = $1 OR user_id IN (SELECT id FROM users WHERE realm_id = $1))")
             .bind(id.as_str())
             .execute(&mut **tx).await.map_err(storage_to_qid_error)?;
@@ -103,8 +100,7 @@ async fn remove_realm_children(
     sqlx::query("DELETE FROM token_families WHERE session_id IN (SELECT id FROM sessions WHERE realm_id = $1 OR user_id IN (SELECT id FROM users WHERE realm_id = $1))")
             .bind(id.as_str())
             .execute(&mut **tx).await.map_err(storage_to_qid_error)?;
-    // Non-FK live state is cleared only after claiming or locking the parent.
-    // Keep the statements static and portable across supported SQL dialects.
+    // Static, portable non-FK deletes run only after claiming or locking the parent.
     for statement in [
         "DELETE FROM service_accounts WHERE realm_id = $1",
         "DELETE FROM par_requests WHERE realm_id = $1",

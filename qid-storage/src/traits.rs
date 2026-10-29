@@ -83,11 +83,10 @@ pub trait RealmRepository: Send + Sync + 'static {
     async fn get_realm_issuer(&self, id: &RealmId) -> QidResult<Option<String>>;
     async fn get_realm_tenant(&self, id: &RealmId) -> QidResult<Option<String>>;
     async fn list_realms(&self) -> QidResult<Vec<(String, String)>>;
-    /// Idempotently remove the realm and its live owned state, including users
-    /// and their authentication dependents. Audit/retention/delivery history and
-    /// independently tenant/global-scoped records survive. Reusing the realm ID
-    /// Reusing an ID clears orphaned live state before exposure. The expected tenant
-    /// is checked atomically; unknown or foreign-tenant deletes are no-ops, including orphans.
+    /// Idempotently remove realm-owned live state and user dependents; preserve
+    /// audit/retention/delivery history and tenant/global records. ID reuse clears
+    /// orphans before exposure; deletion checks expected-tenant ownership atomically.
+    /// Unknown or foreign IDs are no-ops, even if orphaned data remains.
     async fn delete_realm(&self, id: &RealmId, expected_tenant: &TenantId) -> QidResult<()>;
 }
 

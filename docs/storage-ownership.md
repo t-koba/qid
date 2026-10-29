@@ -616,7 +616,7 @@ device approval checks the approving user's realm, and device and CIBA
 redemption check client, grant/user realm and target before consuming them
 (`qid-oauth/src/endpoints/token_grant.rs:21-68`,
 `qid-oidc/src/provider.rs:589-654`, `qid-oauth/src/endpoints/device_flow.rs:280-314,329-406`,
-`qid-oauth/src/endpoints/ciba.rs:366-444`). These token operations preserve their existing owner validation and one-use behavior. Current counted-source usage is 113,973/113,985 workspace and 15,989/15,990 for qid-storage; caps remain unchanged, so further counted storage growth needs measured in-cap simplification, not a cap increase.
+`qid-oauth/src/endpoints/ciba.rs:366-444`). These token operations preserve their existing owner validation and one-use behavior. At source commit `f896fcb30e752538175cf89bff072c9a2572fb20` (digest `5e4be4937bba4a594bb261adc03f0b4c1d3ea1e0aa7330b4e03960e1d3b0e369`), `cargo xtask budget` measured 113,983/113,985 workspace lines and 15,989/15,990 qid-storage lines. Caps remain unchanged; later source changes require a fresh measurement.
 
 ## user
 

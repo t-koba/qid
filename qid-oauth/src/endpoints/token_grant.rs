@@ -202,7 +202,10 @@ pub async fn client_credentials_grant<R: Repository>(
                 description: None,
                 created_at: qid_core::util::now_seconds(),
             };
-            match state.repo.create_service_account(&sa).await {
+            let repo = &*state.repo;
+            #[cfg(test)]
+            let repo = tests::ObservedServiceAccount(repo);
+            match repo.create_service_account(&sa).await {
                 Ok(()) => sa,
                 Err(QidError::Conflict { .. }) => {
                     if let Some(existing) = state
@@ -213,8 +216,15 @@ pub async fn client_credentials_grant<R: Repository>(
                         existing
                     } else {
                         sa.id = format!("service2:{}:{}:{}", realm_id.len(), realm_id, client_id);
-                        state.repo.create_service_account(&sa).await?;
-                        sa
+                        match repo.create_service_account(&sa).await {
+                            Ok(()) => sa,
+                            Err(err @ QidError::Conflict { .. }) => state
+                                .repo
+                                .get_service_account_by_client_id(&realm_id, client_id)
+                                .await?
+                                .ok_or(err)?,
+                            Err(err) => return Err(err),
+                        }
                     }
                 }
                 Err(err) => return Err(err),
@@ -643,6 +653,7 @@ fn log_token_issued(realm_id: &str, subject_id: &str) {
 mod tests {
     include!("token_grant_rotation_tests.rs");
     include!("token_grant_auth_code_tests.rs");
+    include!("token_grant_service_account_tests.rs");
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -650,7 +661,7 @@ mod tests {
         error::{QidError, QidResult},
         models::{
             AuthorizationCode, BackchannelAuthenticationGrant, Client, ClientType,
-            DeviceAuthorizationGrant, ParRequest, Session, TokenFamily, User,
+            DeviceAuthorizationGrant, ParRequest, ServiceAccount, Session, TokenFamily, User,
         },
         state::SharedState,
         tenant::{RealmId, TenantId},

@@ -169,7 +169,7 @@ impl<R: Repository> Authenticator<R> {
             let mut updated = user.clone();
             updated.failed_login_attempts = 0;
             updated.locked_until = None;
-            self.repo.update_user(&updated, Some(realm_id.as_str())).await?;
+            self.repo.update_user(&updated, Some(&realm_id.0)).await?;
         }
         // Capture current user state for potential failure update
         let mut user = user;
@@ -226,7 +226,7 @@ impl<R: Repository> Authenticator<R> {
             let mut updated = user.clone();
             updated.failed_login_attempts = 0;
             updated.locked_until = None;
-            self.repo.update_user(&updated, Some(realm_id.as_str())).await?;
+            self.repo.update_user(&updated, Some(&realm_id.0)).await?;
         }
 
         Ok(AuthResult {

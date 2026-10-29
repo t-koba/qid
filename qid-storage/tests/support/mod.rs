@@ -3391,6 +3391,61 @@ where
     assert_eq!(stored, vec![tuple], "duplicate changed the incumbent tuple");
 }
 
+pub async fn assert_rebac_tuple_delete_namespace_isolated<R>(repo: &R)
+where
+    R: RebacRepository,
+{
+    let tenant_a = RelationshipTuple {
+        namespace: "tenant-a::document".into(),
+        object_id: "document-1".into(),
+        relation: "viewer".into(),
+        subject_namespace: "tenant-a::user".into(),
+        subject_id: "user-1".into(),
+        subject_relation: String::new(),
+        created_at_epoch_seconds: 1,
+    };
+    let tenant_a_other_subject = RelationshipTuple {
+        subject_id: "user-2".into(),
+        created_at_epoch_seconds: 2,
+        ..tenant_a.clone()
+    };
+    let tenant_b = RelationshipTuple {
+        namespace: "tenant-b::document".into(),
+        subject_namespace: "tenant-b::user".into(),
+        ..tenant_a.clone()
+    };
+
+    for tuple in [&tenant_a, &tenant_a_other_subject, &tenant_b] {
+        repo.create_relationship_tuple(tuple)
+            .await
+            .expect("create relationship tuple for deletion contract");
+    }
+
+    repo.delete_relationship_tuple(&tenant_a)
+        .await
+        .expect("delete exact tenant A relationship tuple");
+
+    let tenant_a_remaining = repo
+        .list_relationship_tuples("tenant-a::document", "document-1", None)
+        .await
+        .expect("list tenant A relationship tuples after deletion");
+    assert_eq!(
+        tenant_a_remaining,
+        vec![tenant_a_other_subject],
+        "deleting one tuple must preserve other identities in the same namespace"
+    );
+
+    let tenant_b_remaining = repo
+        .list_relationship_tuples("tenant-b::document", "document-1", None)
+        .await
+        .expect("list tenant B relationship tuples after tenant A deletion");
+    assert_eq!(
+        tenant_b_remaining,
+        vec![tenant_b],
+        "deleting tenant A's tuple must preserve the same-shaped tenant B tuple"
+    );
+}
+
 pub async fn assert_par_request_identity_conflict<R>(repo: &R)
 where
     R: TokenRepository,

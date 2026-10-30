@@ -69,6 +69,7 @@ fn seeded_store(deleted: bool) -> Store {
     merge(&mut value, fixture("realm"), deleted);
     let mut store: Store = serde_json::from_value(value).unwrap();
     store.rekey_ciam_progressive_profiles().unwrap();
+    store.rekey_audit_retention_configs().unwrap();
     // Non-user tokens outside the deleted realm have no user ownership link.
     for subject in ["service", "workload"] {
         let mut token = store.access_tokens["realm-peer-record"].clone();

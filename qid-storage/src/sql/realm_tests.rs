@@ -13,6 +13,10 @@ async fn setup() -> IsolatedDb {
     ] {
         sqlx::raw_sql(&sql).execute(&db.repo().pool).await.unwrap();
     }
+    sqlx::query("UPDATE audit_retention_configs SET stream_id = 'realm:' || realm_id")
+        .execute(&db.repo().pool)
+        .await
+        .unwrap();
     db
 }
 

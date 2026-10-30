@@ -362,6 +362,14 @@ async fn ciam_brand_tenant_ownership_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn ciam_identity_link_ownership_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_ciam_identity_link_ownership(&sql).await;
+    let file = support::file_repo("ownership-contract-ciam-identity-link-owner").await;
+    support::assert_ciam_identity_link_ownership(&file).await;
+}
+
+#[tokio::test]
 async fn ciam_identity_link_delete_scope_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_ciam_identity_link_delete_scope(&sql).await;

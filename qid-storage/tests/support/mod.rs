@@ -4376,6 +4376,156 @@ where
 }
 
 /// Identity-link deletion is scoped to its owning realm in both backends.
+pub async fn assert_ciam_identity_link_ownership<R>(repo: &R)
+where
+    R: CiamRepository + RealmRepository + UserRepository,
+{
+    let suffix = ulid::Ulid::new();
+    let tenant = TenantId::from(format!("tenant-ciam-link-owner-{suffix}"));
+    let realm = RealmId::from(format!("realm-ciam-link-owner-{suffix}"));
+    repo.create_realm(
+        &tenant,
+        &realm,
+        "https://ciam-link-owner.example.com",
+        Some("CIAM identity-link ownership contract"),
+    )
+    .await
+    .expect("create CIAM identity-link owner realm");
+    let user = User {
+        id: format!("user-ciam-link-owner-{suffix}"),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    let foreign_user = User {
+        id: format!("user-ciam-link-foreign-{suffix}"),
+        ..user.clone()
+    };
+    for owner in [&user, &foreign_user] {
+        repo.create_user(owner)
+            .await
+            .expect("create CIAM identity-link contract user");
+    }
+
+    let mut incumbent = CiamIdentityLink {
+        id: format!("ciam-link-owner-{suffix}"),
+        realm_id: realm.0.clone(),
+        user_id: user.id.clone(),
+        provider: "example-idp".to_string(),
+        external_subject: format!("subject-{suffix}"),
+        external_email: Some("original@example.com".to_string()),
+        profile_json: serde_json::json!({"name": "Original"}),
+        linked_at_epoch_seconds: 100,
+        verified: false,
+    };
+    repo.store_ciam_identity_link(&incumbent)
+        .await
+        .expect("store initial CIAM identity link");
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &incumbent.id)
+            .await
+            .expect("get initial CIAM identity link"),
+        Some(incumbent.clone())
+    );
+
+    incumbent.external_email = Some("updated@example.com".to_string());
+    incumbent.profile_json = serde_json::json!({"name": "Updated"});
+    repo.store_ciam_identity_link(&incumbent)
+        .await
+        .expect("same-owner CIAM identity-link contact/profile update");
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &incumbent.id)
+            .await
+            .expect("get CIAM identity link after contact/profile update"),
+        Some(incumbent.clone())
+    );
+
+    incumbent.verified = true;
+    repo.store_ciam_identity_link(&incumbent)
+        .await
+        .expect("promote CIAM identity link to verified");
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &incumbent.id)
+            .await
+            .expect("get CIAM identity link after verified promotion"),
+        Some(incumbent.clone())
+    );
+
+    incumbent.profile_json = serde_json::json!({"name": "Updated after verification"});
+    repo.store_ciam_identity_link(&incumbent)
+        .await
+        .expect("same-owner CIAM identity-link profile update after promotion");
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &incumbent.id)
+            .await
+            .expect("get CIAM identity link after verified profile update"),
+        Some(incumbent.clone())
+    );
+
+    let downgrade = CiamIdentityLink {
+        verified: false,
+        profile_json: serde_json::json!({"name": "Must not persist"}),
+        ..incumbent.clone()
+    };
+    let error = repo
+        .store_ciam_identity_link(&downgrade)
+        .await
+        .expect_err("verified CIAM identity link must not be downgraded");
+    assert!(
+        matches!(error, qid_core::error::QidError::BadRequest { .. }),
+        "verified downgrade must be refused, got {error:?}"
+    );
+    assert_eq!(
+        repo.get_ciam_identity_link(&realm, &incumbent.id)
+            .await
+            .expect("get CIAM identity link after refused downgrade"),
+        Some(incumbent.clone())
+    );
+
+    // Owner mismatch must conflict even when the attempted write also downgrades verification.
+    for verified in [false, true] {
+        let collision = CiamIdentityLink {
+            user_id: foreign_user.id.clone(),
+            external_email: Some("foreign@example.com".to_string()),
+            profile_json: serde_json::json!({"name": "Foreign replacement"}),
+            verified,
+            ..incumbent.clone()
+        };
+        let error = repo
+            .store_ciam_identity_link(&collision)
+            .await
+            .expect_err("cross-owner CIAM identity-link ID reuse must conflict");
+        assert!(
+            matches!(error, qid_core::error::QidError::Conflict { .. }),
+            "cross-owner ID reuse must conflict, got {error:?}"
+        );
+        assert_eq!(
+            repo.get_ciam_identity_link(&realm, &incumbent.id)
+                .await
+                .expect("get incumbent CIAM identity link after refused replacement"),
+            Some(incumbent.clone())
+        );
+        assert_eq!(
+            repo.list_ciam_identity_links(&realm, &user.id)
+                .await
+                .expect("list incumbent owner's CIAM identity links"),
+            vec![incumbent.clone()],
+            "refused replacement must preserve the owner's sole link"
+        );
+        assert!(
+            repo.list_ciam_identity_links(&realm, &foreign_user.id)
+                .await
+                .expect("list foreign user's CIAM identity links")
+                .is_empty(),
+            "cross-owner ID reuse must not create a foreign user's link"
+        );
+    }
+}
+
 pub async fn assert_ciam_identity_link_delete_scope<R>(repo: &R)
 where
     R: CiamRepository + RealmRepository + UserRepository,

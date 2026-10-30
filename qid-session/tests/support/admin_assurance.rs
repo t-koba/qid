@@ -27,9 +27,15 @@ pub fn assert_admin_assurance(session: &Session, webauthn: bool, totp: bool) {
     assert_requirement(&security, session, totp);
 
     let policy: serde_json::Value =
-        serde_json::from_str(include_str!("../../../config/policies/admin.json")).unwrap();
+        match serde_json::from_str(include_str!("../../../config/policies/admin.json")) {
+            Ok(policy) => policy,
+            Err(err) => panic!("admin.json must parse as JSON: {err}"),
+        };
     assert_eq!(policy["default_decision"], "deny");
-    let rules = policy["rules"].as_array().unwrap();
+    let rules = match policy["rules"].as_array() {
+        Some(rules) => rules,
+        None => panic!("admin.json rules must be an array"),
+    };
     assert_eq!(rules.len(), 2);
     for rule in rules {
         assert_eq!(rule["type"], "allow");
@@ -45,13 +51,11 @@ pub fn assert_admin_assurance(session: &Session, webauthn: bool, totp: bool) {
 }
 
 fn sample_security(sample: &str) -> AdminSecurityConfig {
-    QidConfig::from_file(&format!(
-        "{}/../config/usecases/{sample}",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap()
-    .admin
-    .security
+    let path = format!("{}/../config/usecases/{sample}", env!("CARGO_MANIFEST_DIR"));
+    match QidConfig::from_file(&path) {
+        Ok(config) => config.admin.security,
+        Err(err) => panic!("sample {sample} must load: {err}"),
+    }
 }
 
 fn assert_requirement(security: &AdminSecurityConfig, session: &Session, accepted: bool) {

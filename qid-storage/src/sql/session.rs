@@ -5,23 +5,12 @@ use super::*;
 #[async_trait]
 impl SessionRepository for SqlRepository {
     async fn create_session(&self, session: &Session) -> QidResult<()> {
-        // Check for duplicate id before inserting
-        let dup: Option<String> = sqlx::query_scalar("SELECT id FROM sessions WHERE id = $1")
-            .bind(&session.id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
-        if let Some(ref id) = dup {
-            return Err(QidError::BadRequest {
-                message: format!("session {id} already exists"),
-            });
-        }
         let cnf_json = session
             .cnf
             .as_ref()
             .map(|v| serde_json::to_string(v).unwrap_or_default());
-        sqlx::query(
-            "INSERT INTO sessions (id, realm_id, user_id, auth_time, acr, amr, idle_expires_at, absolute_expires_at, revoked, created_at, cnf) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        let rows = sqlx::query(
+            "INSERT INTO sessions (id, realm_id, user_id, auth_time, acr, amr, idle_expires_at, absolute_expires_at, revoked, created_at, cnf) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&session.id)
         .bind(&session.realm_id)
@@ -36,7 +25,13 @@ impl SessionRepository for SqlRepository {
         .bind(&cnf_json)
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(storage_to_qid_error)?
+        .rows_affected();
+        if rows == 0 {
+            return Err(QidError::BadRequest {
+                message: format!("session {} already exists", session.id),
+            });
+        }
         Ok(())
     }
 

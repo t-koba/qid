@@ -408,3 +408,12 @@ async fn audit_retention_stream_identity_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-audit-retention").await;
     support::assert_audit_retention_stream_identity(&file).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_session_creation_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_concurrent_session_creation(&sql).await;
+    sql.close().await;
+    let file = support::file_repo("ownership-contract-session-create").await;
+    support::assert_concurrent_session_creation(&file).await;
+}

@@ -8,7 +8,7 @@ use qid_core::models::{
     IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
     IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, MarketplaceConnector,
     MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
-    ServiceAccount, TotpCredential, UsageBillingEvent, User, VcCredentialStatusRecord,
+    ServiceAccount, Session, TotpCredential, UsageBillingEvent, User, VcCredentialStatusRecord,
     WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
@@ -4899,5 +4899,87 @@ pub async fn assert_audit_retention_stream_identity<R: AuditRepository>(repo: &R
                 Some(expected.clone())
             );
         }
+    }
+}
+
+/// Concurrent creates have one winner; duplicates never replace its payload.
+pub async fn assert_concurrent_session_creation<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + SessionRepository + Clone,
+{
+    repo.create_realm(
+        &"tenant-session-create".into(),
+        &"realm-session-create".into(),
+        "https://id.example.com/realms/session-create",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_user(&User {
+        id: "user-session-create".into(),
+        realm_id: "realm-session-create".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    // Fixed work and a start barrier, not sleeps or timing-sensitive assertions.
+    for round in 0..20 {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(12));
+        let mut tasks = tokio::task::JoinSet::new();
+        for contender in 0..12 {
+            let repo = repo.clone();
+            let barrier = barrier.clone();
+            tasks.spawn(async move {
+                let session = Session {
+                    id: format!("session-create-{round}"),
+                    realm_id: "realm-session-create".into(),
+                    user_id: "user-session-create".into(),
+                    auth_time: 1000,
+                    acr: Some("urn:qid:acr:password".into()),
+                    amr: vec!["pwd".into()],
+                    idle_expires_at: 2000,
+                    absolute_expires_at: 10000,
+                    revoked: false,
+                    created_at: 1000 + contender,
+                    cnf: Some(serde_json::json!({"jkt": format!("key-{contender}")})),
+                };
+                barrier.wait().await;
+                let result = repo.create_session(&session).await;
+                (session, result)
+            });
+        }
+        let mut winner = None;
+        let mut duplicates = 0;
+        while let Some(result) = tasks.join_next().await {
+            let (session, result) = result.expect("session creation task panicked");
+            match result {
+                Ok(()) => {
+                    assert!(winner.is_none(), "more than one session create succeeded");
+                    winner = Some(session);
+                }
+                Err(qid_core::error::QidError::BadRequest { .. }) => duplicates += 1,
+                Err(error) => panic!("unexpected session create error: {error:?}"),
+            }
+        }
+        let winner = winner.expect("one session create must succeed");
+        assert_eq!(duplicates, 11);
+        let expected = serde_json::to_value(&winner).unwrap();
+        // The established sequential duplicate result must also remain unchanged.
+        assert!(matches!(
+            repo.create_session(&winner).await,
+            Err(qid_core::error::QidError::BadRequest { .. })
+        ));
+        let stored = repo.get_session(&winner.id).await.unwrap().unwrap();
+        assert_eq!(serde_json::to_value(stored).unwrap(), expected);
+        let sessions = repo.list_sessions(&winner.realm_id, None).await.unwrap();
+        assert_eq!(sessions.len(), round + 1);
+        let matching: Vec<_> = sessions.iter().filter(|s| s.id == winner.id).collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(serde_json::to_value(matching[0]).unwrap(), expected);
     }
 }

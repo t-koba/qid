@@ -400,3 +400,11 @@ async fn vc_credential_status_identity_collision_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-vc-status").await;
     support::assert_vc_credential_status_identity_collision(&file).await;
 }
+
+#[tokio::test]
+async fn audit_retention_stream_identity_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_audit_retention_stream_identity(&sql).await;
+    let file = support::file_repo("ownership-contract-audit-retention").await;
+    support::assert_audit_retention_stream_identity(&file).await;
+}

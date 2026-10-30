@@ -4791,3 +4791,88 @@ async fn test_polling_grant_target_migration_defaults_existing_rows() {
     pool.close().await;
     repo.close().await;
 }
+
+#[tokio::test]
+async fn test_audit_retention_legacy_stream_identity_migration() {
+    for sentinel_realm in [None, Some("__global__")] {
+        let url = db_url();
+        let repo = SqlRepository::connect(&url).await.unwrap();
+        let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/20250618000007_audit_retention_config.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let configs = [
+            ("__global__", sentinel_realm, 90),
+            ("global", Some("global"), 30),
+            ("realm-a", Some("realm-a"), 60),
+            ("realm:realm-a", Some("realm:realm-a"), 45),
+        ]
+        .map(|(key, realm, days)| {
+            (
+                key,
+                AuditRetentionConfig {
+                    realm_id: realm.map(str::to_owned),
+                    retention_days: days,
+                    legal_hold: days == 90,
+                    updated_by: "legacy-admin".into(),
+                    reason: "preserve legacy values".into(),
+                    updated_at: 123,
+                },
+            )
+        });
+        for (key, config) in &configs {
+            sqlx::query("INSERT INTO audit_retention_configs (stream_id, realm_id, retention_days, legal_hold, updated_by, reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                .bind(key).bind(&config.realm_id).bind(config.retention_days as i64)
+                .bind(i64::from(config.legal_hold)).bind(&config.updated_by)
+                .bind(&config.reason).bind(config.updated_at as i64)
+                .execute(&pool).await.unwrap();
+        }
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/20261030000001_audit_retention_stream_identity.sql"
+        ))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM audit_retention_configs")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            configs.len() as i64
+        );
+        for (_, expected) in &configs {
+            let realm = expected.realm_id.as_deref().map(RealmId::from);
+            assert_eq!(
+                repo.get_audit_retention_config(realm.as_ref())
+                    .await
+                    .unwrap(),
+                Some(expected.clone())
+            );
+        }
+        // The previously unrepresentable other stream can now be stored without
+        // overwriting the migrated sentinel incumbent.
+        let other = AuditRetentionConfig {
+            realm_id: if sentinel_realm.is_none() {
+                Some("__global__".into())
+            } else {
+                None
+            },
+            ..configs[0].1.clone()
+        };
+        repo.set_audit_retention_config(&other).await.unwrap();
+        let incumbent_realm = sentinel_realm.map(RealmId::from);
+        assert_eq!(
+            repo.get_audit_retention_config(incumbent_realm.as_ref())
+                .await
+                .unwrap(),
+            Some(configs[0].1.clone())
+        );
+        pool.close().await;
+        repo.close().await;
+    }
+}

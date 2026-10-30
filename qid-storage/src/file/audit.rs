@@ -1,16 +1,13 @@
 use async_trait::async_trait;
 
 use super::*;
+use crate::domain::audit_retention_stream_id;
 
 #[async_trait]
 impl AuditRepository for FileRepository {
     async fn append_audit_event(&self, event: &AuditEvent) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if store
-            .audit_events
-            .iter()
-            .any(|stored| stored.id == event.id)
-        {
+        if store.audit_events.iter().any(|s| s.id == event.id) {
             return Err(QidError::Conflict {
                 message: format!("Audit event ID {} already exists", event.id),
             });
@@ -18,8 +15,7 @@ impl AuditRepository for FileRepository {
         let previous_hash = store
             .audit_events
             .iter()
-            .rev()
-            .find(|stored| stored.realm_id == event.realm_id)
+            .rfind(|s| s.realm_id == event.realm_id)
             .and_then(|event| event.event_hash.clone());
         store
             .audit_events
@@ -38,17 +34,11 @@ impl AuditRepository for FileRepository {
             .audit_events
             .iter()
             .filter(|event| {
-                realm_id
-                    .map(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
-                    .unwrap_or(true)
+                realm_id.is_none_or(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
             })
             .cloned()
             .collect();
-        events.sort_by(|a, b| {
-            b.created_at
-                .cmp(&a.created_at)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        events.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
         events.truncate(limit);
         Ok(events)
     }
@@ -62,9 +52,7 @@ impl AuditRepository for FileRepository {
             .audit_events
             .iter()
             .filter(|event| {
-                realm_id
-                    .map(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
-                    .unwrap_or(true)
+                realm_id.is_none_or(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
             })
             .collect();
         if realm_id.is_some() {
@@ -75,11 +63,9 @@ impl AuditRepository for FileRepository {
     }
 
     async fn set_audit_retention_config(&self, config: &AuditRetentionConfig) -> QidResult<()> {
-        let key = audit_retention_key(config.realm_id.as_deref());
-        let mut store = self.store.write().await;
-        store.audit_retention_configs.insert(key, config.clone());
-        drop(store);
-        self.save().await
+        let key = audit_retention_stream_id(config.realm_id.as_deref());
+        self.map_write(|store| store.audit_retention_configs.insert(key, config.clone()))
+            .await
     }
 
     async fn get_audit_retention_config(
@@ -89,7 +75,7 @@ impl AuditRepository for FileRepository {
         let store = self.store.read().await;
         Ok(store
             .audit_retention_configs
-            .get(&audit_retention_key(realm_id.map(RealmId::as_str)))
+            .get(&audit_retention_stream_id(realm_id.map(RealmId::as_str)))
             .cloned())
     }
 
@@ -101,7 +87,7 @@ impl AuditRepository for FileRepository {
         let store = self.store.read().await;
         let Some(config) = store
             .audit_retention_configs
-            .get(&audit_retention_key(realm_id.map(RealmId::as_str)))
+            .get(&audit_retention_stream_id(realm_id.map(RealmId::as_str)))
         else {
             return Ok(None);
         };
@@ -109,9 +95,7 @@ impl AuditRepository for FileRepository {
             .audit_events
             .iter()
             .filter(|event| {
-                realm_id
-                    .map(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
-                    .unwrap_or(true)
+                realm_id.is_none_or(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
             })
             .collect();
         Ok(Some(plan_audit_retention_enforcement(

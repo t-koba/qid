@@ -1,14 +1,15 @@
 #![allow(dead_code)]
 
 use qid_core::models::{
-    Admin, AdminApproval, AdminElevation, AuditEvent, BackchannelAuthenticationGrant, CiamBrand,
-    CiamConsentGrant, CiamIdentityLink, CiamProgressiveProfile, CiamVerificationChallengeRecord,
-    Client, ClientType, CustomDomain, Device, DeviceAuthorizationGrant, FedCmIdentity,
-    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
-    IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
-    IgaJitPrivilegeGrantRecord, MarketplaceConnector, MarketplaceConnectorType, ParRequest,
-    PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, TotpCredential,
-    UsageBillingEvent, User, VcCredentialStatusRecord, WebAuthnCredential, WorkloadIdentity,
+    Admin, AdminApproval, AdminElevation, AuditEvent, AuditRetentionConfig,
+    BackchannelAuthenticationGrant, CiamBrand, CiamConsentGrant, CiamIdentityLink,
+    CiamProgressiveProfile, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain,
+    Device, DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
+    IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
+    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, MarketplaceConnector,
+    MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
+    ServiceAccount, TotpCredential, UsageBillingEvent, User, VcCredentialStatusRecord,
+    WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -4855,4 +4856,48 @@ where
         Some(distinct),
         "distinct VC credential status did not round-trip"
     );
+}
+
+/// Retention replaces one stream without changing the global or other realm streams.
+pub async fn assert_audit_retention_stream_identity<R: AuditRepository>(repo: &R) {
+    let mut configs = [None, Some("realm-a"), Some("realm-b"), Some("__global__")].map(|realm| {
+        AuditRetentionConfig {
+            realm_id: realm.map(str::to_owned),
+            retention_days: 30,
+            legal_hold: false,
+            updated_by: "admin".into(),
+            reason: "initial".into(),
+            updated_at: 100,
+        }
+    });
+    for config in &configs {
+        assert_eq!(
+            repo.get_audit_retention_config(config.realm_id.as_deref().map(RealmId::from).as_ref())
+                .await
+                .unwrap(),
+            None
+        );
+        repo.set_audit_retention_config(config).await.unwrap();
+    }
+    // Replace every stream, exercising both write orders of the former sentinel
+    // collision, while comparing all stored fields on every unaffected stream.
+    for index in [3, 2, 1, 0] {
+        configs[index].retention_days = 90 + index as u64;
+        configs[index].legal_hold = true;
+        configs[index].updated_by = "replacement-admin".into();
+        configs[index].reason = "replacement".into();
+        configs[index].updated_at = 200 + index as u64;
+        repo.set_audit_retention_config(&configs[index])
+            .await
+            .unwrap();
+        for expected in &configs {
+            let realm = expected.realm_id.as_deref().map(RealmId::from);
+            assert_eq!(
+                repo.get_audit_retention_config(realm.as_ref())
+                    .await
+                    .unwrap(),
+                Some(expected.clone())
+            );
+        }
+    }
 }

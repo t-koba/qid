@@ -150,6 +150,22 @@ struct Store {
 }
 
 impl Store {
+    fn rekey_audit_retention_configs(&mut self) -> QidResult<bool> {
+        let mut configs = HashMap::with_capacity(self.audit_retention_configs.len());
+        let mut changed = false;
+        for (old_key, config) in &self.audit_retention_configs {
+            let key = crate::domain::audit_retention_stream_id(config.realm_id.as_deref());
+            changed |= *old_key != key;
+            if configs.insert(key, config.clone()).is_some() {
+                return Err(QidError::Internal {
+                    message: "file store contains duplicate audit retention streams".into(),
+                });
+            }
+        }
+        self.audit_retention_configs = configs;
+        Ok(changed)
+    }
+
     // Older file stores used `realm:user`; rebuild from record bindings so
     // delimiter-bearing IDs cannot alias and existing records remain readable.
     fn rekey_ciam_progressive_profiles(&mut self) -> QidResult<bool> {
@@ -247,6 +263,7 @@ impl FileRepository {
             }
         };
         let profiles_rekeyed = store.rekey_ciam_progressive_profiles()?;
+        let retention_rekeyed = store.rekey_audit_retention_configs()?;
         let repo = Self {
             store: Arc::new(tokio::sync::RwLock::new(store)),
             path: p,
@@ -261,7 +278,7 @@ impl FileRepository {
             dirty: Arc::new(AtomicBool::new(false)),
             flush_mode,
         };
-        if profiles_rekeyed {
+        if profiles_rekeyed || retention_rekeyed {
             repo.save().await?;
         }
         if let FileFlushMode::Interval(interval) = flush_mode {
@@ -446,10 +463,6 @@ fn reject_duplicate_id(exists: bool, message: impl FnOnce() -> String) -> QidRes
         return Err(QidError::Conflict { message: message() });
     }
     Ok(())
-}
-
-fn audit_retention_key(realm_id: Option<&str>) -> String {
-    realm_id.unwrap_or("__global__").to_string()
 }
 
 fn iga_tenant_scoped_key(tenant_id: &str, id: &str) -> String {

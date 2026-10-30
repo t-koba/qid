@@ -141,10 +141,6 @@ impl From<AuditRetentionConfigRow> for AuditRetentionConfig {
     }
 }
 
-pub(in crate::sql) fn audit_retention_stream_id(realm_id: Option<&str>) -> String {
-    realm_id.unwrap_or("__global__").to_string()
-}
-
 #[derive(sqlx::FromRow)]
 pub(in crate::sql) struct TotpCredentialRow {
     id: String,

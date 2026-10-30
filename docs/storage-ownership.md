@@ -169,7 +169,16 @@ the global stream (`qid-storage/src/file/audit.rs:13`).
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
 | `append_audit_event` - `AuditEvent` | realm (`realm_id`, `None` = global stream); internal record, not tenant-scoped | globally unique event `id` | none, append-only; chain hashes are derived on append | File: any existing ID is refused with `Conflict` under the exclusive write lock (`qid-storage/src/file/audit.rs:9`, `qid-storage/src/file/audit.rs:14`). SQL: `ON CONFLICT(id) DO NOTHING` and `ensure_upsert_applied` turns a zero-row result into `Conflict` (`qid-storage/src/sql/audit.rs:27`, `qid-storage/src/sql/audit.rs:43`). Both refuse same-stream and cross-realm duplicate IDs and preserve the incumbent history. | file `qid-storage/src/file/audit.rs:9`, `qid-storage/src/file/audit.rs:14`; sql `qid-storage/src/sql/audit.rs:27`, `qid-storage/src/sql/audit.rs:43`; schema `qid-storage/migrations/20250101000001_initial_schema.sql:72` |
-| `set_audit_retention_config` - `AuditRetentionConfig` | realm (`realm_id`, `None` = global key `__global__`) | the retention key, realm or `__global__` (`qid-storage/src/file/mod.rs:438`, `qid-storage/src/sql/row/security.rs:144`) | `retention_days`, `legal_hold`, `updated_by`, `reason`, `updated_at` | File: overwrite of the map entry, no error (`qid-storage/src/file/audit.rs:71`). SQL: `ON CONFLICT(stream_id) DO UPDATE`, an upsert that never errors (`qid-storage/src/sql/audit.rs:101`). Both replace. | file `qid-storage/src/file/audit.rs:69`, `qid-storage/src/file/audit.rs:71`; sql `qid-storage/src/sql/audit.rs:101`, `qid-storage/src/sql/audit.rs:103` |
+| `set_audit_retention_config` - `AuditRetentionConfig` | stream (`realm_id`; `None` = global, every `Some` = a distinct realm) | the retention key, `global` or `realm:<id>` (`qid-storage/src/domain/mod.rs`); legacy File/SQL keys are rebuilt from stored `realm_id` | `retention_days`, `legal_hold`, `updated_by`, `reason`, `updated_at` | File: overwrite of the map entry, no error (`qid-storage/src/file/audit.rs:71`). SQL: `ON CONFLICT(stream_id) DO UPDATE`, an upsert that never errors (`qid-storage/src/sql/audit.rs:101`). Both replace. | file `qid-storage/src/file/audit.rs:69`, `qid-storage/src/file/audit.rs:71`; sql `qid-storage/src/sql/audit.rs:101`, `qid-storage/src/sql/audit.rs:103` |
+
+Retention stream keys use `global` for `None` and `realm:<id>` for every
+`Some(realm_id)`, including `__global__`. File open and SQL migration
+`20261030000001_audit_retention_stream_identity.sql` rebuild legacy keys from
+each stored record's `realm_id`, preserving its configuration fields. File
+open refuses duplicate records for the same derived stream without rewriting
+the store. The SQL migration stages rows before transactional replacement to
+avoid collisions between new and old key strings. Neither migration can recover
+configuration values already overwritten by the old sentinel alias.
 
 ## ciam
 

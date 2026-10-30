@@ -780,3 +780,94 @@ async fn cancelled_magic_link_operations_finish_persistence_or_rollback() {
         }
     }
 }
+
+fn retention_config(realm_id: Option<&str>, days: u64) -> AuditRetentionConfig {
+    AuditRetentionConfig {
+        realm_id: realm_id.map(str::to_owned),
+        retention_days: days,
+        legal_hold: days == 90,
+        updated_by: "legacy-admin".into(),
+        reason: "preserve legacy values".into(),
+        updated_at: 123,
+    }
+}
+
+#[tokio::test]
+async fn file_audit_retention_legacy_keys_rekey_on_open() {
+    // Legacy stores can contain either the global or sentinel-named realm row,
+    // not both. Its realm_id, rather than its ambiguous key, determines identity.
+    for sentinel_realm in [None, Some("__global__")] {
+        let (file, empty_repo) = TestFile::new().await;
+        drop(empty_repo);
+        let mut store = Store::default();
+        let configs = [
+            ("__global__", retention_config(sentinel_realm, 90)),
+            ("global", retention_config(Some("global"), 30)),
+            ("realm-a", retention_config(Some("realm-a"), 60)),
+        ];
+        store.audit_retention_configs = configs
+            .iter()
+            .map(|(key, config)| (key.to_string(), config.clone()))
+            .collect();
+        tokio::fs::write(&file.0, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+
+        let repo = file.reopen().await;
+        for (_, expected) in &configs {
+            let realm = expected.realm_id.as_deref().map(RealmId::from);
+            assert_eq!(
+                repo.get_audit_retention_config(realm.as_ref())
+                    .await
+                    .unwrap(),
+                Some(expected.clone())
+            );
+        }
+        let persisted = tokio::fs::read(&file.0).await.unwrap();
+        let migrated: Store = serde_json::from_slice(&persisted).unwrap();
+        assert_eq!(migrated.audit_retention_configs.len(), configs.len());
+        for (_, config) in &configs {
+            let key = crate::domain::audit_retention_stream_id(config.realm_id.as_deref());
+            assert_eq!(migrated.audit_retention_configs.get(&key), Some(config));
+        }
+        drop(repo);
+        let reopened = file.reopen().await;
+        assert_eq!(
+            tokio::fs::read(&file.0).await.unwrap(),
+            persisted,
+            "reopening migrated keys must be a no-op"
+        );
+        drop(reopened);
+    }
+}
+
+#[tokio::test]
+async fn file_audit_retention_duplicate_streams_fail_without_rewriting() {
+    let (file, empty_repo) = TestFile::new().await;
+    drop(empty_repo);
+    let mut store = Store::default();
+    store
+        .audit_retention_configs
+        .insert("__global__".into(), retention_config(None, 90));
+    store
+        .audit_retention_configs
+        .insert("global".into(), retention_config(None, 30));
+    let original = serde_json::to_vec(&store).unwrap();
+    tokio::fs::write(&file.0, &original).await.unwrap();
+    let error = FileRepository::new(file.0.to_str().unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("duplicate audit retention streams")
+    );
+    assert_eq!(tokio::fs::read(&file.0).await.unwrap(), original);
+    assert_eq!(store.audit_retention_configs.len(), 2);
+    assert!(store.rekey_audit_retention_configs().is_err());
+    assert_eq!(
+        serde_json::to_vec(&store).unwrap(),
+        original,
+        "failed rekey must also leave in-memory records intact"
+    );
+}

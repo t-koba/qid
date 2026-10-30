@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use super::*;
+use crate::domain::audit_retention_stream_id;
 
 #[async_trait]
 impl AuditRepository for SqlRepository {

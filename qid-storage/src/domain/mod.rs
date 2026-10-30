@@ -224,3 +224,8 @@ pub(crate) fn email_magic_link_token_matches(stored: &str, candidate: &str) -> O
         candidate_token.as_bytes(),
     ))
 }
+
+/// Global audit retention is separate from every realm, including `__global__`.
+pub(crate) fn audit_retention_stream_id(realm_id: Option<&str>) -> String {
+    realm_id.map_or_else(|| "global".into(), |id| format!("realm:{id}"))
+}

@@ -8,7 +8,7 @@ use qid_core::models::{
     IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
     IgaJitPrivilegeGrantRecord, MarketplaceConnector, MarketplaceConnectorType, ParRequest,
     PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, TotpCredential,
-    UsageBillingEvent, User, WebAuthnCredential, WorkloadIdentity,
+    UsageBillingEvent, User, VcCredentialStatusRecord, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -4792,5 +4792,67 @@ pub async fn assert_usage_billing_event_tenant_ownership<R: SaasRepository>(repo
             .await
             .expect("list foreign tenant usage history failed"),
         tenant_b_history
+    );
+}
+
+/// VC status records are globally create-once by credential ID, independent of realm payload.
+pub async fn assert_vc_credential_status_identity_collision<R>(repo: &R)
+where
+    R: VcRepository,
+{
+    let incumbent = VcCredentialStatusRecord {
+        credential_id: "credential-vc-owner".to_string(),
+        realm_id: "realm-vc-owner".to_string(),
+        subject: "user-vc-owner".to_string(),
+        issuer: "https://issuer.example.com/owner".to_string(),
+        status_list_uri: "https://issuer.example.com/status/owner".to_string(),
+        issued_at: 1_000,
+        expires_at: 2_000,
+        revoked: false,
+        revocation_reason: None,
+        revoked_at: None,
+    };
+    repo.store_vc_credential_status(&incumbent)
+        .await
+        .expect("store incumbent VC credential status failed");
+
+    let collision = VcCredentialStatusRecord {
+        realm_id: "realm-vc-other".to_string(),
+        subject: "user-vc-other".to_string(),
+        issuer: "https://issuer.example.com/other".to_string(),
+        status_list_uri: "https://issuer.example.com/status/other".to_string(),
+        issued_at: 3_000,
+        expires_at: 4_000,
+        revoked: true,
+        revocation_reason: Some("foreign payload".to_string()),
+        revoked_at: Some(3_500),
+        ..incumbent.clone()
+    };
+    assert!(
+        repo.store_vc_credential_status(&collision).await.is_err(),
+        "a different realm's VC status must not reuse an existing credential ID"
+    );
+    assert_eq!(
+        repo.get_vc_credential_status(&incumbent.credential_id)
+            .await
+            .expect("get incumbent VC credential status after collision failed"),
+        Some(incumbent.clone()),
+        "a credential-ID collision changed the incumbent status record"
+    );
+
+    let distinct = VcCredentialStatusRecord {
+        credential_id: "credential-vc-distinct".to_string(),
+        status_list_uri: "https://issuer.example.com/status/distinct".to_string(),
+        ..incumbent.clone()
+    };
+    repo.store_vc_credential_status(&distinct)
+        .await
+        .expect("a distinct VC credential ID must be storable");
+    assert_eq!(
+        repo.get_vc_credential_status(&distinct.credential_id)
+            .await
+            .expect("get distinct VC credential status failed"),
+        Some(distinct),
+        "distinct VC credential status did not round-trip"
     );
 }

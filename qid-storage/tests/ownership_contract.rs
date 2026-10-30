@@ -1,8 +1,8 @@
-//! Cross-backend contract tests for the owner-bound storage resources.
+//! Cross-backend contract tests for owner-bound and globally keyed storage records.
 //!
 //! Every contract body lives in the shared support module and runs once per
-//! backend, so the file and the SQL backend answer the same owner questions
-//! the same way.
+//! backend, so the file and SQL backends answer the same ownership or identity
+//! questions the same way.
 
 mod support;
 
@@ -391,4 +391,12 @@ async fn usage_billing_event_tenant_ownership_holds_in_both_backends() {
     support::assert_usage_billing_event_tenant_ownership(&sql).await;
     let file = support::file_repo("ownership-contract-usage-billing-event").await;
     support::assert_usage_billing_event_tenant_ownership(&file).await;
+}
+
+#[tokio::test]
+async fn vc_credential_status_identity_collision_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_vc_credential_status_identity_collision(&sql).await;
+    let file = support::file_repo("ownership-contract-vc-status").await;
+    support::assert_vc_credential_status_identity_collision(&file).await;
 }

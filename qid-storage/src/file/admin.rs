@@ -19,11 +19,15 @@ impl AdminRepository for FileRepository {
 
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()> {
         let mut store = self.store.write().await;
-        // Remove existing entry with same tenant_id + subject before inserting
-        store
+        if let Some(incumbent) = store
             .admins
-            .retain(|_, a| !(a.tenant_id == admin.tenant_id && a.subject == admin.subject));
-        store.admins.insert(admin.id.clone(), admin.clone());
+            .values_mut()
+            .find(|a| a.tenant_id == admin.tenant_id && a.subject == admin.subject)
+        {
+            incumbent.roles.clone_from(&admin.roles);
+        } else {
+            store.admins.insert(admin.id.clone(), admin.clone());
+        }
         drop(store);
         self.save().await
     }

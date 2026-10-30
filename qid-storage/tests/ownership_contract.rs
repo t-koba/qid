@@ -135,6 +135,14 @@ async fn admin_approval_identity_ownership_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn admin_upsert_preserves_identity_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_admin_upsert_preserves_identity(&sql).await;
+    let file = support::file_repo("ownership-contract-admin-upsert").await;
+    support::assert_admin_upsert_preserves_identity(&file).await;
+}
+
+#[tokio::test]
 async fn admin_elevation_identity_ownership_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_admin_elevation_identity_ownership(&sql).await;

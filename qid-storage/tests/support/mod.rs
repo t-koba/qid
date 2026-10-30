@@ -1822,6 +1822,67 @@ where
     );
 }
 
+/// Updating a membership changes only roles and preserves existing elevation owners.
+pub async fn assert_admin_upsert_preserves_identity<R>(repo: &R)
+where
+    R: AdminRepository,
+{
+    let incumbent = Admin {
+        id: "admin-1".to_string(),
+        tenant_id: "tenant-admin-upsert".to_string(),
+        subject: "user-1".to_string(),
+        roles: vec!["reader".to_string()],
+        created_at: 1_700_000_000,
+    };
+    repo.upsert_admin(&incumbent).await.unwrap();
+    let elevation = AdminElevation {
+        id: "admin-upsert-elevation".to_string(),
+        tenant_id: incumbent.tenant_id.clone(),
+        admin_id: incumbent.id.clone(),
+        acr: Some("urn:example:loa:2".to_string()),
+        amr: vec!["pwd".to_string(), "otp".to_string()],
+        elevation_expires_at: 1_700_000_100,
+        created_at: 1_700_000_001,
+    };
+    repo.store_admin_elevation(&elevation).await.unwrap();
+    let incoming = Admin {
+        id: "admin-2".to_string(),
+        roles: vec!["admin".to_string(), "auditor".to_string()],
+        created_at: 1_700_000_002,
+        ..incumbent.clone()
+    };
+    assert!(repo.get_admin_by_id(&incoming.id).await.unwrap().is_none());
+    repo.upsert_admin(&incoming).await.unwrap();
+
+    let stored = repo
+        .get_admin(&incumbent.tenant_id, &incumbent.subject)
+        .await
+        .unwrap()
+        .expect("membership must remain stored");
+    assert_eq!(stored.id, incumbent.id);
+    assert_eq!(stored.tenant_id, incumbent.tenant_id);
+    assert_eq!(stored.subject, incumbent.subject);
+    assert_eq!(stored.created_at, incumbent.created_at);
+    assert_eq!(stored.roles, incoming.roles);
+    assert!(repo.get_admin_by_id(&incoming.id).await.unwrap().is_none());
+    let stored_elevation = repo
+        .get_admin_elevation(&elevation.id)
+        .await
+        .unwrap()
+        .expect("elevation must remain stored");
+    assert_eq!(stored_elevation.admin_id, incumbent.id);
+    let owner = repo
+        .get_admin_by_id(&stored_elevation.admin_id)
+        .await
+        .unwrap()
+        .expect("elevation owner must still resolve");
+    assert_eq!(owner.id, incumbent.id);
+    assert_eq!(owner.tenant_id, incumbent.tenant_id);
+    assert_eq!(owner.subject, incumbent.subject);
+    assert_eq!(owner.created_at, incumbent.created_at);
+    assert_eq!(owner.roles, incoming.roles);
+}
+
 /// An admin-elevation ID names one identity-bound context and must never
 /// replace or move the incumbent to another tenant.
 pub async fn assert_admin_elevation_identity_ownership<R>(repo: &R)

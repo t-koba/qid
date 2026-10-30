@@ -35,7 +35,7 @@ fn request(id: &str, admin: &str) -> Request<Body> {
         .uri(format!(
             "/admin/api/v1/target-realm/token-families/{id}/revoke"
         ))
-        .header("x-qid-admin-session-id", admin)
+        .header("x-qid-admin-session-id", format!("elevation-{admin}"))
         .header("x-qid-admin-reason", "family-scope-test")
         .body(Body::empty())
         .unwrap()
@@ -84,7 +84,7 @@ async fn revoke_route_passes_validated_realm_to_storage() {
         .await
         .unwrap();
         repo.store_admin_elevation(&AdminElevation {
-            id: id.into(),
+            id: format!("elevation-{id}"),
             tenant_id: "tenant".into(),
             admin_id: id.into(),
             acr: Some("phr".into()),
@@ -174,11 +174,16 @@ async fn revoke_route_passes_validated_realm_to_storage() {
         .await
         .unwrap();
     assert_eq!(events.len(), 2);
+    let bearer = "elevation-security";
     assert!(events.iter().all(|event| {
+        let metadata = serde_json::to_string(&event.metadata_json).unwrap();
         event.action == "admin.token_family_revoke"
             && event.actor == "security@example.com"
             && event.reason == "family-scope-test"
-            && event.metadata_json["admin_session"]["admin_session_id"] == "security"
+            && !metadata.contains(bearer)
+            && event.metadata_json["admin_session"]
+                .get("admin_session_id")
+                .is_none()
             && event.metadata_json["operation"]["forced"] == true
     }));
 }

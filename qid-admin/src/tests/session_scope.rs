@@ -40,7 +40,10 @@ fn request(path: &str, admin_session: &str, body: serde_json::Value) -> Request<
         .method("POST")
         .uri(path)
         .header("content-type", "application/json")
-        .header("x-qid-admin-session-id", admin_session)
+        .header(
+            "x-qid-admin-session-id",
+            format!("elevation-{admin_session}"),
+        )
         .header("x-qid-admin-reason", "scope-test")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -110,7 +113,7 @@ async fn exercise_route(breakglass: bool) {
         .await
         .unwrap();
         repo.store_admin_elevation(&AdminElevation {
-            id: id.into(),
+            id: format!("elevation-{id}"),
             tenant_id: "admin-tenant".into(),
             admin_id: id.into(),
             acr: Some("phr".into()),
@@ -290,11 +293,16 @@ async fn exercise_route(breakglass: bool) {
             && event.actor == format!("{admin}@example.com")
             && event.reason == "scope-test"
     }));
+    let bearer = format!("elevation-{admin}");
+    assert!(events.iter().all(|event| {
+        !serde_json::to_string(&event.metadata_json)
+            .unwrap()
+            .contains(&bearer)
+            && event.metadata_json["admin_session"]
+                .get("admin_session_id")
+                .is_none()
+    }));
     let event = &events[0];
-    assert_eq!(
-        event.metadata_json["admin_session"]["admin_session_id"],
-        admin
-    );
     if breakglass {
         assert_eq!(event.metadata_json["operation"]["incident_id"], "inc-1");
         assert_eq!(

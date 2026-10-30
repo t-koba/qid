@@ -400,9 +400,12 @@ async fn breakglass_session_revoke_requires_breakglass_role_and_audits_incident(
     assert_eq!(event.reason, "emergency-session-containment");
     assert_eq!(event.metadata_json["operation"]["breakglass"], true);
     assert_eq!(event.metadata_json["operation"]["incident_id"], "inc-1");
-    assert_eq!(
-        event.metadata_json["admin_session"]["admin_session_id"],
-        "breakglass-admin-session"
+    let metadata = serde_json::to_string(&event.metadata_json).unwrap();
+    assert!(!metadata.contains("breakglass-admin-session"));
+    assert!(
+        event.metadata_json["admin_session"]
+            .get("admin_session_id")
+            .is_none()
     );
 }
 
@@ -1169,7 +1172,11 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
             .all(|event| event.actor == "admin@example.com" && event.reason == "ticket-123")
     );
     assert!(audit.iter().any(|event| {
-        event.metadata_json["admin_session"]["admin_session_id"] == "admin-session-1"
+        let metadata = serde_json::to_string(&event.metadata_json).unwrap();
+        !metadata.contains("admin-session-1")
+            && event.metadata_json["admin_session"]
+                .get("admin_session_id")
+                .is_none()
             && event.metadata_json["admin_session"]["roles"][0] == "tenant.owner"
             && event.metadata_json["operation"]["tenant_id"] == "tenant-saas"
     }));

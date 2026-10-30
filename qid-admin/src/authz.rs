@@ -662,7 +662,6 @@ pub(crate) fn admin_session_metadata(
         "subject": admin.subject,
         "tenant_id": admin.tenant_id,
         "roles": admin.roles,
-        "admin_session_id": elevation.id,
         "acr": elevation.acr,
         "amr": elevation.amr,
         "elevation_expires_at": elevation.elevation_expires_at,

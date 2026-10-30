@@ -1,3 +1,6 @@
+#[path = "support/admin_assurance.rs"]
+mod admin_assurance;
+
 use anyhow::Context;
 use qid_core::{
     cache::{MemoryCache, SharedCache},
@@ -149,6 +152,7 @@ async fn password_login_session_and_revoke_propagate_through_shared_cache() -> a
         .await
         .context("failed to create browser session")?;
     assert!(sessions.get(&session.id).await?.is_some());
+    admin_assurance::assert_admin_assurance(&session, false, false);
 
     let shared_cache: Arc<dyn SharedCache> = Arc::new(MemoryCache::new());
     let first = qid_core::state::SharedState::new(

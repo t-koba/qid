@@ -109,8 +109,8 @@ fn json_request(method: Method, uri: &str, body: &'static str) -> Request<Body> 
         .header("x-qid-admin-reason", "ticket-123")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "tenant.owner")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -128,8 +128,8 @@ fn approval_json_request(method: Method, uri: &str, body: &'static str) -> Reque
         .header("x-qid-admin-reason", "ticket-123")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "tenant.owner")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -151,8 +151,8 @@ fn admin_get_request(uri: &str) -> Request<Body> {
         .uri(uri)
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "tenant.owner")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -168,8 +168,8 @@ fn platform_admin_get_request(uri: &str) -> Request<Body> {
         .uri(uri)
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "platform.admin")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -187,8 +187,8 @@ fn security_admin_json_request(method: Method, uri: &str, body: String) -> Reque
         .header("x-qid-admin-reason", "security-ticket-123")
         .header("x-qid-admin-actor", "security-admin@example.com")
         .header("x-qid-admin-roles", "security.admin")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -206,8 +206,8 @@ fn breakglass_request(uri: &str, body: &'static str) -> Request<Body> {
         .header("x-qid-admin-reason", "emergency-session-containment")
         .header("x-qid-admin-actor", "breakglass@example.com")
         .header("x-qid-admin-roles", "breakglass")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -225,29 +225,29 @@ async fn seed_base_admin(state: &SharedState<SqlRepository>) {
             "admin@example.com",
             vec!["tenant.owner".to_string(), "platform.admin".to_string()],
             "admin-session-1",
-            Some("urn:qid:acr:phishing-resistant"),
-            vec!["pwd".to_string(), "hwk".to_string()],
+            Some("phr"),
+            vec!["webauthn".to_string()],
         ),
         (
             "security-admin@example.com",
             vec!["security.admin".to_string()],
             "security-admin-session-1",
-            Some("urn:qid:acr:phishing-resistant"),
-            vec!["pwd".to_string(), "hwk".to_string()],
+            Some("phr"),
+            vec!["webauthn".to_string()],
         ),
         (
             "breakglass@example.com",
             vec!["breakglass".to_string()],
             "breakglass-admin-session",
-            Some("urn:qid:acr:phishing-resistant"),
-            vec!["pwd".to_string(), "hwk".to_string()],
+            Some("phr"),
+            vec!["webauthn".to_string()],
         ),
         (
             "approver@example.com",
             vec!["tenant.owner".to_string()],
             "approver-session",
-            Some("urn:qid:acr:phishing-resistant"),
-            vec!["pwd".to_string(), "hwk".to_string()],
+            Some("phr"),
+            vec!["webauthn".to_string()],
         ),
     ] {
         let admin = Admin {
@@ -333,8 +333,8 @@ async fn breakglass_session_revoke_requires_breakglass_role_and_audits_incident(
             realm_id: "realm-bg".to_string(),
             user_id: "user-bg".to_string(),
             auth_time: now,
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
-            amr: vec!["pwd".to_string(), "hwk".to_string()],
+            acr: Some("phr".to_string()),
+            amr: vec!["webauthn".to_string()],
             idle_expires_at: now + 600,
             absolute_expires_at: now + 3600,
             revoked: false,
@@ -467,8 +467,8 @@ async fn key_rotation_plan_route_requires_security_admin_and_audits_plan() {
                 .header("x-qid-admin-reason", "security-ticket-123")
                 .header("x-qid-admin-actor", "admin@example.com")
                 .header("x-qid-admin-roles", "tenant.owner")
-                .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-                .header("x-qid-admin-amr", "pwd,hwk")
+                .header("x-qid-admin-acr", "phr")
+                .header("x-qid-admin-amr", "webauthn")
                 .header(
                     "x-qid-admin-elevation-expires-at",
                     (qid_core::util::now_seconds() + 60).to_string(),
@@ -756,8 +756,8 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
             id: "other-admin-session".to_string(),
             tenant_id: "tenant-other".to_string(),
             admin_id: other_admin.id,
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
-            amr: vec!["pwd".to_string(), "hwk".to_string()],
+            acr: Some("phr".to_string()),
+            amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 120,
             created_at: now,
         })
@@ -1221,8 +1221,8 @@ async fn custom_domain_cross_tenant_id_collision_returns_conflict_without_mutati
             id: "other-admin-session".to_string(),
             tenant_id: "tenant-other".to_string(),
             admin_id: other_admin.id,
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
-            amr: vec!["pwd".to_string(), "hwk".to_string()],
+            acr: Some("phr".to_string()),
+            amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 120,
             created_at: now,
         })
@@ -1318,8 +1318,8 @@ async fn delegated_admin_cross_tenant_id_collision_returns_conflict_without_muta
             id: "other-admin-session".to_string(),
             tenant_id: "tenant-other".to_string(),
             admin_id: other_admin.id,
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
-            amr: vec!["pwd".to_string(), "hwk".to_string()],
+            acr: Some("phr".to_string()),
+            amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 120,
             created_at: now,
         })
@@ -1449,8 +1449,8 @@ async fn saas_admin_routes_reject_missing_reason_and_tenant_mismatch() {
         .header("Content-Type", "application/json")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "tenant.owner")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header("x-qid-admin-elevation-expires-at", (now + 60).to_string())
         .header("x-qid-admin-session-id", "admin-session-1")
         .body(Body::from(
@@ -1520,8 +1520,8 @@ async fn saas_admin_routes_reject_missing_step_up_and_wrong_role() {
         .header("x-qid-admin-reason", "ticket-123")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "auditor")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -1566,8 +1566,8 @@ async fn saas_admin_routes_reject_expired_or_overlong_elevation() {
         .header("x-qid-admin-reason", "ticket-123")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "app.admin")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() - 1).to_string(),
@@ -1584,8 +1584,8 @@ async fn saas_admin_routes_reject_expired_or_overlong_elevation() {
         .header("x-qid-admin-reason", "ticket-123")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "app.admin")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 3600).to_string(),
@@ -1701,8 +1701,8 @@ async fn saas_admin_routes_reject_self_or_stale_approval() {
         .header("x-qid-admin-reason", "ticket-123")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "tenant.owner")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -1725,8 +1725,8 @@ async fn saas_admin_routes_reject_self_or_stale_approval() {
         .header("x-qid-admin-reason", "ticket-123")
         .header("x-qid-admin-actor", "admin@example.com")
         .header("x-qid-admin-roles", "tenant.owner")
-        .header("x-qid-admin-acr", "urn:qid:acr:phishing-resistant")
-        .header("x-qid-admin-amr", "pwd,hwk")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
         .header(
             "x-qid-admin-elevation-expires-at",
             (qid_core::util::now_seconds() + 60).to_string(),
@@ -1825,8 +1825,8 @@ async fn directory_delete_is_bound_to_the_path_realm() {
             id: "directory-session".into(),
             tenant_id: "tenant-saas".into(),
             admin_id: "admin-directory".into(),
-            acr: Some("urn:qid:acr:phishing-resistant".into()),
-            amr: vec!["pwd".into(), "hwk".into()],
+            acr: Some("phr".into()),
+            amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
             created_at: now,
         })
@@ -1935,8 +1935,8 @@ async fn service_account_delete_is_bound_to_the_path_realm_and_audits_success() 
             id: "service-account-session".into(),
             tenant_id: "tenant-saas".into(),
             admin_id: "admin-service-account".into(),
-            acr: Some("urn:qid:acr:phishing-resistant".into()),
-            amr: vec!["pwd".into(), "hwk".into()],
+            acr: Some("phr".into()),
+            amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
             created_at: now,
         })
@@ -2063,8 +2063,8 @@ async fn directory_update_is_bound_to_the_path_realm() {
             id: "directory-session".into(),
             tenant_id: "tenant-saas".into(),
             admin_id: "admin-directory".into(),
-            acr: Some("urn:qid:acr:phishing-resistant".into()),
-            amr: vec!["pwd".into(), "hwk".into()],
+            acr: Some("phr".into()),
+            amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
             created_at: now,
         })

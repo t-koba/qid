@@ -21,14 +21,15 @@ server:
   listen: "0.0.0.0:8443"
   public_base_url: "https://id.example.com"
 
+# TOTP-only assurance: not phishing-resistant and not password-plus-TOTP.
+# This explicitly opts out of the default WebAuthn admin assurance requirement.
 admin:
   security:
     require_reason: true
     require_step_up: true
-    required_acr: "urn:qid:acr:phishing-resistant"
+    required_acr: "urn:qid:acr:totp"
     required_amr:
-      - pwd
-      - otp
+      - totp
     max_elevation_seconds: 900
     require_approval: true
     max_approval_age_seconds: 1800

@@ -392,6 +392,7 @@ async fn trusted_packed_route_enrolls_only_after_trust_and_ceremony_verification
                 assert_eq!(session.user_id, "alice");
                 assert_eq!(session.acr.as_deref(), Some("phr"));
                 assert_eq!(session.amr, ["webauthn"]); // No hwk or swk claim.
+                admin_assurance::assert_admin_assurance(&session, true, false);
                 assert_eq!(
                     app.repo.list_sessions("corp", None).await?.len(),
                     before.len() + 1

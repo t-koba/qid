@@ -55,6 +55,15 @@ Operational guidance:
 - `max_approval_age_seconds`
 - `breakglass_enabled`
 
+The default step-up requirement is WebAuthn ACR `phr` and AMR `webauthn`.
+ACR comparison is exact; the elevation must contain at least one configured AMR.
+WebAuthn does not claim `hwk` or `passkey` as AMR. Password sessions carry
+`urn:qid:acr:password` / `pwd`; TOTP-only sessions carry
+`urn:qid:acr:totp` / `totp`. Neither meets the phishing-resistant default.
+The TOTP admin sample explicitly selects this lower, TOTP-only assurance; it
+is not password-plus-TOTP. These settings do not grant admin membership or
+provision an elevation.
+
 For sensitive deployments, enable approval and keep elevation TTL short.
 
 `admin.security` is the single owner of the administrator authentication requirement: an administrator elevation must carry the required ACR and one of the required AMR methods, and `require_step_up` is on by default. A realm's `authentication.mfa.totp.enabled` states whether the realm offers the TOTP factor and does not restate that requirement.

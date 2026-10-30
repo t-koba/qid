@@ -87,8 +87,8 @@ async fn revoke_route_passes_validated_realm_to_storage() {
             id: id.into(),
             tenant_id: "tenant".into(),
             admin_id: id.into(),
-            acr: Some("urn:qid:acr:phishing-resistant".into()),
-            amr: vec!["pwd".into(), "hwk".into()],
+            acr: Some("phr".into()),
+            amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
             created_at: now,
         })

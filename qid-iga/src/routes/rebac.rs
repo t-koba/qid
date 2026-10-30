@@ -306,8 +306,8 @@ mod read_and_check_tests {
             id: "session-1".to_string(),
             tenant_id: "test-tenant".to_string(),
             admin_id: admin.id.clone(),
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
-            amr: vec!["hwk".to_string()],
+            acr: Some("phr".to_string()),
+            amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 300,
             created_at: now,
         };

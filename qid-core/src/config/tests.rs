@@ -685,10 +685,8 @@ fn admin_security_config_rejects_unsafe_step_up_and_elevation() {
     let mut config = minimal_config();
     assert!(config.admin.security.require_reason);
     assert!(config.admin.security.require_step_up);
-    assert_eq!(
-        config.admin.security.required_acr,
-        "urn:qid:acr:phishing-resistant"
-    );
+    assert_eq!(config.admin.security.required_acr, "phr");
+    assert_eq!(config.admin.security.required_amr, ["webauthn"]);
     assert_eq!(config.admin.security.max_elevation_seconds, 900);
 
     config.admin.security.required_amr.clear();

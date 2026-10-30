@@ -2083,8 +2083,8 @@ mod directory_http_truthfulness {
             id: format!("admin-session-{}", ulid::Ulid::new()),
             tenant_id: "test".to_string(),
             admin_id: admin.id.clone(),
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
-            amr: vec!["hwk".to_string()],
+            acr: Some("phr".to_string()),
+            amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 300,
             created_at: now,
         };

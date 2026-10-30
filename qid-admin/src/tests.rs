@@ -17,7 +17,7 @@ fn stepped_up_headers(roles: &str) -> HeaderMap {
     let security = AdminSecurityConfig::default();
     headers.insert(ADMIN_ROLES_HEADER, roles.parse().unwrap());
     headers.insert(ADMIN_ACR_HEADER, security.required_acr.parse().unwrap());
-    headers.insert(ADMIN_AMR_HEADER, "pwd,hwk".parse().unwrap());
+    headers.insert(ADMIN_AMR_HEADER, "webauthn".parse().unwrap());
     headers.insert(
         ADMIN_ELEVATION_EXPIRES_AT_HEADER,
         (qid_core::util::now_seconds() + 60)
@@ -53,6 +53,30 @@ fn admin_authorization_requires_step_up_and_role() {
 
     let headers = stepped_up_headers("breakglass");
     assert!(authorize_admin_headers(&headers, AdminPermission::BreakGlass, &security).is_ok());
+}
+
+#[test]
+fn admin_default_requires_exact_webauthn_assurance() {
+    let security = AdminSecurityConfig::default();
+    for (acr, amr, accepted) in [
+        ("phr", "webauthn", true),
+        ("phr", "pwd,webauthn", true), // AMR membership, not list equality.
+        ("urn:qid:acr:phishing-resistant", "webauthn", false),
+        ("urn:qid:acr:totp", "totp", false),
+        ("urn:qid:acr:password", "pwd", false),
+        ("phr", "hwk", false),
+        ("phr", "passkey", false),
+        ("phr", "otp", false),
+    ] {
+        let mut headers = stepped_up_headers("app.admin");
+        headers.insert(ADMIN_ACR_HEADER, acr.parse().unwrap());
+        headers.insert(ADMIN_AMR_HEADER, amr.parse().unwrap());
+        assert_eq!(
+            authorize_admin_headers(&headers, AdminPermission::AppAdmin, &security).is_ok(),
+            accepted,
+            "acr={acr} amr={amr}"
+        );
+    }
 }
 
 #[test]

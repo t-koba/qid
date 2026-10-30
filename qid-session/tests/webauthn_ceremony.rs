@@ -4,6 +4,9 @@
 //! without a live ceremony is refused before the realm's user table is
 //! read.
 
+#[path = "support/admin_assurance.rs"]
+mod admin_assurance;
+
 use anyhow::Context;
 use axum::{
     Router,

@@ -10,7 +10,7 @@
         {
           "field": "acr",
           "op": "equals",
-          "value": "urn:qid:acr:phishing-resistant"
+          "value": "phr"
         }
       ]
     },
@@ -22,7 +22,7 @@
         {
           "field": "acr",
           "op": "equals",
-          "value": "urn:qid:acr:phishing-resistant"
+          "value": "phr"
         }
       ]
     }

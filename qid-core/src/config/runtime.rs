@@ -94,15 +94,11 @@ impl AdminSecurityConfig {
 }
 
 pub fn default_admin_required_acr() -> String {
-    "urn:qid:acr:phishing-resistant".to_string()
+    "phr".to_string()
 }
 
 pub fn default_admin_required_amr() -> Vec<String> {
-    vec![
-        "hwk".to_string(),
-        "webauthn".to_string(),
-        "passkey".to_string(),
-    ]
+    vec!["webauthn".to_string()]
 }
 
 fn default_admin_max_elevation_seconds() -> u64 {

@@ -113,8 +113,8 @@ async fn exercise_route(breakglass: bool) {
             id: id.into(),
             tenant_id: "admin-tenant".into(),
             admin_id: id.into(),
-            acr: Some("urn:qid:acr:phishing-resistant".into()),
-            amr: vec!["pwd".into(), "hwk".into()],
+            acr: Some("phr".into()),
+            amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
             created_at: now,
         })

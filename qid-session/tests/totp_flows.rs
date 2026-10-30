@@ -1,3 +1,6 @@
+#[path = "support/admin_assurance.rs"]
+mod admin_assurance;
+
 use anyhow::Context;
 use axum::{
     Router,
@@ -203,6 +206,7 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
         .context("session missing")?;
     assert_eq!(session.acr.as_deref(), Some("urn:qid:acr:totp"));
     assert_eq!(session.amr, vec!["totp".to_string()]);
+    admin_assurance::assert_admin_assurance(&session, false, true);
 
     let (status, _, _) = post(
         app,

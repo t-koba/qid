@@ -49,7 +49,7 @@ smallest interoperable OIDC authorization-code deployment, then move to
 - `ciam-customer-identity.yaml`: CIAM sign-in with FedCM, consent, identity proofing, and social login.
 - `passkeys-with-password-fallback.yaml`: passkeys with password fallback.
 - `passwordless-passkeys-only.yaml`: passkey-only realm.
-- `totp-admin-step-up.yaml`: TOTP and admin step-up.
+- `totp-admin-step-up.yaml`: TOTP-only admin step-up (`urn:qid:acr:totp` / `totp`), not phishing-resistant or password-plus-TOTP; explicitly lower assurance than the WebAuthn default.
 - `client-certificate-authentication.yaml`: client certificate authentication for a privileged realm.
 - `enterprise-webauthn-passkeys.yaml`: managed workforce passkeys.
 - `password-policy-lockout.yaml`: the realm's Argon2id cost and lockout limits.

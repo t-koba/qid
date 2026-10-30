@@ -25,11 +25,9 @@ admin:
   security:
     require_reason: true
     require_step_up: true
-    required_acr: "urn:qid:acr:phishing-resistant"
+    required_acr: "phr"
     required_amr:
-      - hwk
       - webauthn
-      - passkey
     require_approval: true
     max_approval_age_seconds: 900
     breakglass_enabled: true

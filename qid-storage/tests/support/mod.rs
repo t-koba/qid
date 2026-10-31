@@ -1869,6 +1869,7 @@ where
         id: "admin-upsert-elevation".to_string(),
         tenant_id: incumbent.tenant_id.clone(),
         admin_id: incumbent.id.clone(),
+        source_session_id: None,
         acr: Some("urn:example:loa:2".to_string()),
         amr: vec!["pwd".to_string(), "otp".to_string()],
         elevation_expires_at: 1_700_000_100,
@@ -1944,6 +1945,7 @@ where
         id: "admin-elevation-identity".to_string(),
         tenant_id: admin.tenant_id.clone(),
         admin_id: admin.id.clone(),
+        source_session_id: Some("browser-session-admin-elevation".to_string()),
         acr: Some("urn:example:loa:2".to_string()),
         amr: vec!["pwd".to_string(), "otp".to_string()],
         elevation_expires_at: 1_700_000_100,
@@ -1992,6 +1994,7 @@ where
         .expect("incumbent admin elevation must remain stored");
     assert_eq!(stored.tenant_id, elevation.tenant_id);
     assert_eq!(stored.admin_id, elevation.admin_id);
+    assert_eq!(stored.source_session_id, elevation.source_session_id);
     assert_eq!(stored.acr, elevation.acr);
     assert_eq!(stored.amr, elevation.amr);
     assert_eq!(stored.elevation_expires_at, elevation.elevation_expires_at);
@@ -5073,4 +5076,43 @@ where
         assert_eq!(matching.len(), 1);
         assert_eq!(serde_json::to_value(matching[0]).unwrap(), expected);
     }
+}
+
+/// Missing elevation provenance remains unavailable in both storage backends.
+pub async fn assert_admin_elevation_without_source_session<R>(repo: &R)
+where
+    R: AdminRepository,
+{
+    let admin = Admin {
+        id: "admin-elevation-unbound-owner".to_string(),
+        tenant_id: "tenant-admin-elevation-unbound".to_string(),
+        subject: "unbound-owner".to_string(),
+        roles: vec!["admin".to_string()],
+        created_at: 1_700_000_000,
+    };
+    repo.upsert_admin(&admin)
+        .await
+        .expect("create unbound elevation owner failed");
+    let elevation = AdminElevation {
+        id: "admin-elevation-unbound".to_string(),
+        tenant_id: admin.tenant_id,
+        admin_id: admin.id,
+        source_session_id: None,
+        acr: None,
+        amr: Vec::new(),
+        elevation_expires_at: 1_700_000_100,
+        created_at: 1_700_000_001,
+    };
+    repo.store_admin_elevation(&elevation)
+        .await
+        .expect("store unbound elevation failed");
+    let stored = repo
+        .get_admin_elevation(&elevation.id)
+        .await
+        .expect("get unbound elevation failed")
+        .expect("unbound elevation must remain stored");
+    assert_eq!(
+        stored.source_session_id, None,
+        "storage must not invent source-session provenance"
+    );
 }

@@ -1331,6 +1331,7 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
             id: "ssf-elevation".to_string(),
             tenant_id: "tenant-1".to_string(),
             admin_id: "ssf-admin".to_string(),
+            source_session_id: None,
             acr: Some(state.config.admin.security.required_acr.clone()),
             amr: vec![state.config.admin.security.required_amr[0].clone()],
             elevation_expires_at: admin_now + 300,

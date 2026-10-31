@@ -116,6 +116,7 @@ async fn exercise_route(breakglass: bool) {
             id: format!("elevation-{id}"),
             tenant_id: "admin-tenant".into(),
             admin_id: id.into(),
+            source_session_id: None,
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,

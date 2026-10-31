@@ -83,6 +83,7 @@ impl Fixture {
             id: "elevated".into(),
             tenant_id: "tenant".into(),
             admin_id: "admin".into(),
+            source_session_id: None,
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 300,

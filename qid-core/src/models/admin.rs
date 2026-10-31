@@ -14,6 +14,7 @@ pub struct AdminElevation {
     pub id: String,
     pub tenant_id: String,
     pub admin_id: String,
+    pub source_session_id: Option<String>,
     pub acr: Option<String>,
     pub amr: Vec<String>,
     pub elevation_expires_at: u64,

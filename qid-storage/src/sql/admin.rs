@@ -52,11 +52,12 @@ impl AdminRepository for SqlRepository {
 
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()> {
         let result = sqlx::query(
-            "INSERT INTO admin_elevations (id, tenant_id, admin_id, acr, amr_json, elevation_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO admin_elevations (id, tenant_id, admin_id, source_session_id, acr, amr_json, elevation_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&elevation.id)
         .bind(&elevation.tenant_id)
         .bind(&elevation.admin_id)
+        .bind(&elevation.source_session_id)
         .bind(&elevation.acr)
         .bind(serde_json::to_string(&elevation.amr).unwrap_or_default())
         .bind(elevation.elevation_expires_at as i64)

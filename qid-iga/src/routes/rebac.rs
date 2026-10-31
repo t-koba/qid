@@ -306,6 +306,7 @@ mod read_and_check_tests {
             id: "session-1".to_string(),
             tenant_id: "test-tenant".to_string(),
             admin_id: admin.id.clone(),
+            source_session_id: None,
             acr: Some("phr".to_string()),
             amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 300,

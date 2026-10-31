@@ -425,3 +425,157 @@ async fn concurrent_session_creation_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-session-create").await;
     support::assert_concurrent_session_creation(&file).await;
 }
+
+#[tokio::test]
+async fn admin_elevation_without_source_session_stays_unbound_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_admin_elevation_without_source_session(&sql).await;
+    let file = support::file_repo("ownership-contract-admin-elevation-unbound").await;
+    support::assert_admin_elevation_without_source_session(&file).await;
+}
+#[test]
+fn legacy_admin_elevation_json_defaults_source_session_to_none() {
+    let legacy = serde_json::json!({"id":"legacy-elevation","tenant_id":"legacy-tenant","admin_id":"legacy-admin","acr":null,"amr":[],"elevation_expires_at":1_700_000_100u64,"created_at":1_700_000_001u64});
+    let elevation: qid_core::models::AdminElevation =
+        serde_json::from_value(legacy).expect("legacy elevation without provenance must load");
+    assert_eq!(elevation.source_session_id, None);
+}
+#[tokio::test]
+async fn file_admin_elevation_source_session_survives_reopen_and_legacy_omission() {
+    use qid_core::models::{Admin, AdminElevation};
+    use qid_storage::{AdminRepository, FileRepository};
+    let dir = std::env::temp_dir().join(format!("qid-admin-elevation-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).expect("create isolated file repo directory");
+    let path = dir
+        .join("repository.json")
+        .to_str()
+        .expect("UTF-8 path")
+        .to_string();
+    let admin = Admin {
+        id: "file-elevation-admin".into(),
+        tenant_id: "file-elevation-tenant".into(),
+        subject: "file-elevation-owner".into(),
+        roles: vec!["admin".into()],
+        created_at: 1_700_000_000,
+    };
+    let elevation = AdminElevation {
+        id: "file-elevation".into(),
+        tenant_id: admin.tenant_id.clone(),
+        admin_id: admin.id.clone(),
+        source_session_id: Some("browser-session-file".into()),
+        acr: Some("phr".into()),
+        amr: vec!["webauthn".into()],
+        elevation_expires_at: 1_700_000_100,
+        created_at: 1_700_000_001,
+    };
+    let first = FileRepository::new(&path).await.expect("open file repo");
+    first.migrate().await.expect("migrate file repo");
+    first.upsert_admin(&admin).await.expect("store admin");
+    first
+        .store_admin_elevation(&elevation)
+        .await
+        .expect("store elevation");
+    drop(first);
+    let reopened = FileRepository::new(&path).await.expect("reopen file repo");
+    reopened.migrate().await.expect("migrate reopened repo");
+    let stored = reopened
+        .get_admin_elevation(&elevation.id)
+        .await
+        .expect("load reopened elevation")
+        .expect("elevation persists");
+    assert_eq!(
+        stored.source_session_id.as_deref(),
+        Some("browser-session-file")
+    );
+    drop(reopened);
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read store")).expect("parse store");
+    state["admin_elevations"][&elevation.id]
+        .as_object_mut()
+        .expect("elevation object")
+        .remove("source_session_id");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&state).expect("encode legacy state"),
+    )
+    .expect("write legacy state");
+    let legacy = FileRepository::new(&path).await.expect("open legacy repo");
+    legacy.migrate().await.expect("migrate legacy repo");
+    let stored = legacy
+        .get_admin_elevation(&elevation.id)
+        .await
+        .expect("load legacy elevation")
+        .expect("legacy elevation persists");
+    assert_eq!(stored.source_session_id, None);
+    drop(legacy);
+    std::fs::remove_dir_all(dir).expect("cleanup isolated file repo");
+}
+#[tokio::test]
+async fn legacy_sql_admin_elevation_migrates_with_source_session_unavailable() {
+    use qid_core::models::{Admin, AdminElevation};
+    use qid_storage::{AdminRepository, SqlRepository};
+    let dir = std::env::temp_dir().join(format!("qid-admin-elevation-sql-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).expect("create isolated SQL directory");
+    let path = dir
+        .join("repository.db")
+        .to_str()
+        .expect("UTF-8 DB path")
+        .to_string();
+    let url = format!("sqlite:{path}");
+    let repo = SqlRepository::connect(&url)
+        .await
+        .expect("connect SQL repository");
+    repo.migrate().await.expect("run fresh migrations");
+    let admin = Admin {
+        id: "legacy-sql-admin".into(),
+        tenant_id: "legacy-sql-tenant".into(),
+        subject: "legacy-sql-owner".into(),
+        roles: vec!["admin".into()],
+        created_at: 1_700_000_000,
+    };
+    repo.upsert_admin(&admin)
+        .await
+        .expect("store legacy SQL admin");
+    let elevation = AdminElevation {
+        id: "legacy-sql-elevation".into(),
+        tenant_id: admin.tenant_id,
+        admin_id: admin.id,
+        source_session_id: None,
+        acr: None,
+        amr: Vec::new(),
+        elevation_expires_at: 1_700_000_100,
+        created_at: 1_700_000_001,
+    };
+    repo.store_admin_elevation(&elevation)
+        .await
+        .expect("store SQL elevation");
+    repo.close().await;
+    let pool = sqlx::any::AnyPoolOptions::new()
+        .connect(&url)
+        .await
+        .expect("open legacy SQL DB");
+    sqlx::query("ALTER TABLE admin_elevations DROP COLUMN source_session_id")
+        .execute(&pool)
+        .await
+        .expect("restore legacy table shape");
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 20261031000001")
+        .execute(&pool)
+        .await
+        .expect("mark provenance migration unapplied");
+    pool.close().await;
+    let migrated = SqlRepository::connect(&url)
+        .await
+        .expect("reconnect legacy SQL DB");
+    migrated
+        .migrate()
+        .await
+        .expect("apply provenance migration to legacy DB");
+    let stored = migrated
+        .get_admin_elevation(&elevation.id)
+        .await
+        .expect("load migrated legacy elevation")
+        .expect("legacy SQL elevation remains");
+    assert_eq!(stored.source_session_id, None);
+    migrated.close().await;
+    std::fs::remove_dir_all(dir).expect("cleanup isolated SQL directory");
+}

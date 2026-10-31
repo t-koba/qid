@@ -87,6 +87,7 @@ async fn revoke_route_passes_validated_realm_to_storage() {
             id: format!("elevation-{id}"),
             tenant_id: "tenant".into(),
             admin_id: id.into(),
+            source_session_id: None,
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,

@@ -1053,36 +1053,35 @@ async fn seed_configured_realms_and_clients(
         .map(|realm| RealmId::from(realm.id.clone()))
         .collect();
     for realm in &config.realms {
+        let Some((_, issuer)) = existing_realms.iter().find(|(id, _)| id == &realm.id) else {
+            continue;
+        };
+        if issuer != &realm.issuer {
+            bail!(
+                "configured realm {} issuer mismatch: storage has {issuer}, config has {}",
+                realm.id,
+                realm.issuer
+            );
+        }
+        let tenant = repo
+            .get_realm_tenant(&RealmId::from(realm.id.clone()))
+            .await?
+            .with_context(|| format!("configured realm {} has no tenant binding", realm.id))?;
+        if let Some(expected) = &realm.tenant_id
+            && expected != &tenant
+        {
+            bail!(
+                "configured realm {} tenant mismatch: storage has {tenant}, config has {expected}",
+                realm.id
+            );
+        }
+    }
+    for realm in &config.realms {
         match existing_realms
             .iter()
             .find(|(realm_id, _)| realm_id == &realm.id)
         {
-            Some((_, issuer)) if issuer == &realm.issuer => {
-                let tenant = repo
-                    .get_realm_tenant(&RealmId::from(realm.id.clone()))
-                    .await?
-                    .with_context(|| {
-                        format!("configured realm {} has no tenant binding", realm.id)
-                    })?;
-                if let Some(expected) = &realm.tenant_id
-                    && expected != &tenant
-                {
-                    bail!(
-                        "configured realm {} tenant mismatch: storage has {}, config has {}",
-                        realm.id,
-                        tenant,
-                        expected
-                    );
-                }
-            }
-            Some((_, issuer)) => {
-                bail!(
-                    "configured realm {} issuer mismatch: storage has {}, config has {}",
-                    realm.id,
-                    issuer,
-                    realm.issuer
-                );
-            }
+            Some(_) => {}
             None => {
                 repo.create_realm(
                     &TenantId::from(realm.tenant_id.as_deref().unwrap_or("default")),

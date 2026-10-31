@@ -67,7 +67,11 @@ async fn tenant_binding_rejects_mismatch_and_missing_binding_without_writes() {
         .await
         .unwrap();
     // A client not yet stored must not be written when the tenant conflicts.
-    config.realms[0].clients = vec![
+    let mut first = config.realms[0].clone();
+    first.id = "pending-realm".into();
+    first.issuer = "https://id.example.com/realms/pending".into();
+    first.tenant_id = Some("tenant-first".into());
+    first.clients = vec![
         serde_json::from_value(json!({
             "client_id": "pending-client",
             "client_type": "public",
@@ -78,6 +82,7 @@ async fn tenant_binding_rejects_mismatch_and_missing_binding_without_writes() {
         .unwrap(),
     ];
     config.realms[0].tenant_id = Some("foreign-tenant".into());
+    config.realms.insert(0, first);
     let before = std::fs::read(&path).unwrap();
     let error = seed_configured_realms_and_clients(&repo, &config, &config_path)
         .await
@@ -86,7 +91,13 @@ async fn tenant_binding_rejects_mismatch_and_missing_binding_without_writes() {
     // Byte equality includes all audit and membership collections, not just realms.
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(
-        repo.get_client_by_client_id(&RealmId::from("corp"), "pending-client")
+        repo.get_client_by_client_id(&RealmId::from("pending-realm"), "pending-client")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.get_realm_tenant(&RealmId::from("pending-realm"))
             .await
             .unwrap()
             .is_none()
@@ -98,6 +109,7 @@ async fn tenant_binding_rejects_mismatch_and_missing_binding_without_writes() {
             .as_deref(),
         Some("tenant-corp")
     );
+    config.realms.remove(0);
     drop(repo);
 
     // Model an existing realm whose persisted binding is missing, without a write API.

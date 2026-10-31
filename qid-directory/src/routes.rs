@@ -268,10 +268,47 @@ async fn require_directory_admin<R: Repository>(
         .await
         .map_err(|_| unauthorized_response("admin lookup failed"))?
         .ok_or_else(|| unauthorized_response("admin record not found"))?;
-    if admin.tenant_id != elevation.tenant_id {
-        return Err(unauthorized_response(
-            "admin elevation belongs to a different tenant",
-        ));
+    let invalid_source = || unauthorized_response("admin source session is invalid");
+    let source_id = elevation
+        .source_session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(invalid_source)?;
+    let source = state
+        .repo
+        .get_session(source_id)
+        .await
+        .map_err(|_| unauthorized_response("admin source session lookup failed"))?
+        .ok_or_else(invalid_source)?;
+    let user = state
+        .repo
+        .get_user_by_id(&source.user_id)
+        .await
+        .map_err(|_| unauthorized_response("admin source user lookup failed"))?
+        .ok_or_else(invalid_source)?;
+    let source_tenant = state
+        .repo
+        .get_realm_tenant(&qid_core::tenant::RealmId(source.realm_id.clone()))
+        .await
+        .map_err(|_| unauthorized_response("admin source realm lookup failed"))?
+        .or_else(|| {
+            state
+                .config
+                .realms
+                .iter()
+                .find(|realm| realm.id == source.realm_id)
+                .and_then(|realm| realm.tenant_id.clone())
+        });
+    if elevation.id != session_id
+        || !elevation.source_session_is_valid(
+            &admin,
+            &source,
+            &user,
+            source_tenant.as_deref(),
+            now_seconds(),
+        )
+    {
+        return Err(invalid_source());
     }
     enforce_admin_security(&elevation, &state.config.admin.security)
         .map_err(|error| error.into_response())?;

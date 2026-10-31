@@ -2647,3 +2647,124 @@ async fn access_review_close_returns_not_found_for_missing_or_other_tenant() {
         .expect("other tenant campaign missing");
     assert_eq!(other.status, "open");
 }
+
+#[tokio::test]
+async fn iga_and_all_rebac_routes_reject_invalid_source_sessions() {
+    let (_store_dir, app, repo, id) = setup_with_repo().await;
+    let baseline = repo.get_admin_elevation(&id).await.unwrap().unwrap();
+    let source = repo
+        .get_session(baseline.source_session_id.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let requests = [
+        (Method::GET, "/iga/v1/entitlements", serde_json::json!({})),
+        (
+            Method::POST,
+            "/iga/v1/rebac/check",
+            serde_json::json!({
+                "namespace":"document", "object_id":"one", "relation":"viewer",
+                "subject":{"namespace":"user", "subject_id":"alice"}
+            }),
+        ),
+        (
+            Method::POST,
+            "/iga/v1/rebac/expand",
+            serde_json::json!({
+                "namespace":"document", "object_id":"one", "relation":"viewer"
+            }),
+        ),
+        (
+            Method::POST,
+            "/iga/v1/rebac/tuples/read",
+            serde_json::json!({
+                "namespace":"document", "object_id":"one"
+            }),
+        ),
+        (
+            Method::POST,
+            "/iga/v1/rebac/tuples",
+            serde_json::json!({"tuples":[]}),
+        ),
+        (
+            Method::POST,
+            "/iga/v1/rebac/tuples/delete",
+            serde_json::json!({"tuples":[]}),
+        ),
+    ];
+    for (method, uri, body) in &requests {
+        let response = app
+            .clone()
+            .oneshot(request_with_headers(method.clone(), uri, body.clone(), &id))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    }
+    for case in [
+        "unbound", "empty", "missing", "foreign", "revoked", "idle", "absolute",
+    ] {
+        let mut elevation = baseline.clone();
+        elevation.id = format!("elevation-{case}");
+        let mut invalid = source.clone();
+        invalid.id = format!("source-{case}");
+        match case {
+            "unbound" => elevation.source_session_id = None,
+            "empty" => elevation.source_session_id = Some(String::new()),
+            "missing" => elevation.source_session_id = Some("not-stored".into()),
+            _ => {
+                match case {
+                    "foreign" => invalid.user_id = "another-user".into(),
+                    "revoked" => invalid.revoked = true,
+                    "idle" => invalid.idle_expires_at = 0,
+                    "absolute" => invalid.absolute_expires_at = 0,
+                    _ => unreachable!(),
+                }
+                if case == "foreign" {
+                    repo.create_user(&qid_core::models::User {
+                        id: invalid.user_id.clone(),
+                        realm_id: source.realm_id.clone(),
+                        email: None,
+                        email_verified: false,
+                        display_name: None,
+                        failed_login_attempts: 0,
+                        locked_until: None,
+                        org: None,
+                    })
+                    .await
+                    .unwrap();
+                }
+                repo.create_session(&invalid).await.unwrap();
+                elevation.source_session_id = Some(invalid.id);
+            }
+        }
+        repo.store_admin_elevation(&elevation).await.unwrap();
+        for (method, uri, body) in &requests {
+            let response = app
+                .clone()
+                .oneshot(request_with_headers(
+                    method.clone(),
+                    uri,
+                    body.clone(),
+                    &elevation.id,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}: {uri}");
+        }
+    }
+    repo.revoke_session(&source.id, Some(&source.realm_id))
+        .await
+        .unwrap();
+    for (method, uri, body) in &requests {
+        let response = app
+            .clone()
+            .oneshot(request_with_headers(method.clone(), uri, body.clone(), &id))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "revoked after use: {uri}"
+        );
+    }
+}

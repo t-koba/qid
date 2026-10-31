@@ -83,11 +83,12 @@ async fn revoke_route_passes_validated_realm_to_storage() {
         })
         .await
         .unwrap();
+        super::session_scope::seed_source(&*repo, id).await;
         repo.store_admin_elevation(&AdminElevation {
             id: format!("elevation-{id}"),
             tenant_id: "tenant".into(),
             admin_id: id.into(),
-            source_session_id: None,
+            source_session_id: Some(format!("source-{id}")),
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,

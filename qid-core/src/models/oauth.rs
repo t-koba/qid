@@ -17,6 +17,13 @@ pub struct Session {
     pub cnf: Option<serde_json::Value>,
 }
 
+impl Session {
+    /// Session deadlines are inclusive, matching browser-session validation.
+    pub fn is_active(&self, now: u64) -> bool {
+        !self.revoked && self.absolute_expires_at >= now && self.idle_expires_at >= now
+    }
+}
+
 /// An authorization code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorizationCode {

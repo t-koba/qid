@@ -200,10 +200,10 @@ exclude = ["vendor/rustls"]
 # remain unchanged; the adjustment covers only this scoped prerequisite.
 # Deployment-local Admin grants add 119 measured product-source lines
 # (114011 -> 114130); per-crate limits and the source classifier remain
-# unchanged. Optional AdminElevation source-session provenance adds exactly
-# five product-source lines (114130 -> 114135); only the total ceiling rises
-# for this storage prerequisite, with all per-crate limits/classifier intact.
-total = 114135
+# unchanged. Stored AdminElevation provenance uses five source lines. Validating
+# its source session at all four protected consumers adds 385 source lines;
+# only the total ceiling changes, with per-crate limits/classifier intact.
+total = 114520
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

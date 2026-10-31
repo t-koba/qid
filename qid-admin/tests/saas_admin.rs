@@ -217,7 +217,48 @@ fn breakglass_request(uri: &str, body: &'static str) -> Request<Body> {
         .unwrap()
 }
 
+async fn seed_source_session(repo: &SqlRepository, realm: &str, subject: &str, id: &str) {
+    let now = qid_core::util::now_seconds();
+    repo.create_user(&User {
+        id: subject.into(),
+        realm_id: realm.into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    repo.create_session(&Session {
+        id: id.into(),
+        realm_id: realm.into(),
+        user_id: subject.into(),
+        auth_time: now,
+        acr: Some("phr".into()),
+        amr: vec!["webauthn".into()],
+        idle_expires_at: now + 600,
+        absolute_expires_at: now + 600,
+        revoked: false,
+        created_at: now,
+        cnf: None,
+    })
+    .await
+    .unwrap();
+}
+
 async fn seed_base_admin(state: &SharedState<SqlRepository>) {
+    state
+        .repo
+        .create_realm(
+            &"tenant-saas".into(),
+            &"admin-origin".into(),
+            "https://id.example.com/admin-origin",
+            None,
+        )
+        .await
+        .unwrap();
     let now = qid_core::util::now_seconds();
     let mut admin_map = std::collections::HashMap::new();
     for (subject, roles, session_id, acr, amr) in [
@@ -259,11 +300,13 @@ async fn seed_base_admin(state: &SharedState<SqlRepository>) {
         };
         state.repo.upsert_admin(&admin).await.unwrap();
         admin_map.insert(subject.to_string(), admin.id.clone());
+        let source_id = format!("source-{session_id}");
+        seed_source_session(&state.repo, "admin-origin", subject, &source_id).await;
         let elevation = AdminElevation {
             id: session_id.to_string(),
             tenant_id: "tenant-saas".to_string(),
             admin_id: admin.id.clone(),
-            source_session_id: None,
+            source_session_id: Some(source_id),
             acr: acr.map(ToString::to_string),
             amr,
             elevation_expires_at: now + 120,
@@ -717,14 +760,21 @@ async fn admin_ui_shell_and_dashboard_report_operational_status() {
         .unwrap();
     assert_eq!(dashboard_response.status(), StatusCode::OK);
     let dashboard = response_json(dashboard_response).await;
-    assert_eq!(dashboard["realm_count"], 1);
-    assert_eq!(dashboard["user_count"], 1);
+    assert_eq!(dashboard["realm_count"], 2);
+    assert_eq!(dashboard["user_count"], 5);
     assert_eq!(dashboard["client_count"], 1);
     assert_eq!(dashboard["policy_bundle_count"], 1);
     assert_eq!(dashboard["audit_event_count"], 1);
     assert_eq!(dashboard["breakglass_enabled"], true);
-    assert_eq!(dashboard["realms"][0]["id"], "realm-ui");
-    assert_eq!(dashboard["realms"][0]["user_count"], 1);
+    let realms = dashboard["realms"].as_array().unwrap();
+    assert_eq!(
+        realms.iter().find(|r| r["id"] == "realm-ui").unwrap()["user_count"],
+        1
+    );
+    assert_eq!(
+        realms.iter().find(|r| r["id"] == "admin-origin").unwrap()["user_count"],
+        4
+    );
     assert!(
         dashboard["views"]
             .as_array()
@@ -756,11 +806,28 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
     state.repo.upsert_admin(&other_admin).await.unwrap();
     state
         .repo
+        .create_realm(
+            &"tenant-other".into(),
+            &"admin-other-realm".into(),
+            "https://id.example.com/admin-other",
+            None,
+        )
+        .await
+        .unwrap();
+    seed_source_session(
+        &state.repo,
+        "admin-other-realm",
+        &other_admin.subject,
+        "other-source",
+    )
+    .await;
+    state
+        .repo
         .store_admin_elevation(&AdminElevation {
             id: "other-admin-session".to_string(),
             tenant_id: "tenant-other".to_string(),
             admin_id: other_admin.id,
-            source_session_id: None,
+            source_session_id: Some("other-source".into()),
             acr: Some("phr".to_string()),
             amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 120,
@@ -1226,11 +1293,28 @@ async fn custom_domain_cross_tenant_id_collision_returns_conflict_without_mutati
     state.repo.upsert_admin(&other_admin).await.unwrap();
     state
         .repo
+        .create_realm(
+            &"tenant-other".into(),
+            &"admin-other-realm".into(),
+            "https://id.example.com/admin-other",
+            None,
+        )
+        .await
+        .unwrap();
+    seed_source_session(
+        &state.repo,
+        "admin-other-realm",
+        &other_admin.subject,
+        "other-source",
+    )
+    .await;
+    state
+        .repo
         .store_admin_elevation(&AdminElevation {
             id: "other-admin-session".to_string(),
             tenant_id: "tenant-other".to_string(),
             admin_id: other_admin.id,
-            source_session_id: None,
+            source_session_id: Some("other-source".into()),
             acr: Some("phr".to_string()),
             amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 120,
@@ -1324,11 +1408,28 @@ async fn delegated_admin_cross_tenant_id_collision_returns_conflict_without_muta
     state.repo.upsert_admin(&other_admin).await.unwrap();
     state
         .repo
+        .create_realm(
+            &"tenant-other".into(),
+            &"admin-other-realm".into(),
+            "https://id.example.com/admin-other",
+            None,
+        )
+        .await
+        .unwrap();
+    seed_source_session(
+        &state.repo,
+        "admin-other-realm",
+        &other_admin.subject,
+        "other-source",
+    )
+    .await;
+    state
+        .repo
         .store_admin_elevation(&AdminElevation {
             id: "other-admin-session".to_string(),
             tenant_id: "tenant-other".to_string(),
             admin_id: other_admin.id,
-            source_session_id: None,
+            source_session_id: Some("other-source".into()),
             acr: Some("phr".to_string()),
             amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 120,
@@ -1830,13 +1931,20 @@ async fn directory_delete_is_bound_to_the_path_realm() {
         })
         .await
         .unwrap();
+    seed_source_session(
+        &state.repo,
+        "realm-saas",
+        "directory@example.com",
+        "directory-source",
+    )
+    .await;
     state
         .repo
         .store_admin_elevation(&AdminElevation {
             id: "directory-session".into(),
             tenant_id: "tenant-saas".into(),
             admin_id: "admin-directory".into(),
-            source_session_id: None,
+            source_session_id: Some("directory-source".into()),
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
@@ -1941,13 +2049,20 @@ async fn service_account_delete_is_bound_to_the_path_realm_and_audits_success() 
         })
         .await
         .unwrap();
+    seed_source_session(
+        &state.repo,
+        "realm-saas",
+        "service-account-admin@example.com",
+        "service-account-source",
+    )
+    .await;
     state
         .repo
         .store_admin_elevation(&AdminElevation {
             id: "service-account-session".into(),
             tenant_id: "tenant-saas".into(),
             admin_id: "admin-service-account".into(),
-            source_session_id: None,
+            source_session_id: Some("service-account-source".into()),
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
@@ -2070,13 +2185,20 @@ async fn directory_update_is_bound_to_the_path_realm() {
         })
         .await
         .unwrap();
+    seed_source_session(
+        &state.repo,
+        "realm-saas",
+        "directory@example.com",
+        "directory-source",
+    )
+    .await;
     state
         .repo
         .store_admin_elevation(&AdminElevation {
             id: "directory-session".into(),
             tenant_id: "tenant-saas".into(),
             admin_id: "admin-directory".into(),
-            source_session_id: None,
+            source_session_id: Some("directory-source".into()),
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
@@ -2186,4 +2308,71 @@ async fn directory_update_is_bound_to_the_path_realm() {
         event.metadata_json["operation"]["email_verified_changed"],
         true
     );
+}
+
+#[tokio::test]
+async fn admin_routes_reject_invalid_source_sessions() {
+    let (app, state) = setup().await;
+    let baseline = state
+        .repo
+        .get_admin_elevation("admin-session-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let source = state
+        .repo
+        .get_session(baseline.source_session_id.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let uri = "/admin/api/v1/tenants/tenant-saas/custom-domains";
+    let response = app
+        .clone()
+        .oneshot(json_request(Method::GET, uri, ""))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    for case in [
+        "unbound", "empty", "missing", "foreign", "revoked", "idle", "absolute",
+    ] {
+        let mut elevation = baseline.clone();
+        elevation.id = format!("elevation-{case}");
+        let mut invalid = source.clone();
+        invalid.id = format!("source-{case}");
+        match case {
+            "unbound" => elevation.source_session_id = None,
+            "empty" => elevation.source_session_id = Some(String::new()),
+            "missing" => elevation.source_session_id = Some("not-stored".into()),
+            _ => {
+                match case {
+                    "foreign" => invalid.user_id = "approver@example.com".into(),
+                    "revoked" => invalid.revoked = true,
+                    "idle" => invalid.idle_expires_at = 0,
+                    "absolute" => invalid.absolute_expires_at = 0,
+                    _ => unreachable!(),
+                }
+                state.repo.create_session(&invalid).await.unwrap();
+                elevation.source_session_id = Some(invalid.id);
+            }
+        }
+        state.repo.store_admin_elevation(&elevation).await.unwrap();
+        let mut request = json_request(Method::GET, uri, "");
+        request
+            .headers_mut()
+            .insert("x-qid-admin-session-id", elevation.id.parse().unwrap());
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
+    }
+    // The valid stored session and a warm cache cannot override its revocation.
+    state.session_cache_put(source.id.clone(), serde_json::to_vec(&source).unwrap(), 600);
+    state
+        .repo
+        .revoke_session(&source.id, Some(&source.realm_id))
+        .await
+        .unwrap();
+    let response = app
+        .oneshot(json_request(Method::GET, uri, ""))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

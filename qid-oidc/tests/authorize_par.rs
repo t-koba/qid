@@ -1314,6 +1314,7 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
     assert_eq!(unauthenticated_create.status(), StatusCode::UNAUTHORIZED);
 
     let admin_now = util::now_seconds();
+    seed_ssf_source(&state.repo, "test", "admin@example.com", "ssf-source").await;
     state
         .repo
         .upsert_admin(&Admin {
@@ -1331,7 +1332,7 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
             id: "ssf-elevation".to_string(),
             tenant_id: "tenant-1".to_string(),
             admin_id: "ssf-admin".to_string(),
-            source_session_id: None,
+            source_session_id: Some("ssf-source".into()),
             acr: Some(state.config.admin.security.required_acr.clone()),
             amr: vec![state.config.admin.security.required_amr[0].clone()],
             elevation_expires_at: admin_now + 300,
@@ -1381,6 +1382,65 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
         })
         .await
         .unwrap();
+    let baseline = state
+        .repo
+        .get_admin_elevation("ssf-elevation")
+        .await
+        .unwrap()
+        .unwrap();
+    let source = state.repo.get_session("ssf-source").await.unwrap().unwrap();
+    for case in [
+        "unbound", "empty", "missing", "foreign", "revoked", "idle", "absolute",
+    ] {
+        let mut elevation = baseline.clone();
+        elevation.id = format!("elevation-{case}");
+        let mut invalid = source.clone();
+        invalid.id = format!("source-{case}");
+        match case {
+            "unbound" => elevation.source_session_id = None,
+            "empty" => elevation.source_session_id = Some(String::new()),
+            "missing" => elevation.source_session_id = Some("not-stored".into()),
+            _ => {
+                match case {
+                    "foreign" => invalid.user_id = "ssf-other-user".into(),
+                    "revoked" => invalid.revoked = true,
+                    "idle" => invalid.idle_expires_at = 0,
+                    "absolute" => invalid.absolute_expires_at = 0,
+                    _ => unreachable!(),
+                }
+                if case == "foreign" {
+                    seed_ssf_source(&state.repo, "test", "ssf-other-user", "ssf-other-source")
+                        .await;
+                }
+                state.repo.create_session(&invalid).await.unwrap();
+                elevation.source_session_id = Some(invalid.id);
+            }
+        }
+        state.repo.store_admin_elevation(&elevation).await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/realms/test/ssf/stream")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("x-qid-admin-session-id", &elevation.id)
+                    .body(Body::from(stream_request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
+        assert!(
+            state
+                .repo
+                .get_ssf_stream("test", &stream_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
     let authenticated_create = app
         .clone()
         .oneshot(
@@ -1396,6 +1456,27 @@ async fn ssf_requires_scoped_metadata_and_signed_set_events() {
         .await
         .unwrap();
     assert_eq!(authenticated_create.status(), StatusCode::CREATED);
+
+    state
+        .repo
+        .revoke_session("ssf-source", Some("test"))
+        .await
+        .unwrap();
+    let revoked_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/realms/test/ssf/stream")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {admin_token}"))
+                .header("x-qid-admin-session-id", "ssf-elevation")
+                .body(Body::from(stream_request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoked_response.status(), StatusCode::UNAUTHORIZED);
 
     let now = util::now_seconds();
     let token = qid_oidc::shared_signals::encode_security_event_token(
@@ -3111,4 +3192,35 @@ async fn rp_logout_ignores_foreign_session_identity_sid_and_shared_cookie() {
     );
     assert_eq!(state.session_cache_get(&same_backchannel.id), None);
     server.abort();
+}
+
+async fn seed_ssf_source(repo: &SqlRepository, realm: &str, subject: &str, id: &str) {
+    let now = qid_core::util::now_seconds();
+    repo.create_user(&User {
+        id: subject.into(),
+        realm_id: realm.into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    repo.create_session(&Session {
+        id: id.into(),
+        realm_id: realm.into(),
+        user_id: subject.into(),
+        auth_time: now,
+        acr: Some("phr".into()),
+        amr: vec!["webauthn".into()],
+        idle_expires_at: now + 600,
+        absolute_expires_at: now + 600,
+        revoked: false,
+        created_at: now,
+        cnf: None,
+    })
+    .await
+    .unwrap();
 }

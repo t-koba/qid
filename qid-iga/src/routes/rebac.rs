@@ -32,7 +32,9 @@ pub fn rebac_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
         .route("/iga/v1/rebac/tuples/read", post(read_tuples_handler::<R>))
 }
 
-async fn check_handler<R: AdminRepository + RebacRepository>(
+async fn check_handler<
+    R: AdminRepository + SessionRepository + UserRepository + RealmRepository + RebacRepository,
+>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     JsonObject(req): JsonObject<CheckRequest>,
@@ -119,7 +121,9 @@ fn rebac_error_response(error: qid_core::error::QidError) -> Response {
         .into_response()
 }
 
-async fn read_tuples_handler<R: AdminRepository + RebacRepository>(
+async fn read_tuples_handler<
+    R: AdminRepository + SessionRepository + UserRepository + RealmRepository + RebacRepository,
+>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     JsonObject(req): JsonObject<ReadRequest>,
@@ -191,12 +195,16 @@ mod read_and_check_tests {
         routing::post,
     };
     use http_body_util::BodyExt;
+    use qid_core::tenant::{RealmId, TenantId};
     use qid_core::{
         error::{QidError, QidResult},
-        models::{Admin, AdminApproval, AdminElevation, RelationshipTuple},
+        models::{
+            Admin, AdminApproval, AdminElevation, PasswordCredential, RelationshipTuple, Session,
+            User,
+        },
         state::SharedState,
     };
-    use qid_storage::prelude::{AdminRepository, RebacRepository};
+    use qid_storage::prelude::*;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -208,6 +216,8 @@ mod read_and_check_tests {
     struct FakeReadRepo {
         admin: Admin,
         elevation: AdminElevation,
+        source: Session,
+        user: User,
         mode: ReadMode,
     }
 
@@ -253,6 +263,90 @@ mod read_and_check_tests {
         async fn consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool> {
             let _ = id;
             Ok(false)
+        }
+    }
+
+    #[async_trait]
+    impl SessionRepository for FakeReadRepo {
+        async fn get_session(&self, id: &str) -> QidResult<Option<Session>> {
+            Ok((id == self.source.id).then(|| self.source.clone()))
+        }
+        async fn create_session(&self, _: &Session) -> QidResult<()> {
+            unreachable!()
+        }
+        async fn update_session_idle_expiry(
+            &self,
+            _: &str,
+            _: u64,
+            _: Option<&str>,
+        ) -> QidResult<bool> {
+            unreachable!()
+        }
+        async fn revoke_session(&self, _: &str, _: Option<&str>) -> QidResult<bool> {
+            unreachable!()
+        }
+    }
+
+    #[async_trait]
+    impl UserRepository for FakeReadRepo {
+        async fn get_user_by_id(&self, id: &str) -> QidResult<Option<User>> {
+            Ok((id == self.user.id).then(|| self.user.clone()))
+        }
+        async fn create_user(&self, _: &User) -> QidResult<()> {
+            unreachable!()
+        }
+        async fn get_user_by_id_in_realm(&self, _: &RealmId, _: &str) -> QidResult<Option<User>> {
+            unreachable!()
+        }
+        async fn get_user_by_email(&self, _: &RealmId, _: &str) -> QidResult<Option<User>> {
+            unreachable!()
+        }
+        async fn list_users_page(&self, _: &RealmId, _: usize, _: usize) -> QidResult<Vec<User>> {
+            unreachable!()
+        }
+        async fn delete_user(&self, _: &str, _: Option<&str>) -> QidResult<()> {
+            unreachable!()
+        }
+        async fn update_user(&self, _: &User, _: Option<&str>) -> QidResult<()> {
+            unreachable!()
+        }
+        async fn store_password_credential(&self, _: &PasswordCredential) -> QidResult<()> {
+            unreachable!()
+        }
+        async fn update_password_credential_in_realm(
+            &self,
+            _: &PasswordCredential,
+            _: &str,
+        ) -> QidResult<()> {
+            unreachable!()
+        }
+        async fn get_password_credential(&self, _: &str) -> QidResult<Option<PasswordCredential>> {
+            unreachable!()
+        }
+    }
+
+    #[async_trait]
+    impl RealmRepository for FakeReadRepo {
+        async fn get_realm_tenant(&self, id: &RealmId) -> QidResult<Option<String>> {
+            Ok((id.as_str() == self.source.realm_id).then(|| self.admin.tenant_id.clone()))
+        }
+        async fn create_realm(
+            &self,
+            _: &TenantId,
+            _: &RealmId,
+            _: &str,
+            _: Option<&str>,
+        ) -> QidResult<()> {
+            unreachable!()
+        }
+        async fn get_realm_issuer(&self, _: &RealmId) -> QidResult<Option<String>> {
+            unreachable!()
+        }
+        async fn list_realms(&self) -> QidResult<Vec<(String, String)>> {
+            unreachable!()
+        }
+        async fn delete_realm(&self, _: &RealmId, _: &TenantId) -> QidResult<()> {
+            unreachable!()
         }
     }
 
@@ -306,16 +400,41 @@ mod read_and_check_tests {
             id: "session-1".to_string(),
             tenant_id: "test-tenant".to_string(),
             admin_id: admin.id.clone(),
-            source_session_id: None,
+            source_session_id: Some("source".into()),
             acr: Some("phr".to_string()),
             amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 300,
             created_at: now,
         };
         let session_id = elevation.id.clone();
+        let source = Session {
+            id: "source".into(),
+            realm_id: "test".into(),
+            user_id: admin.subject.clone(),
+            auth_time: now,
+            acr: Some("phr".into()),
+            amr: vec!["webauthn".into()],
+            idle_expires_at: now + 600,
+            absolute_expires_at: now + 600,
+            revoked: false,
+            created_at: now,
+            cnf: None,
+        };
+        let user = User {
+            id: admin.subject.clone(),
+            realm_id: "test".into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        };
         let repo = Arc::new(FakeReadRepo {
             admin,
             elevation,
+            source,
+            user,
             mode,
         });
         let config = qid_core::test_helpers::test_config();

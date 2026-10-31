@@ -34,7 +34,9 @@ fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-pub(crate) async fn require_admin_session<R: AdminRepository>(
+pub(crate) async fn require_admin_session<
+    R: AdminRepository + SessionRepository + UserRepository + RealmRepository,
+>(
     headers: &HeaderMap,
     state: &Arc<SharedState<R>>,
 ) -> Result<Admin, axum::response::Response> {
@@ -52,6 +54,48 @@ pub(crate) async fn require_admin_session<R: AdminRepository>(
         .await
         .map_err(|e| storage_error_response("get_admin_by_id", e))?
         .ok_or_else(|| unauthorized_response("admin record not found"))?;
+    let invalid_source = || unauthorized_response("admin source session is invalid");
+    let source_id = elevation
+        .source_session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(invalid_source)?;
+    let source = state
+        .repo
+        .get_session(source_id)
+        .await
+        .map_err(|e| storage_error_response("get_session", e))?
+        .ok_or_else(invalid_source)?;
+    let user = state
+        .repo
+        .get_user_by_id(&source.user_id)
+        .await
+        .map_err(|e| storage_error_response("get_user_by_id", e))?
+        .ok_or_else(invalid_source)?;
+    let source_tenant = state
+        .repo
+        .get_realm_tenant(&qid_core::tenant::RealmId(source.realm_id.clone()))
+        .await
+        .map_err(|e| storage_error_response("get_realm_tenant", e))?
+        .or_else(|| {
+            state
+                .config
+                .realms
+                .iter()
+                .find(|realm| realm.id == source.realm_id)
+                .and_then(|realm| realm.tenant_id.clone())
+        });
+    if elevation.id != session_id.as_str()
+        || !elevation.source_session_is_valid(
+            &admin,
+            &source,
+            &user,
+            source_tenant.as_deref(),
+            now_seconds(),
+        )
+    {
+        return Err(invalid_source());
+    }
     enforce_iga_admin_authorization(&admin, &elevation, &state.config.admin.security)
         .map_err(|response| *response)?;
     Ok(admin)
@@ -88,12 +132,6 @@ fn enforce_iga_admin_authorization(
     elevation: &AdminElevation,
     security: &AdminSecurityConfig,
 ) -> Result<(), Box<axum::response::Response>> {
-    if admin.tenant_id != elevation.tenant_id {
-        return Err(Box::new(unauthorized_response(
-            "admin elevation belongs to a different tenant",
-        )));
-    }
-
     let now = now_seconds();
     if elevation.elevation_expires_at <= now {
         return Err(Box::new(unauthorized_response(

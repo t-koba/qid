@@ -7,7 +7,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use qid_core::{
-    models::{Admin, AdminElevation, IgaApprovalRecord, IgaEntitlementRecord},
+    models::{Admin, AdminElevation, IgaApprovalRecord, IgaEntitlementRecord, Session, User},
     state::SharedState,
     test_helpers,
 };
@@ -57,6 +57,37 @@ pub async fn post_raw(app: Router, uri: &str, raw: &str, session_id: &str) -> se
     post_json(app, uri, body, session_id).await
 }
 
+async fn seed_source_session(repo: &FileRepository, realm: &str, subject: &str, id: &str) {
+    let now = qid_core::util::now_seconds();
+    repo.create_user(&User {
+        id: subject.into(),
+        realm_id: realm.into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    repo.create_session(&Session {
+        id: id.into(),
+        realm_id: realm.into(),
+        user_id: subject.into(),
+        auth_time: now,
+        acr: Some("phr".into()),
+        amr: vec!["webauthn".into()],
+        idle_expires_at: now + 600,
+        absolute_expires_at: now + 600,
+        revoked: false,
+        created_at: now,
+        cnf: None,
+    })
+    .await
+    .unwrap();
+}
+
 pub async fn seed_admin_session(repo: &FileRepository, tenant_id: &str, subject: &str) -> String {
     let now = qid_core::util::now_seconds();
     let admin = Admin {
@@ -67,11 +98,22 @@ pub async fn seed_admin_session(repo: &FileRepository, tenant_id: &str, subject:
         created_at: now,
     };
     repo.upsert_admin(&admin).await.unwrap();
+    let source_id = format!("source-{}", ulid::Ulid::new());
+    let source_realm = format!("admin-realm-{tenant_id}");
+    repo.create_realm(
+        &tenant_id.into(),
+        &source_realm.clone().into(),
+        "https://id.example.com/admin",
+        None,
+    )
+    .await
+    .unwrap();
+    seed_source_session(repo, &source_realm, subject, &source_id).await;
     let elevation = AdminElevation {
         id: format!("admin-session-{}", ulid::Ulid::new()),
         tenant_id: tenant_id.to_string(),
         admin_id: admin.id.clone(),
-        source_session_id: None,
+        source_session_id: Some(source_id),
         acr: Some("phr".to_string()),
         amr: vec!["webauthn".to_string()],
         elevation_expires_at: now + 300,

@@ -2079,11 +2079,38 @@ mod directory_http_truthfulness {
             created_at: now,
         };
         repo.upsert_admin(&admin).await.unwrap();
+        repo.create_user(&qid_core::models::User {
+            id: admin.subject.clone(),
+            realm_id: "test".into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+        repo.create_session(&qid_core::models::Session {
+            id: "source".into(),
+            realm_id: "test".into(),
+            user_id: admin.subject.clone(),
+            auth_time: now,
+            acr: Some("phr".into()),
+            amr: vec!["webauthn".into()],
+            idle_expires_at: now + 600,
+            absolute_expires_at: now + 600,
+            revoked: false,
+            created_at: now,
+            cnf: None,
+        })
+        .await
+        .unwrap();
         let elevation = AdminElevation {
             id: format!("admin-session-{}", ulid::Ulid::new()),
             tenant_id: "test".to_string(),
             admin_id: admin.id.clone(),
-            source_session_id: None,
+            source_session_id: Some("source".into()),
             acr: Some("phr".to_string()),
             amr: vec!["webauthn".to_string()],
             elevation_expires_at: now + 300,

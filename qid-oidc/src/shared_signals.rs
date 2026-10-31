@@ -621,15 +621,44 @@ async fn require_ssf_stream_admin<R: Repository>(
         .get_admin_elevation(elevation_id)
         .await?
         .ok_or_else(|| unauthorized("SSF stream management elevation was not found"))?;
-    if elevation.admin_id != admin.id {
-        return Err(unauthorized(
-            "SSF stream management elevation belongs to a different admin",
-        ));
-    }
-    if elevation.tenant_id != admin.tenant_id {
-        return Err(unauthorized(
-            "SSF stream management elevation belongs to a different tenant",
-        ));
+    let invalid_source = || unauthorized("SSF stream management source session is invalid");
+    let source_id = elevation
+        .source_session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(invalid_source)?;
+    let source = state
+        .repo
+        .get_session(source_id)
+        .await?
+        .ok_or_else(invalid_source)?;
+    let user = state
+        .repo
+        .get_user_by_id(&source.user_id)
+        .await?
+        .ok_or_else(invalid_source)?;
+    let source_tenant = state
+        .repo
+        .get_realm_tenant(&qid_core::tenant::RealmId(source.realm_id.clone()))
+        .await?
+        .or_else(|| {
+            state
+                .config
+                .realms
+                .iter()
+                .find(|realm| realm.id == source.realm_id)
+                .and_then(|realm| realm.tenant_id.clone())
+        });
+    if elevation.id != elevation_id
+        || !elevation.source_session_is_valid(
+            &admin,
+            &source,
+            &user,
+            source_tenant.as_deref(),
+            util::now_seconds(),
+        )
+    {
+        return Err(invalid_source());
     }
     let realm_tenant = state
         .repo

@@ -112,11 +112,12 @@ async fn exercise_route(breakglass: bool) {
         })
         .await
         .unwrap();
+        seed_source(&*repo, id).await;
         repo.store_admin_elevation(&AdminElevation {
             id: format!("elevation-{id}"),
             tenant_id: "admin-tenant".into(),
             admin_id: id.into(),
-            source_session_id: None,
+            source_session_id: Some(format!("source-{id}")),
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 120,
@@ -319,4 +320,35 @@ async fn exercise_route(breakglass: bool) {
     } else {
         assert_eq!(event.metadata_json["operation"]["forced"], true);
     }
+}
+
+pub(super) async fn seed_source<R: Repository>(repo: &R, id: &str) {
+    let now = now_seconds();
+    repo.create_user(&User {
+        id: format!("{id}@example.com"),
+        realm_id: "target-realm".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    repo.create_session(&Session {
+        id: format!("source-{id}"),
+        realm_id: "target-realm".into(),
+        user_id: format!("{id}@example.com"),
+        auth_time: now,
+        acr: Some("phr".into()),
+        amr: vec!["webauthn".into()],
+        idle_expires_at: now + 600,
+        absolute_expires_at: now + 600,
+        revoked: false,
+        created_at: now,
+        cnf: None,
+    })
+    .await
+    .unwrap();
 }

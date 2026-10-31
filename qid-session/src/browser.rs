@@ -104,9 +104,7 @@ fn generate_session_id() -> String {
 }
 
 pub fn session_is_active(session: &Session, now_epoch: u64) -> bool {
-    !session.revoked
-        && session.absolute_expires_at >= now_epoch
-        && session.idle_expires_at >= now_epoch
+    session.is_active(now_epoch)
 }
 
 pub fn session_cache_key(session_id: &str) -> QidResult<CacheKey> {

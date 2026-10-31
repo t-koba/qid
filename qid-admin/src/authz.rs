@@ -411,6 +411,47 @@ pub(crate) async fn resolve_authenticated_admin<R: Repository>(
         .ok_or_else(|| QidError::Unauthorized {
             message: "admin record for elevation not found".to_string(),
         })?;
+    let invalid_source = || QidError::Unauthorized {
+        message: "admin source session is invalid".to_string(),
+    };
+    let source_id = elevation
+        .source_session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(invalid_source)?;
+    let source = state
+        .repo
+        .get_session(source_id)
+        .await?
+        .ok_or_else(invalid_source)?;
+    let user = state
+        .repo
+        .get_user_by_id(&source.user_id)
+        .await?
+        .ok_or_else(invalid_source)?;
+    let source_tenant = state
+        .repo
+        .get_realm_tenant(&qid_core::tenant::RealmId(source.realm_id.clone()))
+        .await?
+        .or_else(|| {
+            state
+                .config
+                .realms
+                .iter()
+                .find(|realm| realm.id == source.realm_id)
+                .and_then(|realm| realm.tenant_id.clone())
+        });
+    if elevation.id != session_id.as_str()
+        || !elevation.source_session_is_valid(
+            &admin,
+            &source,
+            &user,
+            source_tenant.as_deref(),
+            qid_core::util::now_seconds(),
+        )
+    {
+        return Err(invalid_source());
+    }
     Ok((admin, elevation))
 }
 

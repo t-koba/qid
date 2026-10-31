@@ -6,7 +6,7 @@ use axum::{
 use http_body_util::BodyExt;
 use qid_core::{
     config::{DirectoryProviderConfig, DirectoryWebhookConfig},
-    models::{Admin, AdminElevation, ScimUser},
+    models::{Admin, AdminElevation, ScimUser, Session, User},
     state::SharedState,
     test_helpers,
     util::now_seconds,
@@ -15,6 +15,37 @@ use qid_storage::{AnyRepository, prelude::*};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 use tower::ServiceExt;
+
+async fn seed_source_session(repo: &AnyRepository, realm: &str, subject: &str, id: &str) {
+    let now = qid_core::util::now_seconds();
+    repo.create_user(&User {
+        id: subject.into(),
+        realm_id: realm.into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    repo.create_session(&Session {
+        id: id.into(),
+        realm_id: realm.into(),
+        user_id: subject.into(),
+        auth_time: now,
+        acr: Some("phr".into()),
+        amr: vec!["webauthn".into()],
+        idle_expires_at: now + 600,
+        absolute_expires_at: now + 600,
+        revoked: false,
+        created_at: now,
+        cnf: None,
+    })
+    .await
+    .unwrap();
+}
 
 struct Fixture {
     app: Router,
@@ -79,11 +110,12 @@ impl Fixture {
             })
             .await
             .unwrap();
+        seed_source_session(&state.repo, "test", "admin", "source").await;
         let elevation = AdminElevation {
             id: "elevated".into(),
             tenant_id: "tenant".into(),
             admin_id: "admin".into(),
-            source_session_id: None,
+            source_session_id: Some("source".into()),
             acr: Some("phr".into()),
             amr: vec!["webauthn".into()],
             elevation_expires_at: now + 300,
@@ -556,6 +588,75 @@ async fn hr_route_requires_session_stepup_roles_and_tenant_bound_configured_prov
             }
         );
         f.assert_empty().await;
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+async fn directory_rejects_invalid_source_sessions_on_both_backends() {
+    for sql in [false, true] {
+        let f = Fixture::new(sql, |_| {}).await;
+        let baseline = f
+            .state
+            .repo
+            .get_admin_elevation(&f.session)
+            .await
+            .unwrap()
+            .unwrap();
+        let source = f.state.repo.get_session("source").await.unwrap().unwrap();
+        let payload = body(1, vec![record("one", "joiner")]);
+        for case in [
+            "unbound", "empty", "missing", "foreign", "revoked", "idle", "absolute",
+        ] {
+            let mut elevation = baseline.clone();
+            elevation.id = format!("elevation-{case}");
+            let mut invalid = source.clone();
+            invalid.id = format!("source-{case}");
+            match case {
+                "unbound" => elevation.source_session_id = None,
+                "empty" => elevation.source_session_id = Some(String::new()),
+                "missing" => elevation.source_session_id = Some("not-stored".into()),
+                _ => {
+                    match case {
+                        "foreign" => invalid.user_id = "another-user".into(),
+                        "revoked" => invalid.revoked = true,
+                        "idle" => invalid.idle_expires_at = 0,
+                        "absolute" => invalid.absolute_expires_at = 0,
+                        _ => unreachable!(),
+                    }
+                    if case == "foreign" {
+                        seed_source_session(&f.state.repo, "test", "another-user", "other-source")
+                            .await;
+                    }
+                    f.state.repo.create_session(&invalid).await.unwrap();
+                    elevation.source_session_id = Some(invalid.id);
+                }
+            }
+            f.state
+                .repo
+                .store_admin_elevation(&elevation)
+                .await
+                .unwrap();
+            let (status, _) = f
+                .call(
+                    "/directory/v1/providers/hr/hr?realm=test",
+                    payload.clone(),
+                    Some(&elevation.id),
+                )
+                .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{case}: sql={sql}");
+            f.assert_empty().await;
+        }
+        assert_eq!(f.post(&payload).await.0, StatusCode::OK);
+        f.state
+            .repo
+            .revoke_session("source", Some("test"))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.post(&body(2, vec![record("two", "joiner")])).await.0,
+            StatusCode::UNAUTHORIZED
+        );
         f.close().await;
     }
 }

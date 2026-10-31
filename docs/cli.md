@@ -37,6 +37,7 @@ Top-level commands:
 | `realm` | Create/list/get/delete realms. |
 | `client` | Create/list/delete clients. |
 | `user` | Create/list/get/delete users and password credentials. |
+| `admin` | Deployment-local Admin membership grants (no session or elevation). |
 | `session` | Create/revoke browser sessions. |
 | `totp` | Enroll TOTP credentials. |
 | `explain` | Explain a policy/risk decision from CLI inputs. |
@@ -95,6 +96,48 @@ A realm the configuration declares belongs to the configuration: the daemon serv
 | `delete` | `--id` |
 
 `create` writes the user and its password credential to the repository. The credential is hashed with the Argon2id calibration of the realm, so `--realm` must name a realm the configuration declares; a realm the configuration does not declare is refused by name rather than hashed with a cost the product chose on the operator's behalf. The realm is written to the repository when it is not there yet, with the issuer the configuration names, so the user belongs to a realm the daemon serves.
+
+### qidc admin
+
+Run this only with deployment-local operator access to the configured repository:
+
+```sh
+cargo run --bin qidc -- --config /etc/qid/qid.yaml admin grant \
+  --realm corp \
+  --subject '<existing-user-id>' \
+  --roles realm.admin,auditor \
+  --reason 'Approved initial Admin provisioning'
+```
+
+All four options are required. `--subject` is an existing qid user ID in the explicit
+configured realm, not an email address. The realm must already be stored with its
+configured issuer and a persisted tenant binding. An explicit configured `tenant_id`
+must match storage; absent `tenant_id` preserves the stored binding. This command
+never seeds or reassigns a realm, creates a user, or automatically promotes anyone.
+
+`--roles` accepts a comma-separated list or repeated options and **replaces** membership
+roles, without implicitly adding any. The existing Admin vocabulary is `tenant.owner`,
+`realm.admin`, `app.admin`, `directory.admin`, `security.admin`, `auditor`,
+`platform.admin`, `platform.security.admin`, `platform.auditor`, and `breakglass`.
+Unknown/blank roles, an empty list, and a blank reason are refused. Granting a role
+does not change its authorization policy (including the configured breakglass gate).
+Same-owner updates preserve the Admin ID and creation timestamp. Successful output
+is the stored Admin as JSON, not an authentication credential.
+
+The command stores a required `admin.grant.intent` audit with actor
+`qidc:local-operator` (a local-access label, not an authenticated end-user identity),
+the reason, realm, tenant, subject, target Admin ID, and exact requested roles **before**
+calling `upsert_admin`. If the audit append fails, no Admin upsert is attempted.
+These are separate repository writes, not a transaction: if the later upsert fails,
+the intent audit remains and does not prove a successful grant. A File persistence
+error may also leave the failing write's in-memory mutation; an audit failure still
+prevents reaching the Admin write. Inspect the stored membership after an error;
+there is no rollback or fabricated success audit.
+
+This is provisioning only: it creates no browser session or `AdminElevation`, accepts
+no ACR/AMR/session proof, and supplies no authentication evidence. The user must still
+sign in and meet the existing Admin step-up/authorization policy through the normal
+server flow. No server/Admin API is changed.
 
 ### qidc session
 

@@ -2,7 +2,9 @@ use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use qid_core::{
     config::QidConfig,
-    models::{Client, ClientType, PasswordCredential, Session, TotpCredential, User},
+    models::{
+        Admin, AuditEvent, Client, ClientType, PasswordCredential, Session, TotpCredential, User,
+    },
     state::PasswordCredentials,
     tenant::{RealmId, TenantId},
 };
@@ -718,6 +720,14 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Admin {
+            command: AdminCommand::Grant(args),
+        } => {
+            let config = load_config(&config_paths)?;
+            let repo = open_repo(&config).await?;
+            let admin = grant_admin(&repo, &config, &args, &new_id()).await?;
+            println!("{}", serde_json::to_string_pretty(&admin)?);
+        }
         Command::User { command } => {
             let config = load_config(&config_paths).context("failed to load config")?;
             let repo = open_repo(&config).await?;
@@ -1034,6 +1044,90 @@ fn configured_client_conflict(
         "client {client_id} is declared in the configuration for realm {realm_id}; the daemon serves \
          that client from the configuration"
     ))
+}
+
+/// Audit the local grant intent before attempting membership: an audit failure must not grant.
+/// These writes are not transactional; a later upsert failure can leave an intent audit alone.
+async fn grant_admin(
+    repo: &AnyRepository,
+    config: &QidConfig,
+    args: &GrantAdmin,
+    audit_id: &str,
+) -> anyhow::Result<Admin> {
+    // Vocabulary from qid-admin::authz::role_allows; granting never bypasses its policy gates.
+    if args.roles.is_empty()
+        || args.roles.iter().any(|role| {
+            !matches!(
+                role.as_str(),
+                "tenant.owner"
+                    | "realm.admin"
+                    | "app.admin"
+                    | "directory.admin"
+                    | "security.admin"
+                    | "auditor"
+                    | "platform.admin"
+                    | "platform.security.admin"
+                    | "platform.auditor"
+                    | "breakglass"
+            )
+        })
+    {
+        bail!("an explicit nonempty list of allowed Admin roles is required");
+    }
+    if args.reason.trim().is_empty() {
+        bail!("a nonblank audit reason is required");
+    }
+    let declared = declared_realm(config, &args.realm).context("realm must be configured")?;
+    let realm = RealmId::from(args.realm.clone());
+    let issuer = repo
+        .get_realm_issuer(&realm)
+        .await?
+        .context("realm must already be stored")?;
+    if issuer != declared.issuer {
+        bail!("stored realm issuer differs from configuration");
+    }
+    let tenant = repo
+        .get_realm_tenant(&realm)
+        .await?
+        .context("realm has no stored tenant binding")?;
+    if declared
+        .tenant_id
+        .as_ref()
+        .is_some_and(|expected| expected != &tenant)
+    {
+        bail!("realm tenant mismatch");
+    }
+    let user = repo
+        .get_user_by_id(&args.subject)
+        .await?
+        .context("subject must be an existing user")?;
+    if user.realm_id != args.realm {
+        bail!("subject does not belong to the configured realm");
+    }
+    let mut admin = repo
+        .get_admin(&tenant, &args.subject)
+        .await?
+        .unwrap_or_else(|| Admin {
+            id: new_id(),
+            tenant_id: tenant,
+            subject: args.subject.clone(),
+            roles: Vec::new(),
+            created_at: qid_core::util::now_seconds(),
+        });
+    admin.roles.clone_from(&args.roles);
+    repo.append_audit_event(&AuditEvent {
+        id: audit_id.to_owned(), realm_id: Some(args.realm.clone()),
+        actor: "qidc:local-operator".into(), action: "admin.grant.intent".into(),
+        target_type: "admin".into(), target_id: admin.id.clone(), reason: args.reason.clone(),
+        metadata_json: serde_json::json!({"tenant_id": admin.tenant_id, "subject": admin.subject, "roles": admin.roles}),
+        created_at: qid_core::util::now_seconds(), previous_hash: None, event_hash: None,
+    }).await.context("required grant audit failed; Admin membership was not written")?;
+    repo.upsert_admin(&admin)
+        .await
+        .context("Admin grant failed after intent audit was stored")?;
+    repo.get_admin(&admin.tenant_id, &admin.subject)
+        .await?
+        .context("granted Admin not found")
 }
 
 /// Make sure the repository holds the realm a write belongs to.

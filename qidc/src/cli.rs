@@ -32,6 +32,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: UserCommand,
     },
+    /// Deployment-local Admin membership provisioning.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
     /// Session management.
     Session {
         #[command(subcommand)]
@@ -251,6 +256,26 @@ pub(crate) struct SiemDlqRedriveArgs {
     pub(crate) id: String,
     #[arg(long)]
     pub(crate) now: Option<u64>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AdminCommand {
+    /// Grant or replace explicit Admin roles for an existing subject; never creates a session.
+    Grant(GrantAdmin),
+}
+
+#[derive(Args)]
+pub(crate) struct GrantAdmin {
+    #[arg(long)]
+    pub(crate) realm: String,
+    /// Existing user ID, not an email address.
+    #[arg(long)]
+    pub(crate) subject: String,
+    /// Explicit replacement roles, comma-separated or repeated; no roles are added implicitly.
+    #[arg(long, required = true, value_delimiter = ',')]
+    pub(crate) roles: Vec<String>,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 // --- Realm ---

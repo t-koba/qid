@@ -1001,3 +1001,389 @@ async fn tenant_binding_missing_and_unknown_realms_fail_closed() {
     drop(repo);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+fn local_grant_args() -> GrantAdmin {
+    GrantAdmin {
+        realm: "corp".into(),
+        subject: "local-user".into(),
+        roles: vec!["realm.admin".into(), "auditor".into()],
+        reason: "approved local provisioning".into(),
+    }
+}
+
+#[test]
+fn admin_grant_cli_requires_explicit_inputs_and_accepts_no_authentication_evidence() {
+    let base = [
+        "qidc",
+        "admin",
+        "grant",
+        "--realm",
+        "corp",
+        "--subject",
+        "local-user",
+        "--roles",
+        "realm.admin,auditor",
+        "--reason",
+        "approved provisioning",
+    ];
+    let parsed = CliArgs::try_parse_from(base).unwrap();
+    let Command::Admin {
+        command: AdminCommand::Grant(args),
+    } = parsed.command
+    else {
+        panic!("expected local Admin grant");
+    };
+    assert_eq!(args.roles, ["realm.admin", "auditor"]);
+    for offset in [3, 5, 7, 9] {
+        let mut missing = base.to_vec();
+        missing.drain(offset..offset + 2);
+        assert!(CliArgs::try_parse_from(missing).is_err());
+    }
+    for flag in ["--acr", "--amr", "--session-id", "--elevation-expires-at"] {
+        let mut forbidden = base.to_vec();
+        forbidden.extend([flag, "untrusted"]);
+        assert!(CliArgs::try_parse_from(forbidden).is_err());
+    }
+}
+
+#[tokio::test]
+async fn admin_grant_file_and_sqlite_contract() {
+    for sql in [false, true] {
+        let dir = std::env::temp_dir().join(format!("qidc-grant-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.json");
+        let url = if sql {
+            format!("sqlite:{}?mode=rwc", dir.join("store.db").display())
+        } else {
+            path.to_str().unwrap().to_owned()
+        };
+        let repo = AnyRepository::connect(&url).await.unwrap();
+        let mut config = minimal_config();
+        config.realms[0].tenant_id = Some("tenant-corp".into());
+        ensure_realm_row(&repo, &config, "corp").await.unwrap();
+        repo.create_realm(
+            &TenantId::from("tenant-foreign"),
+            &RealmId::from("foreign"),
+            "https://foreign.example.com",
+            None,
+        )
+        .await
+        .unwrap();
+        for (id, realm) in [("local-user", "corp"), ("foreign-user", "foreign")] {
+            repo.create_user(&User {
+                id: id.into(),
+                realm_id: realm.into(),
+                email: None,
+                email_verified: false,
+                display_name: None,
+                failed_login_attempts: 0,
+                locked_until: None,
+                org: None,
+            })
+            .await
+            .unwrap();
+        }
+        let mut args = local_grant_args();
+        for refusal in [
+            "unknown-subject",
+            "foreign-subject",
+            "unknown-realm",
+            "unconfigured-realm",
+            "missing-realm",
+            "tenant-mismatch",
+            "issuer-mismatch",
+            "invalid-role",
+            "empty-roles",
+            "blank-role",
+            "blank-reason",
+        ] {
+            let mut rejected = local_grant_args();
+            let mut rejected_config = config.clone();
+            match refusal {
+                "unknown-subject" => rejected.subject = "unknown".into(),
+                "foreign-subject" => rejected.subject = "foreign-user".into(),
+                "unknown-realm" => rejected.realm = "unknown".into(),
+                "unconfigured-realm" => rejected.realm = "foreign".into(),
+                "missing-realm" => {
+                    rejected.realm = "missing".into();
+                    rejected_config.realms[0].id = "missing".into();
+                }
+                "tenant-mismatch" => {
+                    rejected_config.realms[0].tenant_id = Some("tenant-foreign".into())
+                }
+                "issuer-mismatch" => {
+                    rejected_config.realms[0].issuer = "https://wrong.example.com".into()
+                }
+                "invalid-role" => rejected.roles = vec!["super_admin".into()],
+                "empty-roles" => rejected.roles.clear(),
+                "blank-role" => rejected.roles = vec![" ".into()],
+                "blank-reason" => rejected.reason = " \n\t".into(),
+                _ => unreachable!(),
+            }
+            let before = (!sql).then(|| std::fs::read(&path).unwrap());
+            assert!(
+                grant_admin(&repo, &rejected_config, &rejected, &new_id())
+                    .await
+                    .is_err(),
+                "{refusal}, sql={sql}"
+            );
+            for tenant in ["tenant-corp", "tenant-foreign"] {
+                for subject in ["local-user", "foreign-user", "unknown"] {
+                    assert!(repo.get_admin(tenant, subject).await.unwrap().is_none());
+                }
+            }
+            assert!(repo.list_audit_events(None, 100).await.unwrap().is_empty());
+            assert!(
+                repo.get_realm_issuer(&RealmId::from("missing"))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            if let Some(before) = before {
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+            }
+        }
+        // A real append-only audit-ID conflict forces both backends' required audit to fail.
+        let marker = AuditEvent {
+            id: "occupied-audit".into(),
+            realm_id: Some("corp".into()),
+            actor: "test".into(),
+            action: "test.marker".into(),
+            target_type: "test".into(),
+            target_id: "marker".into(),
+            reason: "force duplicate audit failure".into(),
+            metadata_json: serde_json::json!({}),
+            created_at: 1,
+            previous_hash: None,
+            event_hash: None,
+        };
+        repo.append_audit_event(&marker).await.unwrap();
+        let error = grant_admin(&repo, &config, &args, &marker.id)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("required grant audit failed"),
+            "{error:#}"
+        );
+        assert!(
+            repo.get_admin("tenant-corp", "local-user")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(repo.list_audit_events(None, 100).await.unwrap().len(), 1);
+
+        let first = grant_admin(&repo, &config, &args, "first-grant")
+            .await
+            .unwrap();
+        assert_eq!(first.tenant_id, "tenant-corp");
+        assert_eq!(first.subject, "local-user");
+        assert_eq!(first.roles, args.roles);
+        assert!(first.created_at > 0);
+        args.roles = vec!["directory.admin".into()];
+        config.realms[0].tenant_id = None; // absence is not an explicit conflict
+        let updated = grant_admin(&repo, &config, &args, "updated-grant")
+            .await
+            .unwrap();
+        assert_eq!(updated.id, first.id);
+        assert_eq!(updated.created_at, first.created_at);
+        assert_eq!(updated.roles, args.roles);
+        args.roles = vec!["security.admin".into()];
+        assert!(
+            grant_admin(&repo, &config, &args, &marker.id)
+                .await
+                .is_err()
+        );
+        let unchanged = repo
+            .get_admin("tenant-corp", "local-user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.roles, updated.roles);
+        assert_eq!(unchanged.id, first.id);
+        assert_eq!(unchanged.created_at, first.created_at);
+        let events = repo.list_audit_events(None, 100).await.unwrap();
+        assert_eq!(events.len(), 3);
+        for (id, roles) in [
+            ("first-grant", first.roles),
+            ("updated-grant", updated.roles),
+        ] {
+            let event = events.iter().find(|event| event.id == id).unwrap();
+            assert_eq!(event.action, "admin.grant.intent");
+            assert_eq!(event.actor, "qidc:local-operator");
+            assert_eq!(event.realm_id.as_deref(), Some("corp"));
+            assert_eq!(event.target_id, first.id);
+            assert_eq!(event.reason, args.reason);
+            assert_eq!(
+                event.metadata_json,
+                serde_json::json!({"tenant_id": "tenant-corp", "subject": "local-user", "roles": roles})
+            );
+        }
+        assert!(
+            repo.verify_audit_chain(Some(&RealmId::from("corp")))
+                .await
+                .unwrap()
+                .valid
+        );
+        assert!(repo.list_sessions("corp", None).await.unwrap().is_empty());
+        assert!(
+            repo.list_sessions("foreign", None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        repo.create_user(&User {
+            id: "incumbent-user".into(),
+            realm_id: "corp".into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+        let incumbent = Admin {
+            id: "incumbent-admin".into(),
+            tenant_id: "tenant-corp".into(),
+            subject: "incumbent-user".into(),
+            roles: vec!["auditor".into()],
+            created_at: 7,
+        };
+        repo.upsert_admin(&incumbent).await.unwrap();
+        let mut incumbent_args = local_grant_args();
+        incumbent_args.subject = incumbent.subject.clone();
+        let replaced = grant_admin(&repo, &config, &incumbent_args, "incumbent-grant")
+            .await
+            .unwrap();
+        assert_eq!(replaced.id, incumbent.id);
+        assert_eq!(replaced.created_at, 7);
+        assert_eq!(replaced.roles, incumbent_args.roles);
+        if sql {
+            let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+            let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM admins), (SELECT COUNT(*) FROM sessions), (SELECT COUNT(*) FROM admin_elevations)")
+                .fetch_one(&pool).await.unwrap();
+            assert_eq!(counts, (2, 0, 0));
+            // A stored intent is not a success claim: force only the subsequent upsert to fail.
+            sqlx::query("CREATE TRIGGER refuse_admin_update BEFORE UPDATE ON admins BEGIN SELECT RAISE(ABORT, 'forced membership failure'); END")
+                .execute(&pool).await.unwrap();
+            let error = grant_admin(&repo, &config, &args, "failed-upsert")
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("after intent audit was stored"),
+                "{error:#}"
+            );
+            assert_eq!(repo.list_audit_events(None, 100).await.unwrap().len(), 5);
+            assert_eq!(
+                repo.get_admin("tenant-corp", "local-user")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .roles,
+                unchanged.roles
+            );
+            pool.close().await;
+        } else {
+            let stored: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(stored["admins"].as_object().unwrap().len(), 2);
+            assert!(stored["sessions"].as_object().unwrap().is_empty());
+            assert!(stored["admin_elevations"].as_object().unwrap().is_empty());
+        }
+        match repo {
+            AnyRepository::Sql(repo) => repo.close().await,
+            AnyRepository::File(repo) => drop(repo),
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn admin_grant_missing_file_binding_and_audit_persistence_failure_do_not_grant() {
+    let dir = std::env::temp_dir().join(format!("qidc-grant-failure-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let url = path.to_str().unwrap();
+    let repo = AnyRepository::connect(url).await.unwrap();
+    let config = minimal_config();
+    ensure_realm_row(&repo, &config, "corp").await.unwrap();
+    repo.create_user(&User {
+        id: "local-user".into(),
+        realm_id: "corp".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    drop(repo);
+    let original = std::fs::read(&path).unwrap();
+    let mut stored: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    stored["realm_tenants"]
+        .as_object_mut()
+        .unwrap()
+        .remove("corp");
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let repo = AnyRepository::connect(url).await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let error = grant_admin(&repo, &config, &local_grant_args(), "missing-binding")
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("no stored tenant binding"),
+        "{error:#}"
+    );
+    assert!(
+        repo.get_admin("default", "local-user")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(repo.list_audit_events(None, 100).await.unwrap().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(repo);
+    std::fs::write(&path, &original).unwrap();
+    let repo = AnyRepository::connect(url).await.unwrap();
+    // Block the existing temp-file write without relying on OS permission behavior.
+    std::fs::create_dir(path.with_extension("tmp")).unwrap();
+    let error = grant_admin(&repo, &config, &local_grant_args(), "failed-persistence")
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("required grant audit failed"),
+        "{error:#}"
+    );
+    assert!(
+        repo.get_admin("default", "local-user")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let events = repo.list_audit_events(None, 100).await.unwrap();
+    assert_eq!(events.len(), 1); // File append mutates memory before its failed save.
+    assert_eq!(events[0].id, "failed-persistence");
+    assert_eq!(std::fs::read(&path).unwrap(), original); // disk has neither audit nor grant
+    drop(repo);
+    let reopened = AnyRepository::connect(url).await.unwrap();
+    assert!(
+        reopened
+            .list_audit_events(None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        reopened
+            .get_admin("default", "local-user")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(dir).unwrap();
+}

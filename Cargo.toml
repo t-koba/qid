@@ -198,7 +198,10 @@ exclude = ["vendor/rustls"]
 # lines (113978 -> 114012); it uses the 7 lines left under the prior cap, so
 # the total limit rises by 27 only. Per-crate caps and the source classifier
 # remain unchanged; the adjustment covers only this scoped prerequisite.
-total = 114012
+# Deployment-local Admin grants add 119 measured product-source lines
+# (114011 -> 114130). Set the total ceiling to that exact final count;
+# per-crate limits and the source classifier remain unchanged.
+total = 114130
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

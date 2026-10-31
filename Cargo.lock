@@ -4567,6 +4567,7 @@ dependencies = [
  "qid-storage",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "ulid",
  "zeroize",

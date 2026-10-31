@@ -1058,20 +1058,34 @@ async fn ensure_realm_row(
                  or declare it in the configuration file"
             );
         }
+        if repo.get_realm_tenant(&realm).await?.is_none() {
+            bail!("realm {realm_id} has no stored tenant binding");
+        }
         return Ok(());
     };
     match stored {
-        Some(issuer) if issuer == declared.issuer => Ok(()),
+        Some(issuer) if issuer == declared.issuer => {
+            let tenant = repo
+                .get_realm_tenant(&realm)
+                .await?
+                .with_context(|| format!("realm {realm_id} has no stored tenant binding"))?;
+            if let Some(expected) = &declared.tenant_id
+                && expected != &tenant
+            {
+                bail!(
+                    "realm {realm_id} tenant mismatch: storage has {tenant}, config has {expected}"
+                );
+            }
+            Ok(())
+        }
         Some(issuer) => bail!(
             "realm {realm_id} is stored with issuer {issuer} but the configuration declares {}; \
              the daemon refuses to start when the two differ",
             declared.issuer
         ),
         None => {
-            // The tenant is the one the daemon seeds a configured realm
-            // with, so the row is the same whoever writes it.
             repo.create_realm(
-                &TenantId::from("default"),
+                &TenantId::from(declared.tenant_id.as_deref().unwrap_or("default")),
                 &realm,
                 &declared.issuer,
                 declared.display_name.as_deref(),

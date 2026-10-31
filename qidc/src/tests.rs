@@ -872,3 +872,127 @@ fn a_repository_only_realm_is_named_as_needing_a_configuration_declaration() {
     assert!(note.contains("stored in the repository only"), "{note}");
     assert!(note.contains("configuration file"), "{note}");
 }
+
+#[tokio::test]
+async fn tenant_binding_configured_realm_helper_preserves_authority() {
+    for sql in [false, true] {
+        for configured in [Some("tenant-corp"), None] {
+            let dir = std::env::temp_dir().join(format!("qidc-tenant-{}", ulid::Ulid::new()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("store.json");
+            let url = if sql {
+                format!("sqlite://{}?mode=rwc", dir.join("store.db").display())
+            } else {
+                path.to_str().unwrap().to_owned()
+            };
+            let repo = AnyRepository::connect(&url).await.unwrap();
+            let mut config = minimal_config();
+            config.realms[0].tenant_id = configured.map(str::to_owned);
+            let realm = RealmId::from("corp");
+            let expected = configured.unwrap_or("default");
+            for _ in 0..2 {
+                ensure_realm_row(&repo, &config, "corp").await.unwrap();
+                assert_eq!(
+                    repo.get_realm_tenant(&realm).await.unwrap().as_deref(),
+                    Some(expected)
+                );
+            }
+            config.realms[0].tenant_id = None;
+            ensure_realm_row(&repo, &config, "corp").await.unwrap();
+            assert_eq!(
+                repo.get_realm_tenant(&realm).await.unwrap().as_deref(),
+                Some(expected)
+            );
+            let before = if sql {
+                None
+            } else {
+                Some(std::fs::read(&path).unwrap())
+            };
+            config.realms[0].tenant_id = Some("foreign-tenant".into());
+            let error = ensure_realm_row(&repo, &config, "corp").await.unwrap_err();
+            assert!(error.to_string().contains("tenant mismatch"), "{error:#}");
+            assert_eq!(
+                repo.get_realm_tenant(&realm).await.unwrap().as_deref(),
+                Some(expected)
+            );
+            config.realms[0].tenant_id = Some(expected.into());
+            config.realms[0].issuer.push_str("/different");
+            let error = ensure_realm_row(&repo, &config, "corp").await.unwrap_err();
+            assert!(
+                error.to_string().contains("stored with issuer"),
+                "{error:#}"
+            );
+            assert_eq!(
+                repo.get_realm_issuer(&realm).await.unwrap().as_deref(),
+                Some("https://id.example.com/realms/corp")
+            );
+            if let Some(before) = before {
+                // All persisted collections, including audit/membership, remain unchanged.
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+            }
+            if let AnyRepository::Sql(repo) = repo {
+                repo.close().await;
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn tenant_binding_missing_and_unknown_realms_fail_closed() {
+    let dir = std::env::temp_dir().join(format!("qidc-tenant-missing-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let url = path.to_str().unwrap();
+    let repo = AnyRepository::connect(url).await.unwrap();
+    let mut config = minimal_config();
+    config.realms[0].tenant_id = Some("tenant-corp".into());
+    ensure_realm_row(&repo, &config, "corp").await.unwrap();
+    drop(repo);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    stored["realm_tenants"]
+        .as_object_mut()
+        .unwrap()
+        .remove("corp");
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let repo = AnyRepository::connect(url).await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    for configured in [Some("tenant-corp"), None] {
+        config.realms[0].tenant_id = configured.map(str::to_owned);
+        let error = ensure_realm_row(&repo, &config, "corp").await.unwrap_err();
+        assert!(
+            error.to_string().contains("no stored tenant binding"),
+            "{error:#}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    config.realms.clear();
+    let error = ensure_realm_row(&repo, &config, "corp").await.unwrap_err();
+    assert!(
+        error.to_string().contains("no stored tenant binding"),
+        "{error:#}"
+    );
+    let error = ensure_realm_row(&repo, &config, "unknown")
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("not in the repository"),
+        "{error:#}"
+    );
+    assert!(
+        repo.get_realm_tenant(&RealmId::from("corp"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.get_realm_issuer(&RealmId::from("unknown"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(repo);
+    std::fs::remove_dir_all(dir).unwrap();
+}

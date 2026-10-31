@@ -45,6 +45,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 mod tls;
 
+#[cfg(test)]
+mod tenant_binding_tests;
+
 type AppState = Arc<SharedState<AnyRepository>>;
 
 struct PrefixedSharedCache {
@@ -1054,7 +1057,24 @@ async fn seed_configured_realms_and_clients(
             .iter()
             .find(|(realm_id, _)| realm_id == &realm.id)
         {
-            Some((_, issuer)) if issuer == &realm.issuer => {}
+            Some((_, issuer)) if issuer == &realm.issuer => {
+                let tenant = repo
+                    .get_realm_tenant(&RealmId::from(realm.id.clone()))
+                    .await?
+                    .with_context(|| {
+                        format!("configured realm {} has no tenant binding", realm.id)
+                    })?;
+                if let Some(expected) = &realm.tenant_id
+                    && expected != &tenant
+                {
+                    bail!(
+                        "configured realm {} tenant mismatch: storage has {}, config has {}",
+                        realm.id,
+                        tenant,
+                        expected
+                    );
+                }
+            }
             Some((_, issuer)) => {
                 bail!(
                     "configured realm {} issuer mismatch: storage has {}, config has {}",
@@ -1065,7 +1085,7 @@ async fn seed_configured_realms_and_clients(
             }
             None => {
                 repo.create_realm(
-                    &TenantId::from("default"),
+                    &TenantId::from(realm.tenant_id.as_deref().unwrap_or("default")),
                     &RealmId::from(realm.id.clone()),
                     &realm.issuer,
                     realm.display_name.as_deref(),
@@ -1715,7 +1735,7 @@ mod tests {
     use qid_core::models::{ClientType, User};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn minimal_config() -> QidConfig {
+    pub(super) fn minimal_config() -> QidConfig {
         QidConfig {
             include: Vec::new(),
             profile: DeploymentProfile::Oidc,

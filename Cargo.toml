@@ -194,7 +194,11 @@ exclude = ["vendor/rustls"]
 # atomic email challenge path and delivery semaphore; measured product
 # source rises 113961 -> 113985 (+24), so the 9 existing lines of
 # headroom are consumed and the total cap rises by exactly 15.
-total = 113985
+# Configured/persisted realm-tenant binding adds 34 measured product-source
+# lines (113978 -> 114012); it uses the 7 lines left under the prior cap, so
+# the total limit rises by 27 only. Per-crate caps and the source classifier
+# remain unchanged; the adjustment covers only this scoped prerequisite.
+total = 114012
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]

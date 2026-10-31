@@ -14,10 +14,7 @@ async fn tenant_binding_seeds_declared_and_default_tenants() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store.json");
             let url = if sql {
-                format!(
-                    "sqlite://{}?mode=rwc",
-                    dir.path().join("store.db").display()
-                )
+                format!("sqlite:{}?mode=rwc", dir.path().join("store.db").display())
             } else {
                 path.to_str().unwrap().to_owned()
             };
@@ -153,10 +150,7 @@ async fn tenant_binding_multi_realm_sample_preserves_distinct_owners() {
     for sql in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let url = if sql {
-            format!(
-                "sqlite://{}?mode=rwc",
-                dir.path().join("store.db").display()
-            )
+            format!("sqlite:{}?mode=rwc", dir.path().join("store.db").display())
         } else {
             dir.path().join("store.json").to_str().unwrap().to_owned()
         };

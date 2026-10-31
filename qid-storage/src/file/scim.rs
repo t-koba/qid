@@ -192,17 +192,17 @@ impl ScimRepository for FileRepository {
         subscription: &ScimEventSubscriptionRecord,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
+        let mut subscription = subscription.clone();
+        let existing = store.scim_event_subscriptions.get(&subscription.id);
         crate::ownership::ensure_same_binding(
-            store
-                .scim_event_subscriptions
-                .get(&subscription.id)
-                .map(|existing| &existing.realm_id),
+            existing.map(|existing| &existing.realm_id),
             &subscription.realm_id,
             || "SCIM event subscription ID belongs to another realm".to_string(),
         )?;
+        subscription.created_at = existing.map_or(subscription.created_at, |s| s.created_at);
         store
             .scim_event_subscriptions
-            .insert(subscription.id.clone(), subscription.clone());
+            .insert(subscription.id.clone(), subscription);
         drop(store);
         self.save().await
     }

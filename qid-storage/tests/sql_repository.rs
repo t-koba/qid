@@ -4291,13 +4291,23 @@ where
     repo.upsert_scim_event_subscription(&subscription)
         .await
         .expect("initial subscription upsert failed");
+    assert_eq!(
+        repo.get_scim_event_subscription(&subscription.id)
+            .await
+            .expect("get initial subscription failed")
+            .expect("initial subscription missing"),
+        subscription
+    );
     let mut updated_subscription = subscription.clone();
     updated_subscription.callback_url = "https://a.example.com/hook2".to_string();
     updated_subscription.event_types = vec!["user.created".to_string(), "user.updated".to_string()];
     updated_subscription.enabled = false;
+    updated_subscription.created_at = 2_000;
     repo.upsert_scim_event_subscription(&updated_subscription)
         .await
         .expect("same-realm subscription update failed");
+    // The caller's replacement timestamp must not overwrite the original creation time.
+    updated_subscription.created_at = subscription.created_at;
     assert_eq!(
         repo.get_scim_event_subscription("scim-sub-shared")
             .await
@@ -4316,6 +4326,7 @@ where
     let mut colliding_subscription = updated_subscription.clone();
     colliding_subscription.realm_id = "realm-owner-b".to_string();
     colliding_subscription.callback_url = "https://b.example.com/hook".to_string();
+    colliding_subscription.created_at = 3_000;
     let error = repo
         .upsert_scim_event_subscription(&colliding_subscription)
         .await

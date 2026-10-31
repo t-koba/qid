@@ -930,10 +930,15 @@ async fn tenant_binding_configured_realm_helper_preserves_authority() {
                 // All persisted collections, including audit/membership, remain unchanged.
                 assert_eq!(std::fs::read(&path).unwrap(), before);
             }
-            if let AnyRepository::Sql(repo) = repo {
-                repo.close().await;
+            match repo {
+                AnyRepository::Sql(repo) => repo.close().await,
+                AnyRepository::File(repo) => drop(repo),
             }
-            std::fs::remove_dir_all(dir).unwrap();
+            // Release the FileRepository's Windows-exclusive process-lock handle
+            // before removing the fixture directory.
+            std::fs::remove_dir_all(&dir).unwrap_or_else(|error| {
+                panic!("failed to remove {dir:?} (sql={sql}, configured={configured:?}): {error}");
+            });
         }
     }
 }

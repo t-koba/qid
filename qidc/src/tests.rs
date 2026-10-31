@@ -881,7 +881,7 @@ async fn tenant_binding_configured_realm_helper_preserves_authority() {
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("store.json");
             let url = if sql {
-                format!("sqlite://{}?mode=rwc", dir.join("store.db").display())
+                format!("sqlite:{}?mode=rwc", dir.join("store.db").display())
             } else {
                 path.to_str().unwrap().to_owned()
             };

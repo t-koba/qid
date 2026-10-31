@@ -856,6 +856,36 @@ where
         .await
         .expect("find clients by client id failed");
     assert_eq!(found.len(), 2, "one client per realm must be found");
+
+    // A reused storage record ID cannot move the incumbent to another realm
+    // or replace its client identity.
+    let reused_id = sample_cross_realm_client("client-unique-a", &other_realm.0, "other-app");
+    let err = repo
+        .create_client(&reused_id)
+        .await
+        .expect_err("reusing a client record ID for another identity must conflict");
+    assert!(
+        matches!(err, qid_core::error::QidError::Conflict { .. }),
+        "a reused client record ID must be a conflict, got: {}",
+        err.message()
+    );
+    let stored = repo
+        .get_client_by_client_id(&realm, "shared-app")
+        .await
+        .expect("get incumbent after refused record-ID reuse failed")
+        .expect("the incumbent client must remain stored");
+    assert_eq!(
+        serde_json::to_value(stored).expect("serialize stored incumbent"),
+        serde_json::to_value(&client).expect("serialize original incumbent"),
+        "a refused record-ID reuse must preserve every incumbent field"
+    );
+    assert!(
+        repo.get_client_by_client_id(&other_realm, "other-app")
+            .await
+            .expect("get replacement after refused record-ID reuse failed")
+            .is_none(),
+        "a refused record-ID reuse must not create the replacement"
+    );
 }
 
 pub async fn assert_client_id_ambiguity<R>(repo: &R)

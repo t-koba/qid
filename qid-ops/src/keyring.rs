@@ -1,5 +1,45 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+fn safe_key_file_component(value: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if safe.is_empty() {
+        "default".to_string()
+    } else {
+        safe
+    }
+}
+
+/// Build encrypted PEM, public PEM and public JWK paths for a rotated signing key.
+///
+/// Components retain only ASCII alphanumerics, `-` and `_`; other characters become
+/// `_`, and empty components become `default`.
+pub fn rotation_key_paths(
+    output_dir: &Path,
+    keyring: &str,
+    alg: &str,
+    kid: &str,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let keyring = safe_key_file_component(keyring);
+    let alg = safe_key_file_component(alg);
+    let kid = safe_key_file_component(kid);
+    let base = format!("signing-key-{keyring}-{alg}-{kid}");
+    (
+        output_dir.join(format!("{base}.pem.enc")),
+        output_dir.join(format!("{base}.pub.pem")),
+        output_dir.join(format!("{base}.jwk.json")),
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -255,6 +295,22 @@ fn days_to_seconds(days: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_paths_preserve_ascii_allowlist_and_default_empty_components() {
+        let output_dir = Path::new("keys");
+        for (input, safe) in [("", "default"), ("AZaz09-_", "AZaz09-_"), ("../é", "____")] {
+            let base = format!("signing-key-{safe}-{safe}-{safe}");
+            assert_eq!(
+                rotation_key_paths(output_dir, input, input, input),
+                (
+                    output_dir.join(format!("{base}.pem.enc")),
+                    output_dir.join(format!("{base}.pub.pem")),
+                    output_dir.join(format!("{base}.jwk.json")),
+                )
+            );
+        }
+    }
 
     fn key_record(
         keyring_name: &str,

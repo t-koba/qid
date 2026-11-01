@@ -17,7 +17,7 @@ use qid_crypto::{
 use qid_diagnostics::{build_check_report, check_storage_saas};
 use qid_ops::{
     CacheKey, RestoreExecutionConfig, build_backup_manifest, plan_key_rotation,
-    plan_restore as ops_plan_restore, run_restore_execution,
+    plan_restore as ops_plan_restore, rotation_key_paths, run_restore_execution,
 };
 use qid_policy::{NativePolicyEngine, PolicyContext, PolicyEngine};
 use qid_risk::{
@@ -52,41 +52,6 @@ fn encrypted_key_path(input: &Path) -> PathBuf {
     let mut path = input.as_os_str().to_os_string();
     path.push(".enc");
     PathBuf::from(path)
-}
-
-fn safe_key_file_component(value: &str) -> String {
-    let safe = value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if safe.is_empty() {
-        "default".to_string()
-    } else {
-        safe
-    }
-}
-
-fn rotation_key_paths(
-    output_dir: &Path,
-    keyring: &str,
-    alg: &str,
-    kid: &str,
-) -> (PathBuf, PathBuf, PathBuf) {
-    let keyring = safe_key_file_component(keyring);
-    let alg = safe_key_file_component(alg);
-    let kid = safe_key_file_component(kid);
-    let base = format!("signing-key-{keyring}-{alg}-{kid}");
-    (
-        output_dir.join(format!("{base}.pem.enc")),
-        output_dir.join(format!("{base}.pub.pem")),
-        output_dir.join(format!("{base}.jwk.json")),
-    )
 }
 
 fn generate_local_signing_key(kid: &str, alg: &str) -> anyhow::Result<GeneratedKeyPair> {
@@ -1116,12 +1081,24 @@ async fn grant_admin(
         });
     admin.roles.clone_from(&args.roles);
     repo.append_audit_event(&AuditEvent {
-        id: audit_id.to_owned(), realm_id: Some(args.realm.clone()),
-        actor: "qidc:local-operator".into(), action: "admin.grant.intent".into(),
-        target_type: "admin".into(), target_id: admin.id.clone(), reason: args.reason.clone(),
-        metadata_json: serde_json::json!({"tenant_id": admin.tenant_id, "subject": admin.subject, "roles": admin.roles}),
-        created_at: qid_core::util::now_seconds(), previous_hash: None, event_hash: None,
-    }).await.context("required grant audit failed; Admin membership was not written")?;
+        id: audit_id.to_owned(),
+        realm_id: Some(args.realm.clone()),
+        actor: "qidc:local-operator".into(),
+        action: "admin.grant.intent".into(),
+        target_type: "admin".into(),
+        target_id: admin.id.clone(),
+        reason: args.reason.clone(),
+        metadata_json: serde_json::json!({
+            "tenant_id": admin.tenant_id,
+            "subject": admin.subject,
+            "roles": admin.roles,
+        }),
+        created_at: qid_core::util::now_seconds(),
+        previous_hash: None,
+        event_hash: None,
+    })
+    .await
+    .context("required grant audit failed; Admin membership was not written")?;
     repo.upsert_admin(&admin)
         .await
         .context("Admin grant failed after intent audit was stored")?;

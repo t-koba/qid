@@ -6,11 +6,11 @@ use qid_crypto::{
 };
 use qid_ops::{
     KeyRotationActionKind, KeyRotationPlan, KeyRotationPlanStatus, KeyRotationRequirement,
-    KeyringInventoryRecord, plan_key_rotation,
+    KeyringInventoryRecord, plan_key_rotation, rotation_key_paths,
 };
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use ulid::Ulid;
 use zeroize::Zeroize;
 
@@ -327,23 +327,6 @@ fn generate_local_signing_key(
     }
 }
 
-fn rotation_key_paths(
-    output_dir: &Path,
-    keyring: &str,
-    algorithm: &str,
-    kid: &str,
-) -> (PathBuf, PathBuf, PathBuf) {
-    let keyring = safe_key_file_component(keyring);
-    let algorithm = safe_key_file_component(algorithm);
-    let kid = safe_key_file_component(kid);
-    let base = format!("signing-key-{keyring}-{algorithm}-{kid}");
-    (
-        output_dir.join(format!("{base}.pem.enc")),
-        output_dir.join(format!("{base}.pub.pem")),
-        output_dir.join(format!("{base}.jwk.json")),
-    )
-}
-
 fn write_rotation_key_files(
     paths: &(PathBuf, PathBuf, PathBuf),
     encrypted_key_json: &str,
@@ -370,24 +353,6 @@ fn write_rotation_key_files(
         message: format!("failed to write successor public JWK: {e}"),
     })?;
     Ok(())
-}
-
-fn safe_key_file_component(value: &str) -> String {
-    let safe = value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if safe.is_empty() {
-        "default".to_string()
-    } else {
-        safe
-    }
 }
 
 fn common_realm_id(requirements: &[KeyRotationRequirement]) -> Option<String> {

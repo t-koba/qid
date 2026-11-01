@@ -2873,13 +2873,44 @@ fn vc_issuer_reference_is_exact_dedicated_and_realm_owned() {
         invalid.validate().is_err(),
         "issuer must identify only one realm"
     );
-    for flag in ["oid4vci", "oid4vp"] {
-        let mut invalid = config.clone();
-        invalid.realms[0].protocols.vc.issuer_key_ref = None;
-        invalid.realms[0].protocols.vc.oid4vci = flag == "oid4vci";
-        invalid.realms[0].protocols.vc.oid4vp = flag == "oid4vp";
-        assert!(invalid.validate().is_err(), "{flag}");
-    }
+}
+
+#[test]
+fn vc_profile_requires_issuer_key_reference_without_capability_switches() {
+    let mut config = minimal_config();
+    config.profile = DeploymentProfile::Vc;
+    config.server.http_message_signatures.enabled = true;
+    config.realms[0]
+        .protocols
+        .oidc
+        .authorization_code
+        .require_signed_request_object = true;
+    let oauth = &mut config.realms[0].protocols.oauth;
+    oauth.par.enabled = true;
+    oauth.rar.enabled = true;
+    oauth.dpop.enabled = true;
+    oauth.mtls.enabled = true;
+    oauth.private_key_jwt.enabled = true;
+    oauth.jarm.enabled = true;
+    oauth.require_pushed_authorization_requests = true;
+    oauth.introspection.jwt_response = true;
+    oauth.resource_servers = vec![OAuthResourceServerConfig {
+        audience: "api://qid/vc".into(),
+        resources: vec!["https://id.example.com/vc/v1".into()],
+        scopes: vec!["qid_identity".into()],
+        introspection_client_ids: Vec::new(),
+        require_sender_constraint: true,
+        high_risk: false,
+    }];
+    config.realms[0].protocols.vc.issuer_key_ref = None;
+    assert!(
+        validate_vc_profile(&config)
+            .unwrap_err()
+            .message()
+            .contains("issuer_key_ref")
+    );
+    config.realms[0].protocols.vc.issuer_key_ref = Some("vc-key".into());
+    validate_vc_profile(&config).unwrap();
 }
 
 #[test]

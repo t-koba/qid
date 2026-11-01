@@ -343,26 +343,11 @@ pub(crate) fn check_profile_obligations(config: &QidConfig) -> Vec<CheckItem> {
         qid_core::config::DeploymentProfile::Vc => {
             push_fapi_profile_checks(&mut checks, config, "vc");
             for realm in &config.realms {
-                let vc = &realm.protocols.vc;
-                for (enabled, feature) in [
-                    (vc.oid4vci, "OID4VCI"),
-                    (vc.oid4vp, "OID4VP"),
-                    (vc.haip, "HAIP"),
-                    (vc.vc_data_model_2_0, "VC Data Model 2.0"),
-                    (vc.jose_cose, "JOSE/COSE"),
-                    (vc.status_list, "VC status list"),
-                    (vc.holder_binding_required, "holder binding"),
-                ] {
-                    let name = format!("profile.vc.{feature}.realm.{}", realm.id);
-                    checks.push(if enabled {
-                        check_ok(&name, format!("{feature} configured"))
-                    } else {
-                        check_error(&name, format!("requires {feature}"))
-                    });
-                }
                 let issuer_key = format!("profile.vc.issuer_key_ref.realm.{}", realm.id);
                 checks.push(
-                    if vc
+                    if realm
+                        .protocols
+                        .vc
                         .issuer_key_ref
                         .as_deref()
                         .is_some_and(|value| !value.trim().is_empty())

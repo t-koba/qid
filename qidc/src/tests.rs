@@ -418,7 +418,7 @@ fn explain_json_reports_fapi_profile_obligations_and_realm_status() {
 }
 
 #[test]
-fn explain_json_reports_vc_profile_as_fapi_plus_vc_obligations() {
+fn explain_json_reports_vc_profile_as_fapi_with_issuer_key() {
     let config = minimal_config();
     let explanation = build_explain_json(
         DeploymentProfile::Vc,
@@ -443,13 +443,7 @@ fn explain_json_reports_vc_profile_as_fapi_plus_vc_obligations() {
         obligations["requires_sender_constrained_resource_servers"],
         true
     );
-    assert_eq!(obligations["requires_oid4vci"], true);
-    assert_eq!(obligations["requires_oid4vp"], true);
-    assert_eq!(obligations["requires_haip"], true);
-    assert_eq!(obligations["requires_vc_data_model_2_0"], true);
-    assert_eq!(obligations["requires_jose_cose"], true);
-    assert_eq!(obligations["requires_vc_status_list"], true);
-    assert_eq!(obligations["requires_holder_binding"], true);
+    assert_eq!(obligations["requires_vc_issuer_key_ref"], true);
 }
 
 #[test]

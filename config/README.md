@@ -105,7 +105,7 @@ smallest interoperable OIDC authorization-code deployment, then move to
 
 ### 08-verifiable-credentials
 
-- `oid4vci-haip.yaml`: VC profile with OID4VCI, OID4VP, HAIP, status, and holder binding.
+- `oid4vci-haip.yaml`: VC profile with the qid-private credential issuance, status and presentation-verification routes.
 - `verifier-presentation-only.yaml`: verifier-oriented OID4VP / holder-bound presentation checks.
 - `issuance-revocation-status-list.yaml`: credential issuance, revocation, and status-list operations.
 

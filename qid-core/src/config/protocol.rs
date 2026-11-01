@@ -607,20 +607,6 @@ pub struct CiamProtocolConfig {
 #[serde(deny_unknown_fields)]
 pub struct VcProtocolConfig {
     #[serde(default)]
-    pub oid4vci: bool,
-    #[serde(default)]
-    pub oid4vp: bool,
-    #[serde(default)]
-    pub haip: bool,
-    #[serde(default)]
-    pub vc_data_model_2_0: bool,
-    #[serde(default)]
-    pub jose_cose: bool,
-    #[serde(default)]
-    pub status_list: bool,
-    #[serde(default)]
-    pub holder_binding_required: bool,
-    #[serde(default)]
     /// Exact name of a dedicated `other:vc_issuer` keyring owned by this realm.
     /// Without a reference, credential issuance and verification fail closed.
     pub issuer_key_ref: Option<String>,
@@ -635,13 +621,6 @@ pub struct VcProtocolConfig {
 impl Default for VcProtocolConfig {
     fn default() -> Self {
         Self {
-            oid4vci: false,
-            oid4vp: false,
-            haip: false,
-            vc_data_model_2_0: false,
-            jose_cose: false,
-            status_list: false,
-            holder_binding_required: false,
             issuer_key_ref: None,
             max_credential_lifetime_seconds: default_vc_max_credential_lifetime(),
         }

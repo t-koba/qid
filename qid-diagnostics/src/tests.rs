@@ -475,13 +475,6 @@ fn vc_profile_diagnostics_include_fapi_prerequisites() {
     std::fs::create_dir_all(&dir).expect("temp dir");
     let mut config = minimal_config();
     config.profile = DeploymentProfile::Vc;
-    config.realms[0].protocols.vc.oid4vci = true;
-    config.realms[0].protocols.vc.oid4vp = true;
-    config.realms[0].protocols.vc.haip = true;
-    config.realms[0].protocols.vc.vc_data_model_2_0 = true;
-    config.realms[0].protocols.vc.jose_cose = true;
-    config.realms[0].protocols.vc.status_list = true;
-    config.realms[0].protocols.vc.holder_binding_required = true;
     config.realms[0].protocols.vc.issuer_key_ref = Some("kms://qid/vc".to_string());
     let plan_config = minimal_config();
     let plan = qid_core::plan::RuntimePlan::from_config(&plan_config).expect("runtime plan");
@@ -506,7 +499,7 @@ fn vc_profile_diagnostics_include_fapi_prerequisites() {
         report
             .checks
             .iter()
-            .any(|check| check.name == "profile.vc.OID4VCI.realm.corp"
+            .any(|check| check.name == "profile.vc.issuer_key_ref.realm.corp"
                 && check.status == CheckStatus::Ok)
     );
     std::fs::remove_dir_all(&dir).ok();

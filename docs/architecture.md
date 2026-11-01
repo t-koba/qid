@@ -81,7 +81,7 @@ flowchart LR
 | `qid-policy` | Native policy engine plus Cedar/Rego integration and policy models. |
 | `qid-risk` | Risk scoring and `/risk/v1/evaluate`. |
 | `qid-iga` | Entitlements, access packages, grants, JIT privilege, reviews, certifications, ReBAC, findings. |
-| `qid-vc` | OID4VCI/OID4VP/HAIP, credential issuance, presentation verification, status list. |
+| `qid-vc` | Credential issuance, status and presentation verification with selective-disclosure, mdoc, HAIP and bitstring helpers. |
 | `qid-network` | RADIUS, RADIUS/TLS, EAP handshake, CAPPORT, Diameter/QUIC helpers. |
 | `qid-admin` | Admin REST API, tenant/SaaS objects, audit export/verification, key rotation planning, policy simulation. |
 | `qid-ops` | Backup/restore planning, cache keys, key rotation plans, cluster/cache operations. |

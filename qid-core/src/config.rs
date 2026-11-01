@@ -106,11 +106,6 @@ impl QidConfig {
         for realm in &self.realms {
             let vc = &realm.protocols.vc;
             let Some(reference) = vc.issuer_key_ref.as_deref() else {
-                if vc.oid4vci || vc.oid4vp {
-                    return Err(QidError::Config {
-                        message: format!("realm {} VC requires issuer_key_ref", realm.id),
-                    });
-                }
                 continue;
             };
             let issuer_is_secure = url::Url::parse(&realm.issuer).is_ok_and(|issuer| {
@@ -910,21 +905,16 @@ fn validate_fapi_profile(config: &QidConfig) -> QidResult<()> {
 fn validate_vc_profile(config: &QidConfig) -> QidResult<()> {
     validate_fapi_profile(config)?;
     for realm in &config.realms {
-        let vc = &realm.protocols.vc;
-        for (enabled, feature) in [
-            (vc.oid4vci, "OID4VCI"),
-            (vc.oid4vp, "OID4VP"),
-            (vc.haip, "HAIP"),
-            (vc.vc_data_model_2_0, "VC Data Model 2.0"),
-            (vc.jose_cose, "JOSE/COSE"),
-            (vc.status_list, "VC status list"),
-            (vc.holder_binding_required, "holder binding"),
-        ] {
-            if !enabled {
-                return Err(QidError::Config {
-                    message: format!("profile vc requires {feature} for realm {}", realm.id),
-                });
-            }
+        if realm
+            .protocols
+            .vc
+            .issuer_key_ref
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(QidError::Config {
+                message: format!("profile vc requires issuer_key_ref for realm {}", realm.id),
+            });
         }
     }
     Ok(())

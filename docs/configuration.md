@@ -63,7 +63,7 @@ Profiles are not marketing labels. They are validation bundles that make a deplo
 | `enterprise` | Passkeys, SCIM with a 32+ byte cursor secret, SCIM callback allowlist, SAML with signed assertions and signed XMLDSig metadata, at least one SAML SP, and an enabled LDAPS directory provider with bind credentials and TLS verification. |
 | `ciam` | OIDC discovery/userinfo/auth code/PKCE, passkeys, FedCM, consent, progressive profile, identity proofing, privacy dashboard, and inbound federation with enabled provider, domains, account linking, and JIT provisioning. |
 | `fapi` | HTTP Message Signatures, PAR, RAR, DPoP, mTLS, private_key_jwt, JARM, required PAR, signed request objects, JWT introspection, and sender-constrained or high-risk resource servers. |
-| `vc` | All `fapi` requirements plus OID4VCI, OID4VP, HAIP, VC Data Model 2.0, JOSE/COSE, status list, holder binding, and issuer key reference. |
+| `vc` | All `fapi` requirements plus a dedicated `issuer_key_ref` for every realm; the deployment serves the qid-private credential issuance, status and presentation-verification routes. |
 | `workload` | SPIFFE Workload API, X.509-SVID, JWT-SVID, short-lived credentials, RATS/EAT, OAuth token exchange, workload CA key reference, mTLS, and private_key_jwt. |
 | `network-aaa` | RADIUS, RADIUS/TLS, EAP, EAP-TLS, CAPPORT, CoA, accounting, directory authority, mTLS, 16+ byte shared secret, bind addresses, TLS material paths, and an enabled directory provider. |
 | `high-assurance` | All `fapi` requirements plus remote KMS/HSM/PKCS#11 keyrings, admin approval, admin step-up, backup enabled, passkeys, mTLS, and passwordless-only realms. |
@@ -290,7 +290,7 @@ Validation rules:
 | `federation` | Inbound OIDC/SAML/social providers, claim mappings, and per-provider `trusted_audiences`. |
 | `directory` | LDAP, Active Directory, CSV HR pulls, and inbound HR webhook bindings; sync filters and attribute mapping apply only to pulls. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
-| `vc` | OID4VCI/OID4VP/HAIP/status/holder binding. |
+| `vc` | Dedicated issuer key reference and credential lifetime ceiling; the deployment serves the qid-private VC routes under the `vc` profile. |
 | `workload` | SPIFFE, SVID, RATS/EAT, token exchange, CA key reference. |
 | `network_aaa` | RADIUS/TLS/EAP/CAPPORT/CoA/accounting/directory authority. |
 
@@ -366,9 +366,9 @@ preflight, and mover-clear semantics stay owned by the HR importer.
 (no whitespace trimming or implicit default). The selected keyring must have
 that realm's `realm_id` and only the `other:vc_issuer` purpose. Missing,
 ambiguous, wrong-purpose and wrong-realm references are configuration errors
-in every profile. Enabling `oid4vci` or `oid4vp` requires a reference; without
-one, runtime issuance and verification refuse the realm rather than using the
-deployment primary signer. A configured VC issuer must uniquely identify its
+in every profile. The `vc` profile requires a reference for every realm. A
+realm without a reference has no VC issuer key, so runtime issuance and
+verification refuse it rather than using the deployment primary signer. A configured VC issuer must uniquely identify its
 realm across the deployment. Issuer identifiers are exact HTTPS strings,
 including any trailing slash; the metadata URL inserts the well-known path
 between the host and configured path, preserving every path segment and

@@ -51,13 +51,6 @@ realms:
           - client_credentials
     protocols:
       vc:
-        oid4vci: true
-        oid4vp: true
-        haip: true
-        vc_data_model_2_0: true
-        jose_cose: true
-        status_list: true
-        holder_binding_required: true
         issuer_key_ref: "credential-status-issuer"
       oidc:
         authorization_code:

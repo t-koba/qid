@@ -197,11 +197,30 @@ impl Fixture {
         drop(app);
         let repo = state.repo.clone();
         drop(state);
-        match Arc::try_unwrap(repo).unwrap_or_else(|_| panic!("repository reference leaked")) {
+        let repo = Arc::try_unwrap(repo).unwrap_or_else(|_| panic!("repository reference leaked"));
+        let sql = matches!(&repo, AnyRepository::Sql(_));
+        match repo {
             AnyRepository::Sql(r) => r.close().await,
             AnyRepository::File(r) => drop(r),
         }
-        std::fs::remove_dir_all(dir).unwrap();
+        remove_fixture_dir(dir, sql).await;
+    }
+}
+
+/// Windows can briefly keep a closed fixture handle busy while another process
+/// inspects the new files. Retry for a bounded time, then report the directory
+/// and backend so a persistent leak still fails the test.
+async fn remove_fixture_dir(dir: PathBuf, sql: bool) {
+    for attempt in 0..40 {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => return,
+            Err(_) if cfg!(windows) && attempt < 39 => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!(
+                "failed to remove fixture directory {dir:?} (sql={sql}) after {attempt} retries: {error}"
+            ),
+        }
     }
 }
 fn record(key: &str, event: &str) -> Value {

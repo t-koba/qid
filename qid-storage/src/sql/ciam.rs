@@ -373,22 +373,6 @@ impl CiamRepository for SqlRepository {
                 message: "CIAM identity link user belongs to another realm".to_string(),
             });
         }
-        if link.verified
-            && let Some(existing_id) = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM ciam_identity_links WHERE realm_id = ? AND provider = ? AND external_subject = ? AND verified = 1",
-        )
-        .bind(&link.realm_id)
-        .bind(&link.provider)
-        .bind(&link.external_subject)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage_to_qid_error)?
-            && existing_id != link.id
-        {
-            return Err(QidError::BadRequest {
-                message: "CIAM identity link external subject is already linked".to_string(),
-            });
-        }
         let result = sqlx::query(
             "INSERT INTO ciam_identity_links (id, realm_id, user_id, provider, external_subject, external_email, profile_json, linked_at_epoch_seconds, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET external_email = excluded.external_email, profile_json = excluded.profile_json, linked_at_epoch_seconds = excluded.linked_at_epoch_seconds, verified = excluded.verified \
@@ -406,7 +390,16 @@ impl CiamRepository for SqlRepository {
         .bind(link.verified as i64)
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(|error| match error {
+            sqlx::Error::Database(database_error)
+                if link.verified && database_error.is_unique_violation() =>
+            {
+                QidError::BadRequest {
+                    message: "CIAM identity link external subject is already linked".to_string(),
+                }
+            }
+            error => storage_to_qid_error(error),
+        })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("CIAM identity link {} changed concurrently", link.id)
         })

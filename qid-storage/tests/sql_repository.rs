@@ -931,7 +931,24 @@ async fn assert_ciam_repository_round_trip(
     assert_eq!(external.id, "link-1");
     let mut duplicate = link.clone();
     duplicate.id = "link-duplicate".to_string();
-    assert!(repo.store_ciam_identity_link(&duplicate).await.is_err());
+    let duplicate_error = repo
+        .store_ciam_identity_link(&duplicate)
+        .await
+        .expect_err("verified duplicate external subject must be rejected");
+    assert!(
+        matches!(
+            duplicate_error,
+            qid_core::error::QidError::BadRequest { .. }
+        ),
+        "duplicate external subject must be BadRequest, got {duplicate_error:?}"
+    );
+    assert_eq!(
+        repo.list_ciam_identity_links(&RealmId::from("realm-ciam"), "user-ciam")
+            .await
+            .expect("list CIAM links after duplicate rejection failed"),
+        vec![link.clone()],
+        "duplicate external subject must not mutate the incumbent"
+    );
     let mut invalid = link.clone();
     invalid.id = "link-invalid".to_string();
     invalid.profile_json = serde_json::json!(["not", "object"]);
@@ -1633,10 +1650,24 @@ async fn assert_ciam_only_verified_subjects_authenticate(
     // Neither a new verified ID nor promotion of a legacy row may steal the subject.
     let mut duplicate = trusted.clone();
     duplicate.id = "duplicate-verified-link".to_string();
-    assert!(repo.store_ciam_identity_link(&duplicate).await.is_err());
+    let duplicate_error = repo
+        .store_ciam_identity_link(&duplicate)
+        .await
+        .expect_err("duplicate verified subject must be rejected");
+    assert!(matches!(
+        duplicate_error,
+        qid_core::error::QidError::BadRequest { .. }
+    ));
     let mut promoted = legacy.clone();
     promoted.verified = true;
-    assert!(repo.store_ciam_identity_link(&promoted).await.is_err());
+    let promotion_error = repo
+        .store_ciam_identity_link(&promoted)
+        .await
+        .expect_err("promotion must not steal a verified subject");
+    assert!(matches!(
+        promotion_error,
+        qid_core::error::QidError::BadRequest { .. }
+    ));
     assert_eq!(
         repo.get_ciam_identity_link(&realm, &legacy.id)
             .await

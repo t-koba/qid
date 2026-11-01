@@ -32,15 +32,12 @@ impl<R: TokenRepository> ObservedRotation<'_, R> {
                 probe.action
             })
         });
-        match action {
-            Some(RotationAction::Missing) => {
-                // Inject disappearance at the storage boundary; backend contracts
-                // independently prove actual missing rows return this, not Conflict.
-                return Err(QidError::NotFound {
-                    resource: format!("token family {id}"),
-                });
-            }
-            _ => {}
+        if let Some(RotationAction::Missing) = action {
+            // Inject disappearance at the storage boundary; backend contracts
+            // independently prove actual missing rows return this, not Conflict.
+            return Err(QidError::NotFound {
+                resource: format!("token family {id}"),
+            });
         }
         self.0
             .update_token_family_refresh_hash(id, realm_id, expected_hash, new_hash, deadline)

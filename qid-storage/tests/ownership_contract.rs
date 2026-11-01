@@ -753,3 +753,199 @@ async fn service_account_identity_migration_preserves_duplicates_and_retries_aft
     repo.close().await;
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn custom_domain_legacy_file_uppercase_collision_preserves_incumbent() {
+    use qid_core::models::CustomDomain;
+    use qid_storage::{FileRepository, SaasRepository};
+
+    let dir = std::env::temp_dir().join(format!("qid-domain-legacy-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/realm_store.json")).unwrap();
+    let mut domain = fixture["custom_domains"]["realm-record"].clone();
+    domain["hostname"] = "LOGIN.Example.COM".into();
+    domain["dns_challenge_name"] = "_qid.login.example.com".into();
+    domain["dns_challenge_value"] = "legacy-proof".into();
+    let empty = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    empty.migrate().await.unwrap();
+    drop(empty);
+    let mut store: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    store["realm_tenants"] = serde_json::json!({"realm": "tenant", "other-realm": "other-tenant"});
+    store["custom_domains"]["realm-record"] = domain;
+    let before = serde_json::to_vec(&store).unwrap();
+    std::fs::write(&path, &before).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let incumbent = repo.list_custom_domains("tenant").await.unwrap();
+    assert_eq!(incumbent.len(), 1);
+    assert_eq!(incumbent[0].hostname, "LOGIN.Example.COM");
+    for (tenant, realm) in [("tenant", "realm"), ("other-tenant", "other-realm")] {
+        let attempt = CustomDomain {
+            id: "refused".into(),
+            tenant_id: tenant.into(),
+            realm_id: realm.into(),
+            hostname: "login.example.com".into(),
+            ..incumbent[0].clone()
+        };
+        // Canonical input and valid ownership must reach the hostname guard.
+        attempt.validate().unwrap();
+        let error = repo.store_custom_domain(&attempt).await.unwrap_err();
+        assert!(error.to_string().contains("hostname already exists"));
+        assert_eq!(repo.list_custom_domains("tenant").await.unwrap(), incumbent);
+        assert!(
+            repo.list_custom_domains("other-tenant")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    drop(repo);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn custom_domain_hostname_migration_preserves_duplicates_and_retries_after_external_repair() {
+    use qid_core::tenant::{RealmId, TenantId};
+    use qid_storage::{RealmRepository, SaasRepository, SqlRepository};
+    use std::borrow::Cow;
+
+    const VERSION: i64 = 20261101000002;
+    let dir = std::env::temp_dir().join(format!("qid-domain-migration-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let url = format!("sqlite:{}", dir.join("legacy.db").display());
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    let mut legacy = sqlx::migrate!("./migrations");
+    legacy.migrations = Cow::Owned(
+        legacy
+            .iter()
+            .filter(|m| m.version < VERSION)
+            .cloned()
+            .collect(),
+    );
+    legacy.run(&pool).await.unwrap();
+    for (tenant, realm) in [("tenant", "realm"), ("other-tenant", "other-realm")] {
+        repo.create_realm(
+            &TenantId::from(tenant),
+            &RealmId::from(realm),
+            &format!("https://{realm}.example.com"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    sqlx::query("INSERT INTO custom_domains (id, tenant_id, realm_id, hostname, certificate_ref, verified, verification_status, dns_challenge_name, dns_challenge_value) VALUES ('first', 'tenant', 'realm', 'LOGIN.Example.COM', 'first-cert', 0, 'pending', '_qid.login.example.com', 'first-proof'), ('second', 'other-tenant', 'other-realm', 'login.example.com', 'second-cert', 0, 'pending', '_qid.login.example.com', 'second-proof')")
+        .execute(&pool).await.unwrap();
+    // Compare every stored domain field, not only the colliding hostname.
+    let read_rows = || {
+        sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+            ),
+        >(
+            "SELECT id, tenant_id, realm_id, hostname, certificate_ref, verified, verification_status, dns_challenge_name, dns_challenge_value, certificate_expires_at, certificate_renew_after, last_verified_at FROM custom_domains ORDER BY id",
+        )
+    };
+    let before = read_rows().fetch_all(&pool).await.unwrap();
+    let ledger_before: Vec<(i64, Vec<u8>, i64)> =
+        sqlx::query_as("SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for _ in 0..2 {
+        let error = repo.migrate().await.unwrap_err().to_string();
+        assert!(error.contains("duplicate LOWER(hostname)"), "{error}");
+        assert!(
+            error.contains("repair externally; retry migration"),
+            "{error}"
+        );
+        assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), before);
+        assert_eq!(
+            sqlx::query_as::<_, (i64, Vec<u8>, i64)>(
+                "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version"
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap(),
+            ledger_before
+        );
+        let index_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_custom_domains_hostname_lower_unique'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index_count, 0);
+    }
+    // Only this explicit test-side repair changes a binding; retain both rows.
+    sqlx::query("UPDATE custom_domains SET hostname = 'repaired.example.com' WHERE id = 'second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut repaired = before;
+    repaired.iter_mut().find(|row| row.0 == "second").unwrap().3 = "repaired.example.com".into();
+    assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    repo.migrate().await.expect("retry after explicit repair");
+    repo.migrate().await.expect("migration is idempotent");
+    assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 20261101000002 AND success = 1"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    let incumbent = repo.list_custom_domains("tenant").await.unwrap().remove(0);
+    for (tenant, realm) in [("tenant", "realm"), ("other-tenant", "other-realm")] {
+        let attempt = qid_core::models::CustomDomain {
+            id: "refused".into(),
+            tenant_id: tenant.into(),
+            realm_id: realm.into(),
+            hostname: "login.example.com".into(),
+            ..incumbent.clone()
+        };
+        attempt.validate().unwrap();
+        assert!(matches!(
+            repo.store_custom_domain(&attempt).await,
+            Err(qid_core::error::QidError::Storage { .. })
+        ));
+        assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    }
+    // Bypass model validation to prove the index itself rejects case variants
+    // on both insert and update, without overwriting either incumbent.
+    for sql in [
+        "INSERT INTO custom_domains (id, tenant_id, realm_id, hostname, certificate_ref, verified) VALUES ('raw', 'other-tenant', 'other-realm', 'Login.Example.Com', 'raw-cert', 0)",
+        "UPDATE custom_domains SET hostname = 'Login.Example.Com' WHERE id = 'second'",
+    ] {
+        assert!(
+            sqlx::query(sql)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .as_database_error()
+                .unwrap()
+                .is_unique_violation()
+        );
+        assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    }
+    pool.close().await;
+    repo.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -1,6 +1,9 @@
 mod support;
 
-use qid_core::models::{AccessToken, TokenFormat, User};
+use qid_core::{
+    error::QidError,
+    models::{AccessToken, TokenFormat, User},
+};
 use qid_storage::prelude::*;
 
 async fn assert_scope(repo: &impl Repository) {
@@ -49,6 +52,14 @@ async fn assert_scope(repo: &impl Repository) {
     };
     repo.create_access_token(&expected).await.unwrap();
     // Compare the complete stored token, not just the revocation flag.
+    assert_row(repo, &expected).await;
+    let mut duplicate = expected.clone();
+    duplicate.revoked = true;
+    duplicate.expires_at += 1;
+    assert!(matches!(
+        repo.create_access_token(&duplicate).await,
+        Err(QidError::Storage { .. })
+    ));
     assert_row(repo, &expected).await;
     repo.revoke_access_token(&expected.jti, "a").await.unwrap();
     assert_row(repo, &expected).await;

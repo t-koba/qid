@@ -76,6 +76,14 @@ async fn assert_scope(repo: &impl Repository, sql: bool) {
     repo.create_authorization_code(&expected).await.unwrap();
     // Compare the complete stored code, not just the consumed flag.
     assert_row(repo, &expected).await;
+    let mut duplicate = expected.clone();
+    duplicate.used = true;
+    duplicate.expires_at += 1;
+    assert!(matches!(
+        repo.create_authorization_code(&duplicate).await,
+        Err(QidError::Storage { .. })
+    ));
+    assert_row(repo, &expected).await;
     // A stale owner after the grant's pre-read cannot consume: realm, client
     // and user replacements are all NotFound and leave the row unchanged.
     for (realm, client, user) in [

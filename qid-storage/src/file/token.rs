@@ -5,11 +5,17 @@ use super::*;
 #[async_trait]
 impl TokenRepository for FileRepository {
     async fn create_authorization_code(&self, code: &AuthorizationCode) -> QidResult<()> {
-        self.map_write(|s| {
-            s.authorization_codes
-                .insert(code.code_hash.clone(), code.clone())
-        })
-        .await
+        let mut store = self.store.write().await;
+        if store.authorization_codes.contains_key(&code.code_hash) {
+            return Err(QidError::Storage {
+                message: format!("duplicate code {}", code.code_hash),
+            });
+        }
+        store
+            .authorization_codes
+            .insert(code.code_hash.clone(), code.clone());
+        drop(store);
+        self.save().await
     }
 
     async fn get_authorization_code(
@@ -49,7 +55,7 @@ impl TokenRepository for FileRepository {
         let mut store = self.store.write().await;
         if store.token_families.contains_key(&family.id) {
             return Err(QidError::Storage {
-                message: format!("duplicate token family {}", family.id),
+                message: format!("duplicate family {}", family.id),
             });
         }
         store
@@ -151,8 +157,15 @@ impl TokenRepository for FileRepository {
     }
 
     async fn create_access_token(&self, token: &AccessToken) -> QidResult<()> {
-        self.map_write(|s| s.access_tokens.insert(token.jti.clone(), token.clone()))
-            .await
+        let mut store = self.store.write().await;
+        if store.access_tokens.contains_key(&token.jti) {
+            return Err(QidError::Storage {
+                message: format!("duplicate token {}", token.jti),
+            });
+        }
+        store.access_tokens.insert(token.jti.clone(), token.clone());
+        drop(store);
+        self.save().await
     }
 
     async fn get_access_token(&self, jti: &str) -> QidResult<Option<AccessToken>> {

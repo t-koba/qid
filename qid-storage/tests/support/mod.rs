@@ -1,15 +1,16 @@
 #![allow(dead_code)]
 
+use qid_core::error::QidError;
 use qid_core::models::{
     Admin, AdminApproval, AdminElevation, AuditEvent, AuditRetentionConfig,
     BackchannelAuthenticationGrant, CiamBrand, CiamConsentGrant, CiamIdentityLink,
     CiamProgressiveProfile, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain,
-    Device, DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord, IgaAccessRequestRecord,
-    IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord, IgaApprovalRecord,
-    IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord, MarketplaceConnector,
-    MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle, RelationshipTuple,
-    ServiceAccount, Session, TotpCredential, UsageBillingEvent, User, VcCredentialStatusRecord,
-    WebAuthnCredential, WorkloadIdentity,
+    DelegatedTenantAdmin, Device, DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord,
+    IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
+    IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
+    MarketplaceConnector, MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle,
+    RelationshipTuple, ServiceAccount, Session, TotpCredential, UsageBillingEvent, User,
+    VcCredentialStatusRecord, WebAuthnCredential, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -4334,6 +4335,140 @@ where
 }
 
 /// Custom-domain IDs remain tenant-owned through lifecycle updates and deletes.
+pub async fn assert_delegated_admin_lifecycle<R>(repo: &R)
+where
+    R: SaasRepository + RealmRepository,
+{
+    let tenant_a = "tenant-delegated-a";
+    let tenant_b = "tenant-delegated-b";
+    let realm_a = "realm-delegated-a";
+    let realm_b = "realm-delegated-b";
+    for (tenant, realm, issuer) in [
+        (tenant_a, realm_a, "https://delegated-a.example.com"),
+        (tenant_b, realm_b, "https://delegated-b.example.com"),
+    ] {
+        repo.create_realm(
+            &TenantId::from(tenant),
+            &RealmId::from(realm),
+            issuer,
+            Some("Delegated-admin ownership realm"),
+        )
+        .await
+        .expect("create delegated-admin ownership realm failed");
+    }
+
+    let admin = DelegatedTenantAdmin {
+        id: "delegated-admin-shared".into(),
+        tenant_id: tenant_a.into(),
+        subject: "admin@example.com".into(),
+        roles: vec!["app.admin".into(), "auditor".into()],
+        allowed_realm_ids: vec![realm_a.into()],
+        granted_by: "owner@example.com".into(),
+        granted_at: 1_800_000_000,
+        expires_at: Some(1_860_000_000),
+        revoked: false,
+    };
+    repo.store_delegated_tenant_admin(&admin)
+        .await
+        .expect("store delegated admin failed");
+    assert_eq!(
+        repo.list_delegated_tenant_admins(tenant_a).await.unwrap(),
+        vec![admin.clone()]
+    );
+
+    // A same-owner active update replaces every mutable field.
+    let mut updated = admin.clone();
+    updated.subject = "updated@example.com".into();
+    updated.roles = vec!["realm.admin".into()];
+    updated.granted_at = 1_800_000_100;
+    updated.expires_at = None;
+    repo.store_delegated_tenant_admin(&updated)
+        .await
+        .expect("same-owner delegated admin update failed");
+    assert_eq!(
+        repo.list_delegated_tenant_admins(tenant_a).await.unwrap(),
+        vec![updated.clone()]
+    );
+
+    // Reusing the global ID under another tenant is refused and leaves the incumbent.
+    let mut foreign = updated.clone();
+    foreign.tenant_id = tenant_b.into();
+    foreign.allowed_realm_ids = vec![realm_b.into()];
+    let error = repo
+        .store_delegated_tenant_admin(&foreign)
+        .await
+        .expect_err("cross-tenant delegated admin ID must conflict");
+    assert!(matches!(error, QidError::Conflict { .. }), "{error:?}");
+    assert_eq!(
+        repo.list_delegated_tenant_admins(tenant_a).await.unwrap(),
+        vec![updated.clone()]
+    );
+    assert!(
+        repo.list_delegated_tenant_admins(tenant_b)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Allowed realms must exist and belong to the granting tenant.
+    let mut cross_tenant = updated.clone();
+    cross_tenant.allowed_realm_ids = vec![realm_b.into()];
+    let error = repo
+        .store_delegated_tenant_admin(&cross_tenant)
+        .await
+        .expect_err("cross-tenant allowed realm must fail");
+    assert!(
+        matches!(error, QidError::BadRequest { ref message } if message.contains("belongs to another tenant")),
+        "{error:?}"
+    );
+    let mut missing = updated.clone();
+    missing.allowed_realm_ids = vec!["realm-delegated-missing".into()];
+    let error = repo
+        .store_delegated_tenant_admin(&missing)
+        .await
+        .expect_err("missing allowed realm must fail");
+    assert!(
+        matches!(error, QidError::BadRequest { ref message } if message.contains("does not exist")),
+        "{error:?}"
+    );
+    assert_eq!(
+        repo.list_delegated_tenant_admins(tenant_a).await.unwrap(),
+        vec![updated.clone()]
+    );
+
+    // Revocation is tenant-scoped, idempotent, and terminal for the grant ID.
+    let error = repo
+        .revoke_delegated_tenant_admin(tenant_b, &updated.id)
+        .await
+        .expect_err("cross-tenant delegated admin revoke must fail");
+    assert!(matches!(error, QidError::NotFound { .. }), "{error:?}");
+    assert_eq!(
+        repo.list_delegated_tenant_admins(tenant_a).await.unwrap(),
+        vec![updated.clone()]
+    );
+    repo.revoke_delegated_tenant_admin(tenant_a, &updated.id)
+        .await
+        .expect("delegated admin revoke failed");
+    repo.revoke_delegated_tenant_admin(tenant_a, &updated.id)
+        .await
+        .expect("repeated delegated admin revoke must succeed");
+    let mut revoked = updated.clone();
+    revoked.revoked = true;
+    assert_eq!(
+        repo.list_delegated_tenant_admins(tenant_a).await.unwrap(),
+        vec![revoked.clone()]
+    );
+    let error = repo
+        .store_delegated_tenant_admin(&updated)
+        .await
+        .expect_err("a revoked delegated admin ID must not be reusable");
+    assert!(matches!(error, QidError::Conflict { .. }), "{error:?}");
+    assert_eq!(
+        repo.list_delegated_tenant_admins(tenant_a).await.unwrap(),
+        vec![revoked]
+    );
+}
+
 pub async fn assert_custom_domain_tenant_ownership<R>(repo: &R)
 where
     R: SaasRepository + RealmRepository,

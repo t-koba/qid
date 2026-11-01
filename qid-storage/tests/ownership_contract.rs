@@ -362,6 +362,15 @@ async fn custom_domain_tenant_ownership_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn delegated_admin_lifecycle_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_delegated_admin_lifecycle(&sql).await;
+    sql.close().await;
+    let file = support::file_repo("ownership-contract-delegated-admin").await;
+    support::assert_delegated_admin_lifecycle(&file).await;
+}
+
+#[tokio::test]
 async fn ciam_brand_tenant_ownership_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_ciam_brand_tenant_ownership(&sql).await;

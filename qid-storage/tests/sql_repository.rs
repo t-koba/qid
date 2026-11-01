@@ -3394,11 +3394,41 @@ async fn assert_saas_repository_round_trip(
     repo.revoke_delegated_tenant_admin("tenant-saas", "delegated-admin-1")
         .await
         .expect("revoke delegated tenant admin failed");
+    repo.revoke_delegated_tenant_admin("tenant-saas", "delegated-admin-1")
+        .await
+        .expect("repeated delegated tenant admin revoke should be idempotent");
     let admins = repo
         .list_delegated_tenant_admins("tenant-saas")
         .await
         .expect("list revoked delegated tenant admins failed");
-    assert!(admins[0].revoked);
+    let mut revoked_admin = updated_admin.clone();
+    revoked_admin.revoked = true;
+    assert_eq!(admins, vec![revoked_admin.clone()]);
+    let error = repo
+        .store_delegated_tenant_admin(&updated_admin)
+        .await
+        .expect_err("a revoked delegated admin ID must not be reusable");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "revoked ID must have conflict semantics, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_delegated_tenant_admins("tenant-saas")
+            .await
+            .expect("list incumbent delegated admin after revoked-ID conflict failed"),
+        vec![revoked_admin.clone()]
+    );
+    let mut regranted_admin = updated_admin;
+    regranted_admin.id = "delegated-admin-regrant".to_string();
+    repo.store_delegated_tenant_admin(&regranted_admin)
+        .await
+        .expect("fresh delegated admin ID should regrant");
+    assert_eq!(
+        repo.list_delegated_tenant_admins("tenant-saas")
+            .await
+            .expect("list delegated admins after fresh-ID regrant failed"),
+        vec![revoked_admin, regranted_admin]
+    );
 
     repo.delete_custom_domain("tenant-saas", "domain-1")
         .await

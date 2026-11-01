@@ -424,7 +424,7 @@ impl SaasRepository for SqlRepository {
         let result = sqlx::query(
             "INSERT INTO delegated_tenant_admins (id, tenant_id, subject, roles_json, allowed_realm_ids_json, granted_by, granted_at, expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET subject = excluded.subject, roles_json = excluded.roles_json, allowed_realm_ids_json = excluded.allowed_realm_ids_json, granted_by = excluded.granted_by, granted_at = excluded.granted_at, expires_at = excluded.expires_at, revoked = excluded.revoked \
-             WHERE delegated_tenant_admins.tenant_id = excluded.tenant_id",
+             WHERE delegated_tenant_admins.tenant_id = excluded.tenant_id AND delegated_tenant_admins.revoked = 0",
         )
         .bind(&admin.id)
         .bind(&admin.tenant_id)
@@ -439,7 +439,7 @@ impl SaasRepository for SqlRepository {
         .await
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
-            "delegated tenant admin ID already belongs to another tenant".to_string()
+            "delegated tenant admin ID is foreign or revoked".to_string()
         })
     }
 

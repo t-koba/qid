@@ -1186,6 +1186,70 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
         revoke_delegated_admin_response.status(),
         StatusCode::NO_CONTENT
     );
+    let revoked_id_write = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/tenants/tenant-saas/delegated-admins",
+            r#"{
+                "id":"delegated-admin-1",
+                "tenant_id":"tenant-saas",
+                "subject":"replacement@example.com",
+                "roles":["app.admin"],
+                "allowed_realm_ids":["realm-saas"],
+                "granted_by":"admin@example.com",
+                "granted_at":1800000001,
+                "expires_at":1860000000,
+                "revoked":false
+            }"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoked_id_write.status(), StatusCode::CONFLICT);
+    let delegated_admins = state
+        .repo
+        .list_delegated_tenant_admins("tenant-saas")
+        .await
+        .unwrap();
+    assert_eq!(delegated_admins.len(), 1);
+    assert_eq!(delegated_admins[0].subject, "delegated@example.com");
+    assert!(delegated_admins[0].revoked);
+    let fresh_id_regrant = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/tenants/tenant-saas/delegated-admins",
+            r#"{
+                "id":"delegated-admin-2",
+                "tenant_id":"tenant-saas",
+                "subject":"delegated@example.com",
+                "roles":["app.admin","auditor"],
+                "allowed_realm_ids":["realm-saas"],
+                "granted_by":"admin@example.com",
+                "granted_at":1800000002,
+                "expires_at":1860000000,
+                "revoked":false
+            }"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(fresh_id_regrant.status(), StatusCode::CREATED);
+    let regranted_admins = state
+        .repo
+        .list_delegated_tenant_admins("tenant-saas")
+        .await
+        .unwrap();
+    assert_eq!(regranted_admins.len(), 2);
+    assert!(
+        regranted_admins
+            .iter()
+            .any(|admin| admin.id == "delegated-admin-1" && admin.revoked)
+    );
+    assert!(
+        regranted_admins
+            .iter()
+            .any(|admin| admin.id == "delegated-admin-2" && !admin.revoked)
+    );
 
     let list_response = app
         .clone()
@@ -1231,8 +1295,21 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
     assert!(actions.contains(&"app_catalog_entry.create"));
     assert!(actions.contains(&"usage_billing_event.create"));
     assert!(actions.contains(&"compliance_evidence_pack.create"));
-    assert!(actions.contains(&"delegated_tenant_admin.create"));
-    assert!(actions.contains(&"delegated_tenant_admin.revoke"));
+    let delegated_admin_creates: Vec<_> = audit
+        .iter()
+        .filter(|event| event.action == "delegated_tenant_admin.create")
+        .map(|event| event.target_id.as_str())
+        .collect();
+    assert_eq!(delegated_admin_creates.len(), 2);
+    assert!(delegated_admin_creates.contains(&"delegated-admin-1"));
+    assert!(delegated_admin_creates.contains(&"delegated-admin-2"));
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|event| event.action == "delegated_tenant_admin.revoke")
+            .count(),
+        1
+    );
     assert!(actions.contains(&"custom_domain.delete"));
     assert!(actions.contains(&"ciam_brand.delete"));
     assert!(

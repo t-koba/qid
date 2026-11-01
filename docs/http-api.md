@@ -159,7 +159,7 @@ Admin mutations require admin authorization checks and, depending on config, rea
 | `DELETE` | `/admin/api/v1/tenants/:tenant/marketplace-connectors/:connector_id` | Delete marketplace connector. |
 | `GET, POST` | `/admin/api/v1/tenants/:tenant/usage-billing-events` | List/create usage billing events; duplicate IDs return `409 Conflict`, and idempotency keys are tenant-scoped. |
 | `GET, POST` | `/admin/api/v1/tenants/:tenant/compliance-evidence-packs` | List/create compliance evidence packs; duplicate pack IDs return `409 Conflict`. |
-| `GET, POST` | `/admin/api/v1/tenants/:tenant/delegated-admins` | List/create or update same-tenant delegated admins. IDs are global; reuse by another tenant returns `409 Conflict` without changing the incumbent. |
+| `GET, POST` | `/admin/api/v1/tenants/:tenant/delegated-admins` | List/create or update active same-tenant delegated admins. IDs are global; reuse by another tenant or after revocation returns `409 Conflict` without changing the incumbent. Revocation is terminal per ID; regrant requires a fresh ID. |
 | `POST` | `/admin/api/v1/tenants/:tenant/delegated-admins/:admin_id/revoke` | Revoke delegated admin. |
 | `GET` | `/admin/api/v1/audit/export` | Export global audit. |
 | `GET` | `/admin/api/v1/:realm/audit/export` | Export realm audit. |

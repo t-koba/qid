@@ -396,13 +396,11 @@ impl SaasRepository for FileRepository {
         }
         drop(store);
         let mut store = self.store.write().await;
+        let existing = store.delegated_tenant_admins.get(&admin.id);
         crate::ownership::ensure_same_binding(
-            store
-                .delegated_tenant_admins
-                .get(&admin.id)
-                .map(|existing| &existing.tenant_id),
-            &admin.tenant_id,
-            || "delegated tenant admin ID already belongs to another tenant".to_string(),
+            existing.map(|existing| (&existing.tenant_id, !existing.revoked)),
+            (&admin.tenant_id, true),
+            || "delegated tenant admin ID is foreign or revoked".to_string(),
         )?;
         store
             .delegated_tenant_admins

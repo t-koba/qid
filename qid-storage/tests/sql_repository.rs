@@ -17,6 +17,7 @@ use qid_storage::{
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 mod support;
 use support::*;
@@ -1696,6 +1697,112 @@ async fn test_sql_ciam_only_verified_subjects_authenticate() {
 #[tokio::test]
 async fn test_file_ciam_only_verified_subjects_authenticate() {
     assert_ciam_only_verified_subjects_authenticate(&file_repo("ciam_link_trust").await).await;
+}
+
+async fn assert_ciam_verified_subject_concurrent_inserts_are_classified(
+    repo: &(impl RealmRepository + UserRepository + CiamRepository + Clone),
+) {
+    const CONTENDERS: usize = 40;
+    let realm = RealmId::from("realm-ciam-identity-race");
+    repo.create_realm(
+        &TenantId::from("tenant-ciam-identity-race"),
+        &realm,
+        "https://identity-race.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    let candidates: Vec<CiamIdentityLink> = (0..CONTENDERS)
+        .map(|index| CiamIdentityLink {
+            id: format!("race-link-{index}"),
+            realm_id: realm.0.clone(),
+            user_id: format!("race-user-{index}"),
+            provider: "google".to_string(),
+            external_subject: "competing-verified-subject".to_string(),
+            external_email: None,
+            profile_json: serde_json::json!({}),
+            linked_at_epoch_seconds: 1_800_000_000,
+            verified: true,
+        })
+        .collect();
+    for candidate in &candidates {
+        repo.create_user(&User {
+            id: candidate.user_id.clone(),
+            realm_id: realm.0.clone(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let repository: Arc<dyn CiamRepository> = Arc::new(repo.clone());
+    // Release all repository calls together to expose the former SQL precheck/write race.
+    let start = Arc::new(tokio::sync::Barrier::new(CONTENDERS));
+    let mut tasks = tokio::task::JoinSet::new();
+    for candidate in candidates.iter().cloned() {
+        let repository = Arc::clone(&repository);
+        let start = Arc::clone(&start);
+        tasks.spawn(async move {
+            start.wait().await;
+            let result = repository.store_ciam_identity_link(&candidate).await;
+            (candidate, result)
+        });
+    }
+
+    let mut winners = Vec::new();
+    let mut bad_request_losers = 0;
+    while let Some(result) = tasks.join_next().await {
+        let (candidate, result) = result.expect("join concurrent CIAM identity-link writer");
+        match result {
+            Ok(()) => winners.push(candidate),
+            Err(qid_core::error::QidError::BadRequest { .. }) => bad_request_losers += 1,
+            Err(error) => panic!("concurrent duplicate must be BadRequest, got {error:?}"),
+        }
+    }
+    assert_eq!(
+        winners.len(),
+        1,
+        "exactly one verified subject contender wins"
+    );
+    assert_eq!(bad_request_losers, CONTENDERS - 1);
+    let winner = winners.pop().unwrap();
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(
+            &realm,
+            "google",
+            "competing-verified-subject",
+        )
+        .await
+        .unwrap(),
+        Some(winner.clone())
+    );
+    for candidate in candidates {
+        assert_eq!(
+            repo.get_ciam_identity_link(&realm, &candidate.id)
+                .await
+                .unwrap(),
+            (candidate.id == winner.id).then_some(winner.clone()),
+            "only the successful contender may persist"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_sql_ciam_verified_subject_concurrent_insert_classification() {
+    assert_ciam_verified_subject_concurrent_inserts_are_classified(&sql_repo().await).await;
+}
+
+#[tokio::test]
+async fn test_file_ciam_verified_subject_concurrent_insert_classification() {
+    assert_ciam_verified_subject_concurrent_inserts_are_classified(
+        &file_repo("ciam_link_verified_race").await,
+    )
+    .await;
 }
 
 async fn assert_ciam_progressive_profile_owner_conflict(

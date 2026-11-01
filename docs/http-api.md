@@ -506,7 +506,7 @@ requiring an admin API session.
 | `GET` | `/.well-known/openid-credential-issuer/*path` | Metadata for the VC realm whose exact issuer-derived path matches; `400` if absent or ambiguous. |
 | `POST` | `/vc/v1/credential` | Credential endpoint. |
 | `GET` | `/vc/v1/status/:credential_id` | Public credential status: revocation and expiry only, no subject or revocation details. |
-| `POST` | `/vc/v1/status/:credential_id/revoke` | Revoke credential status. |
+| `POST` | `/vc/v1/status/:credential_id/revoke` | Revoke credential status (holder-only). |
 | `POST` | `/vc/v1/presentation/verify` | Verify presentation. |
 
 VC routes are only merged in the `vc` profile. Metadata identifies the selected
@@ -521,7 +521,10 @@ uses the access token's realm and rejects a subject from another realm. Holder
 proofs use the realm issuer as their audience, not the shared credential
 endpoint's base URL. The metadata advertises the qid-private credential format
 `qid_sd_jwt_vc`, and the credential response repeats that value; no registered
-OID4VCI format is advertised or accepted.
+OID4VCI format is advertised or accepted. Credential revocation is holder-only:
+the bearer token's subject must equal the credential subject, the token realm
+must match the credential realm, and the token audience's realm issuer must
+match the credential issuer; a client-credentials token cannot revoke.
 
 ### Inbound HR lifecycle batches
 

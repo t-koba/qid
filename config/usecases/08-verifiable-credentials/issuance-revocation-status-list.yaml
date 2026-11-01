@@ -35,14 +35,14 @@ realms:
     issuer: "https://id.example.com/realms/credentials"
     display_name: "Credential Issuance and Status"
     clients:
-      - client_id: "credential-admin"
+      - client_id: "vc-status-reader"
         client_type: confidential
         token_endpoint_auth_method: private_key_jwt
         jwks:
           keys:
             - kty: EC
               crv: P-256
-              kid: "credential-admin-signing"
+              kid: "vc-status-reader-signing"
               use: sig
               alg: ES256
               x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -87,10 +87,9 @@ realms:
               - openid
               - qid_identity
               - vc.issue
-              - vc.revoke
               - vc.verify
             introspection_client_ids:
-              - credential-admin
+              - vc-status-reader
             require_sender_constraint: true
             high_risk: true
     authentication:

@@ -281,9 +281,6 @@ pub fn credential_claims_for_user(
                     claims.insert("name".to_string(), Value::String(name.clone()));
                 }
             }
-            "groups" | "roles" => {
-                claims.insert(claim.clone(), Value::Array(Vec::new()));
-            }
             unsupported => {
                 return Err(QidError::BadRequest {
                     message: format!("unsupported credential claim: {unsupported}"),

@@ -135,13 +135,7 @@ pub fn default_credential_configurations() -> Vec<CredentialConfiguration> {
         scope: "openid qid_identity".to_string(),
         cryptographic_binding_methods_supported: vec!["jwk".to_string()],
         credential_signing_alg_values_supported: vec!["ES256".to_string(), "EdDSA".to_string()],
-        claim_names: vec![
-            "sub".to_string(),
-            "email".to_string(),
-            "name".to_string(),
-            "groups".to_string(),
-            "roles".to_string(),
-        ],
+        claim_names: vec!["sub".to_string(), "email".to_string(), "name".to_string()],
     }]
 }
 
@@ -291,12 +285,7 @@ mod tests {
 
         let claims = credential_claims_for_user(
             &user,
-            &[
-                "sub".to_string(),
-                "email".to_string(),
-                "name".to_string(),
-                "groups".to_string(),
-            ],
+            &["sub".to_string(), "email".to_string(), "name".to_string()],
         )
         .unwrap();
 
@@ -304,10 +293,11 @@ mod tests {
         assert_eq!(claims["email"], json!("user@example.com"));
         assert_eq!(claims["email_verified"], json!(true));
         assert_eq!(claims["name"], json!("Test User"));
-        assert_eq!(claims["groups"], json!([]));
 
-        let err = credential_claims_for_user(&user, &["phone_number".to_string()]).unwrap_err();
-        assert!(err.to_string().contains("unsupported credential claim"));
+        for unsupported in ["phone_number", "groups", "roles"] {
+            let err = credential_claims_for_user(&user, &[unsupported.to_string()]).unwrap_err();
+            assert!(err.to_string().contains("unsupported credential claim"));
+        }
     }
 
     #[test]

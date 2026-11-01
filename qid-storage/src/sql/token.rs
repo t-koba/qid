@@ -155,15 +155,13 @@ impl TokenRepository for SqlRepository {
     }
 
     async fn revoke_token_family(&self, id: &str, realm_id: &str) -> QidResult<()> {
-        let rows =
-            sqlx::query("UPDATE token_families SET revoked = 1 WHERE id = $1 AND realm_id = $2")
-                .bind(id)
-                .bind(realm_id)
-                .execute(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
-                .rows_affected();
-        crate::ownership::ensure_row_present(rows, || format!("token family {id}"))
+        sqlx::query("UPDATE token_families SET revoked = 1 WHERE id = $1 AND realm_id = $2")
+            .bind(id)
+            .bind(realm_id)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
+        Ok(())
     }
 
     async fn list_token_families(

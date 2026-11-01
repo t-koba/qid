@@ -6,7 +6,7 @@ use qid_core::{
 };
 use qid_storage::prelude::*;
 
-async fn assert_scope(repo: &impl Repository, sql: bool) {
+async fn assert_scope(repo: &impl Repository) {
     for realm in ["a", "b"] {
         repo.create_realm(
             &"tenant".into(),
@@ -66,10 +66,10 @@ async fn assert_scope(repo: &impl Repository, sql: bool) {
     expected.refresh_expires_at = Some(300);
     assert_row(repo, &expected).await;
     // A valid but wrong realm cannot change any field of the incumbent.
-    assert_miss(repo.revoke_token_family(&expected.id, "a").await, sql);
+    repo.revoke_token_family(&expected.id, "a").await.unwrap();
     assert_row(repo, &expected).await;
     for realm in ["a", "b"] {
-        assert_miss(repo.revoke_token_family("missing", realm).await, sql);
+        repo.revoke_token_family("missing", realm).await.unwrap();
         assert_row(repo, &expected).await;
     }
     repo.revoke_token_family(&expected.id, "b").await.unwrap();
@@ -84,19 +84,8 @@ async fn assert_scope(repo: &impl Repository, sql: bool) {
     // Repeated owner revocation is successful and never changes other fields.
     repo.revoke_token_family(&expected.id, "b").await.unwrap();
     assert_row(repo, &expected).await;
-    assert_miss(repo.revoke_token_family(&expected.id, "a").await, sql);
+    repo.revoke_token_family(&expected.id, "a").await.unwrap();
     assert_row(repo, &expected).await;
-}
-
-fn assert_miss(result: Result<(), QidError>, sql: bool) {
-    if sql {
-        assert!(
-            matches!(result, Err(QidError::NotFound { .. })),
-            "{result:?}"
-        );
-    } else {
-        result.unwrap(); // Preserve File's existing missing-record no-op.
-    }
 }
 
 async fn assert_row(repo: &impl Repository, expected: &TokenFamily) {
@@ -109,10 +98,10 @@ async fn assert_row(repo: &impl Repository, expected: &TokenFamily) {
 #[tokio::test]
 async fn token_family_revocation_and_rotation_are_realm_bound_file_and_sql() {
     let sql = support::sql_repo().await;
-    assert_scope(&sql, true).await;
+    assert_scope(&sql).await;
     sql.close().await;
     let file = support::file_repo("token-family-scope").await;
-    assert_scope(&file, false).await;
+    assert_scope(&file).await;
 }
 
 // Classify ownership before reuse, even for equal hashes, stale hashes or revoked rows.

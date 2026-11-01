@@ -255,10 +255,15 @@ async fn catalog_upserts_reject_invalid_records_without_state_changes() {
     );
 }
 
-async fn seed_conflicting_erp_pair(app: &Router, session_id: &str) {
+async fn seed_erp_conflicts(
+    app: &Router,
+    session_id: &str,
+    admin_conflicts: &[&str],
+    audit_conflicts: &[&str],
+) {
     for (id, conflicts) in [
-        ("app:erp:admin", vec!["app:erp:audit"]),
-        ("app:erp:audit", vec!["app:erp:admin"]),
+        ("app:erp:admin", admin_conflicts),
+        ("app:erp:audit", audit_conflicts),
     ] {
         post_json(
             app.clone(),
@@ -276,6 +281,10 @@ async fn seed_conflicting_erp_pair(app: &Router, session_id: &str) {
         )
         .await;
     }
+}
+
+async fn seed_conflicting_erp_pair(app: &Router, session_id: &str) {
+    seed_erp_conflicts(app, session_id, &["app:erp:audit"], &["app:erp:admin"]).await;
 }
 
 async fn create_package_and_request(
@@ -328,6 +337,39 @@ async fn access_package_request_rejects_conflicting_members_in_any_order() {
                 .iter()
                 .any(|v| v.as_str().unwrap_or_default().contains("sod_conflict")),
             "conflicting package must surface an SoD violation, got {violations:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn access_package_request_rejects_one_sided_conflict_in_any_order() {
+    for entitlement_ids in [
+        vec!["app:erp:admin", "app:erp:audit"],
+        vec!["app:erp:audit", "app:erp:admin"],
+    ] {
+        let (_store_dir, app, _repo, session_id) = setup_with_repo().await;
+        seed_erp_conflicts(&app, &session_id, &["app:erp:audit"], &[]).await;
+        let body = create_package_and_request(
+            &app,
+            &session_id,
+            serde_json::json!({
+                "id": "pkg-one-sided",
+                "display_name": "One-sided conflict package",
+                "owner": "security-admin",
+                "entitlement_ids": entitlement_ids,
+                "max_duration_seconds": 1800,
+                "active": true
+            }),
+            "user-1",
+        )
+        .await;
+        assert_eq!(body["status"], "rejected", "order: {entitlement_ids:?}");
+        let violations = body["violations"].as_array().unwrap();
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.as_str().unwrap_or_default().contains("sod_conflict")),
+            "one-sided conflict must surface regardless of order, got {violations:?}"
         );
     }
 }

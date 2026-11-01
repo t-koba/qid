@@ -140,6 +140,42 @@ fn high_risk_conflict_is_rejected() {
     );
 }
 
+fn conflict_entitlement(id: &str, conflicts: &[&str]) -> Entitlement {
+    Entitlement {
+        id: id.to_string(),
+        display_name: id.to_string(),
+        owner: "test".to_string(),
+        risk_level: EntitlementRiskLevel::High,
+        conflicting_entitlements: conflicts.iter().map(ToString::to_string).collect(),
+        max_duration_seconds: None,
+    }
+}
+
+#[test]
+fn one_sided_conflict_is_enforced_in_both_directions() {
+    let catalog = vec![
+        conflict_entitlement("app:a", &["app:b"]),
+        conflict_entitlement("app:b", &[]),
+    ];
+    let holding_b =
+        evaluate_access_request("user-1", "app:a", &["app:b".to_string()], None, &catalog);
+    assert_eq!(holding_b.status, AccessRequestStatus::Rejected);
+    assert!(
+        holding_b
+            .violations
+            .contains(&"sod_conflict:app:b".to_string())
+    );
+
+    let holding_a =
+        evaluate_access_request("user-1", "app:b", &["app:a".to_string()], None, &catalog);
+    assert_eq!(holding_a.status, AccessRequestStatus::Rejected);
+    assert!(
+        holding_a
+            .violations
+            .contains(&"sod_conflict:app:a".to_string())
+    );
+}
+
 #[test]
 fn access_review_recommends_revocation_for_orphan_and_sod_conflict() {
     let catalog = default_entitlement_catalog();

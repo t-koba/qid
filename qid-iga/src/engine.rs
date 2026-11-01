@@ -191,9 +191,26 @@ pub fn evaluate_access_request(
     };
 
     let current: HashSet<&str> = current_entitlements.iter().map(String::as_str).collect();
+    let declared: HashSet<&str> = entitlement
+        .conflicting_entitlements
+        .iter()
+        .map(String::as_str)
+        .collect();
     for conflict in &entitlement.conflicting_entitlements {
-        if current.contains(conflict.as_str()) {
+        if conflict.as_str() != entitlement_id && current.contains(conflict.as_str()) {
             violations.push(format!("sod_conflict:{conflict}"));
+        }
+    }
+    for held in catalog {
+        if held.id.as_str() != entitlement.id
+            && current.contains(held.id.as_str())
+            && held
+                .conflicting_entitlements
+                .iter()
+                .any(|id| id.as_str() == entitlement_id)
+            && !declared.contains(held.id.as_str())
+        {
+            violations.push(format!("sod_conflict:{}", held.id));
         }
     }
 

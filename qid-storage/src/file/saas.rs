@@ -100,16 +100,13 @@ impl SaasRepository for FileRepository {
     }
 
     async fn delete_custom_domain(&self, tenant_id: &str, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if store
-            .custom_domains
-            .get(id)
-            .is_some_and(|domain| domain.tenant_id == tenant_id)
-        {
-            store.custom_domains.remove(id);
-        }
-        drop(store);
-        self.save().await
+        self.map_write(|store| {
+            store
+                .custom_domains
+                .retain(|key, domain| key != id || domain.tenant_id != tenant_id);
+            None::<()>
+        })
+        .await
     }
 
     async fn store_ciam_brand(&self, brand: &CiamBrand) -> QidResult<()> {
@@ -155,16 +152,13 @@ impl SaasRepository for FileRepository {
     }
 
     async fn delete_ciam_brand(&self, tenant_id: &str, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if store
-            .ciam_brands
-            .get(id)
-            .is_some_and(|brand| brand.tenant_id == tenant_id)
-        {
-            store.ciam_brands.remove(id);
-        }
-        drop(store);
-        self.save().await
+        self.map_write(|store| {
+            store
+                .ciam_brands
+                .retain(|key, brand| key != id || brand.tenant_id != tenant_id);
+            None::<()>
+        })
+        .await
     }
 
     async fn store_app_catalog_entry(&self, entry: &AppCatalogEntry) -> QidResult<()> {
@@ -240,16 +234,13 @@ impl SaasRepository for FileRepository {
     }
 
     async fn delete_app_catalog_entry(&self, tenant_id: &str, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if store
-            .app_catalog_entries
-            .get(id)
-            .is_some_and(|entry| entry.tenant_id == tenant_id)
-        {
-            store.app_catalog_entries.remove(id);
-        }
-        drop(store);
-        self.save().await
+        self.map_write(|store| {
+            store
+                .app_catalog_entries
+                .retain(|key, entry| key != id || entry.tenant_id != tenant_id);
+            None::<()>
+        })
+        .await
     }
 
     async fn store_marketplace_connector(&self, connector: &MarketplaceConnector) -> QidResult<()> {

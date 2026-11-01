@@ -133,7 +133,11 @@ impl SaasRepository for FileRepository {
             &brand.tenant_id,
             || "CIAM brand ID already belongs to another tenant".to_string(),
         )?;
-        store.ciam_brands.insert(brand.id.clone(), brand.clone());
+        let mut stored = brand.clone();
+        if let Some(existing) = store.ciam_brands.get(&brand.id) {
+            stored.realm_id.clone_from(&existing.realm_id);
+        }
+        store.ciam_brands.insert(stored.id.clone(), stored);
         drop(store);
         self.save().await
     }

@@ -4442,9 +4442,15 @@ where
     let tenant_a = format!("tenant-ciam-brand-a-{suffix}");
     let tenant_b = format!("tenant-ciam-brand-b-{suffix}");
     let realm_a = format!("realm-ciam-brand-a-{suffix}");
+    let realm_a_update = format!("realm-ciam-brand-a-update-{suffix}");
     let realm_b = format!("realm-ciam-brand-b-{suffix}");
     for (tenant, realm, issuer) in [
         (&tenant_a, &realm_a, "https://brand-a.example.com"),
+        (
+            &tenant_a,
+            &realm_a_update,
+            "https://brand-a-update.example.com",
+        ),
         (&tenant_b, &realm_b, "https://brand-b.example.com"),
     ] {
         repo.create_realm(
@@ -4460,7 +4466,7 @@ where
     let brand = CiamBrand {
         id: format!("ciam-brand-shared-{suffix}"),
         tenant_id: tenant_a.clone(),
-        realm_id: realm_a,
+        realm_id: realm_a.clone(),
         display_name: "Customer Blue".to_string(),
         primary_color: "#2f6fed".to_string(),
         logo_uri: Some("https://cdn.example.com/logo.svg".to_string()),
@@ -4472,14 +4478,17 @@ where
     repo.store_ciam_brand(&brand)
         .await
         .expect("store CIAM brand failed");
-    let mut updated = brand.clone();
-    updated.display_name = "Updated Customer Blue".to_string();
-    updated.primary_color = "#123456".to_string();
-    updated.terms_version = Some("2026-07".to_string());
-    updated.active = false;
-    repo.store_ciam_brand(&updated)
+    let mut update_attempt = brand.clone();
+    update_attempt.display_name = "Updated Customer Blue".to_string();
+    update_attempt.primary_color = "#123456".to_string();
+    update_attempt.terms_version = Some("2026-07".to_string());
+    update_attempt.active = false;
+    update_attempt.realm_id = realm_a_update;
+    repo.store_ciam_brand(&update_attempt)
         .await
         .expect("same-tenant CIAM brand update failed");
+    let mut updated = update_attempt;
+    updated.realm_id = realm_a;
     assert_eq!(
         repo.list_ciam_brands(&tenant_a)
             .await

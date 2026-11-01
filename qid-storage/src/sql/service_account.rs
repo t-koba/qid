@@ -6,7 +6,7 @@ use super::*;
 impl ServiceAccountRepository for SqlRepository {
     async fn create_service_account(&self, sa: &ServiceAccount) -> QidResult<()> {
         let result = sqlx::query(
-            "INSERT INTO service_accounts (id, client_id, realm_id, description, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO service_accounts (id, client_id, realm_id, description, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(&sa.id)
         .bind(&sa.client_id)
@@ -17,7 +17,7 @@ impl ServiceAccountRepository for SqlRepository {
         .await
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
-            format!("service account record ID {} already exists", sa.id)
+            "service account ID or realm/client already exists".into()
         })
     }
 

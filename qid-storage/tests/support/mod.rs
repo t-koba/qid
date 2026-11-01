@@ -1256,8 +1256,9 @@ where
     );
 }
 
-/// The owner-bound contract of a service account: a record ID names one
-/// account, so reusing it cannot replace or cross realm boundaries.
+/// A service-account ID and a realm/client pair each name one account.
+/// Duplicate creates, including concurrent ones, cannot replace the incumbent;
+/// the same client ID in a different realm names an independent account.
 pub async fn assert_service_account_identity_ownership<R>(repo: &R)
 where
     R: ServiceAccountRepository,
@@ -1288,6 +1289,60 @@ where
         "a second service account for one record ID must be a conflict, got: {}",
         err.message()
     );
+    let duplicate_identity = ServiceAccount {
+        id: "service-account-other-id".into(),
+        description: Some("must not replace Alice".into()),
+        created_at: 99,
+        ..account.clone()
+    };
+    assert!(matches!(
+        repo.create_service_account(&duplicate_identity).await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
+    let other_realm = ServiceAccount {
+        id: "service-account-other-realm".into(),
+        realm_id: "realm-service-account-other".into(),
+        ..account.clone()
+    };
+    repo.create_service_account(&other_realm).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_service_account_by_client_id(&other_realm.realm_id, &other_realm.client_id)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(Some(&other_realm)).unwrap()
+    );
+
+    let contenders = ["service-race-a", "service-race-b"].map(|id| ServiceAccount {
+        id: id.into(),
+        client_id: "client-race".into(),
+        ..account.clone()
+    });
+    let results = tokio::join!(
+        repo.create_service_account(&contenders[0]),
+        repo.create_service_account(&contenders[1]),
+    );
+    let winner = match results {
+        (Ok(()), Err(qid_core::error::QidError::Conflict { .. })) => &contenders[0],
+        (Err(qid_core::error::QidError::Conflict { .. }), Ok(())) => &contenders[1],
+        other => panic!("exactly one concurrent identity create must succeed: {other:?}"),
+    };
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_service_account_by_client_id(&winner.realm_id, &winner.client_id)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(Some(winner)).unwrap()
+    );
+    let accounts = repo.list_service_accounts(&account.realm_id).await.unwrap();
+    assert_eq!(accounts.len(), 2, "no refused ID may be inserted");
+    assert!(accounts.iter().any(|stored| stored.id == account.id));
+    assert!(accounts.iter().any(|stored| stored.id == winner.id));
+
     let stored = repo
         .get_service_account_by_client_id(&account.realm_id, &account.client_id)
         .await

@@ -6,10 +6,15 @@ use super::*;
 impl ServiceAccountRepository for FileRepository {
     async fn create_service_account(&self, sa: &ServiceAccount) -> QidResult<()> {
         let mut store = self.store.write().await;
-        reject_duplicate_id(store.service_accounts.contains_key(&sa.id), || {
-            format!("service account record ID {} already exists", sa.id)
-        })?;
-        store.service_accounts.insert(sa.id.clone(), sa.clone());
+        let accounts = &mut store.service_accounts;
+        reject_duplicate_id(
+            accounts.contains_key(&sa.id)
+                || accounts
+                    .values()
+                    .any(|a| a.realm_id == sa.realm_id && a.client_id == sa.client_id),
+            || "service account ID or realm/client already exists".into(),
+        )?;
+        accounts.insert(sa.id.clone(), sa.clone());
         drop(store);
         self.save().await
     }
@@ -20,11 +25,15 @@ impl ServiceAccountRepository for FileRepository {
         client_id: &str,
     ) -> QidResult<Option<ServiceAccount>> {
         let store = self.store.read().await;
-        Ok(store
+        let mut matches = store
             .service_accounts
             .values()
-            .find(|sa| sa.realm_id == realm_id && sa.client_id == client_id)
-            .cloned())
+            .filter(|sa| sa.realm_id == realm_id && sa.client_id == client_id);
+        let account = matches.next();
+        reject_duplicate_id(matches.next().is_some(), || {
+            "ambiguous service account realm/client identity; repair externally".into()
+        })?;
+        Ok(account.cloned())
     }
 
     async fn list_service_accounts(&self, realm_id: &str) -> QidResult<Vec<ServiceAccount>> {

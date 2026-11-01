@@ -579,3 +579,177 @@ async fn legacy_sql_admin_elevation_migrates_with_source_session_unavailable() {
     migrated.close().await;
     std::fs::remove_dir_all(dir).expect("cleanup isolated SQL directory");
 }
+
+#[tokio::test]
+async fn service_account_legacy_file_ambiguity_fails_closed_without_changes() {
+    use qid_core::error::QidError;
+    use qid_core::models::ServiceAccount;
+    use qid_storage::{FileRepository, ServiceAccountRepository};
+
+    let dir = std::env::temp_dir().join(format!("qid-service-legacy-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    repo.create_service_account(&ServiceAccount {
+        id: "realm-record".into(),
+        realm_id: "realm".into(),
+        client_id: "realm-client".into(),
+        description: Some("first principal".into()),
+        created_at: 1,
+    })
+    .await
+    .unwrap();
+    drop(repo);
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut second = fixture["service_accounts"]["realm-record"].clone();
+    second["id"] = "second-principal".into();
+    second["description"] = "preserve this principal too".into();
+    fixture["service_accounts"]["second-principal"] = second;
+    let before = serde_json::to_vec(&fixture).unwrap();
+    std::fs::write(&path, &before).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    assert!(matches!(
+        repo.get_service_account_by_client_id("realm", "realm-client")
+            .await,
+        Err(QidError::Conflict { .. })
+    ));
+    let accounts = repo.list_service_accounts("realm").await.unwrap();
+    assert_eq!(accounts.len(), 2);
+    for account in &accounts {
+        assert_eq!(
+            serde_json::to_value(account).unwrap(),
+            fixture["service_accounts"][&account.id]
+        );
+    }
+    let attempt = ServiceAccount {
+        id: "third-principal".into(),
+        ..accounts[0].clone()
+    };
+    assert!(matches!(
+        repo.create_service_account(&attempt).await,
+        Err(QidError::Conflict { .. })
+    ));
+    assert!(
+        repo.get_service_account_by_client_id("another-realm", "realm-client")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.get_service_account_by_client_id("realm", "absent")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(repo);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn service_account_identity_migration_preserves_duplicates_and_retries_after_external_repair()
+{
+    use qid_storage::{ServiceAccountRepository, SqlRepository};
+    use std::borrow::Cow;
+
+    const VERSION: i64 = 20261101000001;
+    let dir = std::env::temp_dir().join(format!("qid-service-migration-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let url = format!("sqlite:{}", dir.join("legacy.db").display());
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    // Build a real pre-uniqueness database, with its historical migration ledger.
+    let mut legacy = sqlx::migrate!("./migrations");
+    legacy.migrations = Cow::Owned(
+        legacy
+            .iter()
+            .filter(|m| m.version < VERSION)
+            .cloned()
+            .collect(),
+    );
+    legacy.run(&pool).await.unwrap();
+    sqlx::query("INSERT INTO service_accounts (id, realm_id, client_id, description, created_at) VALUES ('first', 'realm', 'client', 'first principal', 1), ('second', 'realm', 'client', 'second principal', 2), ('foreign', 'other-realm', 'client', 'independent principal', 3)")
+        .execute(&pool).await.unwrap();
+    let read_rows = || {
+        sqlx::query_as::<_, (String, String, String, Option<String>, i64)>(
+            "SELECT id, realm_id, client_id, description, created_at FROM service_accounts ORDER BY id",
+        )
+    };
+    let before = read_rows().fetch_all(&pool).await.unwrap();
+    let ledger_before: Vec<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for _ in 0..2 {
+        let error = repo
+            .migrate()
+            .await
+            .expect_err("legacy ambiguity must block migration")
+            .to_string();
+        assert!(
+            error.contains("duplicate service_accounts realm_id/client_id"),
+            "{error}"
+        );
+        assert!(
+            error.contains("repair externally and retry migration"),
+            "{error}"
+        );
+        assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), before);
+        assert_eq!(
+            sqlx::query_as::<_, (i64, Vec<u8>)>(
+                "SELECT version, checksum FROM _sqlx_migrations ORDER BY version"
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap(),
+            ledger_before
+        );
+        assert_eq!(sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_service_accounts_realm_client_unique'"
+        ).fetch_one(&pool).await.unwrap(), 0);
+    }
+    // Deliberate test-side operator repair changes only an identity binding,
+    // retaining both principals and every other field. The product never chooses.
+    sqlx::query(
+        "UPDATE service_accounts SET client_id = 'explicitly-repaired-client' WHERE id = 'second'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let repaired = read_rows().fetch_all(&pool).await.unwrap();
+    let mut expected = before;
+    expected.iter_mut().find(|row| row.0 == "second").unwrap().2 =
+        "explicitly-repaired-client".into();
+    assert_eq!(repaired, expected);
+    repo.migrate().await.expect("retry after explicit repair");
+    repo.migrate().await.expect("migration is idempotent");
+    assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 20261101000001 AND success = 1"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    let incumbent = repo
+        .get_service_account_by_client_id("realm", "client")
+        .await
+        .unwrap()
+        .unwrap();
+    let duplicate = qid_core::models::ServiceAccount {
+        id: "refused".into(),
+        ..incumbent
+    };
+    assert!(matches!(
+        repo.create_service_account(&duplicate).await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
+    assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    pool.close().await;
+    repo.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -211,7 +211,7 @@ async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
     let vc = token_data.claims.extra.get("vc").unwrap();
 
     let credential_id = vc["status"]["credential_id"].as_str().unwrap().to_string();
-    assert_eq!(body["format"], "sd_jwt_vc");
+    assert_eq!(body["format"], "qid_sd_jwt_vc");
     assert_eq!(vc["issuer"], "https://id.example.com");
     assert_eq!(vc["subject"], "vc-user");
     assert_eq!(vc["visible_claims"]["sub"], "vc-user");
@@ -483,6 +483,10 @@ async fn credential_issuer_metadata_advertises_supported_configuration() {
     assert_eq!(
         body["credential_configurations_supported"]["qid_identity_sd_jwt"]["scope"],
         "openid qid_identity"
+    );
+    assert_eq!(
+        body["credential_configurations_supported"]["qid_identity_sd_jwt"]["format"],
+        "qid_sd_jwt_vc"
     );
 }
 

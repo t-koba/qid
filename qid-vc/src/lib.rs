@@ -99,6 +99,7 @@ pub struct CredentialConfiguration {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialFormat {
     JwtVcJson,
+    #[serde(rename = "qid_sd_jwt_vc")]
     SdJwtVc,
 }
 

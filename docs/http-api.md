@@ -519,7 +519,9 @@ origin to qid without rewriting or normalizing the metadata path; qid does not
 fetch external issuer URLs or discover unconfigured keys. Credential issuance
 uses the access token's realm and rejects a subject from another realm. Holder
 proofs use the realm issuer as their audience, not the shared credential
-endpoint's base URL.
+endpoint's base URL. The metadata advertises the qid-private credential format
+`qid_sd_jwt_vc`, and the credential response repeats that value; no registered
+OID4VCI format is advertised or accepted.
 
 ### Inbound HR lifecycle batches
 

@@ -463,16 +463,13 @@ impl CiamRepository for FileRepository {
     }
 
     async fn delete_ciam_identity_link(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        if store
-            .ciam_identity_links
-            .get(id)
-            .is_some_and(|link| link.realm_id == realm_id.0)
-        {
-            store.ciam_identity_links.remove(id);
-        }
-        drop(store);
-        self.save().await
+        self.map_write(|store| {
+            store
+                .ciam_identity_links
+                .retain(|key, link| key != id || link.realm_id != realm_id.0);
+            None::<()>
+        })
+        .await
     }
 
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()> {

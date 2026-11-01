@@ -3120,10 +3120,19 @@ async fn assert_saas_repository_round_trip(
     let mut cross_tenant_entry = sample_app_catalog_entry();
     cross_tenant_entry.id = "app-cross-tenant-connector".to_string();
     cross_tenant_entry.marketplace_connector_id = Some("connector-other".to_string());
+    let error = repo
+        .store_app_catalog_entry(&cross_tenant_entry)
+        .await
+        .expect_err("cross-tenant connector reference must be rejected");
     assert!(
-        repo.store_app_catalog_entry(&cross_tenant_entry)
+        matches!(error, qid_core::error::QidError::Storage { .. }),
+        "foreign connector reference must retain Storage classification, got {error:?}"
+    );
+    assert!(
+        repo.list_app_catalog_entries("tenant-saas")
             .await
-            .is_err()
+            .expect("list entries after foreign connector rejection failed")
+            .is_empty()
     );
 
     let mut saml_with_scim_connector = sample_app_catalog_entry();
@@ -3168,6 +3177,19 @@ async fn assert_saas_repository_round_trip(
     repo.store_app_catalog_entry(&saml_entry)
         .await
         .expect("store SAML app catalog entry failed");
+    let error = repo
+        .delete_marketplace_connector("tenant-saas", "connector-saml")
+        .await
+        .expect_err("referenced connector deletion must be refused");
+    assert!(
+        matches!(error, qid_core::error::QidError::Storage { .. }),
+        "referenced connector deletion must retain Storage classification, got {error:?}"
+    );
+    let connectors = repo
+        .list_marketplace_connectors("tenant-saas")
+        .await
+        .expect("list referenced connector after refused deletion failed");
+    assert!(connectors.contains(&saml_connector));
     repo.delete_app_catalog_entry("tenant-saas", "app-saml")
         .await
         .expect("delete SAML app catalog entry failed");

@@ -49,6 +49,14 @@ async fn assert_scope(repo: &impl Repository) {
         revoked: false,
     };
     repo.create_token_family(&expected).await.unwrap();
+    let mut duplicate = expected.clone();
+    duplicate.current_refresh_hash = "other".into();
+    duplicate.revoked = true;
+    assert!(matches!(
+        repo.create_token_family(&duplicate).await,
+        Err(QidError::Storage { .. })
+    ));
+    assert_row(repo, &expected).await;
     assert_rotation_misses(repo, &expected).await;
     // Same-owner reuse and CAS misses remain conflicts, not missing families.
     for (old, new) in [("hash", "hash"), ("stale", "new")] {

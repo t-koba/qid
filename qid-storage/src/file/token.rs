@@ -39,14 +39,19 @@ impl TokenRepository for FileRepository {
     }
 
     async fn create_token_family(&self, family: &TokenFamily) -> QidResult<()> {
-        // This operation replaces an existing ID. Serialize it with immediate
-        // rotations so their rollback cannot overwrite the replacement's fields.
+        // Serialize creation with immediate rotations so a pending rollback
+        // completes before the duplicate check and no incumbent is replaced.
         let save_guard = if self.flush_mode == FileFlushMode::Immediate {
             Some(self.save_lock.lock().await)
         } else {
             None
         };
         let mut store = self.store.write().await;
+        if store.token_families.contains_key(&family.id) {
+            return Err(QidError::Storage {
+                message: format!("duplicate token family {}", family.id),
+            });
+        }
         store
             .token_families
             .insert(family.id.clone(), family.clone());

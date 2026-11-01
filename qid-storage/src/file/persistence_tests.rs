@@ -369,7 +369,7 @@ async fn failed_rotation_cannot_leak_into_another_save() {
 }
 
 #[tokio::test]
-async fn same_id_replacement_waits_for_rotation_rollback() {
+async fn same_id_creation_refuses_after_rotation_rollback() {
     let (file, repo) = TestFile::new().await;
     repo.create_token_family(&family("same", "old", None))
         .await
@@ -390,18 +390,19 @@ async fn same_id_replacement_waits_for_rotation_rollback() {
         resume.send(()).unwrap();
         assert!(complete(rotation).await.is_err());
         assert_family(&repo, "same", "old", None).await;
-        complete(create).await.unwrap();
+        assert!(matches!(
+            complete(create).await,
+            Err(QidError::Storage { .. })
+        ));
     }
-    assert_family(&repo, "same", "replacement", Some(900)).await;
-    // Rotation must validate against the replacement, not stale pre-lock state.
-    assert!(
-        repo.update_token_family_refresh_hash("same", "test", "old", "stale", 400)
-            .await
-            .is_err()
-    );
+    assert_family(&repo, "same", "old", None).await;
+    // The refused creation leaves the incumbent usable for a real rotation.
+    repo.update_token_family_refresh_hash("same", "test", "old", "next", 400)
+        .await
+        .unwrap();
     drop(repo);
     let reopened = file.reopen().await;
-    assert_family(&reopened, "same", "replacement", Some(900)).await;
+    assert_family(&reopened, "same", "next", Some(400)).await;
     assert_eq!(
         reopened
             .get_token_family("same")
@@ -409,7 +410,7 @@ async fn same_id_replacement_waits_for_rotation_rollback() {
             .unwrap()
             .unwrap()
             .user_id,
-        "replacement-user"
+        "user"
     );
 }
 
@@ -426,11 +427,11 @@ async fn interval_rotation_marks_dirty_and_survives_flush_failure() {
     {
         // Neither interval create nor rotation should wait for save_lock.
         let _guard = repo.save_lock.lock().await;
-        complete(repo.create_token_family(&family("interval", "replacement", Some(200))))
+        complete(repo.create_token_family(&family("interval-second", "replacement", Some(200))))
             .await
             .unwrap();
         complete(repo.update_token_family_refresh_hash(
-            "interval",
+            "interval-second",
             "test",
             "replacement",
             "new",
@@ -440,7 +441,7 @@ async fn interval_rotation_marks_dirty_and_survives_flush_failure() {
         .unwrap();
     }
     assert!(repo.dirty.load(Ordering::Acquire));
-    assert_family(&repo, "interval", "new", Some(300)).await;
+    assert_family(&repo, "interval-second", "new", Some(300)).await;
     {
         let flush = repo.flush();
         tokio::pin!(flush);
@@ -450,12 +451,12 @@ async fn interval_rotation_marks_dirty_and_survives_flush_failure() {
         assert!(complete(flush).await.is_err());
     }
     assert!(repo.dirty.load(Ordering::Acquire));
-    assert_family(&repo, "interval", "new", Some(300)).await;
+    assert_family(&repo, "interval-second", "new", Some(300)).await;
     complete(repo.flush()).await.unwrap();
     assert!(!repo.dirty.load(Ordering::Acquire));
     drop(repo);
     let reopened = file.reopen().await;
-    assert_family(&reopened, "interval", "new", Some(300)).await;
+    assert_family(&reopened, "interval-second", "new", Some(300)).await;
 }
 
 fn reset_credential(hash: &str) -> PasswordCredential {

@@ -8,7 +8,6 @@ thread_local! {
 #[derive(Clone, Copy)]
 enum RotationAction {
     Rotate,
-    ReplaceRealm,
     Missing,
 }
 
@@ -34,12 +33,6 @@ impl<R: TokenRepository> ObservedRotation<'_, R> {
             })
         });
         match action {
-            Some(RotationAction::ReplaceRealm) => {
-                // Deterministically replace ownership after the grant's pre-read.
-                let mut replacement = self.0.get_token_family(id).await?.unwrap();
-                replacement.realm_id = "other".into();
-                self.0.create_token_family(&replacement).await?;
-            }
             Some(RotationAction::Missing) => {
                 // Inject disappearance at the storage boundary; backend contracts
                 // independently prove actual missing rows return this, not Conflict.
@@ -57,11 +50,7 @@ impl<R: TokenRepository> ObservedRotation<'_, R> {
 
 #[tokio::test]
 async fn refresh_rotation_observes_validated_client_realm_and_does_not_revoke_on_not_found() {
-    for action in [
-        RotationAction::Rotate,
-        RotationAction::ReplaceRealm,
-        RotationAction::Missing,
-    ] {
+    for action in [RotationAction::Rotate, RotationAction::Missing] {
         let now = util::now_seconds();
         let mut config = test_helpers::test_config();
         let mut second = config.realms[0].clone();
@@ -110,15 +99,12 @@ async fn refresh_rotation_observes_validated_client_realm_and_does_not_revoke_on
                 assert_ne!(stored.current_refresh_hash, expected.current_refresh_hash);
                 expected.current_refresh_hash = stored.current_refresh_hash.clone();
             }
-            RotationAction::ReplaceRealm | RotationAction::Missing => {
+            RotationAction::Missing => {
                 assert!(
                     matches!(result, Err(QidError::Unauthorized { ref message })
                     if message == "invalid refresh token"),
                     "{result:?}"
                 );
-                if matches!(action, RotationAction::ReplaceRealm) {
-                    expected.realm_id = "other".into();
-                }
                 // The Missing case retains the same-realm family, so its full-row
                 // comparison below also catches accidental reuse revocation.
             }

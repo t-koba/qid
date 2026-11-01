@@ -9,9 +9,9 @@ thread_local! {
 #[derive(Clone, Copy)]
 enum AuthCodeAction {
     Consume,
-    ReplaceRealm,
-    ReplaceClient,
-    ReplaceUser,
+    StaleRealm,
+    StaleClient,
+    StaleUser,
     ReturnNotFound,
 }
 
@@ -35,37 +35,31 @@ impl<R: TokenRepository> ObservedAuthCode<'_, R> {
             })
         });
         match action {
-            Some(AuthCodeAction::ReplaceRealm) => {
-                // Deterministically replace ownership after the grant's pre-read.
-                let mut replacement =
-                    self.0.get_authorization_code(&code.code_hash).await?.unwrap();
-                replacement.realm_id = "other-realm".into();
-                self.0.create_authorization_code(&replacement).await?;
-            }
-            Some(AuthCodeAction::ReplaceClient) => {
-                // Deterministically replace ownership after the grant's pre-read.
-                let mut replacement =
-                    self.0.get_authorization_code(&code.code_hash).await?.unwrap();
-                replacement.client_id = "other-client".into();
-                self.0.create_authorization_code(&replacement).await?;
-            }
-            Some(AuthCodeAction::ReplaceUser) => {
-                // Deterministically replace ownership after the grant's pre-read.
-                let mut replacement =
-                    self.0.get_authorization_code(&code.code_hash).await?.unwrap();
-                replacement.user_id = "other-user".into();
-                self.0.create_authorization_code(&replacement).await?;
-            }
             Some(AuthCodeAction::ReturnNotFound) => {
                 // Simulate the storage returning NotFound; the backend contract below
                 // independently proves missing rows return NotFound, not Conflict.
-                return Err(QidError::NotFound {
+                Err(QidError::NotFound {
                     resource: format!("authorization code {}", code.code_hash),
-                });
+                })
             }
-            _ => {}
+            Some(
+                action @ (AuthCodeAction::StaleRealm
+                | AuthCodeAction::StaleClient
+                | AuthCodeAction::StaleUser),
+            ) => {
+                // The incumbent keeps its owner; a stale owner object must be refused
+                // without being marked used.
+                let mut replacement =
+                    self.0.get_authorization_code(&code.code_hash).await?.unwrap();
+                match action {
+                    AuthCodeAction::StaleRealm => replacement.realm_id = "other-realm".into(),
+                    AuthCodeAction::StaleClient => replacement.client_id = "other-client".into(),
+                    _ => replacement.user_id = "other-user".into(),
+                }
+                self.0.mark_authorization_code_used(&replacement).await
+            }
+            _ => self.0.mark_authorization_code_used(code).await,
         }
-        self.0.mark_authorization_code_used(code).await
     }
 }
 
@@ -73,9 +67,9 @@ impl<R: TokenRepository> ObservedAuthCode<'_, R> {
 async fn authorization_code_grant_observes_validated_owner_and_rejects_stale_writes() {
     for action in [
         AuthCodeAction::Consume,
-        AuthCodeAction::ReplaceRealm,
-        AuthCodeAction::ReplaceClient,
-        AuthCodeAction::ReplaceUser,
+        AuthCodeAction::StaleRealm,
+        AuthCodeAction::StaleClient,
+        AuthCodeAction::StaleUser,
         AuthCodeAction::ReturnNotFound,
     ] {
         let (state, repo) = setup_state().await;
@@ -146,20 +140,14 @@ async fn authorization_code_grant_observes_validated_owner_and_rejects_stale_wri
                 assert!(response.refresh_token.is_some());
                 expected.used = true;
             }
-            AuthCodeAction::ReplaceRealm
-            | AuthCodeAction::ReplaceClient
-            | AuthCodeAction::ReplaceUser => {
+            AuthCodeAction::StaleRealm
+            | AuthCodeAction::StaleClient
+            | AuthCodeAction::StaleUser => {
                 assert!(
                     matches!(result, Err(QidError::NotFound { .. })),
                     "stale owner must not issue tokens, got {result:?}"
                 );
-                match action {
-                    AuthCodeAction::ReplaceRealm => expected.realm_id = "other-realm".into(),
-                    AuthCodeAction::ReplaceClient => expected.client_id = "other-client".into(),
-                    _ => expected.user_id = "other-user".into(),
-                }
-                // The foreign replacement keeps `used: false`: a stale owner
-                // mismatch must not mark the changed row.
+                // The incumbent keeps its original owner and `used: false`.
             }
             AuthCodeAction::ReturnNotFound => {
                 assert!(

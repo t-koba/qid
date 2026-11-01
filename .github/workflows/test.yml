@@ -140,7 +140,6 @@ jobs:
   fuzz-smoke:
     name: Fuzz Smoke
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1

@@ -44,6 +44,20 @@ realms:
         grant_types:
           - authorization_code
           - refresh_token
+      - client_id: "vc-api"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "vc-api-signing"
+              use: sig
+              alg: ES256
+              x: "ccccccccccccccccccccccccccccccccccccccccccc"
+              y: "ddddddddddddddddddddddddddddddddddddddddddd"
+        grant_types:
+          - client_credentials
     protocols:
       vc:
         oid4vci: true
@@ -95,6 +109,8 @@ realms:
             resources:
               - "https://id.example.com/vc/v1"
             scopes:
+              - openid
+              - qid_identity
               - vc.issue
               - vc.verify
             introspection_client_ids:

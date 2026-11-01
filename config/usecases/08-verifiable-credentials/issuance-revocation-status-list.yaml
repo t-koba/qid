@@ -91,6 +91,8 @@ realms:
             resources:
               - "https://id.example.com/vc/v1/status"
             scopes:
+              - openid
+              - qid_identity
               - vc.issue
               - vc.revoke
               - vc.verify

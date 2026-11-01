@@ -321,7 +321,24 @@ async fn run(sql: bool) {
     ));
     assert_eq!(consume(&repo, &pending, 150).await, Some(pending));
     close(repo).await;
-    std::fs::remove_dir_all(dir).unwrap();
+    remove_fixture_dir(&dir).await;
+}
+
+/// Windows can briefly keep a closed SQLite handle busy while another process
+/// inspects the fixture files. Retry for a bounded time, then report the
+/// directory so a persistent leak still fails the test.
+async fn remove_fixture_dir(dir: &std::path::Path) {
+    for attempt in 0..40 {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(_) if cfg!(windows) && attempt < 39 => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!(
+                "failed to remove fixture directory {dir:?} after {attempt} retries: {error}"
+            ),
+        }
+    }
 }
 
 #[tokio::test]

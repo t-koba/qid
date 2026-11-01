@@ -14,7 +14,6 @@ rust-version.workspace = true
 default = []
 quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile"]
 radius-tls = ["dep:rustls", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:tokio-rustls"]
-tls-pok = ["dep:rustls", "dep:rustls-pki-types"]
 
 [dependencies]
 hkdf = { workspace = true }

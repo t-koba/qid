@@ -24,11 +24,8 @@ use sha2::Sha256;
 pub mod quic;
 
 pub mod capport;
-pub mod diameter;
-pub mod eap_handshake;
 pub mod radius_tls;
 pub mod server;
-pub mod tls_pok;
 
 type HmacSha256 = Hmac<Sha256>;
 

@@ -1193,7 +1193,7 @@ mod tests {
     }
 
     /// Differential consistency: NativePolicyEngine with default-deny and
-    /// no loaded bundle must produce Deny (same as Cedar/Rego defaults).
+    /// no loaded bundle must produce Deny.
     #[tokio::test]
     async fn test_default_deny_consistent_across_contexts() {
         let engine = NativePolicyEngine::new();

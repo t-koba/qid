@@ -64,7 +64,7 @@ flowchart LR
 | --- | --- |
 | `qid-core` | Canonical config, domain models, tenant/realm types, OAuth/JWT helpers, errors, runtime plan. |
 | `qid-storage` | Repository traits, file-backed JSON store, SQL store, migrations. |
-| `qid-crypto` | JWK/JWT, password hashing, TOTP/HOTP, AEAD, COSE/JWE/HPKE, PKI, keyrings, signer readiness. |
+| `qid-crypto` | JWK/JWT, password hashing, TOTP/HOTP, AEAD, JWE, PKI, keyrings, signer readiness. |
 | `qid-http` | Security headers, CORS, CSRF, HTTP Message Signatures, rate limiting. |
 | `qid-observability` | Logging, metrics, audit helpers, OpenMetrics/syslog helpers. |
 | `qid-diagnostics` | Config, profile, storage, ops, and network readiness checks. |
@@ -78,11 +78,11 @@ flowchart LR
 | `qid-federation` | Inbound OIDC/SAML/social broker, OpenID Federation discovery and trust-chain validation. |
 | `qid-resource` | Device registry, PAR resource endpoint, FedCM, CIAM, SPIFFE/workload identity routes. |
 | `qid-proxy` | Generic PEP decision/AuthZEN, PEP assertion, captive portal bridge. |
-| `qid-policy` | Native policy engine plus Cedar/Rego integration and policy models. |
+| `qid-policy` | Native policy engine and policy models. |
 | `qid-risk` | Risk scoring and `/risk/v1/evaluate`. |
 | `qid-iga` | Entitlements, access packages, grants, JIT privilege, reviews, certifications, ReBAC, findings. |
 | `qid-vc` | Credential issuance, status and presentation verification with selective-disclosure, mdoc, HAIP and bitstring helpers. |
-| `qid-network` | RADIUS, RADIUS/TLS, EAP handshake, CAPPORT, Diameter/QUIC helpers. |
+| `qid-network` | RADIUS, RADIUS/TLS, EAP-TLS, CAPPORT, QUIC helpers. |
 | `qid-admin` | Admin REST API, tenant/SaaS objects, audit export/verification, key rotation planning, policy simulation. |
 | `qid-ops` | Backup/restore planning, cache keys, key rotation plans, cluster/cache operations. |
 | `qidd` | HTTP daemon and runtime assembly. |

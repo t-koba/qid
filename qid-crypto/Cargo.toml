@@ -12,9 +12,6 @@ rust-version.workspace = true
 
 [features]
 default = []
-acme = []
-hpke-rfc9180 = ["dep:hpke"]
-pqc = ["dep:ml-kem", "ml-kem/getrandom"]
 
 [dependencies]
 anyhow = { workspace = true }

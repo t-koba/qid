@@ -2,11 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aead;
-pub mod cose;
-pub mod ech;
 pub mod hotp;
-#[cfg(feature = "hpke-rfc9180")]
-pub mod hpke;
 pub mod jwe;
 pub mod jwk;
 pub mod jwt;
@@ -14,14 +10,8 @@ pub mod kdf;
 pub mod keyring;
 pub mod keystore;
 pub mod password;
-pub mod pkcs11;
 pub mod pki;
-pub mod pqc;
 pub mod totp;
-pub mod x25519;
-
-#[cfg(feature = "acme")]
-pub mod acme;
 
 pub use aead::{chacha20poly1305_decrypt, chacha20poly1305_encrypt};
 pub use jwk::{Jwk, JwkSet};

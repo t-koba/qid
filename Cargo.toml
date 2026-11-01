@@ -38,183 +38,22 @@ exclude = ["vendor/rustls"]
 
 # Product-source line limits; test code is reported separately and is not capped.
 # Inline #[cfg(test)] modules in mixed source files remain in source counts.
-# Headroom covers the configurable CAPPORT/QUIC wiring (server.paths.capport_details,
-# server.quic, qid-network listener split, per-realm gating).
-# Ratchet: 12 edge-PEP, 41 OAuth, 64 IGA tenant-context, 256 admin error-mapping,
-# and 6 OAuth token-audit, 7 DCR-context, 16 OAuth response-mapping, 95 session-cookie,
-# 29 session realm-resolution, 29 shared runtime-realm lookup, 45 lowercase-hex utility,
-# 17 session-config mapping, 9 session-cookie, 4 shared SHA-256-hex,
-# 1 MFA email-token utility, 24 audited-delete response lines, and
-# 12 shared JWK kid-selection lines, 52 browser-session context lines, and
-# 18 shared CIAM-provider predicate lines.
 [workspace.metadata.budget]
-# Raised from 103263 to 103500 to accommodate the queued correctness fixes:
-# the load-time directory provider checks, the LDAP paging-control check, the
-# configuration error messages, the CSV decoder and the object-only body
-# guard. Raised again to 103600 for the storage-ownership typed contract
-# (OwnershipContract plus the user and CIAM consent grant families) and the
-# symmetric duplicate-email update fix. Device registration added 23 source
-# lines and FedCM identity added 20: measured use rose from 103550 to 103593,
-# leaving 7 lines under that cap. The next service-account slice added 14,
-# reaching 103607, so the old cap was insufficient for the staged migrations.
-# The 103800 total was a 200-line ceiling, not a target. The realm ownership
-# fix adds 18 measured product-source lines; six came from existing headroom,
-# so the cap rises by 12 to 103812, exactly the new source count. The typed
-# create-only map operation for policy bundles, users and clients, policy SQL
-# refusal and repository contract add 51 net product-source lines against that
-# baseline (xtask budget: 103812 -> 103863), so the cap rises by exactly 51.
-# The stable client-update binding guard and static SQL contract add 69 lines
-# (xtask budget: 103863 -> 103932), so the cap rises by exactly 69.
-# Workload-certificate revocation validation and its documented trait contract
-# add 32 measured product lines (103932 -> 103964), so the cap rises exactly.
-# SCIM user create-only conflict safety (typed file identity, static SQL
-# conflict mapping and trait contract) adds 37 measured product lines
-# (103964 -> 104001), so the cap rises by exactly 37.
-# SCIM group create-only conflict safety (typed file identity, static SQL
-# conflict mapping and trait contract) adds 37 measured product lines
-# (104001 -> 104038), so the cap rises by exactly 37.
-# Owner-specific CIAM challenge consume outcomes and trait contract add 18
-# measured product lines (104038 -> 104056), so the cap rises by exactly 18.
-# Password-reset token consume outcomes and trait contract add 16 measured
-# product lines (104056 -> 104072), so the cap rises by exactly 16.
-# ReBAC tuple identity refusal across file and SQL and its trait contract add
-# 17 measured product lines (104072 -> 104089); the shared test is uncapped.
-# PAR request create-only identity reuses the file insert primitive and adds a
-# SQL refusal plus trait contract (net +13: 104089 -> 104102); tests are uncapped.
-# Device authorization grant create-only identity (typed file identity with
-# explicit global user-code scope, static SQL refusal and contract) adds 17
-# measured product lines (104102 -> 104119); the shared test is uncapped.
-# Backchannel authentication grant create-only identity (typed file identity
-# with no secondary identity, static SQL refusal and contract) adds 14
-# measured product lines (104119 -> 104133); the shared test is uncapped.
-# The RFC 9126 per-client PAR flag (client metadata field, DCR
-# request/response/update plumbing, SQL row conversion with INSERT/UPDATE
-# binds, file/SQL persistence via serde default plus migration, and the
-# authorization-endpoint client check beside the realm-wide setting) adds 33
-# measured product lines (104133 -> 104166); the DCR, persistence and
-# endpoint tests are uncapped. DCR also rejects the metadata on create/update
-# when its realm has PAR disabled using RFC invalid_client_metadata (18 lines,
-# measured 104166 -> 104184); tests remain uncapped.
-# The SMTP transport, feature-gated CLI path, and secure provider setup add 268
-# measured source lines after consolidation (104184 -> 104452; qid-worker
-# 5200 -> 5467); tests remain uncapped.
-# The CSV HR provider slice adds 416 measured product lines after consolidation
-# (104452 -> 104868): the csv source parser with RFC 4180 quoting and bounds
-# (qid-directory 3286 -> 3521), the csv provider validation with LDAP-only
-# rejection (qid-core 9957 -> 10063), and the worker dispatch with a shared
-# directory-sync audit helper (qid-worker 5467 -> 5542); tests remain uncapped.
-# CSV parser hardening adds 43 measured product lines (104868 -> 104911):
-# bounded reads, incremental records, strict quote states and timeout validation;
-# qid-directory 3521 -> 3553, qid-core 10063 -> 10074, qid-worker unchanged.
-# CSV now rejects the LDAP snapshot-only deactivation setting instead of
-# silently ignoring it. Preserving LDAP/AD defaults and the effective admin
-# response adds 16 measured source lines (104911 -> 104927).
-# Ordered inbound HR webhooks add 766 measured product source lines
-# (104927 -> 105693): strict bounded authenticated route and planning
-# (qid-directory 3559 -> 3778), provider validation and limits
-# (qid-core 10084 -> 10152), and atomic file/SQL user+receipt commits
-# (qid-storage 12469 -> 12948). Worker dispatch changes no source count;
-# all existing per-crate limits still pass; tests remain uncapped.
-# Webhook sync/status refusals avoid directing an inbound-only provider to the
-# periodic worker, adding 12 measured product lines (105693 -> 105705;
-# qid-directory 3778 -> 3790); tests remain uncapped.
-# Configured OTLP tracing through the daemon subscriber adds 224 measured
-# product lines (105705 -> 105929): validated opt-in configuration, one
-# composed subscriber, SDK/exporter setup and explicit async shutdown.
-# All per-crate limits still pass; collector and configuration tests are uncapped.
-# Realm password pepper restoration adds 525 counted source lines
-# (105929 -> 106454): validated secret references, one resolved native
-# Argon2 credential owner, startup wiring and all creation/reset/login paths.
-# This includes inline unit tests under the existing budget classifier;
-# separately classified integration tests remain uncapped. The crypto crate
-# reaches 5972 lines, requiring 372 above its old 5600 cap; no other crate
-# cap changes and no credential schema, SQL or dependency changes are needed.
-# Advisory passkey preference restores a promised capability in the existing
-# OIDC challenge and realm policy: measured net +29, with no parallel service.
-# Unambiguous registration CBOR replaces the old AAGUID extractor: measured
-# net +25 source lines, sharing one map validator for object and statement.
-# Required packed enrollment adds 432 measured source lines for typed inline
-# metadata and service-owned path/profile/signature enforcement; no extra
-# WebAuthn service, metadata fetcher or custom path builder is introduced.
-# Persisted CIAM verification attempts add 25 measured source lines
-# (106940 -> 106965): one serde-compatible counter and one atomic storage
-# operation implemented by the required file and SQL backends.
-# Configured notification delivery and session-bound CIAM email verification
-# add 537 measured product-source lines (106965 -> 107502), including the
-# core contract/configuration, handler, dual-backend atomic confirmation,
-# worker transport and daemon composition. The measured per-crate increases
-# are qid-storage 12971 -> 13147 and qid-worker 5542 -> 5571; other crates
-# remain within their existing caps. Contract tests are uncapped.
-# Generic password-reset issuance replaces the 501 stub with realm-scoped
-# account resolution, hash-only persistence, background delivery and a redacted
-# acceptance audit (+125 measured product-source lines, 107502 -> 107627).
-# The blocking-transport integration test demonstrates the generic response is
-# independent of provider latency; qid-resource rises 3734 -> 3859 within its
-# existing limit. Tests remain uncapped.
-# Public reset abuse controls add 189 measured source lines (107627 -> 107816):
-# server-owned realm TTL/budget and validated process delivery capacity, atomic
-# rolling issuance accounting in both backends (no migration), and generic
-# suppression before background send. qid-core 10689 -> 10746, qid-storage
-# 13147 -> 13265, qid-resource 3859 -> 3868, qid-worker 5571 -> 5572 and
-# qidd 2839 -> 2843 (existing inline test constructors). Integration/config
-# regressions add 431 uncapped test lines; lint/test gates are unchanged.
-# Delivered email magic-link login adds 880 measured counted source lines
-# (107816 -> 108696): realm policy/discovery, session routes and confirmation
-# page, shared delivery auditing, and durable bounded challenge admission and
-# redemption in both storage backends. qid-storage grows 13265 -> 13603; all
-# other crates remain within their existing per-crate caps. Focused storage,
-# session and OIDC tests complete in about 3.1 seconds after compilation.
-# Inbound OIDC audience trust adds 153 measured counted source lines (108696 ->
-# 108849): per-provider audience policy, validation and callback wiring; all
-# existing per-crate caps still hold. Signed verifier regressions cover the
-# local audience, an untrusted extra, and explicitly trusted multi-audience.
-# Separating magic-link browser binding from token attempts adds 54 measured
-# source lines (108849 -> 108903), including 38 in qid-storage (13603 -> 13641)
-# for versioned proof digests and atomic no-attempt-on-binding-mismatch across
-# file and SQL. Cross-backend and delivered-link OIDC resume regressions cover
-# wrong-browser exhaustion, one-use redemption, and preserved authorization.
-# The RUSTSEC-2026-0387 fix upgrades P-256 to 0.14 and needs 9 additional
-# qid-crypto source lines for the shared fallible ES256 key-generation path
-# (5972 -> 5981; workspace total 108903 -> 108912).
-# The shared realm/account TOTP attempt limiter and route wiring add 280
-# measured product source lines (workspace total 108912 -> 109192).
-# Per-registration PEP failure policy adds 60 measured product-source lines
-# (109192 -> 109252): only post-auth internal/storage fallback with audit,
-# noncacheable response, and strict configuration validation; tests are uncapped.
-# The since-removed directory-sync cadence contract added 9 measured product-source
-# lines (109252 -> 109261) for the field policy and positive-interval validation.
-# Realm VC key isolation, HTTPS issuer binding, OID4VCI path-correct metadata,
-# and separate deployment signing add 266 measured source lines (109261 ->
-# 109527); the additions preserve issuer trust and deployment token keys.
-# Operator-approved ceilings permit review of the complete push-MFA candidate.
-# The realm-authoritative FedCM email correction adds 14 measured source lines
-# (113701 -> 113715); per-crate caps, counting rules, and gates are unchanged.
-# Approval does not constitute candidate acceptance or publication.
-# Session-bound email-verification issuance admission reuses the existing
-# atomic email challenge path and delivery semaphore; measured product
-# source rises 113961 -> 113985 (+24), so the 9 existing lines of
-# headroom are consumed and the total cap rises by exactly 15.
-# Configured/persisted realm-tenant binding adds 34 measured product-source
-# lines (113978 -> 114012); it uses the 7 lines left under the prior cap, so
-# the total limit rises by 27 only. Per-crate caps and the source classifier
-# remain unchanged; the adjustment covers only this scoped prerequisite.
-# Deployment-local Admin grants add 119 measured product-source lines
-# (114011 -> 114130); per-crate limits and the source classifier remain
-# unchanged. Stored AdminElevation provenance uses five source lines. Validating
-# its source session at all four protected consumers adds 385 source lines;
-# only the total ceiling changes, with per-crate limits/classifier intact.
-total = 114520
+# Operator-set capability-derived cap. It only falls for what qid already
+# does; an accepted new capability raises it by its measured size in the same
+# change. Per-crate caps are lowered to measured size as each crate is touched.
+total = 110720
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
-# Headroom for QUIC bind/serve startup and shutdown code/tests in qid-network.
-qid-network = 4500
+qid-network = 2079
 qid-admin = 6000
 qid-core = 14000
-qid-crypto = 5981
+qid-crypto = 4253
 qid-storage = 15990
 qid-session = 4806
 qid-oidc = 6000
+qid-policy = 2348
 qid-oauth = 12000
 qid-saml = 7200
 qid-directory = 4000

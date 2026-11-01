@@ -78,6 +78,8 @@ async fn assert_session_scope(repo: &impl Repository) {
     assert_row(repo, &expected).await;
     assert!(!repo.revoke_session(&expected.id, Some("b")).await.unwrap());
     assert_row(repo, &expected).await;
+    assert!(!repo.revoke_session(&expected.id, None).await.unwrap());
+    assert_row(repo, &expected).await;
 
     // None is not an implicit realm: it can revoke a live realm-B row too.
     expected.id = "session-b-unscoped".into();
@@ -85,6 +87,8 @@ async fn assert_session_scope(repo: &impl Repository) {
     repo.create_session(&expected).await.unwrap();
     assert!(repo.revoke_session(&expected.id, None).await.unwrap());
     expected.revoked = true;
+    assert_row(repo, &expected).await;
+    assert!(!repo.revoke_session(&expected.id, None).await.unwrap());
     assert_row(repo, &expected).await;
 }
 
@@ -96,10 +100,14 @@ async fn assert_row(repo: &impl Repository, expected: &Session) {
 }
 
 #[tokio::test]
-async fn scoped_session_writes_file_and_sql() {
+async fn scoped_session_writes_sql() {
     let sql = support::sql_repo().await;
     assert_session_scope(&sql).await;
     sql.close().await;
+}
+
+#[tokio::test]
+async fn scoped_session_writes_file() {
     let file = support::file_repo("session-scope").await;
     assert_session_scope(&file).await;
 }

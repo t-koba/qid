@@ -3,16 +3,6 @@ use qid_core::{
     models::{AuthorizationCode, CiamConsentGrant, CiamIdentityLink, Session, TokenFamily},
 };
 
-/// Validate that a session can be revoked (not already revoked).
-pub fn validate_session_revocation(session: &Session) -> QidResult<()> {
-    if session.revoked {
-        return Err(QidError::BadRequest {
-            message: format!("session {} is already revoked", session.id),
-        });
-    }
-    Ok(())
-}
-
 /// Validate that a session can be created (no duplicate id).
 pub fn validate_session_creation(existing: Option<&Session>) -> QidResult<()> {
     if let Some(s) = existing {

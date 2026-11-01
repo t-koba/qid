@@ -66,7 +66,7 @@ impl SessionRepository for SqlRepository {
 
     async fn revoke_session(&self, id: &str, realm_scope: Option<&str>) -> QidResult<bool> {
         let rows = sqlx::query(
-            "UPDATE sessions SET revoked = 1 WHERE id = ? AND (? IS NULL OR (realm_id = ? AND revoked = 0))",
+            "UPDATE sessions SET revoked = 1 WHERE id = ? AND revoked = 0 AND (? IS NULL OR realm_id = ?)",
         )
         .bind(id)
         .bind(realm_scope)

@@ -45,10 +45,9 @@ impl SessionRepository for FileRepository {
         else {
             return Ok(false);
         };
-        if session.revoked && realm_scope.is_some() {
+        if session.revoked {
             return Ok(false);
         }
-        crate::domain::validate_session_revocation(session)?;
         session.revoked = true;
         drop(store);
         self.save().await?;

@@ -2640,7 +2640,6 @@ dependencies = [
  "async-trait",
  "metrics",
  "qid-core",
- "reqwest",
  "serde",
  "serde_json",
  "tracing",

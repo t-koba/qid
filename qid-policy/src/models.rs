@@ -42,18 +42,15 @@ impl Decision {
         }
     }
 
-    /// The class of the decision in a decision cache. A positive decision is
-    /// one the request proceeds on, a negative one the product refuses or
-    /// defers.
-    ///
-    /// The class decides how long the decision cache may keep the decision:
-    /// a PEP registration names a lifetime for each class, and a deployment
-    /// that names none keeps the product defaults.
+    /// A positive decision is a stable or held outcome (allow, audit-only,
+    /// quarantine), not a grant. Quarantine is still a wire `deny` with a
+    /// 403 local response; the registration or product default sets the TTL.
     pub fn cache_class(&self) -> DecisionCacheClass {
         match self {
-            Decision::Allow | Decision::AuditOnly => DecisionCacheClass::Positive,
+            Decision::Allow | Decision::AuditOnly | Decision::Quarantine => {
+                DecisionCacheClass::Positive
+            }
             Decision::Deny
-            | Decision::Quarantine
             | Decision::StepUp
             | Decision::ConsentRequired
             | Decision::LocalResponse

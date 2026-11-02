@@ -1165,3 +1165,19 @@ async fn missing_mandatory_capability_stays_fail_closed_with_opt_in_allow() {
     );
     std::fs::remove_file(path).ok();
 }
+
+#[test]
+fn quarantine_is_a_stable_positive_class_but_a_deny_at_the_wire() {
+    let cache = PepDecisionCacheConfig::default();
+    assert_eq!(
+        Decision::Quarantine.cache_class(),
+        DecisionCacheClass::Positive
+    );
+    assert_eq!(cache.ttl_ms(DecisionCacheClass::Positive), 30_000);
+    assert_eq!(cache.ttl_ms(Decision::Deny.cache_class()), 5_000);
+    assert_eq!(pep_decision_wire_decision(&Decision::Quarantine), "deny");
+    assert_eq!(audit_severity(&Decision::Quarantine), "normal");
+    let payload = qid_local_response_payload(&Decision::Quarantine, "decision-1");
+    assert_eq!(payload["status"], 403);
+    assert_eq!(payload["body"]["error"], "quarantine_required");
+}

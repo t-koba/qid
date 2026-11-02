@@ -698,8 +698,9 @@ impl Default for PepDecisionCacheConfig {
     }
 }
 
-/// The class of a decision in the decision cache. A positive decision is one
-/// the request proceeds on, a negative one the product refuses or defers.
+/// The class of a decision in the decision cache. A positive decision is a
+/// stable or held outcome (allow, audit-only, quarantine) and is not
+/// necessarily a grant; a negative one is refused or deferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionCacheClass {
     Positive,
@@ -708,9 +709,9 @@ pub enum DecisionCacheClass {
 
 impl PepDecisionCacheConfig {
     /// The lifetime, in milliseconds, the decision cache keeps a decision of
-    /// the given class: a positive decision for `positive_ttl_seconds`, a
-    /// negative one for `negative_ttl_seconds`. A lifetime of zero means the
-    /// decision is not cached at all.
+    /// the given class: a stable or held decision for `positive_ttl_seconds`,
+    /// a refused or deferred one for `negative_ttl_seconds`. A lifetime of
+    /// zero means the decision is not cached at all.
     pub fn ttl_ms(&self, class: DecisionCacheClass) -> u64 {
         let seconds = match class {
             DecisionCacheClass::Positive => self.positive_ttl_seconds,

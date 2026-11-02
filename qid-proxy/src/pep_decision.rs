@@ -1057,7 +1057,9 @@ async fn do_check<R: Repository>(
         .or(risk.cache_bypass)
         .unwrap_or(false);
     // The registration names how long the decision cache may keep a decision
-    // of each class, so a refusal does not live as long as an open decision.
+    // of each class: a stable or held outcome, including quarantine, uses the
+    // positive lifetime while a refusal or deferral uses the negative one.
+    // Quarantine is still reported to the PEP as `deny`.
     let cache_config = pep_decision_cache_config(state, &adapter_realm_id, &req.proxy.proxy_name);
     let ttl_ms = cache_config.ttl_ms(decision_kind.cache_class());
     let response = PepDecisionResponse {

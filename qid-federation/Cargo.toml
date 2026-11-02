@@ -24,9 +24,6 @@ tracing = { workspace = true }
 time = { workspace = true }
 ulid = { workspace = true }
 jsonwebtoken = { workspace = true }
-aes = { workspace = true }
-sha1 = { workspace = true }
-hmac = { workspace = true }
 roxmltree = { workspace = true }
 
 [dev-dependencies]

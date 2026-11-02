@@ -302,7 +302,7 @@ only the `client_id`. After signature/issuer/expiry validation every `aud`
 member must equal the expected audience or a `trusted_audiences` entry, so a
 token that pairs the `client_id` with an unlisted audience is rejected.
 Entries must be nonempty and unique, and malformed `aud` values fail closed.
-Setting this option on SAML, LDAP/AD, or Kerberos providers is a configuration
+Setting this option on SAML or LDAP/AD providers is a configuration
 error because those providers do not verify OIDC ID tokens.
 
 

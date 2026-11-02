@@ -3598,12 +3598,10 @@ dependencies = [
 name = "qid-federation"
 version = "0.1.0"
 dependencies = [
- "aes 0.8.4",
  "axum",
  "base64 0.22.1",
  "bergshamra-dsig",
  "bergshamra-keys",
- "hmac 0.12.1",
  "http-body-util",
  "jsonwebtoken",
  "qid-core",
@@ -3614,7 +3612,6 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "sha1 0.10.7",
  "time",
  "tokio",
  "tower 0.5.3",

@@ -134,8 +134,7 @@ impl PasswordCredentials for CredentialContext {
             .as_ref()
             .and_then(|parsed| parsed.params.get("keyid"))
         else {
-            let verification =
-                verify_password_credential(plaintext, credential, None, Some(&self.cost));
+            let verification = verify_password_credential(plaintext, credential, Some(&self.cost));
             return (
                 verification.valid,
                 verification.valid && (verification.rehash_required || self.active.is_some()),
@@ -277,7 +276,7 @@ mod tests {
         let disabled = CredentialContext::unpeppered(Argon2idParams::new(8, 1, 1));
         assert_eq!(disabled.verify("password", &credential), (false, false));
         assert!(!verify_password("password", &credential.hash).unwrap());
-        assert!(!verify_password_credential("password", &credential, None, None).valid);
+        assert!(!verify_password_credential("password", &credential, None).valid);
         for value in ["!", "", "dG9vLWxvbmcta2V5", "a2V5Mg"] {
             let malformed = PasswordCredential {
                 hash: credential
@@ -286,7 +285,7 @@ mod tests {
                 ..credential.clone()
             };
             assert_eq!(owner.verify("password", &malformed), (false, false));
-            assert!(!verify_password_credential("password", &malformed, None, None).valid);
+            assert!(!verify_password_credential("password", &malformed, None).valid);
         }
     }
 

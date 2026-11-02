@@ -7,7 +7,7 @@ use argon2::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use qid_core::{config::Argon2idCostConfig, models::PasswordCredential};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
 /// The algorithm the product creates password credentials with. It is the
@@ -73,38 +73,6 @@ impl Argon2idParams {
         )
         .map_err(|e| anyhow::anyhow!("invalid Argon2id parameters: {e}"))?;
         Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BreachedPasswordSet {
-    #[serde(default)]
-    sha256_hex: std::collections::BTreeSet<String>,
-}
-
-impl BreachedPasswordSet {
-    pub fn from_sha256_hex<I, S>(digests: I) -> anyhow::Result<Self>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let mut sha256_hex = std::collections::BTreeSet::new();
-        for digest in digests {
-            let digest = digest.into();
-            if !is_lower_hex_sha256(&digest) {
-                anyhow::bail!("breached password digest must be lowercase SHA-256 hex");
-            }
-            sha256_hex.insert(digest);
-        }
-        Ok(Self { sha256_hex })
-    }
-
-    pub fn contains_password(&self, plaintext: &str) -> bool {
-        self.sha256_hex.contains(&sha256_hex(plaintext.as_bytes()))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sha256_hex.is_empty()
     }
 }
 
@@ -200,16 +168,8 @@ pub(crate) fn stored_argon2id_cost(encoded_hash: &str) -> Option<(u32, u32, u32)
 pub fn verify_password_credential(
     plaintext: &str,
     credential: &PasswordCredential,
-    breached_passwords: Option<&BreachedPasswordSet>,
     expected_cost: Option<&Argon2idParams>,
 ) -> PasswordVerification {
-    if breached_passwords.is_some_and(|breached| breached.contains_password(plaintext)) {
-        return PasswordVerification {
-            valid: false,
-            rehash_required: false,
-            algorithm: credential.algorithm.clone(),
-        };
-    }
     if PasswordHash::new(&credential.hash).is_ok_and(|parsed| parsed.params.get("keyid").is_some())
     {
         return PasswordVerification {
@@ -414,18 +374,6 @@ fn normalize_algorithm(algorithm: &str) -> String {
     algorithm.trim().to_ascii_lowercase().replace('_', "-")
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn is_lower_hex_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,29 +409,12 @@ mod tests {
             algorithm: PBKDF2_SHA256_ALGORITHM.to_string(),
         };
 
-        let verified = verify_password_credential(password, &credential, None, None);
+        let verified = verify_password_credential(password, &credential, None);
 
         assert!(verified.valid);
         assert!(verified.rehash_required);
         assert_eq!(verified.algorithm, PBKDF2_SHA256_ALGORITHM);
-        assert!(!verify_password_credential("wrong", &credential, None, None).valid);
-    }
-
-    #[test]
-    fn breached_password_set_rejects_known_password_before_hash_verification() {
-        let password = "breached-password";
-        let credential = PasswordCredential {
-            user_id: "user-1".to_string(),
-            hash: hash_password(password).unwrap(),
-            algorithm: ARGON2ID_ALGORITHM.to_string(),
-        };
-        let breached = BreachedPasswordSet::from_sha256_hex([sha256_hex(password.as_bytes())])
-            .expect("breach set");
-
-        let verified = verify_password_credential(password, &credential, Some(&breached), None);
-
-        assert!(!verified.valid);
-        assert!(!verified.rehash_required);
+        assert!(!verify_password_credential("wrong", &credential, None).valid);
     }
 
     #[test]
@@ -493,7 +424,7 @@ mod tests {
             hash: "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             algorithm: BCRYPT_ALGORITHM.to_string(),
         };
-        let verified = verify_password_credential("password", &credential, None, None);
+        let verified = verify_password_credential("password", &credential, None);
         assert!(!verified.valid);
         assert!(!verified.rehash_required);
         let unknown = PasswordCredential {
@@ -501,8 +432,8 @@ mod tests {
             hash: "not-a-hash".to_string(),
             algorithm: "unknown-algorithm".to_string(),
         };
-        assert!(!verify_password_credential("password", &unknown, None, None).valid);
-        assert!(!verify_password_credential("wrong", &unknown, None, None).valid);
+        assert!(!verify_password_credential("password", &unknown, None).valid);
+        assert!(!verify_password_credential("wrong", &unknown, None).valid);
     }
 
     #[test]
@@ -515,19 +446,15 @@ mod tests {
             algorithm: ARGON2ID_ALGORITHM.to_string(),
         };
 
-        let verified = verify_password_credential(
-            password,
-            &credential,
-            None,
-            Some(&Argon2idParams::new(16, 2, 1)),
-        );
+        let verified =
+            verify_password_credential(password, &credential, Some(&Argon2idParams::new(16, 2, 1)));
         assert!(verified.valid);
         assert!(
             verified.rehash_required,
             "a credential hashed at another cost is rehashed"
         );
 
-        let verified = verify_password_credential(password, &credential, None, Some(&cheap));
+        let verified = verify_password_credential(password, &credential, Some(&cheap));
         assert!(verified.valid);
         assert!(
             !verified.rehash_required,

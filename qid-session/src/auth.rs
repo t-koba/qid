@@ -7,11 +7,9 @@ use qid_core::models::{PasswordCredential, User};
 use qid_core::state::PasswordCredentials;
 use qid_core::tenant::RealmId;
 use qid_core::throttle::FailureBudget;
-use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, BreachedPasswordSet, CredentialContext};
+use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, CredentialContext};
 use qid_storage::prelude::*;
 use std::sync::Arc;
-
-use crate::hibp::HibpClient;
 
 /// Authentication result.
 #[derive(Debug, Clone)]
@@ -81,8 +79,6 @@ impl PasswordPolicy {
 /// Authenticator performs credential verification.
 pub struct Authenticator<R: Repository> {
     repo: Arc<R>,
-    breached_passwords: BreachedPasswordSet,
-    hibp_client: Option<HibpClient>,
     policy: PasswordPolicy,
     failure_budget: Arc<FailureBudget>,
     credentials: Option<Arc<dyn PasswordCredentials>>,
@@ -92,8 +88,6 @@ impl<R: Repository> Authenticator<R> {
     pub fn new(repo: Arc<R>, policy: PasswordPolicy, failure_budget: Arc<FailureBudget>) -> Self {
         Self {
             repo,
-            breached_passwords: BreachedPasswordSet::default(),
-            hibp_client: None,
             credentials: (!policy.requires_resolved_credentials).then(|| {
                 Arc::new(CredentialContext::unpeppered(policy.argon2id))
                     as Arc<dyn PasswordCredentials>
@@ -103,25 +97,9 @@ impl<R: Repository> Authenticator<R> {
         }
     }
 
-    pub fn with_breached_passwords(
-        repo: Arc<R>,
-        breached_passwords: BreachedPasswordSet,
-        policy: PasswordPolicy,
-        failure_budget: Arc<FailureBudget>,
-    ) -> Self {
-        let mut authenticator = Self::new(repo, policy, failure_budget);
-        authenticator.breached_passwords = breached_passwords;
-        authenticator
-    }
-
     /// Use the deployment's resolved realm owner for every credential operation.
     pub fn with_credentials(mut self, credentials: Arc<dyn PasswordCredentials>) -> Self {
         self.credentials = Some(credentials);
-        self
-    }
-
-    pub fn with_hibp_client(mut self, client: HibpClient) -> Self {
-        self.hibp_client = Some(client);
         self
     }
 
@@ -174,20 +152,6 @@ impl<R: Repository> Authenticator<R> {
         // Capture current user state for potential failure update
         let mut user = user;
 
-        if let Some(ref hibp) = self.hibp_client
-            && hibp
-                .check_password(password)
-                .await
-                .map_err(|e| QidError::Internal {
-                    message: format!("breach check error: {e}"),
-                })?
-        {
-            self.record_failed_attempt(realm_id, &mut user, now).await?;
-            return Err(QidError::Unauthorized {
-                message: "password is compromised".to_string(),
-            });
-        }
-
         let cred = match self.repo.get_password_credential(&user.id).await? {
             Some(c) => c,
             None => {
@@ -198,11 +162,7 @@ impl<R: Repository> Authenticator<R> {
             }
         };
 
-        let (valid, rehash_required) = if self.breached_passwords.contains_password(password) {
-            (false, false)
-        } else {
-            credentials.verify(password, &cred)
-        };
+        let (valid, rehash_required) = credentials.verify(password, &cred);
         if !valid {
             self.record_failed_attempt(realm_id, &mut user, now).await?;
             return Err(QidError::Unauthorized {
@@ -287,9 +247,8 @@ mod tests {
     use qid_core::config::PasswordConfig;
     use qid_core::models::{PasswordCredential, User};
     use qid_core::util;
-    use qid_crypto::{PBKDF2_SHA256_ALGORITHM, encode_pbkdf2_sha256_hash, hash_password};
+    use qid_crypto::{PBKDF2_SHA256_ALGORITHM, encode_pbkdf2_sha256_hash};
     use qid_storage::FileRepository;
-    use sha2::{Digest, Sha256};
 
     async fn repository_with_user(password_hash: String, algorithm: &str) -> Arc<FileRepository> {
         let path = std::env::temp_dir().join(format!(
@@ -360,29 +319,5 @@ mod tests {
             .expect("password credential missing");
         assert_eq!(stored.algorithm, ARGON2ID_ALGORITHM);
         assert!(stored.hash.starts_with("$argon2id$"));
-    }
-
-    #[tokio::test]
-    async fn password_auth_rejects_breached_password_even_when_hash_matches() {
-        let password = "known-breached-password";
-        let repo = repository_with_user(hash_password(password).unwrap(), ARGON2ID_ALGORITHM).await;
-        let digest = Sha256::digest(password.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let breached = BreachedPasswordSet::from_sha256_hex([digest]).unwrap();
-        let authenticator = Authenticator::with_breached_passwords(
-            repo,
-            breached,
-            PasswordPolicy::from_config(&PasswordConfig::default()),
-            Arc::new(FailureBudget::new()),
-        );
-
-        let err = authenticator
-            .authenticate_password(&RealmId::from("corp"), "alice@example.com", password)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, QidError::Unauthorized { .. }));
     }
 }

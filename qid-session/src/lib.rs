@@ -7,7 +7,6 @@ pub mod api;
 pub mod auth;
 pub mod browser;
 mod email_magic_link;
-pub mod hibp;
 mod password_limit;
 pub mod push;
 pub mod refresh;
@@ -20,7 +19,6 @@ pub use auth::Authenticator;
 pub use browser::{
     BrowserSession, decode_cached_session, session_cache_key, session_cache_put, session_is_active,
 };
-pub use hibp::HibpClient;
 pub use password_limit::PasswordAttemptLimiter;
 pub use totp_limit::TotpAttemptLimiter;
 pub use webauthn::WebAuthnService;

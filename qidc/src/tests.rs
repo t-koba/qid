@@ -649,10 +649,7 @@ fn explain_json_merges_risk_evaluation_into_required_auth_pep_and_audit() {
         Some(&step_up_risk),
     );
     assert_eq!(explanation["required_auth"]["step_up_required"], true);
-    assert_eq!(
-        explanation["required_auth"]["acr"],
-        "urn:qid:acr:phishing-resistant"
-    );
+    assert_eq!(explanation["required_auth"]["acr"], "phr");
     assert_eq!(explanation["required_auth"]["amr"][0], "webauthn");
 }
 

@@ -64,6 +64,10 @@ authenticators without attestation. Password sessions carry
 `urn:qid:acr:totp` / `totp`. Neither meets the phishing-resistant default.
 OIDC discovery publishes the issued ACR values `phr`, `urn:qid:acr:password`,
 `urn:qid:acr:totp`, `urn:qid:acr:email_magic_link` and `urn:qid:acr:ciba`.
+Client-signed jwt-bearer assertions never contribute authentication context to
+an issued token. A validated SAML bearer assertion may carry its external SAML
+authentication class; it is not a qid-issued ACR and satisfies no qid step-up
+or risk predicate.
 The TOTP admin sample explicitly selects this lower, TOTP-only assurance; it
 is not password-plus-TOTP. These settings do not grant admin membership or
 provision an elevation.

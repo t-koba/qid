@@ -1091,9 +1091,9 @@ async fn client_credentials_rejects_scope_outside_any_target_ceiling() {
 }
 
 #[tokio::test]
-async fn jwt_bearer_preserves_explicit_auth_time_and_omits_otherwise() {
-    // RFC 7523 section 3: iat marks assertion issuance, never the
-    // authentication event, so only an explicit auth_time is preserved.
+async fn jwt_bearer_does_not_inherit_client_asserted_auth_context() {
+    // A client-signed assertion proves the client's identity; it is not a user
+    // authentication event, so none of its auth_time/acr/amr context is inherited.
     let (app, token_path, state) = setup().await;
     let now = util::now_seconds();
     let token_url = format!("https://id.example.com{token_path}");
@@ -1124,7 +1124,7 @@ async fn jwt_bearer_preserves_explicit_auth_time_and_omits_otherwise() {
             ),
         )
     };
-    // Recent issuance with an hour-old authentication preserves the old time.
+    // Even an explicit auth_time from the client assertion is not inherited.
     let json = token_for(assertion(
         "jwt-bearer-client",
         "auth-time-old",
@@ -1133,7 +1133,10 @@ async fn jwt_bearer_preserves_explicit_auth_time_and_omits_otherwise() {
     ))
     .await;
     let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
-    assert_eq!(claims.extra["auth_time"], serde_json::json!(now - 3600));
+    assert!(
+        !claims.extra.contains_key("auth_time"),
+        "client-asserted auth_time must not be inherited"
+    );
     // Present iat without auth_time, and neither claim, both omit auth_time.
     for (jti, iat) in [
         ("auth-time-no-time", Some(now)),
@@ -1146,7 +1149,7 @@ async fn jwt_bearer_preserves_explicit_auth_time_and_omits_otherwise() {
             "{jti} must omit auth_time"
         );
     }
-    // The shared JWT-as-subject exchange path preserves it the same way.
+    // The shared JWT-as-subject exchange path is also client-controlled.
     let exchange_assertion = assertion(
         "exchange-client",
         "auth-time-exchange",
@@ -1163,7 +1166,55 @@ async fn jwt_bearer_preserves_explicit_auth_time_and_omits_otherwise() {
     )
     .await;
     let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
-    assert_eq!(claims.extra["auth_time"], serde_json::json!(now - 3600));
+    assert!(
+        !claims.extra.contains_key("auth_time"),
+        "client-asserted auth_time must not be inherited by token exchange"
+    );
+}
+
+#[tokio::test]
+async fn jwt_bearer_client_assertion_cannot_supply_phishing_resistant_context() {
+    let (app, token_path, state) = setup().await;
+    let now = util::now_seconds();
+    let token_url = format!("https://id.example.com{token_path}");
+    let (private_pem, jwk) = dpop_private_pem_and_jwk();
+    let payload = serde_json::json!({
+        "iss": "jwt-bearer-client",
+        "sub": "workload-123",
+        "aud": token_url,
+        "exp": now + 300,
+        "iat": now,
+        "jti": "jwt-bearer-phr-context",
+        "auth_time": now - 3600,
+        "acr": "phr",
+        "amr": ["webauthn"],
+    });
+    let assertion =
+        sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "JWT", &payload).unwrap();
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&client_id=jwt-bearer-client&client_secret=secret&assertion={}&audience=api://workload&scope=workload",
+        urlencoding::encode(&assertion)
+    );
+    let json = post_token_json(app.clone(), &token_path, body).await;
+    let access_token = json["access_token"].as_str().unwrap();
+    let claims = decode_claims(&state, access_token);
+    assert!(!claims.extra.contains_key("auth_time"));
+    assert!(!claims.extra.contains_key("acr"));
+    assert!(!claims.extra.contains_key("amr"));
+    let jti = claims.jti.as_deref().expect("access token jti");
+    let record = state.repo.get_access_token(jti).await.unwrap().unwrap();
+    assert!(record.acr.is_none());
+    assert!(record.amr.is_empty());
+    // The challenge inspects the stored record; a client-asserted `phr` cannot
+    // satisfy the default phishing-resistant requirement.
+    let (status, body) = post_json(
+        app,
+        "/oauth2/challenge",
+        serde_json::json!({ "access_token": jti }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "insufficient_auth_strength");
 }
 
 #[tokio::test]
@@ -1230,8 +1281,8 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
     assert_eq!(claims.aud_primary(), Some("api://workload"));
     assert_eq!(claims.extra["client_id"], "jwt-bearer-client");
     assert_eq!(claims.extra["scope"], "workload");
-    assert_eq!(claims.extra["acr"], "urn:qid:acr:workload");
-    assert_eq!(claims.extra["amr"], serde_json::json!(["jwt"]));
+    assert!(!claims.extra.contains_key("acr"));
+    assert!(!claims.extra.contains_key("amr"));
     assert_eq!(
         claims.extra["cnf"],
         serde_json::json!({ "jkt": "workload-key-thumbprint" })

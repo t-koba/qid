@@ -370,7 +370,7 @@ async fn advanced_subject_grant<R: Repository>(
         org: None,
     };
     let mut inherited_cnf = None;
-    let mut inherited_auth_time = Some(qid_core::util::now_seconds());
+    let mut inherited_auth_time = None;
     let mut inherited_acr = None;
     let mut inherited_amr = Vec::new();
     let mut actor_claim = None;
@@ -423,9 +423,6 @@ async fn advanced_subject_grant<R: Repository>(
                     org: None,
                 };
                 inherited_cnf = assertion.cnf;
-                inherited_auth_time = assertion.auth_time;
-                inherited_acr = assertion.acr;
-                inherited_amr = assertion.amr;
             }
             "urn:ietf:params:oauth:token-type:saml2" => {
                 let decrypted =
@@ -447,6 +444,8 @@ async fn advanced_subject_grant<R: Repository>(
                     locked_until: None,
                     org: None,
                 };
+                // External SAML authentication class, not a qid-issued ACR;
+                // no qid step-up or risk predicate matches it.
                 inherited_auth_time = assertion.auth_time;
                 inherited_acr =
                     Some("urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified".to_string());
@@ -488,9 +487,6 @@ async fn advanced_subject_grant<R: Repository>(
             org: None,
         };
         inherited_cnf = assertion.cnf;
-        inherited_auth_time = assertion.auth_time;
-        inherited_acr = assertion.acr;
-        inherited_amr = assertion.amr;
     }
     if grant_name == "saml2-bearer" {
         if req
@@ -520,6 +516,8 @@ async fn advanced_subject_grant<R: Repository>(
             locked_until: None,
             org: None,
         };
+        // External SAML authentication class, not a qid-issued ACR; no qid
+        // step-up or risk predicate matches it.
         inherited_auth_time = assertion.auth_time;
         inherited_acr = Some("urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified".to_string());
         inherited_amr = vec!["saml".to_string()];
@@ -662,9 +660,6 @@ async fn validate_token_exchange_actor<R: Repository>(
 struct ValidatedJwtBearerAssertion {
     subject: String,
     issuer: String,
-    auth_time: Option<u64>,
-    acr: Option<String>,
-    amr: Vec<String>,
     cnf: Option<serde_json::Value>,
 }
 
@@ -733,29 +728,10 @@ fn validate_jwt_bearer_assertion<R: Repository>(
         now,
         "jwt bearer assertion jti already used (replay detected)",
     )?;
-    let acr = claims
-        .get("acr")
-        .and_then(|value| value.as_str())
-        .map(ToOwned::to_owned);
-    let amr = claims
-        .get("amr")
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     let cnf = claims.get("cnf").cloned();
     Ok(ValidatedJwtBearerAssertion {
         subject,
         issuer: assertion_issuer,
-        // iat marks assertion issuance, never user authentication: only an
-        // explicit signed auth_time is preserved, otherwise it stays omitted.
-        auth_time: claims.get("auth_time").and_then(|value| value.as_u64()),
-        acr,
-        amr,
         cnf,
     })
 }

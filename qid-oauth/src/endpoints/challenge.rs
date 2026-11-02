@@ -72,7 +72,7 @@ pub async fn challenge<R: Repository>(
     let _current_amr: std::collections::BTreeSet<String> = token_info.amr.into_iter().collect();
 
     let required_acrs = if req.acr_values.is_empty() {
-        vec!["urn:qid:acr:phishing-resistant".to_string()]
+        vec!["phr".to_string()]
     } else {
         req.acr_values
     };

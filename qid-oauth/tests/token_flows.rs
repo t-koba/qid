@@ -9,7 +9,7 @@ use base64::Engine;
 use http_body_util::BodyExt;
 use qid_core::{
     config::{OAuthProtocolConfig, OAuthResourceServerConfig, PepRegistrationConfig, QidConfig},
-    models::{AuthorizationCode, Client, ClientType, TokenFormat, User},
+    models::{AccessToken, AuthorizationCode, Client, ClientType, TokenFormat, User},
     state::SharedState,
     tenant::RealmId,
     test_helpers, util,
@@ -165,6 +165,22 @@ async fn get_response(app: Router, uri: &str) -> axum::response::Response {
     app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
         .await
         .unwrap()
+}
+
+async fn post_json(
+    app: Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    (status, json_body(response).await)
 }
 
 async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> String {
@@ -5320,4 +5336,107 @@ async fn device_mtls_polling_binds_registered_thumbprint() {
 #[tokio::test]
 async fn ciba_mtls_polling_binds_registered_thumbprint() {
     mtls_bound_polling_flow(true).await;
+}
+
+#[tokio::test]
+async fn challenge_defaults_to_phr_and_reflects_explicit_acr_values() {
+    let (app, _token_path, state) = setup().await;
+    state
+        .repo
+        .create_user(&User {
+            id: "challenge-user".to_string(),
+            realm_id: "test".to_string(),
+            email: Some("challenge@example.com".to_string()),
+            email_verified: true,
+            display_name: Some("Challenge User".to_string()),
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    for (jti, acr, amr) in [
+        ("challenge-password", "urn:qid:acr:password", vec!["pwd"]),
+        ("challenge-phr", "phr", vec!["webauthn"]),
+    ] {
+        let now = util::now_seconds();
+        state
+            .repo
+            .create_access_token(&AccessToken {
+                jti: jti.to_string(),
+                family_id: None,
+                user_id: "challenge-user".to_string(),
+                client_id: "test-client".to_string(),
+                realm_id: "test".to_string(),
+                scopes: Vec::new(),
+                audience: Vec::new(),
+                resource: Vec::new(),
+                authorization_details: None,
+                cnf: None,
+                auth_time: None,
+                acr: Some(acr.to_string()),
+                amr: amr.into_iter().map(str::to_string).collect(),
+                nonce: None,
+                sender_constraint: None,
+                token_format: TokenFormat::Jwt,
+                expires_at: now + 300,
+                revoked: false,
+                issued_at: now,
+            })
+            .await
+            .unwrap();
+    }
+
+    let (status, body) = post_json(
+        app.clone(),
+        "/oauth2/challenge",
+        serde_json::json!({ "access_token": "challenge-password" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "insufficient_auth_strength");
+    assert_eq!(body["acr_values"], serde_json::json!(["phr"]));
+    assert_eq!(
+        body["claims"]["id_token"]["acr"]["values"],
+        serde_json::json!(["phr"])
+    );
+
+    let (status, body) = post_json(
+        app.clone(),
+        "/oauth2/challenge",
+        serde_json::json!({
+            "access_token": "challenge-password",
+            "acr_values": ["phr"],
+            "max_age": 60
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["acr_values"], serde_json::json!(["phr"]));
+    assert_eq!(body["max_age"], 60);
+
+    let (status, body) = post_json(
+        app.clone(),
+        "/oauth2/challenge",
+        serde_json::json!({ "access_token": "challenge-phr" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["active"], true);
+    assert_eq!(body["acr"], "phr");
+
+    let (status, body) = post_json(
+        app,
+        "/oauth2/challenge",
+        serde_json::json!({
+            "access_token": "challenge-phr",
+            "acr_values": ["urn:qid:acr:password"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body["acr_values"],
+        serde_json::json!(["urn:qid:acr:password"])
+    );
 }

@@ -500,6 +500,27 @@ async fn discovery_metadata_only_advertises_implemented_bearer_grants() {
 }
 
 #[tokio::test]
+async fn discovery_metadata_advertises_issued_acr_values() {
+    let (app, state) = setup().await;
+    let expected = serde_json::json!([
+        "phr",
+        "urn:qid:acr:password",
+        "urn:qid:acr:totp",
+        "urn:qid:acr:email_magic_link",
+        "urn:qid:acr:ciba"
+    ]);
+    let root = get_json(
+        app.clone(),
+        state.paths.well_known_openid_configuration.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(root["acr_values_supported"], expected);
+    let realm = get_json(app, "/realms/test/.well-known/openid-configuration", None).await;
+    assert_eq!(realm["acr_values_supported"], expected);
+}
+
+#[tokio::test]
 async fn discovery_metadata_hides_disabled_oauth_endpoints() {
     let (app, state) = setup().await;
     let metadata = get_json(

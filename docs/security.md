@@ -57,9 +57,13 @@ Operational guidance:
 
 The default step-up requirement is WebAuthn ACR `phr` and AMR `webauthn`.
 ACR comparison is exact; the elevation must contain at least one configured AMR.
-WebAuthn does not claim `hwk` or `passkey` as AMR. Password sessions carry
+WebAuthn does not claim `hwk` or `passkey` as AMR. `webauthn` is a deliberate
+AMR extension, and qid does not claim hardware-bound or non-exportable
+authenticators without attestation. Password sessions carry
 `urn:qid:acr:password` / `pwd`; TOTP-only sessions carry
 `urn:qid:acr:totp` / `totp`. Neither meets the phishing-resistant default.
+OIDC discovery publishes the issued ACR values `phr`, `urn:qid:acr:password`,
+`urn:qid:acr:totp`, `urn:qid:acr:email_magic_link` and `urn:qid:acr:ciba`.
 The TOTP admin sample explicitly selects this lower, TOTP-only assurance; it
 is not password-plus-TOTP. These settings do not grant admin membership or
 provision an elevation.

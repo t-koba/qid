@@ -259,6 +259,16 @@ fn openid_configuration_response<R: Repository>(
         json!(["ES256"]),
     );
     metadata.insert(
+        "acr_values_supported".to_string(),
+        json!([
+            "phr",
+            "urn:qid:acr:password",
+            "urn:qid:acr:totp",
+            "urn:qid:acr:email_magic_link",
+            "urn:qid:acr:ciba"
+        ]),
+    );
+    metadata.insert(
         "token_endpoint_auth_methods_supported".to_string(),
         json!(auth_methods),
     );

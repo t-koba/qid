@@ -165,6 +165,18 @@ jobs:
         # The value profile gives libFuzzer feedback on the equality checks
         # the filter parser makes.
         run: cargo fuzz run scim_filter -- -max_total_time=30 -use_value_profile=1
+      - name: Run policy fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run policy -- -max_total_time=30
+      - name: Run RADIUS fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run radius -- -max_total_time=30
+      - name: Run TACACS+ fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run tacacs -- -max_total_time=30
+      - name: Run EAP fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run eap -- -max_total_time=30
 
   coverage:
     name: Coverage

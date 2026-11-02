@@ -46,5 +46,6 @@ A buffered application-data write rejected by the last-fragment record-limit pre
 5. Run `cargo test --manifest-path vendor/rustls/Cargo.toml --lib`.
 6. Run qid's RFC 9966, RFC 6961, RFC 5280, and workspace test suites with warnings denied.
 7. Run `cargo deny check` and `cargo audit`; review every new transitive dependency and license.
+8. Record whether the update still uses the aws-lc-rs provider's default key-exchange list with hybrid `X25519MLKEM768` preferred. An explicit `kx_groups` list or provider switch that drops it is a deliberate, reviewed change; qidd does not claim post-quantum signatures or authentication.
 
 Do not silently drop a protocol patch, substitute another TLS implementation, or add a compatibility fallback during an update.

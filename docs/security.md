@@ -353,6 +353,8 @@ qid follows the same primary backend policy as qpx: rustls is the default and se
 
 RFC 6961 requires a rustls capability absent from the pinned upstream base, `v/0.23.46`; see `vendor/rustls/QID-PATCHES.md`. The workspace pins a reviewed source fork through `[patch.crates-io]`; its provenance, patch boundary, and update procedure are recorded there. All ordinary rustls callers continue to use upstream behavior unless they explicitly select the multi-stapling APIs. The fork must pass both upstream rustls tests and qid's protocol handshake tests before an update is accepted.
 
+qidd's own listeners use the aws-lc-rs provider's default key-exchange group list, which prefers the hybrid `X25519MLKEM768` group. This protects TLS key exchange against a future quantum adversary that records traffic today, but it is a pre-standardization group and does not make the connection post-quantum secure: token and assertion signatures remain ES256/EdDSA, and qid publishes no post-quantum signing key or algorithm. The statement covers qidd's own listeners; other rustls users must be checked separately before extending it. Any fork update, provider switch, or explicit `kx_groups` list must state whether it preserves this preference.
+
 Do not introduce a native TLS backend as an implicit fallback. Any future platform-native adapter must be an explicit feature with an independently reviewed use case and must not weaken the RFC 6961, certificate-path, revocation, or fail-closed guarantees.
 
 ## Dependency and Quality Gates

@@ -26,7 +26,7 @@ fn compromised_device_is_denied_even_with_strong_token() {
         phishing_resistant_mfa_satisfied: true,
         token: Some(TokenSignal {
             sender_constrained: true,
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+            acr: Some("phr".to_string()),
             amr: vec!["webauthn".to_string()],
             ..Default::default()
         }),
@@ -34,7 +34,13 @@ fn compromised_device_is_denied_even_with_strong_token() {
     });
 
     assert_eq!(evaluation.outcome, RiskOutcome::Deny);
-    assert_eq!(evaluation.required_amr, vec!["webauthn", "admin_review"]);
+    assert!(evaluation.required_acr.is_none());
+    assert!(evaluation.required_amr.is_empty());
+    assert!(
+        evaluation
+            .labels
+            .contains(&"admin-review-required".to_string())
+    );
 }
 
 #[test]
@@ -112,10 +118,7 @@ fn tenant_and_posture_risk_requires_step_up() {
     });
 
     assert_eq!(evaluation.outcome, RiskOutcome::StepUp);
-    assert_eq!(
-        evaluation.required_acr.as_deref(),
-        Some("urn:qid:acr:phishing-resistant")
-    );
+    assert_eq!(evaluation.required_acr.as_deref(), Some("phr"));
     assert!(
         evaluation
             .labels

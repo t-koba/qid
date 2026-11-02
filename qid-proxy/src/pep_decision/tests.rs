@@ -26,7 +26,7 @@ fn request() -> PepDecisionRequest {
             entitlements: vec!["app:erp:read".to_string()],
             device_id: Some("device-1".to_string()),
             posture: vec!["managed".to_string()],
-            auth_strength: Some("urn:qid:acr:phishing-resistant".to_string()),
+            auth_strength: Some("phr".to_string()),
         }),
         destination: Some(DestinationInfo {
             category: Some("banking".to_string()),
@@ -66,10 +66,7 @@ fn authzen_request() -> AuthZenEvaluationRequest {
                     "groups".to_string(),
                     serde_json::json!(["finance", "engineering"]),
                 ),
-                (
-                    "acr".to_string(),
-                    serde_json::json!("urn:qid:acr:phishing-resistant"),
-                ),
+                ("acr".to_string(), serde_json::json!("phr")),
             ]),
         },
         action: AuthZenAction {
@@ -122,7 +119,7 @@ fn pep_decision_request_accepts_qid_owned_shape() {
             "entitlements": ["app:erp:read"],
             "device_id": "device-1",
             "posture": ["managed"],
-            "assurance_level": "urn:qid:acr:phishing-resistant"
+            "assurance_level": "phr"
         },
         "resource": {
             "id": "finance.example.com",
@@ -219,7 +216,7 @@ fn authzen_request_maps_to_policy_context() {
 
     assert_eq!(ctx.subject_id.as_deref(), Some("alice@example.com"));
     assert_eq!(ctx.groups, vec!["finance", "engineering"]);
-    assert_eq!(ctx.acr.as_deref(), Some("urn:qid:acr:phishing-resistant"));
+    assert_eq!(ctx.acr.as_deref(), Some("phr"));
     assert_eq!(ctx.resource_action.as_deref(), Some("document.read"));
     assert_eq!(ctx.resource_host.as_deref(), Some("finance.example.com"));
     assert_eq!(ctx.risk_score, Some(10));

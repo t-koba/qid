@@ -597,7 +597,7 @@ mod tests {
         assert_eq!(claims["tid"], "corp");
         assert_eq!(claims["email"], "alice@example.com");
         assert_eq!(claims["email_verified"], true);
-        assert_eq!(claims["auth"]["acr"], "urn:qid:acr:phishing-resistant");
+        assert_eq!(claims["auth"]["acr"], "phr");
         assert_eq!(claims["auth"]["amr"][0], "pwd");
         assert_eq!(claims["auth"]["amr"][1], "hwk");
         assert_eq!(claims["auth"]["auth_time"], now - 120);
@@ -916,7 +916,7 @@ mod tests {
             realm_id: "corp".to_string(),
             user_id: "usr_01J".to_string(),
             auth_time: now - 120,
-            acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+            acr: Some("phr".to_string()),
             amr: vec!["pwd".to_string(), "hwk".to_string()],
             idle_expires_at: now + 300,
             absolute_expires_at: now + 3600,

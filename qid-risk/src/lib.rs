@@ -515,10 +515,7 @@ pub fn evaluate_risk(input: &RiskInput) -> RiskEvaluation {
             score += 15;
             labels.push("stale-auth-time".to_string());
         }
-        if token
-            .acr
-            .as_deref()
-            .is_some_and(|acr| acr.contains("phishing-resistant"))
+        if token.acr.as_deref().is_some_and(|acr| acr == "phr")
             || token
                 .amr
                 .iter()
@@ -585,14 +582,13 @@ pub fn evaluate_risk(input: &RiskInput) -> RiskEvaluation {
         | RiskOutcome::ForceTunnel
         | RiskOutcome::RateLimit
         | RiskOutcome::AuditHigh => (None, Vec::new()),
-        RiskOutcome::StepUp | RiskOutcome::Quarantine => (
-            Some("urn:qid:acr:phishing-resistant".to_string()),
-            vec!["webauthn".to_string()],
-        ),
-        RiskOutcome::Deny => (
-            Some("urn:qid:acr:admin-review".to_string()),
-            vec!["webauthn".to_string(), "admin_review".to_string()],
-        ),
+        RiskOutcome::StepUp | RiskOutcome::Quarantine => {
+            (Some("phr".to_string()), vec!["webauthn".to_string()])
+        }
+        RiskOutcome::Deny => {
+            labels.push("admin-review-required".to_string());
+            (None, Vec::new())
+        }
     };
 
     RiskEvaluation {
@@ -743,10 +739,7 @@ mod tests {
 
         assert_eq!(evaluation.outcome, RiskOutcome::StepUp);
         assert!(evaluation.labels.contains(&"impossible-travel".to_string()));
-        assert_eq!(
-            evaluation.required_acr,
-            Some("urn:qid:acr:phishing-resistant".to_string())
-        );
+        assert_eq!(evaluation.required_acr.as_deref(), Some("phr"));
     }
 
     #[test]
@@ -773,10 +766,12 @@ mod tests {
 
         assert_eq!(evaluation.score, 100);
         assert_eq!(evaluation.outcome, RiskOutcome::Deny);
+        assert!(evaluation.required_acr.is_none());
+        assert!(evaluation.required_amr.is_empty());
         assert!(
             evaluation
-                .required_amr
-                .contains(&"admin_review".to_string())
+                .labels
+                .contains(&"admin-review-required".to_string())
         );
     }
 
@@ -822,7 +817,7 @@ mod tests {
             }),
             token: Some(TokenSignal {
                 sender_constrained: true,
-                acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+                acr: Some("phr".to_string()),
                 amr: vec!["webauthn".to_string()],
                 ..TokenSignal::default()
             }),
@@ -906,7 +901,7 @@ mod tests {
             phishing_resistant_mfa_satisfied: true,
             token: Some(TokenSignal {
                 sender_constrained: true,
-                acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+                acr: Some("phr".to_string()),
                 amr: vec!["webauthn".to_string()],
                 ..TokenSignal::default()
             }),
@@ -929,7 +924,7 @@ mod tests {
             phishing_resistant_mfa_satisfied: true,
             token: Some(TokenSignal {
                 sender_constrained: true,
-                acr: Some("urn:qid:acr:phishing-resistant".to_string()),
+                acr: Some("phr".to_string()),
                 amr: vec!["webauthn".to_string()],
                 ..TokenSignal::default()
             }),

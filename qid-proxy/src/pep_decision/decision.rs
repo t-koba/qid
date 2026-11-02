@@ -20,7 +20,7 @@ pub(crate) fn pep_decision_risk_advisory(req: &PepDecisionRequest) -> PepDecisio
             .unwrap_or(DestinationReputation::KnownGood),
         phishing_resistant_mfa_satisfied: identity
             .and_then(|identity| identity.auth_strength.as_deref())
-            .is_some_and(|acr| acr.contains("phishing-resistant")),
+            .is_some_and(|acr| acr == "phr"),
         device_trust: device_trust_from_identity(identity),
         pep: Some(PepSignal {
             edge_name: Some(req.proxy.proxy_name.clone()),
@@ -74,10 +74,10 @@ pub(crate) fn pep_decision_risk_advisory(req: &PepDecisionRequest) -> PepDecisio
         policy_tags.push("risk:missing-device".to_string());
     }
     if identity.is_some_and(|identity| {
-        !identity
+        identity
             .auth_strength
             .as_deref()
-            .is_some_and(|acr| acr.contains("phishing-resistant"))
+            .is_none_or(|acr| acr != "phr")
     }) {
         score = score.saturating_add(10);
         policy_tags.push("risk:non-phishing-resistant-auth".to_string());

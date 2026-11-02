@@ -1,3 +1,4 @@
+# ops.emergency.read_only is a restore/orchestration interlock, not daemon-enforced read-only.
 profile: oidc
 
 storage:

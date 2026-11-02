@@ -264,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
                     "emergency": {
                         "read_only": config.ops.emergency.read_only,
                     },
+                    "readiness": ops_readiness_descriptions(),
                     "status": "ok",
                 });
                 println!("{}", serde_json::to_string_pretty(&checks)?);

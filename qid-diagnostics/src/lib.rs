@@ -97,6 +97,7 @@ pub fn build_check_report(
     checks.extend(check_ops_cache(config));
     checks.extend(check_ops_cluster(config));
     checks.extend(check_ops_backup(config));
+    checks.extend(check_ops_emergency(config));
 
     let errors = checks
         .iter()

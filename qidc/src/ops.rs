@@ -115,6 +115,14 @@ pub(crate) fn parse_key_purpose(value: &str) -> anyhow::Result<KeyPurpose> {
     })
 }
 
+pub(crate) fn ops_readiness_descriptions() -> serde_json::Value {
+    serde_json::json!({
+        "emergency_read_only": "ops.emergency.read_only is a restore/orchestration interlock, not daemon-enforced read-only",
+        "backup": "ops.backup.object_store_uri/migration_version declare an external backup target and expected schema version, not evidence a backup ran",
+        "cluster": "ops.cluster.multi_region_active_active is a declared topology label, not validated active-active HA or leader election",
+    })
+}
+
 pub(crate) fn cache_backend_config_from_qid(
     config: &QidConfig,
 ) -> anyhow::Result<CacheBackendConfig> {

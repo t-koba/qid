@@ -119,9 +119,9 @@ smallest interoperable OIDC authorization-code deployment, then move to
 - `sqlite-file.yaml`: local SQLite state in `target/tmp`.
 - `postgres-url-env.yaml`: primary store URL from an environment variable.
 - `valkey-cache.yaml`: Valkey-backed ops and storage cache.
-- `multi-region-active-active.yaml`: active-active cluster metadata.
-- `backup-readiness.yaml`: backup configuration.
-- `emergency-read-only.yaml`: read-only emergency mode.
+- `multi-region-active-active.yaml`: declared multi-region topology label (not validated HA).
+- `backup-readiness.yaml`: declared external backup target and expected schema version.
+- `emergency-read-only.yaml`: restore/orchestration interlock (not daemon-enforced read-only).
 
 ### 11-observability-debug
 

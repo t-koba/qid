@@ -1,3 +1,4 @@
+# ops.cluster.multi_region_active_active is a declared topology label, not validated active-active HA or leader election.
 profile: oidc
 
 server:

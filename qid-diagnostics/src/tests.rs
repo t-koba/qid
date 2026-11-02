@@ -922,3 +922,57 @@ fn saml_certificate_diagnostics_reject_malformed_and_preserve_validity_checks() 
     assert_eq!(expired.status, CheckStatus::Error);
     assert!(expired.message.contains("certificate expired"));
 }
+
+#[test]
+fn ops_readiness_messages_state_declared_only_semantics() {
+    let mut config = minimal_config();
+    config.ops.backup.enabled = true;
+    config.ops.backup.object_store_uri = Some("s3://example/backups".to_string());
+    config.ops.backup.migration_version = Some("20250628000002".to_string());
+    config.ops.cluster.multi_region_active_active = true;
+    config.ops.cluster.cluster_id = Some("c".to_string());
+    config.ops.cluster.region = Some("r".to_string());
+    config.ops.cluster.node_id = Some("n".to_string());
+    let backup_ok = check_ops_backup(&config)
+        .into_iter()
+        .find(|c| c.status == CheckStatus::Ok)
+        .expect("backup ok");
+    assert!(
+        backup_ok.message.contains("declared backup target"),
+        "{backup_ok:?}"
+    );
+    let cluster_ok = check_ops_cluster(&config)
+        .into_iter()
+        .find(|c| c.message.contains("declared topology label"))
+        .expect("cluster label");
+    assert!(
+        cluster_ok
+            .message
+            .contains("not validated HA or leader election"),
+        "{cluster_ok:?}"
+    );
+    for read_only in [false, true] {
+        config.ops.emergency.read_only = read_only;
+        let emergency = check_ops_emergency(&config).pop().expect("emergency");
+        assert_eq!(emergency.status, CheckStatus::Ok, "{emergency:?}");
+        assert!(
+            emergency
+                .message
+                .contains("orchestration/restore interlock"),
+            "{emergency:?}"
+        );
+        assert!(
+            emergency.message.contains("not daemon-enforced"),
+            "{emergency:?}"
+        );
+    }
+    config.profile = DeploymentProfile::HighAssurance;
+    let backup_check = check_profile_obligations(&config)
+        .into_iter()
+        .find(|c| c.name == "profile.high-assurance.backup")
+        .expect("ha backup");
+    assert!(
+        backup_check.message.contains("declared backup target"),
+        "{backup_check:?}"
+    );
+}

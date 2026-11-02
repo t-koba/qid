@@ -51,10 +51,10 @@ pub(crate) fn check_ops_cluster(config: &QidConfig) -> Vec<CheckItem> {
         if cluster.cluster_id.is_some() && cluster.region.is_some() && cluster.node_id.is_some() {
             checks.push(check_ok(
                 name,
-                "multi-region active-active fully configured",
+                "multi-region active-active is a declared topology label (not validated HA or leader election)",
             ));
         } else {
-            checks.push(check_warning(name, "multi-region active-active enabled but cluster_id/region/node_id partially configured"));
+            checks.push(check_warning(name, "declared topology label multi-region active-active partially configured: cluster_id/region/node_id incomplete (not validated HA or leader election)"));
         }
     }
     checks
@@ -68,19 +68,37 @@ pub(crate) fn check_ops_backup(config: &QidConfig) -> Vec<CheckItem> {
         if backup.object_store_uri.is_none() {
             checks.push(check_error(
                 name,
-                "backup enabled but object_store_uri not set",
+                "backup enabled but declared backup target (object_store_uri) not set",
             ));
         } else {
-            checks.push(check_ok(name, "backup configured with object store URI"));
+            checks.push(check_ok(
+                name,
+                "declared backup target configured with object store URI",
+            ));
         }
         if backup.migration_version.is_none() {
             checks.push(check_warning(
                 name,
-                "backup enabled but migration_version not set",
+                "backup enabled but declared backup version (migration_version) not set",
             ));
         }
     } else {
         checks.push(check_ok(name, "backup is disabled"));
     }
     checks
+}
+
+pub(crate) fn check_ops_emergency(config: &QidConfig) -> Vec<CheckItem> {
+    let name = "ops.emergency";
+    if config.ops.emergency.read_only {
+        vec![check_ok(
+            name,
+            "emergency read_only enabled: orchestration/restore interlock, not daemon-enforced read-only",
+        )]
+    } else {
+        vec![check_ok(
+            name,
+            "emergency read_only disabled: orchestration/restore interlock, not daemon-enforced read-only",
+        )]
+    }
 }

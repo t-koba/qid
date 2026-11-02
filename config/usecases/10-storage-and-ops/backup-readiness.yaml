@@ -1,3 +1,4 @@
+# ops.backup.object_store_uri/migration_version declare an external backup target and expected schema version, not evidence a backup ran.
 profile: oidc
 
 storage:

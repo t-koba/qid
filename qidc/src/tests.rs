@@ -1381,3 +1381,25 @@ async fn admin_grant_missing_file_binding_and_audit_persistence_failure_do_not_g
     drop(reopened);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn ops_readiness_descriptions_state_no_runtime_guarantee() {
+    let readiness = ops_readiness_descriptions();
+    let emergency = readiness["emergency_read_only"]
+        .as_str()
+        .expect("emergency string");
+    assert!(
+        emergency.contains("restore/orchestration interlock"),
+        "{readiness}"
+    );
+    assert!(emergency.contains("not daemon-enforced"), "{readiness}");
+    let backup = readiness["backup"].as_str().expect("backup string");
+    assert!(backup.contains("external backup target"), "{readiness}");
+    assert!(backup.contains("not evidence a backup ran"), "{readiness}");
+    let cluster = readiness["cluster"].as_str().expect("cluster string");
+    assert!(cluster.contains("declared topology label"), "{readiness}");
+    assert!(
+        cluster.contains("not validated active-active HA"),
+        "{readiness}"
+    );
+}

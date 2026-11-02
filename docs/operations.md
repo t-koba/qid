@@ -258,10 +258,10 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml audit-siem-redrive --id
 
 ## Backup and Restore Helpers
 
-Configure backups under `ops.backup`. Backup enabled requires:
+Configure backups under `ops.backup`. The two fields declare an external backup target and expected schema version; they are not evidence a backup ran. Backup enabled requires:
 
-- `object_store_uri`
-- `migration_version`
+- `object_store_uri` (declared external backup target)
+- `migration_version` (expected schema version)
 
 Generate a manifest:
 
@@ -292,13 +292,15 @@ cargo run --bin qidc -- --config /etc/qid/qid.yaml ops restore-execute \
 
 ## Emergency Read-Only
 
-`ops.emergency.read_only` is used by restore planning and execution. Set it when the cluster should refuse operational writes at the orchestration layer.
+`ops.emergency.read_only` is a restore/orchestration interlock used by restore planning and execution, not daemon-enforced read-only. Set it when orchestration should treat the cluster as refusing operational writes while a restore is planned or executed.
 
 ```yaml
 ops:
   emergency:
     read_only: true
 ```
+
+`ops.cluster.multi_region_active_active` is a declared topology label, not validated active-active HA or leader election. It records deployment intent alongside `cluster_id`, `region`, and `node_id`; qid does not prove multi-region replication or elect a global leader from this flag.
 
 ## Push Challenge and OIDC Continuation Cleanup
 

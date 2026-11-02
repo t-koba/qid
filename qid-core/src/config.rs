@@ -1086,7 +1086,7 @@ fn validate_high_assurance_profile(config: &QidConfig) -> QidResult<()> {
     }
     if !config.ops.backup.enabled {
         return Err(QidError::Config {
-            message: "profile high-assurance requires backup".to_string(),
+            message: "profile high-assurance requires a declared backup target".to_string(),
         });
     }
     for realm in &config.realms {

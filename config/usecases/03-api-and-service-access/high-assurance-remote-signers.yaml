@@ -82,6 +82,7 @@ ops:
     region: "us-east-1"
     node_id: "qid-ha-prod-a"
     leader_lease_ttl_seconds: 15
+  # Declared external backup target and expected schema version (not evidence a backup ran).
   backup:
     enabled: true
     object_store_uri: "s3://qid-prod-backups/high-assurance"

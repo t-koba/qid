@@ -38,7 +38,7 @@ cargo run --bin qidc -- --config base.yaml --config prod.yaml plan
 | `crypto` | no | Default signing algorithm and keyrings. |
 | `realms` | yes | Realm definitions. At least one realm is required. |
 | `observability` | no | Log format and metrics listener. |
-| `ops` | no | Ops cache, cluster, backup, emergency read-only mode. |
+| `ops` | no | Ops cache, cluster, declared backup target/version, and restore/orchestration interlock. |
 
 ## Profiles
 
@@ -66,7 +66,7 @@ Profiles are not marketing labels. They are validation bundles that make a deplo
 | `vc` | All `fapi` requirements plus a dedicated `issuer_key_ref` for every realm; the deployment serves the qid-private credential issuance, status and presentation-verification routes. |
 | `workload` | SPIFFE Workload API, X.509-SVID, JWT-SVID, short-lived credentials, RATS/EAT, OAuth token exchange, workload CA key reference, mTLS, and private_key_jwt. |
 | `network-aaa` | RADIUS, RADIUS/TLS, EAP, EAP-TLS, CAPPORT, CoA, accounting, directory authority, mTLS, 16+ byte shared secret, bind addresses, TLS material paths, and an enabled directory provider. |
-| `high-assurance` | All `fapi` requirements plus remote KMS/HSM/PKCS#11 keyrings, admin approval, admin step-up, backup enabled, passkeys, mTLS, and passwordless-only realms. |
+| `high-assurance` | All `fapi` requirements plus remote KMS/HSM/PKCS#11 keyrings, admin approval, admin step-up, a declared backup target, passkeys, mTLS, and passwordless-only realms. |
 
 ## Server and Paths
 
@@ -824,13 +824,15 @@ Metrics should stay low-cardinality. User IDs, email addresses, raw host/path va
 `ops` includes:
 
 - `cache`: disabled/redis/valkey-style cache config.
-- `cluster`: cluster ID, region, node ID, leader lease TTL, active-active flag.
-- `backup`: enabled, object store URI, migration version.
-- `emergency.read_only`: emergency mode used by restore planning/execution.
+- `cluster`: cluster ID, region, node ID, leader lease TTL, and the `multi_region_active_active` declared topology label (not validated active-active HA or leader election).
+- `backup`: `enabled` plus the declared external backup target `object_store_uri` and expected schema version `migration_version` (not evidence a backup ran).
+- `emergency.read_only`: restore/orchestration interlock used by restore planning/execution, not daemon-enforced read-only.
 
-Backup enabled requires both `object_store_uri` and `migration_version`.
+Backup enabled requires both `object_store_uri` (declared external target) and `migration_version` (expected schema version).
 
-Active-active requires `cluster_id`, `region`, and `node_id`.
+Active-active requires `cluster_id`, `region`, and `node_id`; the flag only labels intended topology.
+
+The `cluster`, `backup` and `emergency` settings are configuration declarations: they do not validate active-active HA, run a backup, or enforce daemon read-only.
 
 ## Validation Commands
 

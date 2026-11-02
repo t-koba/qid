@@ -444,9 +444,15 @@ pub(crate) fn check_profile_obligations(config: &QidConfig) -> Vec<CheckItem> {
                 )
             });
             checks.push(if config.ops.backup.enabled {
-                check_ok("profile.high-assurance.backup", "backup enabled")
+                check_ok(
+                    "profile.high-assurance.backup",
+                    "declared backup target configured",
+                )
             } else {
-                check_error("profile.high-assurance.backup", "requires backup")
+                check_error(
+                    "profile.high-assurance.backup",
+                    "requires a declared backup target",
+                )
             });
             for realm in &config.realms {
                 let pk = format!("profile.high-assurance.passkeys.realm.{}", realm.id);

@@ -1,7 +1,5 @@
-//! PKI protocol types: EST (RFC 7030), CMP (RFC 9480/9481/9483), SCEP (RFC 8894),
-//! ACME ARI (RFC 9773), ACME delegated (RFC 9115), STAR (RFC 8739),
-//! DC for TLS (RFC 9345), PKCS#12 (RFC 7292), CMS (RFC 5652),
-//! CRMF (RFC 4211), CT v2.0 (RFC 6962-bis), Trust Anchor Constraints.
+//! PKI protocol types: EST (RFC 7030), CMS (RFC 5652), CRMF (RFC 4211),
+//! DC for TLS (RFC 9345) and PKCS#12 (RFC 7292).
 
 use qid_core::error::{QidError, QidResult};
 use serde::{Deserialize, Serialize};
@@ -59,24 +57,6 @@ pub struct CrmfCertTemplate {
 pub struct CrmfControl {
     pub control_type: String,
     pub value: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AcmeAriRequest {
-    pub certificate_id: String,
-    pub renewal_window: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AcmeDelegatedRequest {
-    pub parent_account: String,
-    pub child_account: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StarCertificate {
-    pub short_cert: Vec<u8>,
-    pub renew_after: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,15 +121,6 @@ mod tests {
     }
 
     #[test]
-    fn acme_ari_request() {
-        let req = AcmeAriRequest {
-            certificate_id: "cert-1".to_string(),
-            renewal_window: Some("P30D".to_string()),
-        };
-        assert_eq!(req.certificate_id, "cert-1");
-    }
-
-    #[test]
     fn pkcs12_bundle() {
         let bundle = Pkcs12Bundle {
             certificate: vec![0x00],
@@ -157,14 +128,5 @@ mod tests {
             ca_certificates: vec![vec![0x02]],
         };
         assert!(!bundle.private_key.is_empty());
-    }
-
-    #[test]
-    fn star_certificate() {
-        let sc = StarCertificate {
-            short_cert: vec![0x00],
-            renew_after: 3600,
-        };
-        assert_eq!(sc.renew_after, 3600);
     }
 }

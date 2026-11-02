@@ -98,7 +98,7 @@ The proprietary ACS in `qid-federation` requires one direct assertion `Condition
 
 | Standard | qid status | Boundary |
 | --- | --- | --- |
-| [FAPI 2.0 Security Profile Final](https://openid.net/specs/fapi-security-profile-2_0-final.html) | Config-pattern only; no Final interop claimed | `profile:fapi` yamls (`fapi2-baseline.yaml`, `fapi2-payments-high-risk.yaml`) are hardened-config examples (PAR-required, S256 PKCE, signed request, JARM, DPoP-nonce/mTLS, sender-constraint, ES256), not conformance. Known non-goals: client-assertion `aud` accepts the token-endpoint URL (not issuer-only), no `dpop_jkt` authorize/PAR pre-binding, bearer by default outside `fapi` realms. Any interop claim waits for a passing OIDF FAPI2SP-OP-Final run recorded with pinned versions; do not use OpenID Certified marks without certification. |
+| [FAPI 2.0 Security Profile Final](https://openid.net/specs/fapi-security-profile-2_0-final.html) | Config-pattern only; no Final interop claimed | `profile:fapi` yamls (`fapi2-baseline.yaml`, `fapi2-payments-high-risk.yaml`) are hardened-config examples (PAR-required, S256 PKCE, signed request, JARM, DPoP-nonce/mTLS, sender-constraint, ES256), not conformance. Known non-goals: no `dpop_jkt` authorize/PAR pre-binding, bearer by default outside `fapi` realms. Client-assertion `aud` is issuer-only (the token-endpoint URL is rejected) in every realm, including `fapi`. Any interop claim waits for a passing OIDF FAPI2SP-OP-Final run recorded with pinned versions; do not use OpenID Certified marks without certification. |
 
 ## OAuth Discovery (RFC 8414 / RFC 9728)
 

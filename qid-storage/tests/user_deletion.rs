@@ -49,7 +49,7 @@ async fn seed(repo: &impl Repository) {
         repo.store_webauthn_credential(&WebAuthnCredential {
             id: id.into(),
             user_id: id.into(),
-            credential_id: vec![1],
+            credential_id: id.as_bytes().to_vec(),
             public_key: vec![2],
             counter: 1,
             aaguid: vec![0; 16],

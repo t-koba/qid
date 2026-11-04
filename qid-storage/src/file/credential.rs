@@ -5,26 +5,28 @@ use super::*;
 #[async_trait]
 impl CredentialRepository for FileRepository {
     async fn get_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>> {
-        Ok(self
-            .map_get(|s| s.webauthn_credentials.get(user_id))
-            .await
-            .unwrap_or_default())
+        let store = self.store.read().await;
+        let credentials = &store.webauthn_credentials;
+        let mut ids = std::collections::HashSet::new();
+        for credential in credentials.values().flatten() {
+            reject_duplicate_id(!ids.insert(&credential.credential_id), || {
+                "ambiguous WebAuthn credential ID; repair externally".into()
+            })?;
+        }
+        Ok(credentials.get(user_id).cloned().unwrap_or_default())
     }
 
     async fn store_webauthn_credential(&self, cred: &WebAuthnCredential) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if store
-            .webauthn_credentials
-            .values()
-            .flatten()
-            .any(|incumbent| incumbent.id == cred.id)
-        {
-            return Err(QidError::Conflict {
-                message: format!("WebAuthn credential record ID {} already exists", cred.id),
-            });
-        }
-        store
-            .webauthn_credentials
+        let credentials = &mut store.webauthn_credentials;
+        reject_duplicate_id(
+            credentials
+                .values()
+                .flatten()
+                .any(|c| c.id == cred.id || c.credential_id == cred.credential_id),
+            || format!("WebAuthn credential ID conflicts for record {}", cred.id),
+        )?;
+        credentials
             .entry(cred.user_id.clone())
             .or_default()
             .push(cred.clone());

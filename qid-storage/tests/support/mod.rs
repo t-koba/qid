@@ -1120,8 +1120,8 @@ pub fn sample_cross_realm_client(id: &str, realm_id: &str, client_id: &str) -> C
     }
 }
 
-/// A WebAuthn credential record ID belongs to one user and cannot be reused
-/// to attach another user's authenticator.
+/// WebAuthn record IDs and raw credential IDs are globally unique, so neither
+/// can be reused to attach another authenticator, even for the same user.
 pub async fn assert_webauthn_credential_identity_ownership<R>(repo: &R)
 where
     R: RealmRepository + UserRepository + CredentialRepository,
@@ -1187,15 +1187,29 @@ where
         "a second user for one credential record ID must be a conflict, got: {}",
         err.message()
     );
+    for owner in [&user.id, &other_user.id] {
+        let raw_duplicate = WebAuthnCredential {
+            id: "duplicate-raw-id".to_string(),
+            user_id: owner.clone(),
+            credential_id: credential.credential_id.clone(),
+            ..duplicate.clone()
+        };
+        let error = repo
+            .store_webauthn_credential(&raw_duplicate)
+            .await
+            .expect_err("a raw credential ID cannot be registered under another record ID");
+        assert!(matches!(error, QidError::Conflict { .. }), "{error}");
+    }
     let stored = repo
         .get_webauthn_credentials(&user.id)
         .await
         .expect("list incumbent WebAuthn credentials failed");
     assert_eq!(stored.len(), 1, "the refusal changed the incumbent list");
-    assert_eq!(stored[0].user_id, credential.user_id);
-    assert_eq!(stored[0].credential_id, credential.credential_id);
-    assert_eq!(stored[0].public_key, credential.public_key);
-    assert_eq!(stored[0].device_name, credential.device_name);
+    assert_eq!(
+        serde_json::to_value(&stored[0]).unwrap(),
+        serde_json::to_value(&credential).unwrap(),
+        "record-ID or raw-ID refusal changed an incumbent field"
+    );
     let listed = repo
         .list_webauthn_credentials(&user.id)
         .await
@@ -1256,6 +1270,7 @@ where
 
     let sibling = WebAuthnCredential {
         id: "alice-other-credential".to_string(),
+        credential_id: vec![5],
         ..credential.clone()
     };
     let other_credential = WebAuthnCredential {

@@ -967,3 +967,169 @@ async fn ciam_identity_link_concurrent_subject_holds_in_both_backends() {
     support::assert_ciam_identity_link_concurrent_subject(&sql).await;
     sql.close().await;
 }
+
+#[tokio::test]
+async fn webauthn_legacy_file_raw_id_ambiguity_fails_closed_without_changes() {
+    use qid_core::{error::QidError, models::WebAuthnCredential};
+    use qid_storage::{CredentialRepository, FileRepository};
+
+    let dir = std::env::temp_dir().join(format!("qid-webauthn-legacy-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let credential = WebAuthnCredential {
+        id: "first".into(),
+        user_id: "alice".into(),
+        credential_id: vec![1],
+        public_key: vec![2],
+        counter: 7,
+        aaguid: vec![3; 16],
+        device_name: Some("Alice key".into()),
+        created_at: 1,
+    };
+    repo.store_webauthn_credential(&credential).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(repo.get_webauthn_credentials("alice").await.unwrap()).unwrap(),
+        serde_json::json!([credential])
+    );
+    assert!(
+        repo.get_webauthn_credentials("bob")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(repo);
+
+    // Seed an old file directly: distinct records and users share one raw ID.
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    fixture["webauthn_credentials"]["bob"] = serde_json::json!([WebAuthnCredential {
+        id: "second".into(),
+        user_id: "bob".into(),
+        public_key: vec![4],
+        counter: 9,
+        aaguid: vec![5; 16],
+        device_name: Some("Bob key".into()),
+        created_at: 2,
+        ..credential
+    }]);
+    let before = serde_json::to_vec_pretty(&fixture).unwrap();
+    std::fs::write(&path, &before).unwrap();
+
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    for user in ["alice", "bob", "absent"] {
+        assert!(matches!(
+            repo.get_webauthn_credentials(user).await,
+            Err(QidError::Conflict { .. })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    drop(repo);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn webauthn_raw_id_migration_preserves_duplicates_and_retries_after_external_repair() {
+    use qid_core::tenant::{RealmId, TenantId};
+    use qid_storage::{RealmRepository, SqlRepository};
+    use std::borrow::Cow;
+
+    const VERSION: i64 = 20261105000001;
+    let dir = std::env::temp_dir().join(format!("qid-webauthn-migration-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let url = format!("sqlite:{}", dir.join("legacy.db").display());
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    let mut legacy = sqlx::migrate!("./migrations");
+    legacy.migrations = Cow::Owned(
+        legacy
+            .iter()
+            .filter(|m| m.version < VERSION)
+            .cloned()
+            .collect(),
+    );
+    legacy.run(&pool).await.unwrap();
+    repo.create_realm(
+        &TenantId::from("tenant"),
+        &RealmId::from("realm"),
+        "https://webauthn-migration.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO users (id, realm_id) VALUES ('alice', 'realm'), ('bob', 'realm')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO credentials_webauthn (id, user_id, credential_id, public_key, counter, aaguid, device_name, created_at) VALUES ('first', 'alice', 'AQ==', 'Ag==', 7, 'Aw==', 'Alice key', 1), ('second', 'bob', 'AQ==', 'BA==', 9, 'BQ==', 'Bob key', 2)")
+        .execute(&pool).await.unwrap();
+    // Snapshot every credential and ledger field, not just the duplicate ID.
+    let read_rows = || {
+        sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                i64,
+                String,
+                Option<String>,
+                i64,
+            ),
+        >(
+            "SELECT id, user_id, credential_id, public_key, counter, aaguid, device_name, created_at FROM credentials_webauthn ORDER BY id",
+        )
+    };
+    let read_ledger = || {
+        sqlx::query_as::<_, (i64, String, String, i64, Vec<u8>, i64)>(
+            "SELECT version, description, CAST(installed_on AS TEXT), success, checksum, execution_time FROM _sqlx_migrations ORDER BY version",
+        )
+    };
+    let before = read_rows().fetch_all(&pool).await.unwrap();
+    let ledger_before = read_ledger().fetch_all(&pool).await.unwrap();
+    let error = repo.migrate().await.unwrap_err().to_string();
+    assert!(error.contains("duplicate credential_id"), "{error}");
+    assert!(
+        error.contains("inspect/repair externally; retry"),
+        "{error}"
+    );
+    assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), before);
+    assert_eq!(read_ledger().fetch_all(&pool).await.unwrap(), ledger_before);
+    let index_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_credentials_webauthn_credential_id_unique'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(index_count, 0, "failed migration retained its unique index");
+
+    // This is an explicit test/operator repair, never migration-side selection.
+    sqlx::query("UPDATE credentials_webauthn SET credential_id = 'Bg==' WHERE id = 'second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let repaired = read_rows().fetch_all(&pool).await.unwrap();
+    repo.migrate().await.unwrap();
+    assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    let ledger_after = read_ledger().fetch_all(&pool).await.unwrap();
+    assert_eq!(&ledger_after[..ledger_before.len()], &ledger_before);
+    assert_eq!(ledger_after.len(), ledger_before.len() + 1);
+    assert_eq!(ledger_after.last().unwrap().0, VERSION);
+    assert_eq!(ledger_after.last().unwrap().3, 1);
+    // Prove the migrated index itself, independent of repository checks.
+    assert!(
+        sqlx::query("UPDATE credentials_webauthn SET credential_id = 'AQ==' WHERE id = 'second'")
+            .execute(&pool)
+            .await
+            .unwrap_err()
+            .as_database_error()
+            .unwrap()
+            .is_unique_violation()
+    );
+    assert_eq!(read_rows().fetch_all(&pool).await.unwrap(), repaired);
+    pool.close().await;
+    repo.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}

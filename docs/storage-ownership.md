@@ -238,12 +238,27 @@ for `update_client` remains relevant if its pre-read races with deletion.
 ## credential
 
 Model types: `WebAuthnCredential`, `TotpCredential`. The owner is the user
-(`user_id`); the WebAuthn table's primary key is the record `id`
-(`qid-storage/migrations/20250101000001_initial_schema.sql:33`).
+(`user_id`). WebAuthn has two distinct globally unique identities: qid's record
+`id` (the table primary key) and the authenticator's raw `credential_id` (stored
+as canonical standard Base64 in SQL). A raw ID cannot be registered under a
+second record ID, even for the same user. This prevents ambiguous authenticator
+ownership rather than relying on probabilistic ID uniqueness (WebAuthn §7.1
+recommends refusing registration of an ID already registered to another user).
+
+Migration `20261105000001_webauthn_credential_id_unique.sql` preflights duplicate
+`credential_id` values before adding the portable unique index. On ambiguity it
+fails transactionally without changing any credential row or migration ledger.
+Inspect with `SELECT credential_id, COUNT(*) FROM credentials_webauthn GROUP BY
+credential_id HAVING COUNT(*) > 1;`, then inspect the matching records and users.
+An operator must explicitly repair the bindings externally and retry migration;
+qid never selects an owner or rewrites/deletes ambiguous legacy records. File
+`get_webauthn_credentials` checks all users' raw IDs under the shared read lock;
+if any duplicate exists, every such read returns `Conflict` without exposing
+credentials or changing the file. Repair remains an explicit external operation.
 
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
-| `store_webauthn_credential` - `WebAuthnCredential` | user (`user_id`) | record `id` | credential data, counter, device name | File: a credential record ID already in any user's list is refused with `Conflict` under the exclusive write lock (`qid-storage/src/file/credential.rs:20`, `qid-storage/src/file/credential.rs:25`). SQL: `ON CONFLICT(id) DO NOTHING` and `ensure_upsert_applied` turns a zero-row result into `Conflict` (`qid-storage/src/sql/credential.rs:25`, `qid-storage/src/sql/credential.rs:38`). Both refuse a duplicate record ID, including one presented for another user. | file `qid-storage/src/file/credential.rs:20`, `qid-storage/src/file/credential.rs:25`; sql `qid-storage/src/sql/credential.rs:25`, `qid-storage/src/sql/credential.rs:38` |
+| `store_webauthn_credential` - `WebAuthnCredential` | user (`user_id`) | record `id` and raw `credential_id`, both globally unique | none on collision; insert only | File: scans all users' credentials for either identity under the exclusive write lock. SQL: primary key plus raw-ID unique index and static `ON CONFLICT DO NOTHING`; `ensure_upsert_applied` turns a zero-row result into `Conflict`. Both refuse either duplicate identity for any user without changing the incumbent. | file `qid-storage/src/file/credential.rs:14-32`; sql `qid-storage/src/sql/credential.rs:20-41`; migration `20261105000001_webauthn_credential_id_unique.sql` |
 | `update_webauthn_credential_counter` - `WebAuthnCredential` | user (`user_id`) | record `id` | counter, monotonic maximum | File: only the specified user's credential is updated under the write lock, retaining the greater counter. SQL: an owner-qualified `CASE` update retains the greater counter atomically. Stale writes cannot lower the stored high-water mark; both silently leave it unchanged for a wrong owner or unknown ID. | file `qid-storage/src/file/credential.rs:41-50`; sql `qid-storage/src/sql/credential.rs:49-55` |
 | `delete_webauthn_credential` (delete) | user (`user_id`) | record `id` | none, removal | File: only the specified user's list is modified under the write lock. SQL: `DELETE FROM credentials_webauthn WHERE user_id = ? AND id = ?`. Both silently leave credentials unchanged for a wrong owner or unknown ID. | file `qid-storage/src/file/credential.rs:55`; sql `qid-storage/src/sql/credential.rs:102` |
 | `store_totp_credential` - `TotpCredential` | user (`user_id`) | record `id` | secret, algorithm, digits, period, `enabled`; `last_used_step` is monotonic | File: checks the existing record owner under the exclusive write lock before replacing fields, while retaining the greater used step; SQL: the static `ON CONFLICT(id) DO UPDATE` includes the owner predicate and retains the greater `last_used_step` with `CASE`. Both refuse a cross-user ID collision without changing the incumbent; same-owner replacement may update credential data but cannot reopen an already-consumed TOTP step. | file `qid-storage/src/file/credential.rs:62-78`; sql `qid-storage/src/sql/credential.rs:59-78` |

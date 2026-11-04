@@ -32,14 +32,16 @@ impl WorkloadRepository for FileRepository {
         spiffe_id: &str,
     ) -> QidResult<Option<WorkloadIdentity>> {
         let store = self.store.read().await;
-        // A file written before the SPIFFE ID was unique can hold two identities
-        // for one SPIFFE ID; the oldest registration answers the lookup.
-        Ok(store
+        store
             .workload_identities
             .values()
             .filter(|wi| wi.realm_id == realm_id.0 && wi.spiffe_id == spiffe_id)
-            .min_by(|a, b| a.id.cmp(&b.id))
-            .cloned())
+            .try_fold(None, |found, wi| match found {
+                None => Ok(Some(wi.clone())),
+                Some(_) => Err(QidError::Internal {
+                    message: "ambiguous SPIFFE binding; repair file store, then retry".into(),
+                }),
+            })
     }
 
     async fn list_workload_identities(

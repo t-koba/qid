@@ -466,3 +466,58 @@ async fn realm_deletion_file_rechecks_tenant_under_lock_after_id_reuse() {
         serde_json::to_value(seeded_store(true)).unwrap()
     );
 }
+
+#[tokio::test]
+async fn workload_lookup_fails_closed_on_legacy_duplicate_spiffe_bindings() {
+    let (file, repo) = TestFile::new().await;
+    let spiffe_id = "spiffe://corp.example/workload/worker";
+    let mut store = Store::default();
+    for id in ["workload-a", "workload-b"] {
+        store.workload_identities.insert(
+            id.to_string(),
+            WorkloadIdentity {
+                id: id.to_string(),
+                realm_id: "realm".to_string(),
+                spiffe_id: spiffe_id.to_string(),
+                description: None,
+                trust_domain: "corp.example".to_string(),
+                authorities_json: serde_json::json!([]),
+            },
+        );
+    }
+    *repo.store.write().await = store;
+    repo.save().await.unwrap();
+    drop(repo);
+
+    let repo = file.reopen().await;
+    let before = tokio::fs::read(&file.0).await.unwrap();
+    let err = repo
+        .get_workload_identity_by_spiffe(&RealmId::from("realm"), spiffe_id)
+        .await
+        .expect_err("an ambiguous legacy SPIFFE binding must fail closed");
+    assert!(matches!(err, QidError::Internal { .. }));
+    assert!(err.message().contains("repair file store, then retry"));
+    assert_eq!(tokio::fs::read(&file.0).await.unwrap(), before);
+    let identities = repo
+        .list_workload_identities(&RealmId::from("realm"))
+        .await
+        .unwrap();
+    assert_eq!(identities.len(), 2, "ambiguous records must be preserved");
+    drop(repo);
+
+    let mut repaired: Value = serde_json::from_slice(&before).unwrap();
+    repaired["workload_identities"]
+        .as_object_mut()
+        .unwrap()
+        .remove("workload-b");
+    tokio::fs::write(&file.0, serde_json::to_vec(&repaired).unwrap())
+        .await
+        .unwrap();
+    let repo = file.reopen().await;
+    let identity = repo
+        .get_workload_identity_by_spiffe(&RealmId::from("realm"), spiffe_id)
+        .await
+        .unwrap()
+        .expect("lookup succeeds after explicit repair");
+    assert_eq!(identity.id, "workload-a");
+}

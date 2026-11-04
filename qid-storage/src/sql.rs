@@ -122,7 +122,7 @@ fn postgres_migrator() -> sqlx::migrate::Migrator {
             migration.sql = std::borrow::Cow::Owned(
                 migration
                     .sql
-                    .replace("PRAGMA foreign_keys = off;", "")
+                    .replace("PRAGMA foreign_keys = off;", "").replace("\r\n", "\n")
                     .replace("PRAGMA foreign_keys = on;", "")
                     .replace("DATETIME", "BIGINT")
                     .replace("CURRENT_TIMESTAMP", POSTGRES_EPOCH_DEFAULT)
@@ -158,7 +158,7 @@ mod postgres_migration_tests {
         for (original, adapted) in MIGRATOR.iter().zip(postgres.iter()) {
             let expected_sql = original
                 .sql
-                .replace("PRAGMA foreign_keys = off;", "")
+                .replace("PRAGMA foreign_keys = off;", "").replace("\r\n", "\n")
                 .replace("PRAGMA foreign_keys = on;", "")
                 .replace("DATETIME", "BIGINT")
                 .replace("CURRENT_TIMESTAMP", POSTGRES_EPOCH_DEFAULT)

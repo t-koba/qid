@@ -8,16 +8,14 @@ impl AuditRepository for SqlRepository {
     async fn append_audit_event(&self, event: &AuditEvent) -> QidResult<()> {
         let mut transaction = self.pool.begin().await.map_err(storage_to_qid_error)?;
         let stream_id = audit_retention_stream_id(event.realm_id.as_deref());
-        sqlx::query("INSERT INTO audit_chain_locks (stream_id, lock_version) VALUES (?, 1) ON CONFLICT (stream_id) DO UPDATE SET lock_version = lock_version + 1")
+        sqlx::query("INSERT INTO audit_chain_locks (stream_id) VALUES ($1) ON CONFLICT (stream_id) DO UPDATE SET lock_version = 0")
             .bind(stream_id)
             .execute(&mut *transaction)
             .await
             .map_err(storage_to_qid_error)?;
         let previous_hash: Option<String> = sqlx::query_scalar(
-            "SELECT e.event_hash FROM audit_events e WHERE (e.realm_id = ? OR (? AND e.realm_id IS NULL)) AND e.event_hash IS NOT NULL AND NOT EXISTS (SELECT 1 FROM audit_events n WHERE (n.realm_id = ? OR (? AND n.realm_id IS NULL)) AND n.previous_hash = e.event_hash) ORDER BY e.created_at DESC, e.id DESC LIMIT 1",
+            "SELECT e.event_hash FROM audit_events e WHERE (e.realm_id = $1 OR ($2 AND e.realm_id IS NULL)) AND e.event_hash IS NOT NULL AND NOT EXISTS (SELECT 1 FROM audit_events n WHERE (n.realm_id = $1 OR ($2 AND n.realm_id IS NULL)) AND n.previous_hash = e.event_hash) ORDER BY e.created_at DESC, e.id DESC LIMIT 1",
         )
-        .bind(&event.realm_id)
-        .bind(event.realm_id.is_none())
         .bind(&event.realm_id)
         .bind(event.realm_id.is_none())
         .fetch_optional(&mut *transaction)
@@ -25,7 +23,7 @@ impl AuditRepository for SqlRepository {
         .map_err(storage_to_qid_error)?;
         let event = event.clone().with_chain_hashes(previous_hash);
         let result = sqlx::query(
-            "INSERT INTO audit_events (id, realm_id, actor, action, target_type, target_id, reason, metadata_json, created_at, previous_hash, event_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO audit_events (id, realm_id, actor, action, target_type, target_id, reason, metadata_json, created_at, previous_hash, event_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&event.id)
         .bind(&event.realm_id)
@@ -55,7 +53,7 @@ impl AuditRepository for SqlRepository {
         let limit = limit.min(1_000) as i64;
         let rows: Vec<AuditEventRow> = if let Some(realm_id) = realm_id {
             sqlx::query_as(
-                "SELECT * FROM audit_events WHERE realm_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                "SELECT * FROM audit_events WHERE realm_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2",
             )
             .bind(realm_id.as_str())
             .bind(limit)
@@ -63,7 +61,7 @@ impl AuditRepository for SqlRepository {
             .await
             .map_err(storage_to_qid_error)?
         } else {
-            sqlx::query_as("SELECT * FROM audit_events ORDER BY created_at DESC, id DESC LIMIT ?")
+            sqlx::query_as("SELECT * FROM audit_events ORDER BY created_at DESC, id DESC LIMIT $1")
                 .bind(limit)
                 .fetch_all(&self.pool)
                 .await
@@ -78,7 +76,7 @@ impl AuditRepository for SqlRepository {
     ) -> QidResult<AuditChainVerification> {
         let rows: Vec<AuditEventRow> = if let Some(realm_id) = realm_id {
             sqlx::query_as(
-                "SELECT * FROM audit_events WHERE realm_id = ? ORDER BY created_at ASC, id ASC",
+                "SELECT * FROM audit_events WHERE realm_id = $1 ORDER BY created_at ASC, id ASC",
             )
             .bind(realm_id.as_str())
             .fetch_all(&self.pool)
@@ -102,7 +100,7 @@ impl AuditRepository for SqlRepository {
 
     async fn set_audit_retention_config(&self, config: &AuditRetentionConfig) -> QidResult<()> {
         sqlx::query(
-            "INSERT INTO audit_retention_configs (stream_id, realm_id, retention_days, legal_hold, updated_by, reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(stream_id) DO UPDATE SET realm_id = excluded.realm_id, retention_days = excluded.retention_days, legal_hold = excluded.legal_hold, updated_by = excluded.updated_by, reason = excluded.reason, updated_at = excluded.updated_at",
+            "INSERT INTO audit_retention_configs (stream_id, realm_id, retention_days, legal_hold, updated_by, reason, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(stream_id) DO UPDATE SET realm_id = excluded.realm_id, retention_days = excluded.retention_days, legal_hold = excluded.legal_hold, updated_by = excluded.updated_by, reason = excluded.reason, updated_at = excluded.updated_at",
         )
         .bind(audit_retention_stream_id(config.realm_id.as_deref()))
         .bind(&config.realm_id)
@@ -122,7 +120,7 @@ impl AuditRepository for SqlRepository {
         realm_id: Option<&RealmId>,
     ) -> QidResult<Option<AuditRetentionConfig>> {
         let row: Option<AuditRetentionConfigRow> =
-            sqlx::query_as("SELECT * FROM audit_retention_configs WHERE stream_id = ?")
+            sqlx::query_as("SELECT * FROM audit_retention_configs WHERE stream_id = $1")
                 .bind(audit_retention_stream_id(realm_id.map(RealmId::as_str)))
                 .fetch_optional(&self.pool)
                 .await
@@ -140,7 +138,7 @@ impl AuditRepository for SqlRepository {
         };
         let rows: Vec<AuditEventRow> = if let Some(realm_id) = realm_id {
             sqlx::query_as(
-                "SELECT * FROM audit_events WHERE realm_id = ? ORDER BY created_at ASC, id ASC",
+                "SELECT * FROM audit_events WHERE realm_id = $1 ORDER BY created_at ASC, id ASC",
             )
             .bind(realm_id.as_str())
             .fetch_all(&self.pool)

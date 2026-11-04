@@ -377,7 +377,7 @@ pub trait DeviceRepository: Send + Sync + 'static {
     async fn register_device(&self, device: &Device) -> QidResult<()>;
     async fn get_device(&self, device_id: &str) -> QidResult<Option<Device>>;
     async fn get_user_devices(&self, user_id: &str) -> QidResult<Vec<Device>>;
-    /// Update only `last_seen_at` when ID, realm and user match atomically.
+    /// Set only a newer `last_seen_at` when ID, realm and user match atomically.
     /// Missing IDs and foreign owners are silent no-ops.
     async fn update_device_last_seen(&self, device: &Device) -> QidResult<()>;
 }

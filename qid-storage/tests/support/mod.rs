@@ -1651,6 +1651,20 @@ where
         serde_json::to_value(&device).unwrap()
     );
 
+    let stale_snapshot = Device {
+        last_seen_at: 1,
+        ..device.clone()
+    };
+    repo.update_device_last_seen(&stale_snapshot)
+        .await
+        .expect("stale same-owner heartbeat succeeds without rollback");
+    let stored = repo.get_device(&device.id).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&stored).unwrap(),
+        serde_json::to_value(&device).unwrap(),
+        "stale heartbeat must not roll back the newer timestamp"
+    );
+
     let foreign_realm = Device {
         realm_id: "foreign-realm".to_string(),
         last_seen_at: 3,

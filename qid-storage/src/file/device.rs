@@ -40,7 +40,7 @@ impl DeviceRepository for FileRepository {
             && stored.realm_id == device.realm_id
             && stored.user_id == device.user_id
         {
-            stored.last_seen_at = device.last_seen_at;
+            stored.last_seen_at = stored.last_seen_at.max(device.last_seen_at);
         }
         drop(store);
         self.save().await

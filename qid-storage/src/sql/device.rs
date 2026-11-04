@@ -47,8 +47,9 @@ impl DeviceRepository for SqlRepository {
 
     async fn update_device_last_seen(&self, device: &Device) -> QidResult<()> {
         sqlx::query(
-            "UPDATE devices SET last_seen_at = ? WHERE id = ? AND realm_id = ? AND user_id = ?",
+            "UPDATE devices SET last_seen_at = CASE WHEN last_seen_at < ? THEN ? ELSE last_seen_at END WHERE id = ? AND realm_id = ? AND user_id = ?",
         )
+        .bind(device.last_seen_at as i64)
         .bind(device.last_seen_at as i64)
         .bind(&device.id)
         .bind(&device.realm_id)

@@ -502,6 +502,104 @@ async fn workload_certificate_lifecycle_requires_bound_workload_svid() {
 }
 
 #[tokio::test]
+async fn workload_certificate_access_does_not_follow_reused_record_id() {
+    let (app, state, _) = setup().await;
+    let workload_id = "workload-api";
+    let certificate_id = "workload-retained-cert";
+    let certificate = WorkloadCertificate {
+        id: certificate_id.to_string(),
+        realm_id: "test".to_string(),
+        workload_id: workload_id.to_string(),
+        spiffe_id: WORKLOAD_SPIFFE_ID.to_string(),
+        serial_number: "01".to_string(),
+        x5t_s256: "a".repeat(64),
+        csr_sha256: "b".repeat(64),
+        certificate_pem: "-----BEGIN CERTIFICATE-----\\nZmFrZQ==\\n-----END CERTIFICATE-----"
+            .to_string(),
+        issuer_key_ref: "qid-ca://workload/test".to_string(),
+        issued_at: 1_800_000_000,
+        not_before: 1_800_000_000,
+        not_after: 1_800_003_600,
+        revoked_at: None,
+    };
+    state
+        .repo
+        .store_workload_certificate(&certificate)
+        .await
+        .unwrap();
+    state
+        .repo
+        .delete_workload_identity(&"test".into(), workload_id)
+        .await
+        .unwrap();
+    let replacement_spiffe = "spiffe://prod.example/ns/default/sa/reassigned";
+    state
+        .repo
+        .create_workload_identity(&WorkloadIdentity {
+            id: workload_id.to_string(),
+            realm_id: "test".to_string(),
+            spiffe_id: replacement_spiffe.to_string(),
+            trust_domain: "prod.example".to_string(),
+            description: Some("Reassigned workload".to_string()),
+            authorities_json: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    let now = qid_core::util::now_seconds();
+    let token = state
+        .signer
+        .sign(&JwtClaims {
+            iss: Some("https://id.example.com".to_string()),
+            sub: Some(replacement_spiffe.to_string()),
+            aud: Some(Audience::single("qid-workload-api".to_string())),
+            exp: Some((now + 3600) as usize),
+            nbf: Some((now - 10) as usize),
+            iat: Some(now as usize),
+            jti: Some("workload-reassigned-svid".to_string()),
+            extra: std::collections::HashMap::new(),
+        })
+        .unwrap();
+    let token = format!("Bearer {token}");
+    let listed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/api/v1/test/workload-certificates?workload_id={workload_id}"
+                ))
+                .header(axum::http::header::AUTHORIZATION, &token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    assert!(
+        json(listed).await["certificates"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let revoked = app
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/test/workload-certificates/{certificate_id}/revoke"),
+            r#"{"revoked_at":1800000100}"#.to_string(),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+    let retained = state
+        .repo
+        .list_workload_certificates(&"test".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(retained, vec![certificate]);
+}
+
+#[tokio::test]
 async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca() {
     let (app, state, token) = setup_with_workload_ca().await;
 

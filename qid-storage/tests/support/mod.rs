@@ -10,7 +10,7 @@ use qid_core::models::{
     IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
     MarketplaceConnector, MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle,
     RelationshipTuple, ServiceAccount, Session, TotpCredential, UsageBillingEvent, User,
-    VcCredentialStatusRecord, WebAuthnCredential, WorkloadIdentity,
+    VcCredentialStatusRecord, WebAuthnCredential, WorkloadCertificate, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -1003,6 +1003,25 @@ where
     repo.create_workload_identity(&identity)
         .await
         .expect("create workload identity failed");
+    let certificate = WorkloadCertificate {
+        id: "workload-delete-cert".to_string(),
+        realm_id: realm.0.clone(),
+        workload_id: identity.id.clone(),
+        spiffe_id: identity.spiffe_id.clone(),
+        serial_number: "01".to_string(),
+        x5t_s256: "a".repeat(64),
+        csr_sha256: "b".repeat(64),
+        certificate_pem: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----"
+            .to_string(),
+        issuer_key_ref: "qid-ca://workload/test".to_string(),
+        issued_at: 1_800_000_000,
+        not_before: 1_800_000_000,
+        not_after: 1_800_003_600,
+        revoked_at: None,
+    };
+    repo.store_workload_certificate(&certificate)
+        .await
+        .expect("store workload certificate failed");
 
     // Another realm may not delete this identity.
     let err = repo
@@ -1051,6 +1070,25 @@ where
             .expect("get workload identity by spiffe failed")
             .is_none(),
         "the deleted identity is still found by its SPIFFE ID"
+    );
+    let replacement = WorkloadIdentity {
+        id: identity.id.clone(),
+        realm_id: realm.0.clone(),
+        spiffe_id: "spiffe://corp.example/workload/delete-api-reassigned".to_string(),
+        description: Some("Reassigned workload".to_string()),
+        trust_domain: "corp.example".to_string(),
+        authorities_json: serde_json::json!({"issuer": "ca-reassigned"}),
+    };
+    repo.create_workload_identity(&replacement)
+        .await
+        .expect("recreate workload identity under a different SPIFFE subject");
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&replacement.id))
+            .await
+            .expect("list retained workload certificate")
+            .as_slice(),
+        &[certificate],
+        "deleting or reusing a workload ID must retain its certificate history"
     );
 }
 

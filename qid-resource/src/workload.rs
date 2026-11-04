@@ -310,7 +310,8 @@ pub async fn list_workload_certificates<R: Repository>(
         .list_workload_certificates(&RealmId(realm), Some(&caller.id))
         .await
     {
-        Ok(certificates) => {
+        Ok(mut certificates) => {
+            certificates.retain(|certificate| certificate.spiffe_id == caller.spiffe_id);
             Json(serde_json::json!({ "certificates": certificates })).into_response()
         }
         Err(e) => qid_http::error_response(e),
@@ -335,10 +336,9 @@ pub async fn revoke_workload_certificate<R: Repository>(
         Ok(certificates) => certificates,
         Err(e) => return qid_http::error_response(e),
     };
-    if !caller_certificates
-        .iter()
-        .any(|certificate| certificate.id == certificate_id)
-    {
+    if !caller_certificates.iter().any(|certificate| {
+        certificate.id == certificate_id && certificate.spiffe_id == caller.spiffe_id
+    }) {
         return qid_http::error_response(qid_core::error::QidError::Unauthorized {
             message: "caller workload cannot revoke a certificate for another workload".to_string(),
         });

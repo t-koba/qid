@@ -4191,10 +4191,33 @@ where
             .await
             .expect("unknown TOTP step claim failed")
     );
+    let stale = TotpCredential {
+        last_used_step: Some(100),
+        ..credential.clone()
+    };
     assert!(
         repo.consume_totp_step(&credential, 101)
             .await
             .expect("later TOTP step claim failed")
+    );
+    repo.store_totp_credential(&stale)
+        .await
+        .expect("same-owner stale TOTP update failed");
+    assert_eq!(
+        repo.get_totp_credential(&credential.user_id)
+            .await
+            .expect("get TOTP owner credential after stale update failed")
+            .expect("TOTP owner credential missing after stale update")
+            .last_used_step,
+        Some(101),
+        "a stale same-owner update must not roll back the consumed step"
+    );
+    assert!(
+        !repo
+            .consume_totp_step(&credential, 101)
+            .await
+            .expect("replayed later TOTP step claim failed"),
+        "a stale update must not reopen an already-consumed TOTP step"
     );
 }
 

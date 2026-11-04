@@ -192,6 +192,15 @@ pub struct TotpCredential {
     pub created_at: u64,
 }
 
+impl TotpCredential {
+    /// Replace credential data without moving the replay-protection step backward.
+    pub fn replace_preserving_last_used_step(&mut self, replacement: &Self) {
+        let last_used_step = self.last_used_step.max(replacement.last_used_step);
+        *self = replacement.clone();
+        self.last_used_step = last_used_step;
+    }
+}
+
 /// A registered device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {

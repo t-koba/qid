@@ -58,7 +58,7 @@ impl CredentialRepository for SqlRepository {
 
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()> {
         let result = sqlx::query(
-            "INSERT INTO credentials_totp (id, user_id, secret, algorithm, digits, period, enabled, last_used_step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, algorithm = excluded.algorithm, digits = excluded.digits, period = excluded.period, enabled = excluded.enabled, last_used_step = excluded.last_used_step, created_at = excluded.created_at WHERE credentials_totp.user_id = excluded.user_id",
+            "INSERT INTO credentials_totp (id, user_id, secret, algorithm, digits, period, enabled, last_used_step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, algorithm = excluded.algorithm, digits = excluded.digits, period = excluded.period, enabled = excluded.enabled, last_used_step = CASE WHEN excluded.last_used_step IS NULL OR credentials_totp.last_used_step > excluded.last_used_step THEN credentials_totp.last_used_step ELSE excluded.last_used_step END, created_at = excluded.created_at WHERE credentials_totp.user_id = excluded.user_id",
         )
         .bind(&cred.id)
         .bind(&cred.user_id)
@@ -88,17 +88,15 @@ impl CredentialRepository for SqlRepository {
     }
 
     async fn consume_totp_step(&self, cred: &TotpCredential, step: u64) -> QidResult<bool> {
-        let affected =
-            sqlx::query("UPDATE credentials_totp SET last_used_step = ? WHERE user_id = ? AND id = ? AND (last_used_step IS NULL OR last_used_step < ?)")
-                .bind(step as i64)
-                .bind(&cred.user_id)
-                .bind(&cred.id)
-                .bind(step as i64)
-                .execute(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
-                .rows_affected();
-        Ok(affected == 1)
+        sqlx::query("UPDATE credentials_totp SET last_used_step = ? WHERE user_id = ? AND id = ? AND (last_used_step IS NULL OR last_used_step < ?)")
+            .bind(step as i64)
+            .bind(&cred.user_id)
+            .bind(&cred.id)
+            .bind(step as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)
+            .map(|result| result.rows_affected() == 1)
     }
 
     async fn delete_webauthn_credential(&self, user_id: &str, id: &str) -> QidResult<()> {

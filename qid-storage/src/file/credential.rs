@@ -69,7 +69,11 @@ impl CredentialRepository for FileRepository {
             cred.user_id.as_str(),
             || format!("TOTP credential ID {} belongs to another user", cred.id),
         )?;
-        store.totp_credentials.insert(cred.id.clone(), cred.clone());
+        store
+            .totp_credentials
+            .entry(cred.id.clone())
+            .and_modify(|stored| stored.replace_preserving_last_used_step(cred))
+            .or_insert_with(|| cred.clone());
         drop(store);
         self.save().await
     }
@@ -85,13 +89,11 @@ impl CredentialRepository for FileRepository {
         let Some(stored) = store.totp_credentials.get_mut(&cred.id) else {
             return Ok(false);
         };
-        if stored.user_id != cred.user_id || stored.last_used_step.is_some_and(|used| used >= step)
-        {
+        if stored.user_id != cred.user_id || stored.last_used_step >= Some(step) {
             return Ok(false);
         }
         stored.last_used_step = Some(step);
         drop(store);
-        self.save().await?;
-        Ok(true)
+        self.save().await.map(|_| true)
     }
 }

@@ -4858,6 +4858,97 @@ where
     }
 }
 
+/// Competing verified links must have one unchanged winner and domain-error losers.
+pub async fn assert_ciam_identity_link_concurrent_subject<R>(repo: &R)
+where
+    R: CiamRepository + RealmRepository + UserRepository + Clone + Send + Sync + 'static,
+{
+    let realm = RealmId("realm-ciam-link-race".to_string());
+    repo.create_realm(
+        &TenantId("tenant-ciam-link-race".to_string()),
+        &realm,
+        "https://ciam-link-race.example.com",
+        None,
+    )
+    .await
+    .expect("create CIAM identity-link race realm");
+    let user = User {
+        id: "user-ciam-link-race".to_string(),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create CIAM identity-link race user");
+
+    // Release all contenders together, exceeding the SQL pool's ten connections
+    // so reads overlap before insertion. This bounded schedule exercises the
+    // former check-then-insert race, unlike sequential duplicate assertions.
+    const CONTENDERS: usize = 40;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(CONTENDERS));
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..CONTENDERS {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        let link = CiamIdentityLink {
+            id: format!("ciam-link-race-{index}"),
+            realm_id: realm.0.clone(),
+            user_id: user.id.clone(),
+            provider: "example-idp".to_string(),
+            external_subject: "contended-subject".to_string(),
+            external_email: Some(format!("contender-{index}@example.com")),
+            profile_json: serde_json::json!({"contender": index}),
+            linked_at_epoch_seconds: 100 + index as u64,
+            verified: true,
+        };
+        tasks.spawn(async move {
+            barrier.wait().await;
+            let result = repo.store_ciam_identity_link(&link).await;
+            (link, result)
+        });
+    }
+    // Drain every writer before asserting, including on a classifier regression.
+    let mut outcomes = Vec::new();
+    while let Some(outcome) = tasks.join_next().await {
+        outcomes.push(outcome.expect("CIAM identity-link contender panicked"));
+    }
+    let mut winners = Vec::new();
+    for (link, result) in outcomes {
+        match result {
+            Ok(()) => winners.push(link),
+            Err(error) => assert!(
+                matches!(error, QidError::BadRequest { .. }),
+                "competing verified link {} must return BadRequest, got {error:?}",
+                link.id
+            ),
+        }
+    }
+    assert_eq!(winners.len(), 1, "exactly one verified link must win");
+    assert_eq!(
+        repo.list_ciam_identity_links(&realm, &user.id)
+            .await
+            .expect("list CIAM identity links after contention"),
+        winners,
+        "only the unchanged winning link may persist"
+    );
+    let winner = &winners[0];
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(
+            &realm,
+            &winner.provider,
+            &winner.external_subject,
+        )
+        .await
+        .expect("resolve contended external subject"),
+        Some(winner.clone())
+    );
+}
+
 pub async fn assert_ciam_identity_link_delete_scope<R>(repo: &R)
 where
     R: CiamRepository + RealmRepository + UserRepository,

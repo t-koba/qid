@@ -958,3 +958,12 @@ async fn custom_domain_hostname_migration_preserves_duplicates_and_retries_after
     repo.close().await;
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn ciam_identity_link_concurrent_subject_holds_in_both_backends() {
+    let file = support::file_repo("ownership-contract-ciam-link-race").await;
+    support::assert_ciam_identity_link_concurrent_subject(&file).await;
+    let sql = support::sql_repo().await;
+    support::assert_ciam_identity_link_concurrent_subject(&sql).await;
+    sql.close().await;
+}

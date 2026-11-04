@@ -6,23 +6,23 @@ use crate::domain::audit_retention_stream_id;
 #[async_trait]
 impl AuditRepository for SqlRepository {
     async fn append_audit_event(&self, event: &AuditEvent) -> QidResult<()> {
-        let previous_hash: Option<String> = if let Some(realm_id) = &event.realm_id {
-            sqlx::query_scalar(
-                "SELECT e.event_hash FROM audit_events e WHERE e.realm_id = ? AND e.event_hash IS NOT NULL AND NOT EXISTS (SELECT 1 FROM audit_events n WHERE n.realm_id = ? AND n.previous_hash = e.event_hash) ORDER BY e.created_at DESC, e.id DESC LIMIT 1",
-            )
-            .bind(realm_id)
-            .bind(realm_id)
-            .fetch_optional(&self.pool)
+        let mut transaction = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        let stream_id = audit_retention_stream_id(event.realm_id.as_deref());
+        sqlx::query("INSERT INTO audit_chain_locks (stream_id, lock_version) VALUES (?, 1) ON CONFLICT (stream_id) DO UPDATE SET lock_version = lock_version + 1")
+            .bind(stream_id)
+            .execute(&mut *transaction)
             .await
-            .map_err(storage_to_qid_error)?
-        } else {
-            sqlx::query_scalar(
-                "SELECT e.event_hash FROM audit_events e WHERE e.realm_id IS NULL AND e.event_hash IS NOT NULL AND NOT EXISTS (SELECT 1 FROM audit_events n WHERE n.realm_id IS NULL AND n.previous_hash = e.event_hash) ORDER BY e.created_at DESC, e.id DESC LIMIT 1",
-            )
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?
-        };
+            .map_err(storage_to_qid_error)?;
+        let previous_hash: Option<String> = sqlx::query_scalar(
+            "SELECT e.event_hash FROM audit_events e WHERE (e.realm_id = ? OR (? AND e.realm_id IS NULL)) AND e.event_hash IS NOT NULL AND NOT EXISTS (SELECT 1 FROM audit_events n WHERE (n.realm_id = ? OR (? AND n.realm_id IS NULL)) AND n.previous_hash = e.event_hash) ORDER BY e.created_at DESC, e.id DESC LIMIT 1",
+        )
+        .bind(&event.realm_id)
+        .bind(event.realm_id.is_none())
+        .bind(&event.realm_id)
+        .bind(event.realm_id.is_none())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage_to_qid_error)?;
         let event = event.clone().with_chain_hashes(previous_hash);
         let result = sqlx::query(
             "INSERT INTO audit_events (id, realm_id, actor, action, target_type, target_id, reason, metadata_json, created_at, previous_hash, event_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
@@ -38,12 +38,13 @@ impl AuditRepository for SqlRepository {
         .bind(event.created_at as i64)
         .bind(&event.previous_hash)
         .bind(&event.event_hash)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(storage_to_qid_error)?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("Audit event ID {} already exists", event.id)
-        })
+        })?;
+        transaction.commit().await.map_err(storage_to_qid_error)
     }
 
     async fn list_audit_events(

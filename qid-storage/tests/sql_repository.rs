@@ -556,6 +556,56 @@ async fn test_audit_event_append_and_list() {
 }
 
 #[tokio::test]
+async fn test_concurrent_audit_appends_preserve_each_chain() {
+    let repo = Arc::new(sql_repo().await);
+    let events_per_stream = 32;
+    let barrier = Arc::new(tokio::sync::Barrier::new(events_per_stream * 2 + 1));
+    let mut tasks = tokio::task::JoinSet::new();
+
+    for (stream, realm_id) in [("global", None), ("realm", Some("audit-concurrency"))] {
+        for index in 0..events_per_stream {
+            let repo = Arc::clone(&repo);
+            let barrier = Arc::clone(&barrier);
+            let realm_id = realm_id.map(str::to_string);
+            tasks.spawn(async move {
+                barrier.wait().await;
+                let event = AuditEvent {
+                    id: format!("audit-concurrent-{stream}-{index}"),
+                    realm_id,
+                    actor: "test".into(),
+                    action: "test".into(),
+                    target_type: "test".into(),
+                    target_id: index.to_string(),
+                    reason: "concurrent append regression".into(),
+                    metadata_json: serde_json::json!({}),
+                    created_at: 1_700_000_000,
+                    previous_hash: None,
+                    event_hash: None,
+                };
+                repo.append_audit_event(&event)
+                    .await
+                    .expect("append concurrent audit event");
+            });
+        }
+    }
+
+    barrier.wait().await;
+    while let Some(result) = tasks.join_next().await {
+        result.expect("audit append task panicked");
+    }
+
+    let verification = repo
+        .verify_audit_chain(None)
+        .await
+        .expect("verify concurrent audit chains");
+    assert!(
+        verification.valid,
+        "broken concurrent chain: {verification:?}"
+    );
+    assert_eq!(verification.checked_events, events_per_stream * 2);
+}
+
+#[tokio::test]
 async fn test_audit_retention_config_crud() {
     let repo = sql_repo().await;
 

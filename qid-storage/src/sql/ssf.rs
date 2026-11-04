@@ -128,7 +128,7 @@ impl SsfRepository for SqlRepository {
         .bind(issuer)
         .bind(stream_id)
         .bind(jti)
-        .bind(expires_at as i64)
+        .bind(expires_at.min(i64::MAX as u64) as i64)
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;

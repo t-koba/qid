@@ -64,9 +64,9 @@ impl SsfRepository for FileRepository {
         if store.ssf_set_replay.contains_key(&key) {
             return Ok(false);
         }
+        let expires_at = expires_at.min(i64::MAX as u64);
         store.ssf_set_replay.insert(key, expires_at);
         drop(store);
-        self.save().await?;
-        Ok(true)
+        self.save().await.map(|()| true)
     }
 }

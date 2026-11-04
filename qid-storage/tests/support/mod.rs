@@ -4370,6 +4370,35 @@ where
             .await
             .expect("check replay after SSF SET JTI renewal failed")
     );
+
+    for expires_at in [i64::MAX as u64, u64::MAX] {
+        let jti = expires_at.to_string();
+        assert!(
+            repo.record_ssf_set_jti(&realm_a.0, issuer, stream_id, &jti, expires_at, 20)
+                .await
+                .expect("admit SSF SET JTI with maximum expiration failed")
+        );
+        for now in [21, i64::MAX as u64 - 1] {
+            assert!(
+                !repo
+                    .record_ssf_set_jti(&realm_a.0, issuer, stream_id, &jti, expires_at, now)
+                    .await
+                    .expect("maximum expiration must not re-enable SSF SET JTI replay")
+            );
+        }
+        assert!(
+            repo.record_ssf_set_jti(
+                &realm_a.0,
+                issuer,
+                stream_id,
+                &jti,
+                expires_at,
+                i64::MAX as u64
+            )
+            .await
+            .expect("SSF SET JTI expiration must clamp to the maximum signed timestamp")
+        );
+    }
 }
 
 /// Custom-domain IDs remain tenant-owned through lifecycle updates and deletes.

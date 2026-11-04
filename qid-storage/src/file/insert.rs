@@ -1,6 +1,6 @@
 use super::*;
 
-/// Keys for create-only records, not replacement or lifecycle writes.
+/// Keys for create-only writes and SCIM replacement validation.
 pub(super) trait InsertIdentity: Clone {
     const RECORD: &'static str;
     const IDENTITY: &'static str;

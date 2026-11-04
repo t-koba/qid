@@ -123,37 +123,45 @@ async fn exercise_cas(repo: &AnyRepository) {
             serde_json::to_value(Some(&user)).unwrap()
         );
     }
-    if matches!(repo, AnyRepository::Sql(_)) {
-        let mut occupied = user.clone();
-        occupied.id = "occupied".into();
-        occupied.user_name = "taken".into();
-        repo.create_scim_user(&occupied).await.unwrap();
-        for _ in 0..12 {
-            // An UPDATE constraint error, not just a callback error, must roll
-            // back and release the writer lock before the next attempt.
-            assert!(
-                repo.mutate_scim_user(
-                    &user.id,
-                    Box::new(|current| {
-                        let mut changed = current.clone();
-                        changed.user_name = "taken".into();
-                        Ok(ScimMutation::Replace(changed))
-                    })
-                )
-                .await
-                .is_err()
-            );
+    let mut occupied = user.clone();
+    occupied.id = "occupied".into();
+    occupied.user_name = "taken".into();
+    repo.create_scim_user(&occupied).await.unwrap();
+    let mut collision = user.clone();
+    collision.user_name = occupied.user_name.clone();
+    assert!(matches!(
+        repo.update_scim_user(&collision).await,
+        Err(QidError::Storage { .. })
+    ));
+    for expected in [&user, &occupied] {
+        assert_eq!(
+            serde_json::to_value(repo.get_scim_user(&expected.id).await.unwrap()).unwrap(),
+            serde_json::to_value(Some(expected)).unwrap()
+        );
+    }
+    for _ in 0..12 {
+        // A uniqueness rejection, not just a callback error, must release
+        // the writer lock before the next attempt.
+        assert!(
+            repo.mutate_scim_user(
+                &user.id,
+                Box::new(|current| {
+                    let mut changed = current.clone();
+                    changed.user_name = "taken".into();
+                    Ok(ScimMutation::Replace(changed))
+                })
+            )
+            .await
+            .is_err()
+        );
+        for expected in [&user, &occupied] {
             assert_eq!(
-                repo.get_scim_user(&user.id)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .user_name,
-                user.user_name
+                serde_json::to_value(repo.get_scim_user(&expected.id).await.unwrap()).unwrap(),
+                serde_json::to_value(Some(expected)).unwrap()
             );
         }
-        repo.delete_scim_user(&occupied.id, None).await.unwrap();
     }
+    repo.delete_scim_user(&occupied.id, None).await.unwrap();
     let mut first = repo.get_scim_user(&user.id).await.unwrap().unwrap();
     let mut second = repo.get_scim_user(&user.id).await.unwrap().unwrap();
     first.user_name = "first".into();
@@ -279,35 +287,43 @@ async fn exercise_cas(repo: &AnyRepository) {
         serde_json::to_value(repo.get_scim_group(&group.id).await.unwrap()).unwrap(),
         serde_json::to_value(Some(&group)).unwrap()
     );
-    if matches!(repo, AnyRepository::Sql(_)) {
-        let mut occupied = group.clone();
-        occupied.id = "occupied".into();
-        occupied.display_name = "taken".into();
-        repo.create_scim_group(&occupied).await.unwrap();
-        for _ in 0..12 {
-            assert!(
-                repo.mutate_scim_group(
-                    &group.id,
-                    Box::new(|current| {
-                        let mut changed = current.clone();
-                        changed.display_name = "taken".into();
-                        Ok(ScimMutation::Replace(changed))
-                    })
-                )
-                .await
-                .is_err()
-            );
+    let mut occupied = group.clone();
+    occupied.id = "occupied".into();
+    occupied.display_name = "taken".into();
+    repo.create_scim_group(&occupied).await.unwrap();
+    let mut collision = group.clone();
+    collision.display_name = occupied.display_name.clone();
+    assert!(matches!(
+        repo.update_scim_group(&collision).await,
+        Err(QidError::Storage { .. })
+    ));
+    for expected in [&group, &occupied] {
+        assert_eq!(
+            serde_json::to_value(repo.get_scim_group(&expected.id).await.unwrap()).unwrap(),
+            serde_json::to_value(Some(expected)).unwrap()
+        );
+    }
+    for _ in 0..12 {
+        assert!(
+            repo.mutate_scim_group(
+                &group.id,
+                Box::new(|current| {
+                    let mut changed = current.clone();
+                    changed.display_name = "taken".into();
+                    Ok(ScimMutation::Replace(changed))
+                })
+            )
+            .await
+            .is_err()
+        );
+        for expected in [&group, &occupied] {
             assert_eq!(
-                repo.get_scim_group(&group.id)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .display_name,
-                group.display_name
+                serde_json::to_value(repo.get_scim_group(&expected.id).await.unwrap()).unwrap(),
+                serde_json::to_value(Some(expected)).unwrap()
             );
         }
-        repo.delete_scim_group(&occupied.id, None).await.unwrap();
     }
+    repo.delete_scim_group(&occupied.id, None).await.unwrap();
     let mut first = repo.get_scim_group(&group.id).await.unwrap().unwrap();
     let mut second = repo.get_scim_group(&group.id).await.unwrap().unwrap();
     first.display_name = "first".into();

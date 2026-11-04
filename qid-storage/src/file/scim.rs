@@ -71,13 +71,8 @@ impl ScimRepository for FileRepository {
         id: &str,
         mutation: ScimMutator<'_, ScimUser>,
     ) -> QidResult<Option<ScimUser>> {
-        self.mutate_resource(
-            id,
-            mutation,
-            |store| &mut store.scim_users,
-            |a, b| a.id == b.id && a.realm_id == b.realm_id,
-        )
-        .await
+        self.mutate_resource(id, mutation, |store| &mut store.scim_users)
+            .await
     }
 
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
@@ -135,13 +130,8 @@ impl ScimRepository for FileRepository {
         id: &str,
         mutation: ScimMutator<'_, ScimGroup>,
     ) -> QidResult<Option<ScimGroup>> {
-        self.mutate_resource(
-            id,
-            mutation,
-            |store| &mut store.scim_groups,
-            |a, b| a.id == b.id && a.realm_id == b.realm_id,
-        )
-        .await
+        self.mutate_resource(id, mutation, |store| &mut store.scim_groups)
+            .await
     }
 
     async fn upsert_scim_device(&self, device: &ScimDeviceRecord) -> QidResult<()> {
@@ -249,12 +239,11 @@ impl ScimRepository for FileRepository {
 
 impl FileRepository {
     /// Apply the callback under the exclusive store lock and flush applied writes.
-    async fn mutate_resource<T: Clone>(
+    async fn mutate_resource<T: super::insert::InsertIdentity>(
         &self,
         id: &str,
         mutation: ScimMutator<'_, T>,
         resources: fn(&mut Store) -> &mut HashMap<String, T>,
-        same_identity: fn(&T, &T) -> bool,
     ) -> QidResult<Option<T>> {
         let mut store = self.store.write().await;
         let resources = resources(&mut store);
@@ -264,9 +253,20 @@ impl FileRepository {
         let result = match mutation(current)? {
             ScimMutation::Reject => return Ok(None),
             ScimMutation::Replace(replacement) => {
-                if !same_identity(current, &replacement) {
+                if current.id() != replacement.id()
+                    || current.identity().map(|(realm, _)| realm)
+                        != replacement.identity().map(|(realm, _)| realm)
+                {
                     return Err(QidError::BadRequest {
                         message: "serialized mutation cannot change resource identity".into(),
+                    });
+                }
+                if resources
+                    .iter()
+                    .any(|(key, stored)| key != id && stored.identity() == replacement.identity())
+                {
+                    return Err(QidError::Storage {
+                        message: format!("{} already exists in realm", T::IDENTITY),
                     });
                 }
                 resources.insert(id.to_string(), replacement.clone());

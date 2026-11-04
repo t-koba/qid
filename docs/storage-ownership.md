@@ -504,7 +504,7 @@ also require the referenced realm to belong to that tenant.
 
 | write | owner key | identity key | mutable fields | same-owner collision | enforcement (file:line) |
 |---|---|---|---|---|---|
-| `store_custom_domain` - `CustomDomain` | tenant (`tenant_id`); the realm must belong to it | record `id`; the schema also makes `hostname` ASCII-case-insensitively unique for supported canonical hostnames (`qid-storage/migrations/20261101000002_custom_domain_hostname_unique.sql`, unique `LOWER(hostname)` index) | hostname, certificate ref, verification fields, dates | File: another domain with the same hostname (case-insensitive) is refused with `Storage` (`qid-storage/src/file/saas.rs:68`, `qid-storage/src/file/saas.rs:71`); an ID already held by another tenant is refused with `Conflict` (`qid-storage/src/file/saas.rs:75`); a realm of another tenant is `Storage` (`qid-storage/src/file/saas.rs:63`). SQL: `ON CONFLICT(id) DO UPDATE ... WHERE` the tenant matches, so a foreign tenant updates no row and `ensure_upsert_applied` returns `Conflict` (`qid-storage/src/sql/saas.rs:50`, `qid-storage/src/sql/saas.rs:51`, `qid-storage/src/sql/saas.rs:68`); a case-insensitive duplicate hostname is a unique violation surfaced as `Storage` (`qid-storage/src/sql/row.rs:10`); a realm of another tenant is `Storage` (`qid-storage/src/sql/saas.rs:44`). Both refuse a foreign tenant with `Conflict`. | file `qid-storage/src/file/saas.rs:75`; sql `qid-storage/src/sql/saas.rs:51`, `qid-storage/src/sql/saas.rs:68` |
+| `store_custom_domain` - `CustomDomain` | tenant (`tenant_id`); the realm must belong to it | record `id`; the shared migration enforces ASCII-case-insensitive hostname uniqueness for supported canonical hostnames (PostgreSQL applies C collation in its adapter) | hostname, certificate ref, verification fields, dates | File: another domain with the same hostname (case-insensitive) is refused with `Storage` (`qid-storage/src/file/saas.rs:68`, `qid-storage/src/file/saas.rs:71`); an ID already held by another tenant is refused with `Conflict` (`qid-storage/src/file/saas.rs:75`); a realm of another tenant is `Storage` (`qid-storage/src/file/saas.rs:63`). SQL: `ON CONFLICT(id) DO UPDATE ... WHERE` the tenant matches, so a foreign tenant updates no row and `ensure_upsert_applied` returns `Conflict` (`qid-storage/src/sql/saas.rs:50`, `qid-storage/src/sql/saas.rs:51`, `qid-storage/src/sql/saas.rs:68`); a case-insensitive duplicate hostname is a unique violation surfaced as `Storage` (`qid-storage/src/sql/row.rs:10`); a realm of another tenant is `Storage` (`qid-storage/src/sql/saas.rs:44`). Both refuse a foreign tenant with `Conflict`. | file `qid-storage/src/file/saas.rs:75`; sql `qid-storage/src/sql/saas.rs:51`, `qid-storage/src/sql/saas.rs:68` |
 | `store_ciam_brand` - `CiamBrand` | tenant (`tenant_id`); the realm must belong to it | record `id`; the initial `realm_id` is retained on same-owner updates | display name, colours, logo and policy URIs, terms version, `active` | File: an ID already held by another tenant is refused with `Conflict` (`qid-storage/src/file/saas.rs:128`); a realm of another tenant is `Storage` (`qid-storage/src/file/saas.rs:124`). SQL: `ON CONFLICT(id) DO UPDATE ... WHERE` the tenant matches, so a foreign tenant updates no row and `ensure_upsert_applied` returns `Conflict` (`qid-storage/src/sql/saas.rs:113`, `qid-storage/src/sql/saas.rs:114`, `qid-storage/src/sql/saas.rs:129`); a realm of another tenant is `Storage` (`qid-storage/src/sql/saas.rs:107`). Both refuse a foreign tenant with `Conflict`. | file `qid-storage/src/file/saas.rs:128`; sql `qid-storage/src/sql/saas.rs:114`, `qid-storage/src/sql/saas.rs:129` |
 | `delete_ciam_brand` (delete) | tenant (`tenant_id`) | record `id` | none, removal | File: the brand is removed only when its tenant matches, and a missing brand or a brand of another tenant is a silent no-op (`qid-storage/src/file/saas.rs:158`, `qid-storage/src/file/saas.rs:160`). SQL: `DELETE FROM ciam_brands WHERE id = ? AND tenant_id = ?` and a missing brand is a silent no-op (`qid-storage/src/sql/saas.rs:145`). Both are tenant-scoped. | file `qid-storage/src/file/saas.rs:160`; sql `qid-storage/src/sql/saas.rs:145` |
 | `store_app_catalog_entry` - `AppCatalogEntry` | tenant (`tenant_id`); the realm must belong to it, and the referenced client and connector must exist | record `id`; the connector is tenant-bound by FK `(tenant_id, marketplace_connector_id)` to `(tenant_id, id)` (`qid-storage/migrations/20261101000003_app_catalog_connector_tenant_fk.sql`) | display name, category, OIDC client ID, SAML entity ID, SCIM flag, connector ID | File: an existing record ID is refused with `Conflict` (`qid-storage/src/file/saas.rs:216`, `qid-storage/src/file/saas.rs:217`); a foreign realm, a missing client or a connector of another tenant are `Storage` (`qid-storage/src/file/saas.rs:174`, `qid-storage/src/file/saas.rs:184`, `qid-storage/src/file/saas.rs:196`). SQL: plain `INSERT` maps duplicate IDs to `Conflict` (`qid-storage/src/sql/saas.rs:229`, `qid-storage/src/sql/saas.rs:243`); existing reference checks return `Storage` (`qid-storage/src/sql/saas.rs:168`, `qid-storage/src/sql/saas.rs:181`, `qid-storage/src/sql/saas.rs:195`), while the composite FK atomically rejects a stale cross-tenant connector reference. Both refuse a duplicate ID with `Conflict`. | file `qid-storage/src/file/saas.rs:216`; sql `qid-storage/src/sql/saas.rs:243`; schema `qid-storage/migrations/20261101000003_app_catalog_connector_tenant_fk.sql` |
@@ -520,13 +520,25 @@ also require the referenced realm to belong to that tenant.
 Custom-domain hostnames use ASCII-case-insensitive uniqueness in File and SQL for
 supported inputs: validation requires the URL parser's canonical ASCII hostname.
 Same-ID, same-tenant updates remain supported; a hostname cannot move to a second
-ID or tenant. The shared SQL migration preflights `LOWER(hostname)` collisions
-transactionally and fails without selecting, rewriting or deleting legacy rows,
-or advancing the migration ledger. If it fails, inspect ambiguous hostnames with:
+ID or tenant. The shared SQL migration preflights collisions transactionally and
+fails without selecting, rewriting or deleting legacy rows, or advancing the
+migration ledger. Its canonical bytes and checksum remain unchanged: SQLite uses
+`LOWER(hostname)`, while the PostgreSQL adapter applies `COLLATE "C"` to the
+hostname in both the guard and unique index. If migration fails, inspect ambiguous
+hostnames with the query for that database:
+
+SQLite:
 
 ```sql
 SELECT LOWER(hostname), COUNT(*) FROM custom_domains
 GROUP BY LOWER(hostname) HAVING COUNT(*) > 1;
+```
+
+PostgreSQL:
+
+```sql
+SELECT LOWER(hostname COLLATE "C"), COUNT(*) FROM custom_domains
+GROUP BY LOWER(hostname COLLATE "C") HAVING COUNT(*) > 1;
 ```
 
 Inspect each group's rows (including IDs, tenants and realms), explicitly repair

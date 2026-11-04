@@ -44,7 +44,7 @@ impl CredentialRepository for FileRepository {
             .get_mut(user_id)
             .and_then(|creds| creds.iter_mut().find(|c| c.id == id))
         {
-            cred.counter = counter;
+            cred.counter = cred.counter.max(counter);
         }
         drop(store);
         self.save().await

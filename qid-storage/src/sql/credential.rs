@@ -46,7 +46,7 @@ impl CredentialRepository for SqlRepository {
         id: &str,
         counter: u64,
     ) -> QidResult<()> {
-        sqlx::query("UPDATE credentials_webauthn SET counter = ? WHERE user_id = ? AND id = ?")
+        sqlx::query("UPDATE credentials_webauthn SET counter = CASE WHEN counter < $1 THEN $1 ELSE counter END WHERE user_id = $2 AND id = $3")
             .bind(counter as i64)
             .bind(user_id)
             .bind(id)

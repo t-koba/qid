@@ -1231,16 +1231,28 @@ where
     repo.update_webauthn_credential_counter(&user.id, &credential.id, 8)
         .await
         .expect("owner counter update failed");
+    repo.update_webauthn_credential_counter(&user.id, &credential.id, 10)
+        .await
+        .expect("newer owner counter update failed");
+    repo.update_webauthn_credential_counter(&user.id, &credential.id, 9)
+        .await
+        .expect("stale owner counter update should be harmless");
     let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].counter, 8, "owner update did not persist");
+    assert_eq!(
+        stored[0].counter, 10,
+        "stale owner update rolled back the authenticator counter"
+    );
 
-    repo.update_webauthn_credential_counter(&user.id, "unknown-credential", 9)
+    repo.update_webauthn_credential_counter(&user.id, "unknown-credential", 11)
         .await
         .expect("unknown credential update should be a no-op");
     let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].counter, 8, "unknown ID changed incumbent counter");
+    assert_eq!(
+        stored[0].counter, 10,
+        "unknown ID changed incumbent counter"
+    );
 
     let sibling = WebAuthnCredential {
         id: "alice-other-credential".to_string(),

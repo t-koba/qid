@@ -53,8 +53,9 @@ mod user;
 mod vc;
 mod workload;
 
-fn ciam_progressive_profile_key(realm_id: &str, user_id: &str) -> String {
-    format!("{}:{realm_id}{user_id}", realm_id.len())
+// Length-prefix the scope so delimiter-bearing components cannot alias.
+fn scoped_record_key(scope: &str, id: &str) -> String {
+    format!("{}:{scope}{id}", scope.len())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -149,42 +150,25 @@ struct Store {
     audit_retention_configs: HashMap<String, AuditRetentionConfig>,
 }
 
-impl Store {
-    fn rekey_audit_retention_configs(&mut self) -> QidResult<bool> {
-        let mut configs = HashMap::with_capacity(self.audit_retention_configs.len());
-        let mut changed = false;
-        for (old_key, config) in &self.audit_retention_configs {
-            let key = crate::domain::audit_retention_stream_id(config.realm_id.as_deref());
-            changed |= *old_key != key;
-            if configs.insert(key, config.clone()).is_some() {
-                return Err(QidError::Internal {
-                    message: "file store contains duplicate audit retention streams".into(),
-                });
-            }
+// Rebuild from record bindings, not legacy keys; reject ambiguous owners before saving.
+fn rekey_records<T: Clone>(
+    records: &mut HashMap<String, T>,
+    key: impl Fn(&T) -> String,
+    bindings: &str,
+) -> QidResult<bool> {
+    let mut rekeyed = HashMap::with_capacity(records.len());
+    let mut changed = false;
+    for (old_key, record) in records.iter() {
+        let new_key = key(record);
+        changed |= *old_key != new_key;
+        if rekeyed.insert(new_key, record.clone()).is_some() {
+            return Err(QidError::Internal {
+                message: format!("file store contains duplicate {bindings}"),
+            });
         }
-        self.audit_retention_configs = configs;
-        Ok(changed)
     }
-
-    // Older file stores used `realm:user`; rebuild from record bindings so
-    // delimiter-bearing IDs cannot alias and existing records remain readable.
-    fn rekey_ciam_progressive_profiles(&mut self) -> QidResult<bool> {
-        let old_profiles = std::mem::take(&mut self.ciam_profiles);
-        let mut profiles = HashMap::with_capacity(old_profiles.len());
-        let mut changed = false;
-        for (old_key, profile) in old_profiles {
-            let new_key = ciam_progressive_profile_key(&profile.realm_id, &profile.user_id);
-            changed |= old_key != new_key;
-            if profiles.insert(new_key, profile).is_some() {
-                return Err(QidError::Internal {
-                    message: "file store contains duplicate CIAM progressive profile owners"
-                        .to_string(),
-                });
-            }
-        }
-        self.ciam_profiles = profiles;
-        Ok(changed)
-    }
+    *records = rekeyed;
+    Ok(changed)
 }
 
 /// File-backed repository implementation.
@@ -262,8 +246,26 @@ impl FileRepository {
                 });
             }
         };
-        let profiles_rekeyed = store.rekey_ciam_progressive_profiles()?;
-        let retention_rekeyed = store.rekey_audit_retention_configs()?;
+        let mut rekeyed = rekey_records(
+            &mut store.ciam_profiles,
+            |p| scoped_record_key(&p.realm_id, &p.user_id),
+            "CIAM progressive profile owners",
+        )?;
+        rekeyed |= rekey_records(
+            &mut store.audit_retention_configs,
+            |c| crate::domain::audit_retention_stream_id(c.realm_id.as_deref()),
+            "audit retention streams",
+        )?;
+        rekeyed |= rekey_records(
+            &mut store.iga_entitlements,
+            |e| scoped_record_key(&e.tenant_id, &e.id),
+            "IGA entitlement owners",
+        )?;
+        rekeyed |= rekey_records(
+            &mut store.iga_access_packages,
+            |p| scoped_record_key(&p.tenant_id, &p.id),
+            "IGA access package owners",
+        )?;
         let repo = Self {
             store: Arc::new(tokio::sync::RwLock::new(store)),
             path: p,
@@ -278,7 +280,7 @@ impl FileRepository {
             dirty: Arc::new(AtomicBool::new(false)),
             flush_mode,
         };
-        if profiles_rekeyed || retention_rekeyed {
+        if rekeyed {
             repo.save().await?;
         }
         if let FileFlushMode::Interval(interval) = flush_mode {
@@ -463,10 +465,6 @@ fn reject_duplicate_id(exists: bool, message: impl FnOnce() -> String) -> QidRes
         return Err(QidError::Conflict { message: message() });
     }
     Ok(())
-}
-
-fn iga_tenant_scoped_key(tenant_id: &str, id: &str) -> String {
-    format!("{tenant_id}:{id}")
 }
 
 fn ssf_stream_key(realm_id: &str, stream_id: &str) -> String {

@@ -8,7 +8,7 @@ impl IgaRepository for FileRepository {
         entitlement.validate()?;
         let mut store = self.store.write().await;
         store.iga_entitlements.insert(
-            iga_tenant_scoped_key(&entitlement.tenant_id, &entitlement.id),
+            scoped_record_key(&entitlement.tenant_id, &entitlement.id),
             entitlement.clone(),
         );
         drop(store);
@@ -31,7 +31,7 @@ impl IgaRepository for FileRepository {
         let mut store = self.store.write().await;
         store
             .iga_entitlements
-            .remove(&iga_tenant_scoped_key(tenant_id, id));
+            .remove(&scoped_record_key(tenant_id, id));
         drop(store);
         self.save().await
     }
@@ -40,7 +40,7 @@ impl IgaRepository for FileRepository {
         package.validate()?;
         let mut store = self.store.write().await;
         store.iga_access_packages.insert(
-            iga_tenant_scoped_key(&package.tenant_id, &package.id),
+            scoped_record_key(&package.tenant_id, &package.id),
             package.clone(),
         );
         drop(store);
@@ -66,7 +66,7 @@ impl IgaRepository for FileRepository {
         let mut store = self.store.write().await;
         store
             .iga_access_packages
-            .remove(&iga_tenant_scoped_key(tenant_id, id));
+            .remove(&scoped_record_key(tenant_id, id));
         drop(store);
         self.save().await
     }

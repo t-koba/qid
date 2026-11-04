@@ -68,8 +68,30 @@ fn seeded_store(deleted: bool) -> Store {
     merge(&mut value, fixture("realm-peer"), false);
     merge(&mut value, fixture("realm"), deleted);
     let mut store: Store = serde_json::from_value(value).unwrap();
-    store.rekey_ciam_progressive_profiles().unwrap();
-    store.rekey_audit_retention_configs().unwrap();
+    rekey_records(
+        &mut store.ciam_profiles,
+        |p| scoped_record_key(&p.realm_id, &p.user_id),
+        "CIAM progressive profile owners",
+    )
+    .unwrap();
+    rekey_records(
+        &mut store.audit_retention_configs,
+        |c| crate::domain::audit_retention_stream_id(c.realm_id.as_deref()),
+        "audit retention streams",
+    )
+    .unwrap();
+    rekey_records(
+        &mut store.iga_entitlements,
+        |e| scoped_record_key(&e.tenant_id, &e.id),
+        "IGA entitlement owners",
+    )
+    .unwrap();
+    rekey_records(
+        &mut store.iga_access_packages,
+        |p| scoped_record_key(&p.tenant_id, &p.id),
+        "IGA access package owners",
+    )
+    .unwrap();
     // Non-user tokens outside the deleted realm have no user ownership link.
     for subject in ["service", "workload"] {
         let mut token = store.access_tokens["realm-peer-record"].clone();

@@ -594,7 +594,7 @@ impl CiamRepository for FileRepository {
         user_id: &str,
     ) -> QidResult<Option<CiamProgressiveProfile>> {
         let store = self.store.read().await;
-        let key = ciam_progressive_profile_key(&realm_id.0, user_id);
+        let key = scoped_record_key(&realm_id.0, user_id);
         Ok(store.ciam_profiles.get(&key).cloned())
     }
 
@@ -603,7 +603,7 @@ impl CiamRepository for FileRepository {
         profile: &CiamProgressiveProfile,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let key = ciam_progressive_profile_key(&profile.realm_id, &profile.user_id);
+        let key = scoped_record_key(&profile.realm_id, &profile.user_id);
         let incumbent = store.ciam_profiles.get(&key);
         // Preserve legacy file snapshots that already contain duplicate IDs
         // across distinct owners; only a new owner attempting that ID conflicts.
@@ -641,7 +641,7 @@ impl CiamRepository for FileRepository {
         user_id: &str,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let key = ciam_progressive_profile_key(&realm_id.0, user_id);
+        let key = scoped_record_key(&realm_id.0, user_id);
         store.ciam_profiles.remove(&key);
         drop(store);
         self.save().await

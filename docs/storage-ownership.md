@@ -302,9 +302,15 @@ Model types: `IgaEntitlementRecord`, `IgaAccessPackageRecord`,
 `IgaJitPrivilegeGrantRecord`, `IgaAccessReviewCampaignRecord`,
 `IgaAccessReviewDecisionRecord`, `IgaCertificationRecord`, `IgaFindingRecord`.
 The owner is the tenant (`tenant_id`). Entitlements and access packages are
-keyed by tenant plus ID (`qid-storage/src/file/mod.rs:442`,
-`qid-storage/migrations/20250618000019_iga_entitlements.sql:10`,
-`qid-storage/migrations/20250618000021_iga_access_packages.sql:10`); the other
+keyed by `(tenant_id, id)`. File uses the length-prefixed `scoped_record_key`
+encoding (`qid-storage/src/file/mod.rs`), so colons in either component do not
+alias another owner. On open, File rebuilds legacy keys from the records' tenant
+and ID bindings, preserving their contents. Duplicate bindings refuse the open
+without rewriting the store; no row is chosen or discarded. Same-owner writes
+still replace only that pair, and deletes remain tenant-scoped. SQL uses the
+composite primary keys in
+`qid-storage/migrations/20250618000019_iga_entitlements.sql:10` and
+`qid-storage/migrations/20250618000021_iga_access_packages.sql:10`. The other
 IGA tables declare `id` alone as the primary key
 (`qid-storage/migrations/20250618000017_iga_records.sql:2`).
 

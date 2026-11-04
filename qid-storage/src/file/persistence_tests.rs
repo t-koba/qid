@@ -865,7 +865,14 @@ async fn file_audit_retention_duplicate_streams_fail_without_rewriting() {
     );
     assert_eq!(tokio::fs::read(&file.0).await.unwrap(), original);
     assert_eq!(store.audit_retention_configs.len(), 2);
-    assert!(store.rekey_audit_retention_configs().is_err());
+    assert!(
+        rekey_records(
+            &mut store.audit_retention_configs,
+            |c| crate::domain::audit_retention_stream_id(c.realm_id.as_deref()),
+            "audit retention streams",
+        )
+        .is_err()
+    );
     assert_eq!(
         serde_json::to_vec(&store).unwrap(),
         original,

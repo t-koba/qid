@@ -54,6 +54,7 @@ fn minimal_config() -> QidConfig {
             },
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     }
 }

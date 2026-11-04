@@ -71,9 +71,24 @@ async fn expand_handler<R: Repository>(
         Err(e) => return e,
     };
     let namespace = scoped_namespace(&admin.tenant_id, &req.namespace);
-    let tree = match rebac::expand(&*state.repo, &namespace, &req.object_id, &req.relation).await {
+    let tree = match rebac::expand(
+        &*state.repo,
+        &namespace,
+        &req.object_id,
+        &req.relation,
+        state.config.iga.rebac.expand_max_response_bytes.get(),
+    )
+    .await
+    {
         Ok(tree) => tree,
-        Err(error) => return rebac_error_response(error),
+        Err(rebac::ExpandError::Repository(error)) => return rebac_error_response(error),
+        Err(rebac::ExpandError::ResponseTooLarge { limit_bytes }) => {
+            let body = serde_json::json!({
+                "error": "expand_response_too_large",
+                "limit_bytes": limit_bytes,
+            });
+            return (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response();
+        }
     };
     Json(ExpandResponse { tree }).into_response()
 }

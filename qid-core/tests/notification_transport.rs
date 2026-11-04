@@ -69,6 +69,7 @@ fn test_state() -> qid_core::state::SharedState<()> {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
     qid_core::state::SharedState::new(

@@ -43,6 +43,8 @@ pub struct QidConfig {
     #[serde(default)]
     pub admin: AdminConfig,
     #[serde(default)]
+    pub iga: IgaConfig,
+    #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
     pub crypto: CryptoConfig,
@@ -52,6 +54,30 @@ pub struct QidConfig {
     pub observability: ObservabilityConfig,
     #[serde(default)]
     pub ops: OpsConfig,
+}
+
+/// Identity governance configuration.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct IgaConfig {
+    pub rebac: RebacConfig,
+}
+
+/// ReBAC response resource policy.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RebacConfig {
+    /// Maximum complete compact JSON Expand response size, including its envelope.
+    pub expand_max_response_bytes: std::num::NonZeroUsize,
+}
+
+impl Default for RebacConfig {
+    fn default() -> Self {
+        Self {
+            expand_max_response_bytes: std::num::NonZeroUsize::new(2_097_152)
+                .unwrap_or(std::num::NonZeroUsize::MIN),
+        }
+    }
 }
 
 impl QidConfig {

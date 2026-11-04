@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use qid_core::{
-    error::QidResult,
+    error::{QidError, QidResult},
     models::{CheckRequest, ExpandNode, RelationshipTuple},
     util::now_seconds,
 };
@@ -95,9 +95,165 @@ pub async fn check<R: RebacRepository>(
     Ok(false)
 }
 
+/// Failure to expand a complete response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpandError {
+    Repository(QidError),
+    ResponseTooLarge { limit_bytes: usize },
+}
+
+impl std::fmt::Display for ExpandError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Repository(error) => std::fmt::Display::fmt(error, formatter),
+            Self::ResponseTooLarge { limit_bytes } => write!(
+                formatter,
+                "ReBAC Expand response exceeds the configured {limit_bytes}-byte limit"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExpandError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Repository(error) => Some(error),
+            Self::ResponseTooLarge { .. } => None,
+        }
+    }
+}
+
+impl From<QidError> for ExpandError {
+    fn from(error: QidError) -> Self {
+        Self::Repository(error)
+    }
+}
+
+type TupleGroupKey = (String, String, String);
+type TupleGroups = HashMap<TupleGroupKey, Vec<RelationshipTuple>>;
+
+// Lazy borrowed tree: serialization and materialization share edge selection.
+// Preflight allocates only the current path, never the expanded tree.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ExpandView<'a> {
+    Leaf {
+        namespace: &'a str,
+        subject_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subject_relation: Option<&'a str>,
+    },
+    Branch {
+        namespace: &'a str,
+        object_id: &'a str,
+        relation: &'a str,
+        children: ExpandChildren<'a>,
+    },
+}
+
+struct ExpandChildren<'a> {
+    groups: &'a TupleGroups,
+    key: &'a TupleGroupKey,
+    ancestry: Vec<&'a TupleGroupKey>,
+}
+
+impl<'a> ExpandChildren<'a> {
+    fn nodes(&self) -> impl Iterator<Item = ExpandView<'a>> + '_ {
+        self.groups.get(self.key).into_iter().flatten().map(|t| {
+            if !t.subject_relation.is_empty() && self.ancestry.len() <= MAX_DEPTH {
+                let key = (
+                    t.subject_namespace.clone(),
+                    t.subject_id.clone(),
+                    t.subject_relation.clone(),
+                );
+                if let Some((key, tuples)) = self.groups.get_key_value(&key)
+                    && !tuples.is_empty()
+                    && !self.ancestry.contains(&key)
+                {
+                    let mut ancestry = self.ancestry.clone();
+                    ancestry.push(key);
+                    return ExpandView::branch(self.groups, key, ancestry);
+                }
+            }
+            ExpandView::Leaf {
+                namespace: &t.subject_namespace,
+                subject_id: &t.subject_id,
+                subject_relation: (!t.subject_relation.is_empty())
+                    .then_some(t.subject_relation.as_str()),
+            }
+        })
+    }
+}
+
+impl serde::Serialize for ExpandChildren<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.nodes())
+    }
+}
+
+impl<'a> ExpandView<'a> {
+    fn branch(
+        groups: &'a TupleGroups,
+        key: &'a TupleGroupKey,
+        ancestry: Vec<&'a TupleGroupKey>,
+    ) -> Self {
+        Self::Branch {
+            namespace: &key.0,
+            object_id: &key.1,
+            relation: &key.2,
+            children: ExpandChildren {
+                groups,
+                key,
+                ancestry,
+            },
+        }
+    }
+
+    fn materialize(self) -> ExpandNode {
+        match self {
+            Self::Leaf {
+                namespace,
+                subject_id,
+                subject_relation,
+            } => ExpandNode::Leaf {
+                namespace: namespace.into(),
+                subject_id: subject_id.into(),
+                subject_relation: subject_relation.map(Into::into),
+            },
+            Self::Branch {
+                namespace,
+                object_id,
+                relation,
+                children,
+            } => ExpandNode::Branch {
+                namespace: namespace.into(),
+                object_id: object_id.into(),
+                relation: relation.into(),
+                children: children.nodes().map(Self::materialize).collect(),
+            },
+        }
+    }
+}
+
+struct ByteBudget(usize);
+
+impl std::io::Write for ByteBudget {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_sub(bytes.len())
+            .ok_or_else(|| std::io::Error::other("expand response byte budget exceeded"))?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Expand the set of subjects that have `relation` on `(namespace, object_id)`.
 ///
-/// Uses two phases:
+/// Preflight the complete compact JSON response before materializing the tree.
+/// Uses two traversal phases:
 ///   1. BFS to read each reachable tuple group once, up to MAX_DEPTH.
 ///   2. Render each path separately, preserving cyclic and depth-limited edges as leaves.
 pub async fn expand<R: RebacRepository>(
@@ -105,9 +261,8 @@ pub async fn expand<R: RebacRepository>(
     namespace: &str,
     object_id: &str,
     relation: &str,
-) -> QidResult<ExpandNode> {
-    type TupleGroupKey = (String, String, String);
-
+    max_response_bytes: usize,
+) -> Result<ExpandNode, ExpandError> {
     let root_key = (
         namespace.to_string(),
         object_id.to_string(),
@@ -140,65 +295,21 @@ pub async fn expand<R: RebacRepository>(
         groups.insert(key, tuples);
     }
 
-    // A rendered subtree depends on its path and depth, not just its group key.
-    // Only raw tuples are shared; remove ancestors on return so siblings retain
-    // their own copies of shared children. Recursion is bounded by MAX_DEPTH.
-    fn render_children(
-        groups: &HashMap<TupleGroupKey, Vec<RelationshipTuple>>,
-        key: &TupleGroupKey,
-        depth: usize,
-        ancestry: &mut HashSet<TupleGroupKey>,
-    ) -> Vec<ExpandNode> {
-        let Some(tuples) = groups.get(key) else {
-            return Vec::new();
-        };
-        let mut children = Vec::with_capacity(tuples.len());
-        for t in tuples {
-            if !t.subject_relation.is_empty() && depth < MAX_DEPTH {
-                let sub_key = (
-                    t.subject_namespace.clone(),
-                    t.subject_id.clone(),
-                    t.subject_relation.clone(),
-                );
-                if groups.get(&sub_key).is_some_and(|group| !group.is_empty())
-                    && ancestry.insert(sub_key.clone())
-                {
-                    let grand_children = render_children(groups, &sub_key, depth + 1, ancestry);
-                    ancestry.remove(&sub_key);
-                    children.push(ExpandNode::Branch {
-                        namespace: t.subject_namespace.clone(),
-                        object_id: t.subject_id.clone(),
-                        relation: t.subject_relation.clone(),
-                        children: grand_children,
-                    });
-                    continue;
-                }
-            }
-            children.push(ExpandNode::Leaf {
-                namespace: t.subject_namespace.clone(),
-                subject_id: t.subject_id.clone(),
-                subject_relation: if t.subject_relation.is_empty() {
-                    None
-                } else {
-                    Some(t.subject_relation.clone())
-                },
-            });
-        }
-        children
+    let tree = ExpandView::branch(&groups, &root_key, vec![&root_key]);
+    #[derive(serde::Serialize)]
+    struct ResponseView<'a> {
+        tree: &'a ExpandView<'a>,
     }
-
-    let root_children = render_children(
-        &groups,
-        &root_key,
-        0,
-        &mut HashSet::from([root_key.clone()]),
-    );
-    Ok(ExpandNode::Branch {
-        namespace: namespace.to_string(),
-        object_id: object_id.to_string(),
-        relation: relation.to_string(),
-        children: root_children,
-    })
+    // Include the envelope. serde_json encodes strings exactly as the HTTP Json
+    // response does, without allocating an output buffer or an owned tree.
+    serde_json::to_writer(
+        ByteBudget(max_response_bytes),
+        &ResponseView { tree: &tree },
+    )
+    .map_err(|_| ExpandError::ResponseTooLarge {
+        limit_bytes: max_response_bytes,
+    })?;
+    Ok(tree.materialize())
 }
 
 /// Write one or more relationship tuples.

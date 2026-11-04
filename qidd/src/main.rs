@@ -1765,6 +1765,7 @@ mod tests {
                 policy: Default::default(),
             }],
             observability: ObservabilityConfig::default(),
+            iga: Default::default(),
             ops: OpsConfig::default(),
         }
     }

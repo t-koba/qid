@@ -330,7 +330,9 @@ async fn test_expand_flat_members() {
     insert(&repo, direct("group", "eng", "member", "user", "alice")).await;
     insert(&repo, direct("group", "eng", "member", "user", "bob")).await;
 
-    let tree = expand(&repo, "group", "eng", "member").await.unwrap();
+    let tree = expand(&repo, "group", "eng", "member", 2_097_152)
+        .await
+        .unwrap();
     let ExpandNode::Branch { children, .. } = &tree else {
         panic!("expected branch");
     };
@@ -347,7 +349,9 @@ async fn test_expand_nested_group() {
     )
     .await;
 
-    let tree = expand(&repo, "group", "eng", "member").await.unwrap();
+    let tree = expand(&repo, "group", "eng", "member", 2_097_152)
+        .await
+        .unwrap();
     let ExpandNode::Branch { children, .. } = &tree else {
         panic!("expected branch");
     };
@@ -406,7 +410,9 @@ async fn test_expand_shared_child_appears_under_every_parent() {
     .await;
     insert(&repo, direct("group", "shared", "member", "user", "alice")).await;
 
-    let tree = expand(&repo, "group", "root", "member").await.unwrap();
+    let tree = expand(&repo, "group", "root", "member", 2_097_152)
+        .await
+        .unwrap();
     let ExpandNode::Branch { children, .. } = &tree else {
         panic!("expected branch");
     };
@@ -535,7 +541,9 @@ async fn test_expand_complete_three_group_cycle_reads_each_group_once() {
         }
     }
     let repo = ReadCountingRepository::new(tuples, 3);
-    let tree = expand(&repo, "group", "a", "member").await.unwrap();
+    let tree = expand(&repo, "group", "a", "member", 2_097_152)
+        .await
+        .unwrap();
     assert_eq!(repo.reads.load(std::sync::atomic::Ordering::SeqCst), 3);
 
     fn inspect(node: &ExpandNode, path: &mut HashSet<String>) -> (usize, usize) {
@@ -612,7 +620,9 @@ async fn test_expand_max_depth_is_path_local_even_for_cached_groups() {
     ));
     // 'shared' is cached at depth 1 but must not be expanded at depth 11.
     let repo = ReadCountingRepository::new(tuples, MAX_DEPTH + 2);
-    let tree = expand(&repo, "group", "g0", "member").await.unwrap();
+    let tree = expand(&repo, "group", "g0", "member", 2_097_152)
+        .await
+        .unwrap();
     assert_eq!(count_alice_leaves(&tree), 1);
     let mut node = &tree;
     for depth in 0..=MAX_DEPTH {
@@ -654,7 +664,9 @@ async fn test_expand_empty_groups_keep_userset_leaves_and_root_branch() {
         )],
         3,
     );
-    let tree = expand(&repo, "group", "root", "member").await.unwrap();
+    let tree = expand(&repo, "group", "root", "member", 2_097_152)
+        .await
+        .unwrap();
     let ExpandNode::Branch { children, .. } = tree else {
         panic!("expected root branch");
     };
@@ -662,7 +674,9 @@ async fn test_expand_empty_groups_keep_userset_leaves_and_root_branch() {
     assert!(matches!(&children[0], ExpandNode::Leaf {
             namespace, subject_id, subject_relation: Some(relation),
         } if namespace == "group" && subject_id == "missing" && relation == "member"));
-    let empty = expand(&repo, "group", "missing", "member").await.unwrap();
+    let empty = expand(&repo, "group", "missing", "member", 2_097_152)
+        .await
+        .unwrap();
     assert!(matches!(empty, ExpandNode::Branch {
             namespace, object_id, relation, children,
         } if namespace == "group" && object_id == "missing"
@@ -684,7 +698,9 @@ async fn test_expand_cyclic_membership_terminates() {
     )
     .await;
 
-    let tree = expand(&repo, "group", "cycle-a", "member").await.unwrap();
+    let tree = expand(&repo, "group", "cycle-a", "member", 2_097_152)
+        .await
+        .unwrap();
     assert!(count_alice_leaves(&tree) >= 1);
 }
 
@@ -796,4 +812,78 @@ async fn test_tenant_scoped_bridge_propagates_storage_error() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn expand_byte_budget_matches_serialized_response_with_escaped_text() {
+    use qid_core::models::ExpandResponse;
+    let namespace = "group\"\\\n\t\u{0000}雪";
+    let root = "root\"\\\r";
+    let relation = "member\n";
+    let mut tuples = Vec::new();
+    // Shared branches, a cycle, an empty userset, direct leaves, and a path
+    // beyond MAX_DEPTH exercise every edge-selection case in both passes.
+    for i in 0..=MAX_DEPTH {
+        let id = if i == 0 { root.into() } else { format!("g{i}") };
+        for (subject, subject_relation) in [
+            (format!("g{}", i + 1), relation),
+            (root.into(), relation),
+            ("missing".into(), relation),
+            ("alice\"\\\n\u{001f}雪".into(), ""),
+        ] {
+            tuples.push(userset(
+                namespace,
+                &id,
+                relation,
+                namespace,
+                &subject,
+                subject_relation,
+            ));
+        }
+    }
+    tuples.push(userset(
+        namespace, root, relation, namespace, "g2", relation,
+    ));
+    let repo = ReadCountingRepository::new(tuples, 100);
+    let tree = expand(&repo, namespace, root, relation, usize::MAX)
+        .await
+        .unwrap();
+    let expected = ExpandResponse { tree };
+    let size = serde_json::to_vec(&expected).unwrap().len();
+    for limit in [size, size + 1] {
+        let tree = expand(&repo, namespace, root, relation, limit)
+            .await
+            .unwrap();
+        assert_eq!(ExpandResponse { tree }, expected);
+    }
+    assert!(matches!(
+        expand(&repo, namespace, root, relation, size - 1).await,
+        Err(ExpandError::ResponseTooLarge { limit_bytes }) if limit_bytes == size - 1
+    ));
+}
+
+#[tokio::test]
+async fn expand_rejects_dense_graph_at_default_budget() {
+    let mut tuples = Vec::new();
+    for i in 0..8 {
+        for j in 0..8 {
+            tuples.push(userset(
+                "group",
+                &format!("g{i}"),
+                "member",
+                "group",
+                &format!("g{j}"),
+                "member",
+            ));
+        }
+    }
+    let repo = ReadCountingRepository::new(tuples, 8);
+    let limit = qid_core::config::RebacConfig::default()
+        .expand_max_response_bytes
+        .get();
+    assert!(
+        matches!(expand(&repo, "group", "g0", "member", limit).await,
+        Err(ExpandError::ResponseTooLarge { limit_bytes }) if limit_bytes == limit)
+    );
+    assert_eq!(repo.reads.load(std::sync::atomic::Ordering::SeqCst), 8);
 }

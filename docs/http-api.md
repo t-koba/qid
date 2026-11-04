@@ -474,6 +474,13 @@ or no trust domain is refused wherever it is named.
 | `POST` | `/iga/v1/rebac/tuples/delete` | Delete tuples. |
 | `POST` | `/iga/v1/rebac/tuples/read` | Read tuples. |
 
+ReBAC Expand returns the complete path-expanded `tree`, never a truncated tree
+or shared-node references. Its compact JSON response is limited by
+`iga.rebac.expand_max_response_bytes` (default 2 MiB). A response above the
+configured limit returns HTTP 413 with
+`{"error":"expand_response_too_large","limit_bytes":2097152}`; `limit_bytes`
+reports the configured value. See [configuration](configuration.md#rebac-expand-response-budget).
+
 ## Directory, risk, SSF, VC
 
 Directory provider list/detail routes require the `x-qid-admin-session-id`

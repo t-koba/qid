@@ -82,6 +82,7 @@ fn config() -> QidConfig {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     }
 }

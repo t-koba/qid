@@ -34,11 +34,35 @@ cargo run --bin qidc -- --config base.yaml --config prod.yaml plan
 | `profile` | no | Deployment profile. Defaults to `oidc`. |
 | `server` | yes | Listen address, public URL, TLS, paths, CORS, HTTP Message Signatures. |
 | `admin` | no | Admin operation security policy. |
+| `iga` | no | Identity governance and ReBAC response budgets. |
 | `storage` | no | Primary repository and cache settings. |
 | `crypto` | no | Default signing algorithm and keyrings. |
 | `realms` | yes | Realm definitions. At least one realm is required. |
 | `observability` | no | Log format and metrics listener. |
 | `ops` | no | Ops cache, cluster, declared backup target/version, and restore/orchestration interlock. |
+
+## ReBAC Expand response budget
+
+`iga.rebac.expand_max_response_bytes` is a nonzero integer, default **2,097,152
+bytes (2 MiB)**. Set it in YAML/TOML or override it with
+`QID_IGA__REBAC__EXPAND_MAX_RESPONSE_BYTES=2097152`.
+
+```yaml
+iga:
+  rebac:
+    expand_max_response_bytes: 2097152
+```
+
+The limit covers the complete compact UTF-8 JSON `ExpandResponse`, including
+its `tree` envelope and JSON string escaping, not headers or transport framing.
+A response exactly at the limit succeeds. Larger responses are rejected before
+tree materialization with HTTP **413** and JSON
+`{"error":"expand_response_too_large","limit_bytes":2097152}` (the configured
+limit is reported). There is no partial tree, silent truncation, or shared-node
+reference format. Path-expanded trees, cycle leaves and `MAX_DEPTH=10` remain
+unchanged. The preflight uses the already-fetched tuple groups; this is an
+output budget, not a bound on repository reads or raw tuple storage. Raising it
+permits larger response allocations and serialization work.
 
 ## Profiles
 

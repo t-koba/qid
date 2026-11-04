@@ -1,3 +1,8 @@
+# Complete ReBAC Expand JSON response budget; nonzero, overflow returns HTTP 413.
+iga:
+  rebac:
+    expand_max_response_bytes: 2097152 # 2 MiB; QID_IGA__REBAC__EXPAND_MAX_RESPONSE_BYTES
+
 server:
   listen: "0.0.0.0:8443"
   public_base_url: "https://id.example.com"

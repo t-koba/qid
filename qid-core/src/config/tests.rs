@@ -31,6 +31,7 @@ fn minimal_config() -> QidConfig {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     }
 }
@@ -165,6 +166,7 @@ fn test_minimal_config_validation() {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
     assert!(config.validate().is_ok());
@@ -436,6 +438,7 @@ fn test_duplicate_realm_rejected() {
             },
         ],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
     assert!(config.validate().is_err());
@@ -462,6 +465,7 @@ fn test_config_validation_no_realms() {
         crypto: CryptoConfig::default(),
         realms: vec![],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
     let err = config.validate().unwrap_err();
@@ -500,6 +504,7 @@ fn test_issuer_url_validation() {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
     let err = config.validate().unwrap_err();
@@ -568,6 +573,7 @@ fn ops_config_rejects_incomplete_cache_and_multi_region() {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
 
@@ -1083,6 +1089,7 @@ fn saml_service_provider_config_validates_trust_material() {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
     config.validate().unwrap();
@@ -1148,6 +1155,7 @@ fn saml_service_provider_config_rejects_duplicates_and_missing_encryption() {
             policy: PolicyConfig::default(),
         }],
         observability: ObservabilityConfig::default(),
+        iga: Default::default(),
         ops: OpsConfig::default(),
     };
     let err = config.validate().unwrap_err();
@@ -2955,4 +2963,72 @@ fn push_policy_is_disabled_bounded_and_strict() {
     }
     assert!(serde_json::from_str::<MfaConfig>(r#"{"push":{"algorithm":"none"}}"#).is_err());
     assert!(serde_json::from_str::<MfaConfig>(r#"{"require_step_up":true}"#).is_err());
+}
+
+#[test]
+fn rebac_response_budget_config_defaults_and_rejects_zero() {
+    let base = r#"
+server:
+  listen: "127.0.0.1:8443"
+  public_base_url: "https://id.example.com"
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+"#;
+    for section in ["", "iga: {}", "iga: {rebac: {}}"] {
+        let config: QidConfig = Figment::from(Yaml::string(&format!("{base}\n{section}")))
+            .extract()
+            .unwrap();
+        assert_eq!(config.iga.rebac.expand_max_response_bytes.get(), 2_097_152);
+    }
+    for (value, valid) in [("1", true), ("12345", true), ("0", false), ("-1", false)] {
+        let result = Figment::from(Yaml::string(&format!(
+            "{base}\niga:\n  rebac:\n    expand_max_response_bytes: {value}\n"
+        )))
+        .extract::<QidConfig>();
+        assert_eq!(result.is_ok(), valid);
+        if let Ok(config) = result {
+            assert_eq!(
+                config.iga.rebac.expand_max_response_bytes.get(),
+                value.parse::<usize>().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn rebac_response_budget_environment_override() {
+    // Re-execute in a child rather than mutate the parallel test process's env.
+    if std::env::var_os("REBAC_BUDGET_ENV_CHILD").is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::rebac_response_budget_environment_override",
+            ])
+            .env("REBAC_BUDGET_ENV_CHILD", "1")
+            .env("QID_IGA__REBAC__EXPAND_MAX_RESPONSE_BYTES", "37")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let path = temp_config_path("rebac-env.yaml");
+    std::fs::write(
+        &path,
+        r#"
+server:
+  listen: "127.0.0.1:8443"
+  public_base_url: "https://id.example.com"
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+iga:
+  rebac:
+    expand_max_response_bytes: 2097152
+"#,
+    )
+    .unwrap();
+    let config = QidConfig::from_file(path.to_str().unwrap()).unwrap();
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    assert_eq!(config.iga.rebac.expand_max_response_bytes.get(), 37);
 }

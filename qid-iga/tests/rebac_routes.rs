@@ -128,3 +128,43 @@ async fn delete_removes_tuple_and_check_denies() {
     let body = post_raw(app.clone(), "/iga/v1/rebac/check", r#"{"namespace":"document","object_id":"doc-5","relation":"viewer","subject":{"namespace":"user","subject_id":"alice"}}"#, &session_id).await;
     assert_eq!(body["allowed"], false);
 }
+
+#[tokio::test]
+async fn expand_uses_configured_response_budget_and_returns_explicit_413() {
+    use qid_core::{state::SharedState, test_helpers};
+    use qid_crypto::LocalSigner;
+    use std::sync::Arc;
+
+    let (_dir, app, repo, session) = setup_app("qid-rebac-budget", None, "test-admin").await;
+    let body = serde_json::json!({"namespace": "group", "object_id": "empty\"\\\n雪", "relation": "member"});
+    let expected = common::post_json(app, "/iga/v1/rebac/expand", body.clone(), &session).await;
+    let size = serde_json::to_vec(&expected).unwrap().len();
+    for limit in [size + 1, size, size - 1] {
+        let mut config = test_helpers::test_config();
+        config.iga.rebac.expand_max_response_bytes = limit.try_into().unwrap();
+        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
+        let state = Arc::new(
+            SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap(),
+        );
+        let app = qid_iga::iga_routes().with_state(state);
+        let response = app
+            .oneshot(common::request_with_headers(
+                Method::POST,
+                "/iga/v1/rebac/expand",
+                body.clone(),
+                &session,
+            ))
+            .await
+            .unwrap();
+        if limit >= size {
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(common::json(response).await, expected);
+        } else {
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(
+                common::json(response).await,
+                serde_json::json!({"error": "expand_response_too_large", "limit_bytes": limit})
+            );
+        }
+    }
+}

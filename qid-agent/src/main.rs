@@ -140,9 +140,19 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             };
             device.last_seen_at = last_seen_at.unwrap_or_else(now_seconds);
             repo.update_device_last_seen(&device).await?;
+            let stored = repo
+                .get_device(&device_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("device not found: {device_id}"))?;
+            ensure!(
+                stored.id == device.id
+                    && stored.realm_id == device.realm_id
+                    && stored.user_id == device.user_id,
+                "device identity changed: {device_id}"
+            );
             Ok(serde_json::json!({
                 "command": "device_heartbeat",
-                "device": device,
+                "device": stored,
             }))
         }
         Command::Devices { user_id } => {
@@ -378,26 +388,29 @@ realms:
         assert_eq!(device.last_seen_at, 100);
         drop(lookup_repo);
 
-        let heartbeat = run(Args {
-            config,
-            command: Command::DeviceHeartbeat {
-                device_id: device_id.clone(),
-                last_seen_at: Some(250),
-            },
-        })
-        .await
-        .expect("device heartbeat");
-        assert_eq!(heartbeat["command"], "device_heartbeat");
+        for last_seen_at in [250, 150] {
+            let heartbeat = run(Args {
+                config: config.clone(),
+                command: Command::DeviceHeartbeat {
+                    device_id: device_id.clone(),
+                    last_seen_at: Some(last_seen_at),
+                },
+            })
+            .await
+            .expect("device heartbeat");
+            assert_eq!(heartbeat["command"], "device_heartbeat");
 
-        let refreshed_repo = AnyRepository::connect(store.to_str().expect("utf-8 store"))
-            .await
-            .expect("refreshed repository");
-        let updated = refreshed_repo
-            .get_device(&device_id)
-            .await
-            .expect("updated device lookup")
-            .expect("updated device");
-        assert_eq!(updated.last_seen_at, 250);
+            let refreshed_repo = AnyRepository::connect(store.to_str().expect("utf-8 store"))
+                .await
+                .expect("refreshed repository");
+            let updated = refreshed_repo
+                .get_device(&device_id)
+                .await
+                .expect("updated device lookup")
+                .expect("updated device");
+            assert_eq!(updated.last_seen_at, 250);
+            assert_eq!(heartbeat["device"], serde_json::to_value(updated).unwrap());
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

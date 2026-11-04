@@ -9,7 +9,8 @@ async fn setup() -> IsolatedDb {
     for sql in [
         seed.to_string(),
         seed.replace("'realm", "'realm-peer")
-            .replace("https://realm.", "https://realm-peer."),
+            .replace("https://realm.", "https://realm-peer.")
+            .replace("'AQ=='", "'Ag=='"),
     ] {
         sqlx::raw_sql(&sql).execute(&db.repo().pool).await.unwrap();
     }

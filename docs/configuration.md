@@ -521,7 +521,7 @@ naming the key.
 `authentication` includes:
 
 - `passkeys.enabled`, `rp_id`, `rp_origin`, `rp_name`, `preferred`, optional `attestation`
-- `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `max_failed_attempts_per_realm`, `argon2id`, `pepper`
+- `password.enabled`, `hash`, `max_failed_attempts`, `lockout_duration_seconds`, `max_failed_attempts_per_realm`, `argon2id`, `pepper`, `screening`
 - `email_verification.ttl_seconds` (default `600`, allowed `1..=3600`) and `email_verification.max_attempts` (default `5`, positive): persisted session-bound email challenge policy. `email_verification.max_issuances_per_window` (default `5`, allowed `1..=100`) and `email_verification.issuance_window_seconds` (default `3600`, allowed `1..=86400`) bound issuance per realm/user/purpose independently of magic-link login. All fields may be omitted independently. Admission atomically checks the current stored address and unverified owner and persists before delivery. All records created at or after `server_creation_time - issuance_window_seconds + 1` count, including consumed, expired, failed-delivery and newer records (clock rollback). At the next second after the boundary an old record stops counting. Changing the stored address does not reset the account budget; suppression sends nothing, and delivery failure does not refund admission.
 - `mfa.totp.enabled`, `mfa.totp.max_failed_attempts` (default `5`, allowed `1..=100`), `mfa.totp.failed_attempt_window_seconds` (default `300`, allowed `1..=86400`): per-account TOTP proof admission policy.
 - `mfa.push.enabled` (default `false`), `mfa.push.ttl_seconds` (default `300`, `1..=600`), `mfa.push.max_attempts` (default `5`, `1..=20`), `mfa.push.max_issuances_per_window` (default `5`, `1..=100`), `mfa.push.issuance_window_seconds` (default `3600`, `1..=86400`), `mfa.push.resend_cooldown_seconds` (default `30`, `1..=600`), `mfa.push.recent_reauth_seconds` (default `300`, `1..=900`), `mfa.push.max_destination_bytes` (default `1024`, `1..=4096`) and `mfa.push.max_proof_bytes` (default `4096`, `256..=8192`): registered-device push-MFA and enrollment limits. qid does not claim this flow is a NIST SP 800-63B-4-conforming OOB method, AAL2, or phishing-resistant authentication; see the [push assurance boundary](password-push-login.md#assurance-boundary). The login purpose issuance quota counts initial sends and admitted resends together; failures/timeouts consume admission. Resends never reset expiry or signature attempts. Cooldown uses durable last-send admission time.
@@ -638,6 +638,76 @@ there is no extra trusted-enrollment endpoint or hosted enrollment UI.
 ### Password policy
 
 `password` is the realm's password policy, and every setting in it has an effect. `hash` names the algorithm the product creates credentials with, so any other value is a configuration error naming the key. `max_failed_attempts` and `lockout_duration_seconds` are the limits the realm's password logins enforce: the session API and the OIDC authorization endpoint both lock the account after that many failed attempts and refuse even the correct password until the lockout expires. `max_failed_attempts_per_realm` bounds the failures the realm accepts as a whole: within the lockout window the realm accepts that many failed password logins and refuses further password logins with `429 Too Many Requests` until the window passes, so a spray that tests one guess per account cannot run without bound, and one burst cannot lock every account of a realm. The budget counts failures only, so a successful login never spends it, and a refused login is refused before any credential is verified, so it costs no Argon2id work. The budget is kept in the process that enforces it, so a deployment with several instances applies the limit to each of them. Both password login paths share the budget of the realm, so they enforce the same numbers. Before the credential work, a password login is admitted by an admission count: the submitted email's admission count follows `max_failed_attempts` within `lockout_duration_seconds`, and the realm's admission count follows `max_failed_attempts_per_realm` within the same window. The admission cap counts the logins that reach the credential work, while the budget counts only the logins that failed, so the two answer different questions: the cap bounds the work a spray of guesses can cause, and the budget bounds the failures a realm accepts. A login the cap refuses answers `429 Too Many Requests` before any credential is verified, so it costs no Argon2id work, and the session API and the authorization endpoint share the cap, so both paths refuse the same logins. A successful login gives back the admission it spent on the submitted address and on the realm, so both counts follow the logins that failed and the ones still in flight: a realm whose logins succeed keeps its room, and one success never spends the room of the realm it belongs to. The admission limiter is process-local, so each qidd instance enforces its own counts and restarts clear them. `argon2id` is the cost the product hashes with whenever it creates a credential - a user the CLI creates, a user a seed writes, a password a reset consumes - and the cost every credential of the realm ends up carrying: a credential whose stored parameters differ from the realm's is rehashed with the realm's cost at the next successful login, so an imported credential and a credential created at an older cost both reach it; verification always honours the parameters stored in the hash. The obsolete `pepper_ref` is rejected; use the explicit versioned `pepper` key configuration below.
+
+### Prospective-password screening
+
+`authentication.password.screening` is opt-in per realm. Omit it for no screening
+and **no network request**; omission never selects a public service. When present,
+configure at least one source. For example, under `authentication.password`:
+
+```yaml
+screening:
+  # SHA-256 of the exact UTF-8 bytes of "password"; replace/extend for your policy.
+  sha256_hex:
+    - "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"
+  # Optional HIBP-compatible endpoint base, explicitly chosen by the operator:
+  # range_url: https://range.example.com/range/
+  on_unavailable: deny
+  timeout_ms: 3000
+  max_retries: 0
+  retry_delay_ms: 250
+  max_response_bytes: 1048576
+```
+
+`sha256_hex` defaults to an empty list. Entries must be exactly 64 ASCII hex
+characters (case-insensitive). qid hashes exact UTF-8 password bytes with SHA-256:
+no trimming, Unicode normalization or pepper. The list is an immutable per-context
+set; configuration changes require rebuilding the context/restarting the process.
+There is no watcher, cache or background fetch, and a finite list is not a
+completeness or password-strength guarantee.
+
+`range_url` defaults to absent. It must be HTTPS with a host and no credentials,
+query or fragment. qid appends the first **five uppercase SHA-1 hex characters**
+as one path segment and compares the remaining 35 hex characters locally. It
+sends `Add-Padding: true`; zero-count response entries are padding, not matches.
+Only the prefix is transmitted, never the full digest, plaintext, identity or
+reset token. This reduces disclosure but is not anonymity: the selected service
+can observe the prefix, caller address and timing. Choose a trusted endpoint and
+control egress accordingly. Redirects and automatic HTTP-client retries are disabled.
+`max_retries` defaults to **0**: one attempt per prospective password unless a
+local hit already rejects it. Set it to the number of additional attempts allowed
+after transient transport, timeout or body-read errors, or HTTP 429/5xx responses.
+`retry_delay_ms` defaults to **250**; qid waits this fixed delay between attempts
+(zero is allowed). It does not retry valid positive/negative results, malformed or
+oversized payloads, redirects or other HTTP statuses. Exhaustion uses
+`on_unavailable`. One immutable HTTP client is reused per realm context. No
+request or raw service error/body/URL is logged by screening.
+
+`timeout_ms` defaults to **3000** (per attempt, including body) and
+`max_response_bytes` to **1048576** (1 MiB); both must be positive. The byte limit
+is enforced while reading chunks, including responses without Content-Length.
+Attempts run sequentially and discard response buffers before waiting/retrying;
+retry count does not multiply retained response memory. Total screening latency
+can grow with the configured attempts and intervening delays.
+Timeout, transport/TLS errors, non-2xx responses, oversized bodies and malformed
+range entries are unavailable-source outcomes. Range lines are `35-hex:count`,
+with an unsigned decimal count; a valid positive match rejects even if another
+entry is malformed. `on_unavailable` is `deny` by default, returning the existing
+503 service-unavailable classifier (`storage_error`) with the sanitized message
+`password screening unavailable`. Explicit `allow` continues on source failure;
+it never overrides a positive match from either source. Every listed password
+returns the same source-independent 400 `password_not_allowed` message. Neither
+refusal counts as a failed login or identifies an account/source.
+
+Screening runs **before hashing/storage** for reset consumption, `qidc user create`
+and qid-dev new-user seeding or `--replace-password`. A refused reset leaves the
+proof unconsumed and the old credential intact for retry; CLI/dev refusal leaves
+no partial new user and does not overwrite an incumbent. Existing dev users are
+not screened without replacement. **Login and verified-password progressive
+rehash are never screened**: an already stored password remains usable if later
+listed. Embedders must install resolved realm contexts before serving configured
+screening; a missing context fails closed. Use `PasswordCredentials::prepare` for
+prospective passwords, not the low-level `hash` used for verified rehash.
 
 ### Realm password pepper
 

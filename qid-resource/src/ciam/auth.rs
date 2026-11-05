@@ -271,13 +271,9 @@ pub async fn password_reset_consume<R: Repository>(
                 Ok(credentials) => credentials,
                 Err(error) => return qid_http::error_response(error),
             };
-            let hash = match credentials.hash(&req.new_password) {
+            let hash = match credentials.prepare(&req.new_password).await {
                 Ok(hash) => hash,
-                Err(err) => {
-                    return qid_http::error_response(qid_core::error::QidError::Internal {
-                        message: format!("password reset hashing failed: {err}"),
-                    });
-                }
+                Err(err) => return qid_http::error_response(err),
             };
             if let Err(err) = state
                 .repo

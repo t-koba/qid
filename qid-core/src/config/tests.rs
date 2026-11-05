@@ -3032,3 +3032,50 @@ iga:
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     assert_eq!(config.iga.rebac.expand_max_response_bytes.get(), 37);
 }
+
+#[test]
+fn password_screening_is_opt_in_and_validates_sources_and_bounds() {
+    assert!(PasswordConfig::default().screening.is_none());
+    let parse = |screening| {
+        serde_json::from_value::<PasswordConfig>(serde_json::json!({"screening":screening}))
+    };
+    let valid = serde_json::json!({"sha256_hex":["aB".repeat(32)]});
+    let config = parse(valid.clone()).unwrap();
+    config.validate("test").unwrap();
+    let screening = config.screening.unwrap();
+    assert_eq!(screening.on_unavailable, ScreeningUnavailable::Deny);
+    assert_eq!(screening.timeout_ms, 3000);
+    assert_eq!(screening.max_retries, 0);
+    assert_eq!(screening.retry_delay_ms, 250);
+    assert_eq!(screening.max_response_bytes, 1024 * 1024);
+    for invalid in [
+        serde_json::json!({}),
+        serde_json::json!({"sha256_hex":["a".repeat(63)]}),
+        serde_json::json!({"sha256_hex":["g".repeat(64)]}),
+        serde_json::json!({"sha256_hex":["é".repeat(32)]}),
+        serde_json::json!({"range_url":"http://range.example/range"}),
+        serde_json::json!({"range_url":"https://user@range.example/range"}),
+        serde_json::json!({"range_url":"https://range.example/range?q=1"}),
+        serde_json::json!({"range_url":"https://range.example/range#fragment"}),
+        serde_json::json!({"range_url":"https:///"}),
+        serde_json::json!({"range_url":"not a URL"}),
+        serde_json::json!({"sha256_hex":["a".repeat(64)],"timeout_ms":0}),
+        serde_json::json!({"sha256_hex":["a".repeat(64)],"max_response_bytes":0}),
+    ] {
+        assert!(parse(invalid).unwrap().validate("test").is_err());
+    }
+    assert!(
+        parse(serde_json::json!({"sha256_hex":["a".repeat(64)],"on_unavailable":"ignore"}))
+            .is_err()
+    );
+    let config = parse(
+        serde_json::json!({"range_url":"https://range.example/range/", "on_unavailable":"allow",
+            "max_retries":2, "retry_delay_ms":0}),
+    )
+    .unwrap();
+    config.validate("test").unwrap();
+    let screening = config.screening.unwrap();
+    assert_eq!(screening.on_unavailable, ScreeningUnavailable::Allow);
+    assert_eq!(screening.max_retries, 2);
+    assert_eq!(screening.retry_delay_ms, 0);
+}

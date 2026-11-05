@@ -2097,3 +2097,167 @@ async fn email_verification_concurrent_request_cannot_bypass_pending_delivery() 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json(response).await["challenge_id"], id);
 }
+
+#[tokio::test]
+async fn password_screening_refusals_preserve_reset_proof_and_old_credential_for_retry() {
+    use qid_core::{models::PasswordCredential, state::PasswordCredentials};
+    use sha2::{Digest, Sha256};
+    // An unserved loopback TLS socket deterministically times out without Internet.
+    let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let local =
+        serde_json::json!({"sha256_hex":[format!("{:x}", Sha256::digest(b"listed-password"))]});
+    for source_unavailable in [false, true] {
+        let mut config = test_helpers::test_config();
+        let password = &mut config.realms[0].authentication.password;
+        password.argon2id = Argon2idCostConfig {
+            memory_kib: 8,
+            time_cost: 1,
+            parallelism: 1,
+        };
+        let mut screening = local.clone();
+        if source_unavailable {
+            screening["range_url"] =
+                format!("https://{}/range", unavailable.local_addr().unwrap()).into();
+            screening["timeout_ms"] = 50.into();
+        }
+        password.screening = Some(serde_json::from_value(screening).unwrap());
+        let repaired = qid_crypto::CredentialContext::resolve(&qid_core::config::PasswordConfig {
+            screening: Some(serde_json::from_value(local.clone()).unwrap()),
+            ..password.clone()
+        })
+        .unwrap();
+        let (app, state) = setup_with_config(config, &[]).await;
+        let old = PasswordCredential {
+            user_id: "user-ciam".into(),
+            hash: repaired.hash("old-password").unwrap(),
+            algorithm: qid_crypto::ARGON2ID_ALGORITHM.into(),
+        };
+        state.repo.store_password_credential(&old).await.unwrap();
+        let now = qid_core::util::now_seconds();
+        let token = PasswordResetToken {
+            id: "screened-reset".into(),
+            realm_id: "test".into(),
+            user_id: "user-ciam".into(),
+            token_hash: qid_core::util::sha256_base64url("reset-proof"),
+            device_id: None,
+            risk_json: serde_json::json!({}),
+            expires_at_epoch_seconds: now + 60,
+            consumed_at_epoch_seconds: None,
+            created_at_epoch_seconds: now,
+        };
+        state.repo.store_password_reset_token(&token).await.unwrap();
+        let request = |password: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/test/ciam/password-reset/consume")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "token_id": "screened-reset",
+                        "token": "reset-proof",
+                        "new_password": password,
+                        "now_epoch_seconds": 1
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        let response = app
+            .clone()
+            .oneshot(request(if source_unavailable {
+                "allowed-password"
+            } else {
+                "listed-password"
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if source_unavailable {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+        let body = json(response).await.to_string();
+        assert!(body.contains(if source_unavailable {
+            "password screening unavailable"
+        } else {
+            "password_not_allowed"
+        }));
+        assert!(!body.contains("listed-password"));
+        assert!(!body.contains("range"));
+        assert_eq!(
+            serde_json::to_value(
+                state
+                    .repo
+                    .get_password_reset_token(&token.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(&token).unwrap()
+        );
+        assert_eq!(
+            state
+                .repo
+                .get_password_credential("user-ciam")
+                .await
+                .unwrap()
+                .unwrap()
+                .hash,
+            old.hash
+        );
+        assert_eq!(
+            state
+                .repo
+                .get_user_by_id("user-ciam")
+                .await
+                .unwrap()
+                .unwrap()
+                .failed_login_attempts,
+            0
+        );
+        // Repair the unavailable source (or pick an unlisted password); reuse the exact proof.
+        drop(app);
+        let mut state = Arc::try_unwrap(state).ok().unwrap();
+        state.password_credentials.clear();
+        assert!(
+            qid_crypto::realm_password_context(&state, "test").is_err(),
+            "configured screening must not fall back to an unconfigured context"
+        );
+        state
+            .password_credentials
+            .insert("test".into(), Arc::new(repaired));
+        let state = Arc::new(state);
+        let app = qid_resource::resource_routes(&state.paths).with_state(state.clone());
+        assert_eq!(
+            app.oneshot(request("allowed-password"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let stored = state
+            .repo
+            .get_password_credential("user-ciam")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.password_credentials["test"].verify("allowed-password", &stored),
+            (true, false)
+        );
+        assert!(
+            state
+                .repo
+                .get_password_reset_token(&token.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .consumed_at_epoch_seconds
+                .is_some()
+        );
+    }
+}

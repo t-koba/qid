@@ -13,7 +13,7 @@ async fn create_uses_realm_pepper_and_missing_source_leaves_no_account() {
     std::fs::create_dir(&dir).unwrap();
     let store = dir.join("store.json");
     let config_path = dir.join("qid.yaml");
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "server":{"listen":"127.0.0.1:0", "public_base_url":"https://id.example.com"},
         "storage":{"primary":{"type":"file", "url":store}},
         "realms":[{"id":"corp", "issuer":"https://id.example.com/realms/corp", "authentication":{"password":{
@@ -54,6 +54,29 @@ async fn create_uses_realm_pepper_and_missing_source_leaves_no_account() {
             .is_none()
     );
     drop(repo);
+    // A configured listing is refused before either user or credential is written.
+    config["realms"][0]["authentication"]["password"]["screening"] = serde_json::json!({
+        "sha256_hex":["c638833f69bbfb3c267afa0a74434812436b8f08a81fd263c6be6871de4f1265"]
+    });
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    let refusal = invoke(Some("test-only-cli-pepper"));
+    assert!(!refusal.status.success());
+    assert!(String::from_utf8_lossy(&refusal.stderr).contains("password_not_allowed"));
+    let repo = AnyRepository::connect(store.to_str().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        repo.get_user_by_email(&"corp".into(), "pepper@example.com")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(repo);
+    config["realms"][0]["authentication"]["password"]
+        .as_object_mut()
+        .unwrap()
+        .remove("screening");
+    std::fs::write(&config_path, config.to_string()).unwrap();
     let result = invoke(Some("test-only-cli-pepper"));
     assert!(
         result.status.success(),

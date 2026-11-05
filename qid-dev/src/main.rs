@@ -485,12 +485,14 @@ async fn seed_users(
         if let Some(user) = repo.get_user_by_email(&realm_id, &seed.email).await? {
             existing.push(seed.email.clone());
             if replace_password {
-                store_password(&repo, &user.id, &seed.password, &credentials).await?;
+                let hash = credentials.prepare(&seed.password).await?;
+                store_password(&repo, &user.id, hash).await?;
                 updated_password.push(seed.email);
             }
             continue;
         }
 
+        let hash = credentials.prepare(&seed.password).await?;
         let id = ulid::Ulid::new().to_string();
         repo.create_user(&User {
             id: id.clone(),
@@ -503,7 +505,7 @@ async fn seed_users(
             org: None,
         })
         .await?;
-        store_password(&repo, &id, &seed.password, &credentials).await?;
+        store_password(&repo, &id, hash).await?;
         created.push(seed.email);
     }
 
@@ -537,12 +539,8 @@ async fn ensure_realm(
 async fn store_password(
     repo: &Arc<AnyRepository>,
     user_id: &str,
-    plaintext: &str,
-    credentials: &CredentialContext,
+    hash: String,
 ) -> anyhow::Result<()> {
-    // The realm's own Argon2id cost, so a seeded credential carries the
-    // deployment's calibration rather than the library defaults.
-    let hash = credentials.hash(plaintext)?;
     repo.store_password_credential(&PasswordCredential {
         user_id: user_id.to_string(),
         hash,
@@ -801,3 +799,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod screening_tests;

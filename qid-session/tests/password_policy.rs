@@ -287,3 +287,114 @@ async fn a_spent_realm_budget_refuses_the_password_paths() -> anyhow::Result<()>
     assert!(matches!(err, QidError::AttemptBudgetSpent { .. }));
     Ok(())
 }
+
+#[tokio::test]
+async fn stored_listed_password_still_logs_in_and_rehashes_without_range_requests() {
+    use qid_core::state::PasswordCredentials;
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Arc::new(
+        FileRepository::new(dir.path().join("store.json").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    repo.migrate().await.unwrap();
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"corp".into(),
+        "https://login.example.com",
+        None,
+    )
+    .await
+    .unwrap();
+    repo.create_user(&User {
+        id: "user-1".into(),
+        realm_id: "corp".into(),
+        email: Some("alice@example.com".into()),
+        email_verified: true,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .unwrap();
+    let password = "stored-before-listing";
+    repo.store_password_credential(&PasswordCredential {
+        user_id: "user-1".into(),
+        hash: hash_password_with_params(password, &Argon2idParams::new(8, 1, 1)).unwrap(),
+        algorithm: ARGON2ID_ALGORITHM.into(),
+    })
+    .await
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut cfg = PasswordConfig {
+        argon2id: Argon2idCostConfig {
+            memory_kib: 8,
+            time_cost: 2,
+            parallelism: 1,
+        },
+        screening: Some(
+            serde_json::from_value(serde_json::json!({
+                "sha256_hex": [format!("{:x}", Sha256::digest(password.as_bytes()))],
+                "range_url": format!("https://{}/range", listener.local_addr().unwrap()),
+                "timeout_ms": 50
+            }))
+            .unwrap(),
+        ),
+        ..PasswordConfig::default()
+    };
+    let owner = Arc::new(qid_crypto::CredentialContext::resolve(&cfg).unwrap());
+    assert!(owner.prepare(password).await.is_err());
+    let auth = Authenticator::new(
+        repo.clone(),
+        PasswordPolicy::from_config(&cfg),
+        Arc::new(FailureBudget::new()),
+    )
+    .with_credentials(owner.clone());
+    auth.authenticate_password(&"corp".into(), "alice@example.com", password)
+        .await
+        .unwrap();
+    let rehashed = repo
+        .get_password_credential("user-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rehashed.algorithm, ARGON2ID_ALGORITHM);
+    assert_eq!(owner.verify(password, &rehashed), (true, false));
+    // A range-only policy also cannot turn login/verified rehash into a network operation.
+    cfg.screening.as_mut().unwrap().sha256_hex.clear();
+    let owner = Arc::new(qid_crypto::CredentialContext::resolve(&cfg).unwrap());
+    // Changing the cost forces another verified rehash.
+    cfg.argon2id.time_cost = 3;
+    let rehash_owner = Arc::new(qid_crypto::CredentialContext::resolve(&cfg).unwrap());
+    let auth = Authenticator::new(
+        repo.clone(),
+        PasswordPolicy::from_config(&cfg),
+        Arc::new(FailureBudget::new()),
+    )
+    .with_credentials(rehash_owner.clone());
+    auth.authenticate_password(&"corp".into(), "alice@example.com", password)
+        .await
+        .unwrap();
+    let stored = repo
+        .get_password_credential("user-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rehash_owner.verify(password, &stored), (true, false));
+    assert_eq!(owner.verify(password, &stored), (true, true));
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        repo.get_user_by_id("user-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .failed_login_attempts,
+        0
+    );
+}

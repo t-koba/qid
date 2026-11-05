@@ -18,7 +18,10 @@ const SESSION_L1_TTL_SECONDS: u64 = 30;
 
 /// Realm credential operations, implemented by the cryptographic service.
 /// The returned pair is (valid, rehash required).
+#[async_trait::async_trait]
 pub trait PasswordCredentials: Send + Sync {
+    /// Screen a prospective password, then hash it. Never used for verified rehash.
+    async fn prepare(&self, plaintext: &str) -> QidResult<String>;
     fn hash(&self, plaintext: &str) -> QidResult<String>;
     fn verify(
         &self,

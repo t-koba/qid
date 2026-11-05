@@ -708,7 +708,7 @@ async fn main() -> anyhow::Result<()> {
                     // repository, so the write names the realm that
                     // holds the user.
                     ensure_realm_row(&repo, &config, &args.realm).await?;
-                    let hash = context.hash(&args.password)?;
+                    let hash = context.prepare(&args.password).await?;
                     let id = new_id();
                     repo.create_user(&User {
                         id: id.clone(),

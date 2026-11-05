@@ -42,6 +42,29 @@ Operational guidance:
 - Tune Argon2id cost per deployment CPU/memory budget.
 - Keep lockout enabled for password-backed realms. Password logins also use a process-local admission cap per realm - the realm's own `password.max_failed_attempts_per_realm` within the lockout window - to bound concurrent credential work; each qidd instance enforces its own cap, and a successful login gives back the admission it spent, so the cap follows the logins that failed.
 
+### Breached-password screening
+
+Realm-local `authentication.password.screening` optionally refuses newly
+established/changed passwords before hashing or storage (reset, CLI creation,
+and dev seeding/replacement). Omission performs no screening or network request.
+Configured sources are exact-byte SHA-256 digests and/or an explicitly selected
+HTTPS HIBP-compatible range endpoint. Range requests disclose only five uppercase
+SHA-1 hex characters, use padding, and never include identity or reset proof;
+the endpoint still sees prefix, address and timing. No public service is selected
+implicitly. Redirects/automatic retries are disabled; configured transient-error
+retries default to zero, with a 250 ms delay and configurable 3000 ms per-attempt
+timeout and 1 MiB streamed-body bound by default. Sources/client are snapshotted
+per realm context, without background work.
+
+Source failure denies by default with sanitized 503; opt-in `on_unavailable: allow`
+permits unavailable sources but never a positive listing. Listings use one generic
+400 `password_not_allowed`. Neither condition spends failed-login budget; reset
+proof and old credential remain intact on refusal. Login, already verified
+progressive rehash, and existing dev users without replacement are never screened.
+This is not a claim of list completeness, strong passwords, or anonymous queries.
+See [screening configuration and privacy](configuration.md#prospective-password-screening)
+for exact digest, response, availability and embedding contracts.
+
 ## Admin Operations
 
 `admin.security` defaults toward reason and step-up requirements:

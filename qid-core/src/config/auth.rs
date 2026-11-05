@@ -207,6 +207,9 @@ pub struct PasswordConfig {
     /// Optional external secret keys; omitted means unpeppered creation.
     #[serde(default)]
     pub pepper: Option<PasswordPepperConfig>,
+    /// Opt-in prospective-password screening; omission performs no screening.
+    #[serde(default)]
+    pub screening: Option<PasswordScreeningConfig>,
 }
 
 /// Key IDs are 1–8 UTF-8 bytes (the native Argon2 keyid limit).
@@ -259,6 +262,7 @@ impl Default for PasswordConfig {
             max_failed_attempts_per_realm: default_max_failed_attempts_per_realm(),
             argon2id: Argon2idCostConfig::default(),
             pepper: None,
+            screening: None,
         }
     }
 }
@@ -269,6 +273,9 @@ impl PasswordConfig {
     /// the lockout limits are the ones the realm's password logins
     /// enforce.
     pub fn validate(&self, realm_id: &str) -> QidResult<()> {
+        if let Some(screening) = &self.screening {
+            screening.validate()?;
+        }
         if let Some(pepper) = &self.pepper {
             pepper.validate()?;
         }

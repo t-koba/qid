@@ -20,6 +20,7 @@ use crate::password::{
 /// One resolved owner for creation, verification and progressive migration.
 /// Deliberately has no Debug/Serialize implementation: secret bytes stay private.
 pub struct CredentialContext {
+    screening: Option<crate::screening::PasswordScreening>,
     cost: Argon2idParams,
     active: Option<String>,
     keys: BTreeMap<String, Zeroizing<Vec<u8>>>,
@@ -56,6 +57,11 @@ impl CredentialContext {
         )
         .map_err(|_| config_error())?;
         let mut context = Self::unpeppered(Argon2idParams::from_cost(&config.argon2id));
+        context.screening = config
+            .screening
+            .as_ref()
+            .map(crate::screening::PasswordScreening::new)
+            .transpose()?;
         if let Some(pepper) = &config.pepper {
             for (id, source) in &pepper.keys {
                 let secret = read(source).map_err(|_| config_error())?;
@@ -80,6 +86,7 @@ impl CredentialContext {
     /// Low-level unconfigured operations; tagged credentials still fail closed.
     pub fn unpeppered(cost: Argon2idParams) -> Self {
         Self {
+            screening: None,
             cost,
             active: None,
             keys: BTreeMap::new(),
@@ -87,7 +94,14 @@ impl CredentialContext {
     }
 }
 
+#[async_trait::async_trait]
 impl PasswordCredentials for CredentialContext {
+    async fn prepare(&self, plaintext: &str) -> QidResult<String> {
+        if let Some(screening) = &self.screening {
+            screening.check(plaintext).await?;
+        }
+        self.hash(plaintext)
+    }
     fn hash(&self, plaintext: &str) -> QidResult<String> {
         let result = (|| -> anyhow::Result<String> {
             let Some(id) = &self.active else {
@@ -211,7 +225,7 @@ pub fn realm_password_context<R>(
         return Ok(context.clone());
     }
     let config = &state.require_realm(realm)?.password;
-    if config.pepper.is_some() {
+    if config.pepper.is_some() || config.screening.is_some() {
         return Err(config_error());
     }
     Ok(Arc::new(CredentialContext::resolve(config)?))

@@ -704,3 +704,117 @@ async fn file_polling_grant_targets_survive_reopen_and_legacy_records_default_em
     drop(repo);
     std::fs::remove_file(path).unwrap();
 }
+
+#[tokio::test]
+async fn file_device_user_code_ambiguity_fails_closed_without_changing_legacy_records() {
+    let path = std::env::temp_dir().join(format!(
+        "qid_duplicate_user_code_{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = setup_at(path.clone()).await;
+    drop(repo);
+
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let grants = stored["device_authorization_grants"]
+        .as_object_mut()
+        .expect("serialized file store has its grant map");
+    for device_code_hash in ["device-one", "device-two"] {
+        grants.insert(
+            device_code_hash.into(),
+            serde_json::json!({
+                "device_code_hash": device_code_hash,
+                "user_code": "DUPLICATE-CODE",
+                "client_id": "client",
+                "realm_id": "test",
+                "scopes": ["read"],
+                "user_id": null,
+                "expires_at": 3000,
+                "approved_at": null,
+                "consumed": false,
+                "last_poll_at": null,
+                "poll_interval_seconds": 5,
+                "created_at": 1,
+                "resource": [],
+                "audience": []
+            }),
+        );
+    }
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let legacy_bytes = std::fs::read(&path).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+
+    assert!(matches!(
+        repo.get_device_authorization_grant_by_user_code("DUPLICATE-CODE")
+            .await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
+    assert!(matches!(
+        repo.approve_device_authorization_grant("DUPLICATE-CODE", "user", 10)
+            .await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
+    assert!(
+        repo.get_device_authorization_grant_by_user_code("MISSING-CODE")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        repo.approve_device_authorization_grant("MISSING-CODE", "user", 10)
+            .await,
+        Err(qid_core::error::QidError::NotFound { .. })
+    ));
+    for device_code_hash in ["device-one", "device-two"] {
+        let grant = repo
+            .get_device_authorization_grant(device_code_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(grant.user_code, "DUPLICATE-CODE");
+        assert!(grant.user_id.is_none());
+        assert!(grant.approved_at.is_none());
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), legacy_bytes);
+
+    let unique: qid_core::models::DeviceAuthorizationGrant =
+        serde_json::from_value(serde_json::json!({
+            "device_code_hash": "device-unique",
+            "user_code": "UNIQUE-CODE",
+            "client_id": "client",
+            "realm_id": "test",
+            "scopes": ["read"],
+            "user_id": null,
+            "expires_at": 3000,
+            "approved_at": null,
+            "consumed": false,
+            "last_poll_at": null,
+            "poll_interval_seconds": 5,
+            "created_at": 1,
+            "resource": [],
+            "audience": []
+        }))
+        .unwrap();
+    repo.store_device_authorization_grant(&unique)
+        .await
+        .unwrap();
+    let found = repo
+        .get_device_authorization_grant_by_user_code("UNIQUE-CODE")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.device_code_hash, "device-unique");
+    repo.approve_device_authorization_grant("UNIQUE-CODE", "user", 20)
+        .await
+        .unwrap();
+    let approved = repo
+        .get_device_authorization_grant("device-unique")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(approved.user_id.as_deref(), Some("user"));
+    assert_eq!(approved.approved_at, Some(20));
+
+    drop(repo);
+    std::fs::remove_file(path).unwrap();
+}

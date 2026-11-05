@@ -235,11 +235,14 @@ impl TokenRepository for FileRepository {
         user_code: &str,
     ) -> QidResult<Option<DeviceAuthorizationGrant>> {
         let store = self.store.read().await;
-        Ok(store
-            .device_authorization_grants
-            .values()
-            .find(|g| g.user_code == user_code)
-            .cloned())
+        Ok(unique_match(
+            store
+                .device_authorization_grants
+                .values()
+                .filter(|g| g.user_code == user_code),
+            "ambiguous device user code",
+        )?
+        .cloned())
     }
 
     async fn approve_device_authorization_grant(
@@ -249,15 +252,16 @@ impl TokenRepository for FileRepository {
         approved_at: u64,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let Some(grant) = store
-            .device_authorization_grants
-            .values_mut()
-            .find(|grant| grant.user_code == user_code)
-        else {
-            return Err(QidError::NotFound {
-                resource: "device authorization grant".to_string(),
-            });
-        };
+        let grant = unique_match(
+            store
+                .device_authorization_grants
+                .values_mut()
+                .filter(|g| g.user_code == user_code),
+            "ambiguous device user code",
+        )?
+        .ok_or(QidError::NotFound {
+            resource: "device authorization grant".into(),
+        })?;
         grant.user_id = Some(user_id.to_string());
         grant.approved_at = Some(approved_at);
         drop(store);

@@ -143,6 +143,82 @@ async fn admin_upsert_preserves_identity_in_both_backends() {
 }
 
 #[tokio::test]
+async fn admin_legacy_file_ambiguity_fails_closed_without_changes() {
+    use qid_core::{error::QidError, models::Admin};
+    use qid_storage::{AdminRepository, FileRepository};
+
+    let dir = std::env::temp_dir().join(format!("qid-admin-legacy-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let first = Admin {
+        id: "first-admin".into(),
+        tenant_id: "tenant".into(),
+        subject: "subject".into(),
+        roles: vec!["reader".into()],
+        created_at: 1,
+    };
+    repo.upsert_admin(&first).await.unwrap();
+    drop(repo);
+    let second = Admin {
+        id: "second-admin".into(),
+        roles: vec!["auditor".into()],
+        created_at: 2,
+        ..first.clone()
+    };
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    fixture["admins"][&second.id] = serde_json::to_value(&second).unwrap();
+    let before = serde_json::to_vec(&fixture).unwrap();
+    std::fs::write(&path, &before).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    assert!(matches!(
+        repo.get_admin(&first.tenant_id, &first.subject).await,
+        Err(QidError::Conflict { .. })
+    ));
+    let incoming = Admin {
+        id: "incoming-admin".into(),
+        roles: vec!["admin".into()],
+        created_at: 3,
+        ..first.clone()
+    };
+    // Neither a new ID nor an incumbent ID may update an ambiguous identity.
+    for id in [&incoming.id, &first.id, &second.id] {
+        let attempt = Admin {
+            id: id.clone(),
+            ..incoming.clone()
+        };
+        assert!(matches!(
+            repo.upsert_admin(&attempt).await,
+            Err(QidError::Conflict { .. })
+        ));
+        for admin in [&first, &second] {
+            assert_eq!(
+                serde_json::to_value(repo.get_admin_by_id(&admin.id).await.unwrap()).unwrap(),
+                serde_json::to_value(admin).unwrap()
+            );
+        }
+        assert!(repo.get_admin_by_id(&incoming.id).await.unwrap().is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    assert!(
+        repo.get_admin("other-tenant", &first.subject)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.get_admin(&first.tenant_id, "absent")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(repo);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn admin_elevation_identity_ownership_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_admin_elevation_identity_ownership(&sql).await;

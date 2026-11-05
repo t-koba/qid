@@ -5,12 +5,15 @@ use super::*;
 #[async_trait]
 impl AdminRepository for FileRepository {
     async fn get_admin(&self, tenant_id: &str, subject: &str) -> QidResult<Option<Admin>> {
-        let store = self.store.read().await;
-        Ok(store
-            .admins
+        let admins = &self.store.read().await.admins;
+        let mut matches = admins
             .values()
-            .find(|a| a.tenant_id == tenant_id && a.subject == subject)
-            .cloned())
+            .filter(|a| a.tenant_id == tenant_id && a.subject == subject);
+        let admin = matches.next();
+        reject_duplicate_id(matches.next().is_some(), || {
+            "ambiguous admin identity".into()
+        })?;
+        Ok(admin.cloned())
     }
 
     async fn get_admin_by_id(&self, id: &str) -> QidResult<Option<Admin>> {
@@ -19,11 +22,15 @@ impl AdminRepository for FileRepository {
 
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if let Some(incumbent) = store
+        let mut matches = store
             .admins
             .values_mut()
-            .find(|a| a.tenant_id == admin.tenant_id && a.subject == admin.subject)
-        {
+            .filter(|a| a.tenant_id == admin.tenant_id && a.subject == admin.subject);
+        let incumbent = matches.next();
+        reject_duplicate_id(matches.next().is_some(), || {
+            "ambiguous admin identity".into()
+        })?;
+        if let Some(incumbent) = incumbent {
             incumbent.roles.clone_from(&admin.roles);
         } else {
             store.admins.insert(admin.id.clone(), admin.clone());

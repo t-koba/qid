@@ -150,30 +150,30 @@ impl PasswordScreening {
 }
 
 fn parse_range(body: &[u8], suffix: &str) -> Result<bool, ()> {
-    let text = std::str::from_utf8(body).map_err(|_| ())?;
-    let mut valid = !text.is_empty();
-    let mut found = false;
-    for line in text.lines() {
-        let entry = line.split_once(':').and_then(|(hash, count)| {
-            (hash.len() == 35
-                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                && !count.is_empty()
-                && count.bytes().all(|byte| byte.is_ascii_digit()))
-            .then(|| count.parse::<u64>().ok().map(|count| (hash, count)))
-            .flatten()
+    let mut valid = !body.is_empty();
+    for line in body.split_inclusive(|byte| *byte == b'\n') {
+        let line = line
+            .strip_suffix(b"\r\n")
+            .or_else(|| line.strip_suffix(b"\n"))
+            .unwrap_or(line);
+        let entry = line.iter().position(|byte| *byte == b':').and_then(|at| {
+            let (hash, count) = (&line[..at], &line[at + 1..]);
+            if hash.len() != 35 || !hash.iter().all(u8::is_ascii_hexdigit) || count.is_empty() {
+                return None;
+            }
+            let count = count.iter().try_fold(0u64, |count, byte| {
+                byte.is_ascii_digit()
+                    .then(|| count.checked_mul(10)?.checked_add(u64::from(byte - b'0')))
+                    .flatten()
+            })?;
+            Some(count > 0 && hash.eq_ignore_ascii_case(suffix.as_bytes()))
         });
-        match entry {
-            Some((hash, count)) => found |= count > 0 && hash.eq_ignore_ascii_case(suffix),
-            None => valid = false,
+        if entry == Some(true) {
+            return Ok(true);
         }
+        valid &= entry.is_some();
     }
-    if found {
-        Ok(true)
-    } else if valid {
-        Ok(false)
-    } else {
-        Err(())
-    }
+    if valid { Ok(false) } else { Err(()) }
 }
 
 #[cfg(test)]

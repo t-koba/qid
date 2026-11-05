@@ -55,12 +55,58 @@ async fn fixture(
     (screening, task)
 }
 
-fn response(body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+fn response(body: impl AsRef<[u8]>) -> Vec<u8> {
+    let body = body.as_ref();
+    let mut wire = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )
-    .into_bytes()
+    .into_bytes();
+    wire.extend_from_slice(body);
+    wire
+}
+
+#[tokio::test]
+async fn range_positive_survives_invalid_utf8_under_allow_policy() {
+    let password = "candidate";
+    let digest = hex::encode_upper(sha1::Sha1::digest(password.as_bytes()));
+    let positive = format!("{}:1\r\n", &digest[5..]);
+    for body in [
+        [positive.as_bytes(), b"\xff"].concat(),
+        [b"\xff\n", positive.as_bytes()].concat(),
+    ] {
+        let (mut screening, task) = fixture(response(body), 0, 1000, 1024).await;
+        screening.on_unavailable = ScreeningUnavailable::Allow;
+        assert_eq!(screening.check(password).await, Err(not_allowed()));
+        assert!(task.await.unwrap().starts_with("GET /range/"));
+    }
+}
+
+#[test]
+fn range_parser_preserves_line_and_count_validation() {
+    let suffix = "a".repeat(35);
+    for ending in ["", "\n", "\r\n"] {
+        for count in ["0", "000", "18446744073709551615"] {
+            let body = format!("{}:{count}{ending}", "B".repeat(35));
+            assert_eq!(parse_range(body.as_bytes(), &suffix), Ok(false));
+        }
+    }
+    for body in [
+        Vec::new(),
+        b"\n".to_vec(),
+        b"\xff".to_vec(),
+        format!("{suffix}:0\r").into_bytes(),
+        format!("{suffix}:0\n\n").into_bytes(),
+        [format!("{suffix}:0\n").as_bytes(), b"\xff"].concat(),
+        format!("{}:1", "A".repeat(34)).into_bytes(),
+        format!("{}:1", "G".repeat(35)).into_bytes(),
+        format!("{suffix}:").into_bytes(),
+        format!("{suffix}:+1").into_bytes(),
+        format!("{suffix}:1:2").into_bytes(),
+        format!("{suffix}:18446744073709551616").into_bytes(),
+    ] {
+        assert_eq!(parse_range(&body, &suffix), Err(()), "{body:?}");
+    }
 }
 
 #[tokio::test]
@@ -153,8 +199,9 @@ async fn range_failures_obey_policy_and_local_positive_always_wins() {
     for (wire, delay, timeout, bound) in [
         (response(""), 0, 1000, 1024),
         (response("malformed"), 0, 1000, 1024),
+        (response(b"\xff"), 0, 1000, 1024),
         (
-            response(&format!("{}:not-a-count", "A".repeat(35))),
+            response(format!("{}:not-a-count", "A".repeat(35))),
             0,
             1000,
             1024,
@@ -252,7 +299,7 @@ async fn retry_fixture(
 #[tokio::test]
 async fn configured_retries_recover_transient_failures_with_same_prefix_and_padding() {
     let digest = hex::encode_upper(sha1::Sha1::digest(b"candidate"));
-    let positive = response(&format!("{}:1\r\n", &digest[5..]));
+    let positive = response(format!("{}:1\r\n", &digest[5..]));
     for (case, first) in [
         (
             b"HTTP/1.1 429 Limited\r\nContent-Length: 0\r\n\r\n".to_vec(),
@@ -329,7 +376,7 @@ async fn retries_are_opt_in_bounded_and_follow_unavailable_policy_on_exhaustion(
         }
     }
     // A valid negative result after a transient failure ends retries immediately.
-    let negative = response(&format!("{}:0\r\n", "A".repeat(35)));
+    let negative = response(format!("{}:0\r\n", "A".repeat(35)));
     let (mut screening, stop, task) = retry_fixture(vec![(wire, 0), (negative, 0)]).await;
     screening.max_retries = 2;
     screening.retry_delay = Duration::ZERO;
@@ -343,14 +390,14 @@ async fn configured_retries_never_repeat_terminal_responses() {
     let digest = hex::encode_upper(sha1::Sha1::digest(b"candidate"));
     for (wire, bound, expected) in [
         (
-            response(&format!("{}:1\r\n", &digest[5..])),
+            response(format!("{}:1\r\n", &digest[5..])),
             1024,
             Err(not_allowed()),
         ),
-        (response(&format!("{}:0\r\n", &digest[5..])), 1024, Ok(())),
+        (response(format!("{}:0\r\n", &digest[5..])), 1024, Ok(())),
         (response("malformed"), 1024, Err(unavailable())),
         (
-            response(&format!("{}:1\r\n", &digest[5..])),
+            response(format!("{}:1\r\n", &digest[5..])),
             16,
             Err(unavailable()),
         ),
@@ -366,7 +413,7 @@ async fn configured_retries_never_repeat_terminal_responses() {
         ),
     ] {
         // A retry would get a valid negative response, exposing even permanent-error retries.
-        let negative = response(&format!("{}:0\r\n", &digest[5..]));
+        let negative = response(format!("{}:0\r\n", &digest[5..]));
         let (mut screening, stop, task) = retry_fixture(vec![(wire, 0), (negative, 0)]).await;
         screening.max_retries = 2;
         screening.retry_delay = Duration::ZERO;

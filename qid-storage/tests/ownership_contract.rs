@@ -1209,3 +1209,70 @@ async fn webauthn_raw_id_migration_preserves_duplicates_and_retries_after_extern
     repo.close().await;
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn file_legacy_cross_tenant_app_catalog_reference_blocks_connector_delete() {
+    use qid_storage::{FileRepository, SaasRepository};
+
+    let dir = std::env::temp_dir().join(format!("qid-legacy-connector-ref-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let empty = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    empty.migrate().await.unwrap();
+    drop(empty);
+
+    let mut store: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    store["marketplace_connectors"]["connector-a"] = serde_json::json!({
+        "id": "connector-a",
+        "tenant_id": "tenant-a",
+        "provider": "example",
+        "connector_type": "scim",
+        "config_json": {},
+        "enabled": true
+    });
+    store["app_catalog_entries"]["entry-b"] = serde_json::json!({
+        "id": "entry-b",
+        "tenant_id": "tenant-b",
+        "realm_id": "realm-b",
+        "display_name": "Legacy entry",
+        "category": "other",
+        "oidc_client_id": null,
+        "saml_entity_id": null,
+        "scim_enabled": false,
+        "marketplace_connector_id": "connector-a"
+    });
+    let before = serde_json::to_vec(&store).unwrap();
+    std::fs::write(&path, &before).unwrap();
+
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let error = repo
+        .delete_marketplace_connector("tenant-a", "connector-a")
+        .await
+        .expect_err("legacy cross-tenant connector reference must block deletion");
+    assert!(
+        matches!(error, qid_core::error::QidError::Storage { .. }),
+        "referenced connector deletion must retain Storage classification, got {error:?}"
+    );
+    assert_eq!(
+        repo.list_marketplace_connectors("tenant-a")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "owner connector must remain intact"
+    );
+    let entries = repo.list_app_catalog_entries("tenant-b").await.unwrap();
+    assert_eq!(entries.len(), 1, "legacy catalog row must remain intact");
+    assert_eq!(
+        entries[0].marketplace_connector_id.as_deref(),
+        Some("connector-a")
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "refused deletion must not change persisted legacy rows"
+    );
+    drop(repo);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -274,18 +274,18 @@ impl SaasRepository for FileRepository {
 
     async fn delete_marketplace_connector(&self, tenant_id: &str, id: &str) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if store.app_catalog_entries.values().any(|entry| {
-            entry.tenant_id == tenant_id && entry.marketplace_connector_id.as_deref() == Some(id)
-        }) {
-            return Err(QidError::Storage {
-                message: "marketplace connector is referenced by app catalog entries".to_string(),
-            });
-        }
-        if store
-            .marketplace_connectors
-            .get(id)
-            .is_some_and(|connector| connector.tenant_id == tenant_id)
-        {
+        let connector = store.marketplace_connectors.get(id);
+        if connector.is_some_and(|c| c.tenant_id == tenant_id) {
+            if store
+                .app_catalog_entries
+                .values()
+                .any(|entry| entry.marketplace_connector_id.as_deref() == Some(id))
+            {
+                return Err(QidError::Storage {
+                    message: "marketplace connector is referenced by app catalog entries"
+                        .to_string(),
+                });
+            }
             store.marketplace_connectors.remove(id);
         }
         drop(store);

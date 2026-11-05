@@ -467,6 +467,12 @@ fn reject_duplicate_id(exists: bool, message: impl FnOnce() -> String) -> QidRes
     Ok(())
 }
 
+fn unique_match<T>(mut matches: impl Iterator<Item = T>, message: &str) -> QidResult<Option<T>> {
+    let first = matches.next();
+    reject_duplicate_id(matches.next().is_some(), || message.into())?;
+    Ok(first)
+}
+
 fn ssf_stream_key(realm_id: &str, stream_id: &str) -> String {
     format!("{realm_id}\u{1f}{stream_id}")
 }

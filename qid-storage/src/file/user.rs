@@ -28,11 +28,11 @@ impl UserRepository for FileRepository {
 
     async fn get_user_by_email(&self, realm_id: &RealmId, email: &str) -> QidResult<Option<User>> {
         let store = self.store.read().await;
-        Ok(store
+        let matches = store
             .users
             .values()
-            .find(|u| u.realm_id == realm_id.0 && u.email.as_deref() == Some(email))
-            .cloned())
+            .filter(|u| u.realm_id == realm_id.0 && u.email.as_deref() == Some(email));
+        Ok(unique_match(matches, "ambiguous user realm/email identity")?.cloned())
     }
 
     async fn list_users_page(

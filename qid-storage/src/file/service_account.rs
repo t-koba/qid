@@ -25,15 +25,15 @@ impl ServiceAccountRepository for FileRepository {
         client_id: &str,
     ) -> QidResult<Option<ServiceAccount>> {
         let store = self.store.read().await;
-        let mut matches = store
+        let matches = store
             .service_accounts
             .values()
             .filter(|sa| sa.realm_id == realm_id && sa.client_id == client_id);
-        let account = matches.next();
-        reject_duplicate_id(matches.next().is_some(), || {
-            "ambiguous service account realm/client identity; repair externally".into()
-        })?;
-        Ok(account.cloned())
+        Ok(unique_match(
+            matches,
+            "ambiguous service account realm/client identity; repair externally",
+        )?
+        .cloned())
     }
 
     async fn list_service_accounts(&self, realm_id: &str) -> QidResult<Vec<ServiceAccount>> {

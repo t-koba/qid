@@ -6,14 +6,10 @@ use super::*;
 impl AdminRepository for FileRepository {
     async fn get_admin(&self, tenant_id: &str, subject: &str) -> QidResult<Option<Admin>> {
         let admins = &self.store.read().await.admins;
-        let mut matches = admins
+        let matches = admins
             .values()
             .filter(|a| a.tenant_id == tenant_id && a.subject == subject);
-        let admin = matches.next();
-        reject_duplicate_id(matches.next().is_some(), || {
-            "ambiguous admin identity".into()
-        })?;
-        Ok(admin.cloned())
+        Ok(unique_match(matches, "ambiguous admin identity")?.cloned())
     }
 
     async fn get_admin_by_id(&self, id: &str) -> QidResult<Option<Admin>> {
@@ -22,15 +18,11 @@ impl AdminRepository for FileRepository {
 
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let mut matches = store
+        let matches = store
             .admins
             .values_mut()
             .filter(|a| a.tenant_id == admin.tenant_id && a.subject == admin.subject);
-        let incumbent = matches.next();
-        reject_duplicate_id(matches.next().is_some(), || {
-            "ambiguous admin identity".into()
-        })?;
-        if let Some(incumbent) = incumbent {
+        if let Some(incumbent) = unique_match(matches, "ambiguous admin identity")? {
             incumbent.roles.clone_from(&admin.roles);
         } else {
             store.admins.insert(admin.id.clone(), admin.clone());

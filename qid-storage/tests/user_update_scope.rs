@@ -1,7 +1,7 @@
 mod support;
 
 use qid_core::{error::QidError, models::User};
-use qid_storage::prelude::*;
+use qid_storage::{FileRepository, prelude::*};
 
 fn user(id: &str, realm: &str) -> User {
     User {
@@ -101,4 +101,74 @@ async fn unscoped_missing_update_retains_backend_semantics() {
     let sql = support::sql_repo().await;
     sql.update_user(&missing, None).await.unwrap();
     assert!(sql.get_user_by_id("missing").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn legacy_file_email_ambiguity_fails_closed_without_changes() {
+    let dir = std::env::temp_dir().join(format!("qid-user-email-legacy-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let first = user("first", "a");
+    let mut peer = user("peer", "b");
+    peer.email.clone_from(&first.email);
+    let mut unique = user("unique", "a");
+    unique.email = Some("unique@example.com".into());
+    for record in [&first, &peer, &unique] {
+        repo.create_user(record).await.unwrap();
+    }
+    assert_eq!(
+        repo.get_user_by_email(&"a".into(), "a@example.com")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        first.id
+    );
+    drop(repo);
+    // Simulate legacy data that predates realm/email uniqueness on writes.
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let second = user("second", "a");
+    fixture["users"][&second.id] = serde_json::to_value(&second).unwrap();
+    let before = serde_json::to_vec_pretty(&fixture).unwrap();
+    std::fs::write(&path, &before).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    assert!(matches!(
+        repo.get_user_by_email(&"a".into(), "a@example.com").await,
+        Err(QidError::Conflict { .. })
+    ));
+    for record in [&unique, &peer] {
+        assert_eq!(
+            serde_json::to_value(
+                repo.get_user_by_email(
+                    &record.realm_id.clone().into(),
+                    record.email.as_ref().unwrap()
+                )
+                .await
+                .unwrap()
+                .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(record).unwrap()
+        );
+    }
+    for (realm, email) in [("a", "missing@example.com"), ("missing", "a@example.com")] {
+        assert!(
+            repo.get_user_by_email(&realm.into(), email)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    for record in [&first, &second, &peer, &unique] {
+        assert_eq!(
+            serde_json::to_value(repo.get_user_by_id(&record.id).await.unwrap().unwrap()).unwrap(),
+            serde_json::to_value(record).unwrap()
+        );
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(repo);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -3785,6 +3785,67 @@ where
     );
 }
 
+pub async fn assert_par_request_consumption<R>(repo: &R)
+where
+    R: TokenRepository,
+{
+    let mut expected = ParRequest {
+        request_uri: "urn:par:consumption-contract".into(),
+        client_id: "client-par-consumption".into(),
+        realm_id: "realm-par-consumption".into(),
+        params_json: serde_json::json!({"scope": "read", "state": "preserved"}),
+        expires_at: 3000,
+        used: false,
+        created_at: 1,
+    };
+    let error = repo
+        .mark_par_request_used(&expected.request_uri)
+        .await
+        .expect_err("missing PAR request must return NotFound");
+    assert!(matches!(
+        error,
+        QidError::NotFound { resource }
+            if resource == format!("PAR request {}", expected.request_uri)
+    ));
+    assert!(
+        repo.get_par_request(&expected.request_uri)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    repo.store_par_request(&expected).await.unwrap();
+    repo.mark_par_request_used(&expected.request_uri)
+        .await
+        .expect("first consumption must succeed");
+    expected.used = true;
+    let consumed = repo
+        .get_par_request(&expected.request_uri)
+        .await
+        .unwrap()
+        .expect("consumed PAR request must remain stored");
+    assert_eq!(
+        serde_json::to_value(&consumed).unwrap(),
+        serde_json::to_value(&expected).unwrap(),
+        "first consumption must change only used"
+    );
+
+    let error = repo
+        .mark_par_request_used(&expected.request_uri)
+        .await
+        .expect_err("replay must conflict");
+    assert!(matches!(
+        error,
+        QidError::Conflict { message } if message == "PAR request already consumed"
+    ));
+    let after_replay = repo.get_par_request(&expected.request_uri).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&after_replay).unwrap(),
+        serde_json::to_value(Some(&consumed)).unwrap(),
+        "replay must preserve the entire incumbent"
+    );
+}
+
 pub async fn assert_par_request_identity_conflict<R>(repo: &R)
 where
     R: TokenRepository,

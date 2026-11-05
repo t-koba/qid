@@ -382,6 +382,14 @@ async fn rebac_tuple_delete_namespace_isolated_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn par_request_consumption_holds_in_both_backends() {
+    let file = support::file_repo("ownership-contract-par-consumption").await;
+    support::assert_par_request_consumption(&file).await;
+    let sql = support::sql_repo().await;
+    support::assert_par_request_consumption(&sql).await;
+}
+
+#[tokio::test]
 async fn par_request_identity_conflict_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_par_request_identity_conflict(&sql).await;

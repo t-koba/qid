@@ -284,6 +284,11 @@ impl TokenRepository for SqlRepository {
                 .execute(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
+        if result.rows_affected() == 0 && self.get_par_request(request_uri).await?.is_none() {
+            return Err(QidError::NotFound {
+                resource: format!("PAR request {request_uri}"),
+            });
+        }
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "PAR request already consumed".to_string()
         })

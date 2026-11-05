@@ -62,11 +62,9 @@ impl OidcContinuationRepository for FileRepository {
         state::validate_creation(record, now)?;
         let record = record.clone();
         self.mutate_oidc_continuation(move |rows| {
-            if rows.contains_key(&record.id) {
-                return Err(QidError::Conflict {
-                    message: "OIDC continuation ID already exists".into(),
-                });
-            }
+            reject_duplicate_id(rows.contains_key(&record.id), || {
+                "OIDC continuation ID already exists".into()
+            })?;
             rows.insert(
                 record.id.clone(),
                 StoredContinuation {

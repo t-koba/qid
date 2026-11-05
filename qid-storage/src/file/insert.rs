@@ -72,11 +72,9 @@ pub(super) fn insert_new<T: InsertIdentity>(
     map: &mut HashMap<String, T>,
     record: &T,
 ) -> QidResult<()> {
-    if map.contains_key(record.id()) {
-        return Err(QidError::Conflict {
-            message: format!("{} record ID {} already exists", T::RECORD, record.id()),
-        });
-    }
+    reject_duplicate_id(map.contains_key(record.id()), || {
+        format!("{} record ID {} already exists", T::RECORD, record.id())
+    })?;
     if let Some((owner, identity)) = record.identity()
         && map
             .values()

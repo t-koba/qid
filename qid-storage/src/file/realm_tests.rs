@@ -543,3 +543,81 @@ async fn workload_lookup_fails_closed_on_legacy_duplicate_spiffe_bindings() {
         .expect("lookup succeeds after explicit repair");
     assert_eq!(identity.id, "workload-a");
 }
+
+#[tokio::test]
+async fn ciam_external_subject_lookup_rejects_legacy_ambiguity_without_rewriting() {
+    let (file, repo) = TestFile::new().await;
+    let link = |id: &str, verified| CiamIdentityLink {
+        id: id.to_string(),
+        realm_id: "realm".to_string(),
+        user_id: "user".to_string(),
+        provider: "google".to_string(),
+        external_subject: "subject".to_string(),
+        external_email: None,
+        profile_json: serde_json::json!({}),
+        linked_at_epoch_seconds: 1,
+        verified,
+    };
+    let mut store = Store::default();
+    for record in [
+        link("link-a", true),
+        link("link-b", true),
+        link("link-unverified", false),
+    ] {
+        store.ciam_identity_links.insert(record.id.clone(), record);
+    }
+    *repo.store.write().await = store;
+    repo.save().await.unwrap();
+    drop(repo);
+
+    let repo = file.reopen().await;
+    let before = tokio::fs::read(&file.0).await.unwrap();
+    let err = repo
+        .get_ciam_identity_link_by_external_subject(&RealmId::from("realm"), "google", "subject")
+        .await
+        .expect_err("ambiguous legacy verified subject must fail closed");
+    assert!(matches!(err, QidError::Conflict { .. }));
+    assert_eq!(tokio::fs::read(&file.0).await.unwrap(), before);
+    assert_eq!(
+        repo.list_ciam_identity_links(&RealmId::from("realm"), "user")
+            .await
+            .unwrap()
+            .len(),
+        3,
+        "ambiguous legacy records must be preserved"
+    );
+    drop(repo);
+
+    let mut repaired: Value = serde_json::from_slice(&before).unwrap();
+    repaired["ciam_identity_links"]
+        .as_object_mut()
+        .unwrap()
+        .remove("link-b");
+    tokio::fs::write(&file.0, serde_json::to_vec(&repaired).unwrap())
+        .await
+        .unwrap();
+    let repo = file.reopen().await;
+    assert_eq!(
+        repo.get_ciam_identity_link_by_external_subject(
+            &RealmId::from("realm"),
+            "google",
+            "subject"
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .id,
+        "link-a",
+        "an unverified duplicate must not make the verified subject ambiguous"
+    );
+    assert!(
+        repo.get_ciam_identity_link_by_external_subject(
+            &RealmId::from("realm"),
+            "google",
+            "missing"
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+}

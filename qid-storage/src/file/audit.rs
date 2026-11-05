@@ -7,11 +7,9 @@ use crate::domain::audit_retention_stream_id;
 impl AuditRepository for FileRepository {
     async fn append_audit_event(&self, event: &AuditEvent) -> QidResult<()> {
         let mut store = self.store.write().await;
-        if store.audit_events.iter().any(|s| s.id == event.id) {
-            return Err(QidError::Conflict {
-                message: format!("Audit event ID {} already exists", event.id),
-            });
-        }
+        reject_duplicate_id(store.audit_events.iter().any(|s| s.id == event.id), || {
+            format!("Audit event ID {} already exists", event.id)
+        })?;
         let previous_hash = store
             .audit_events
             .iter()

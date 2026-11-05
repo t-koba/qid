@@ -450,16 +450,13 @@ impl CiamRepository for FileRepository {
         external_subject: &str,
     ) -> QidResult<Option<CiamIdentityLink>> {
         let store = self.store.read().await;
-        Ok(store
-            .ciam_identity_links
-            .values()
-            .find(|link| {
-                link.verified
-                    && link.realm_id == realm_id.0
-                    && link.provider == provider
-                    && link.external_subject == external_subject
-            })
-            .cloned())
+        let matches = store.ciam_identity_links.values().filter(|link| {
+            link.verified
+                && link.realm_id == realm_id.0
+                && link.provider == provider
+                && link.external_subject == external_subject
+        });
+        Ok(unique_match(matches, "ambiguous verified CIAM external subject")?.cloned())
     }
 
     async fn delete_ciam_identity_link(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {

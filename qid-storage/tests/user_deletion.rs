@@ -322,7 +322,22 @@ async fn assert_deleted(repo: &impl Repository) {
 
 #[tokio::test]
 async fn sql_user_deletion_cleans_only_owned_authentication_state() {
-    let path = std::env::temp_dir().join(format!("qid-user-deletion-{}.db", ulid::Ulid::new()));
+    let suffix = match std::env::var("QID_SQLITE_CLEANUP_SUFFIX") {
+        Ok(suffix) => {
+            assert!(
+                !suffix.is_empty()
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+                "QID_SQLITE_CLEANUP_SUFFIX must contain only ASCII alphanumerics and hyphens"
+            );
+            suffix
+        }
+        Err(std::env::VarError::NotPresent) => ulid::Ulid::new().to_string(),
+        Err(_) => panic!("QID_SQLITE_CLEANUP_SUFFIX is not valid Unicode"),
+    };
+    let path = std::env::temp_dir().join(format!("qid-user-deletion-{suffix}.db"));
+    assert!(!path.try_exists().unwrap(), "test database already exists");
     let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
         .await
         .unwrap();

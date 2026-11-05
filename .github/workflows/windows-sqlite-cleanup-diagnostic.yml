@@ -1,0 +1,287 @@
+name: Windows SQLite Cleanup Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      QID_DIAGNOSTIC_OWNED: "false"
+      QID_SQLITE_CLEANUP_SUFFIX: trace-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.96"
+      - name: Capture one exact-path cleanup trace
+        timeout-minutes: 24
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $dir = Join-Path $env:RUNNER_TEMP "qid-sqlite-$env:QID_SQLITE_CLEANUP_SUFFIX"
+          $db = Join-Path ([IO.Path]::GetTempPath()) "qid-user-deletion-$env:QID_SQLITE_CLEANUP_SUFFIX.db"
+          $tool = Join-Path $dir 'Procmon64.exe'
+          $pml = Join-Path $dir 'trace.pml'
+          $csv = Join-Path $dir 'trace.csv'
+          $config = Join-Path $dir 'trace.pmc'
+          $stage = 'preflight'
+          $started = $false
+          $stopped = $false
+          $failed = $false
+          $testExit = $null
+
+          function Run-Procmon([string]$arguments) {
+            $p = Start-Process $tool -ArgumentList $arguments -PassThru
+            if (!$p.WaitForExit(15000)) { throw 'Procmon command timed out' }
+            if ($p.ExitCode -ne 0) { throw 'Procmon command failed' }
+          }
+          function Wait-Ready([scriptblock]$condition) {
+            $deadline = [DateTime]::UtcNow.AddSeconds(15)
+            $signal = [Threading.ManualResetEvent]::new($false)
+            try {
+              do {
+                if (& $condition) { return }
+                # Bounded condition polling, not a fixed startup delay.
+                [void]$signal.WaitOne(100)
+              } while ([DateTime]::UtcNow -lt $deadline)
+              throw 'Procmon UI readiness timed out'
+            } finally { $signal.Dispose() }
+          }
+          try {
+            if (Test-Path $dir) { throw 'Diagnostic directory already exists' }
+            foreach ($path in @($db, "$db-wal", "$db-shm", "$db-journal")) {
+              if (Test-Path -LiteralPath $path) { throw 'Test database or sidecar already exists' }
+            }
+            [void](New-Item -ItemType Directory $dir)
+            'QID_DIAGNOSTIC_OWNED=true' >> $env:GITHUB_ENV
+            $stage = 'download and signature verification'
+            Invoke-WebRequest 'https://download.sysinternals.com/files/ProcessMonitor.zip' -OutFile "$dir/tool.zip"
+            Expand-Archive "$dir/tool.zip" $dir
+            $signature = Get-AuthenticodeSignature $tool
+            if ($signature.Status -ne 'Valid' -or
+                $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+              throw 'Procmon Microsoft signature validation failed'
+            }
+
+            # Let the signed application write its own PMC format. /NoConnect is
+            # essential: no events may be captured while configuring the filter.
+            $stage = 'noncapturing UI initialization'
+            Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+            $scope = [Windows.Automation.TreeScope]::Descendants
+            $ae = [Windows.Automation.AutomationElement]
+            $ct = [Windows.Automation.ControlType]
+            $proc = Start-Process $tool -ArgumentList "/AcceptEula /Quiet /NoConnect /BackingFile `"$pml`"" -PassThru
+            $started = $true
+            if (!$proc.WaitForInputIdle(15000)) { throw 'Procmon did not initialize' }
+            $pidCondition = [Windows.Automation.PropertyCondition]::new($ae::ProcessIdProperty, $proc.Id)
+            function Elements($type) {
+              $condition = [Windows.Automation.AndCondition]::new(
+                $pidCondition, [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $type))
+              return $ae::RootElement.FindAll($scope, $condition)
+            }
+            function Find-Control($type, [string]$name) {
+              $matches = @(Elements $type | Where-Object { $_.Current.Name -match $name })
+              if ($matches.Count -ne 1) { throw 'Unexpected Procmon UI layout' }
+              return $matches[0]
+            }
+            function Click($element) {
+              $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+            }
+            function Set-Menu([string]$name, [bool]$open) {
+              $pattern = (Find-Control $ct::MenuItem $name).GetCurrentPattern(
+                [Windows.Automation.ExpandCollapsePattern]::Pattern)
+              if ($open) { $pattern.Expand() } else { $pattern.Collapse() }
+            }
+            function Menu([string]$parent, [string]$item) {
+              Set-Menu $parent $true
+              Click (Find-Control $ct::MenuItem $item)
+            }
+            function Checked($element) {
+              $legacy = $element.GetCurrentPattern([Windows.Automation.LegacyIAccessiblePattern]::Pattern)
+              return ($legacy.Current.State -band 0x10) -ne 0
+            }
+            Wait-Ready { @(Elements $ct::MenuItem | Where-Object { $_.Current.Name -eq 'File' }).Count -eq 1 }
+            Set-Menu '^File$' $true
+            $capture = Find-Control $ct::MenuItem '^Capture Events'
+            if (Checked $capture) { throw 'Unexpected active capture before filtering' }
+            Set-Menu '^File$' $false
+            $stage = 'exact path filter configuration'
+            Menu '^Filter$' '^Filter\.\.\.'
+            Wait-Ready { @(Elements $ct::Window | Where-Object { $_.Current.Name -eq 'Process Monitor Filter' }).Count -eq 1 }
+            $dialog = Find-Control $ct::Window '^Process Monitor Filter$'
+            $combos = @($dialog.FindAll($scope,
+              [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $ct::ComboBox)))
+            if ($combos.Count -ne 4) { throw 'Unexpected Procmon filter controls' }
+            # Remove every existing rule, including defaults, rather than relying
+            # on the runner's saved configuration. Never capture during this step.
+            $list = $dialog.FindFirst($scope,
+              [Windows.Automation.PropertyCondition]::new($ae::ClassNameProperty, 'SysListView32'))
+            if ($null -eq $list) { throw 'Procmon filter list unavailable' }
+            function Rules {
+              return @($list.FindAll([Windows.Automation.TreeScope]::Children,
+                [Windows.Automation.OrCondition]::new(
+                  [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $ct::DataItem),
+                  [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $ct::ListItem))))
+            }
+            $rules = @(Rules)
+            if ($rules.Count -eq 0) { throw 'Cannot inspect existing filter rules' }
+            $initialCount = $rules.Count
+            for ($i = 0; $i -lt $initialCount; $i++) {
+              $rules[0].GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+              Click (Find-Control $ct::Button '^Remove$')
+              $remaining = @(Rules)
+              if ($remaining.Count -ne $rules.Count - 1) { throw 'Filter removal failed' }
+              $rules = $remaining
+            }
+            function Select-Value($combo, [string]$value) {
+              $combo.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+              $items = @($combo.FindAll($scope,
+                [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $ct::ListItem)) |
+                Where-Object { $_.Current.Name -eq $value })
+              if ($items.Count -ne 1) { throw 'Required filter choice unavailable' }
+              $items[0].GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+            }
+            Select-Value $combos[0] 'Path'
+            Select-Value $combos[1] 'begins with'
+            $edit = $combos[2].FindFirst($scope,
+              [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $ct::Edit))
+            $edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($db)
+            Select-Value $combos[3] 'Include'
+            Click (Find-Control $ct::Button '^Add$')
+            $rules = @(Rules)
+            if ($rules.Count -ne 1) { throw 'Expected exactly one path rule' }
+            $labels = @($rules[0].Current.Name) + @($rules[0].FindAll($scope,
+              [Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name })
+            foreach ($expected in @('Path', 'begins with', $db, 'Include')) {
+              if ($labels -notcontains $expected) { throw 'Could not verify the exact path rule' }
+            }
+            Click (Find-Control $ct::Button '^OK$')
+            Set-Menu '^Filter$' $true
+            $drop = Find-Control $ct::MenuItem '^Drop Filtered Events$'
+            if (!(Checked $drop)) {
+              Click $drop
+              Set-Menu '^Filter$' $true
+            }
+            if (!(Checked (Find-Control $ct::MenuItem '^Drop Filtered Events$'))) {
+              throw 'Destructive filtering is not enabled'
+            }
+            Set-Menu '^Filter$' $false
+            $stage = 'configuration export'
+            Menu '^File$' '^Export Configuration'
+            Wait-Ready { @(Elements $ct::Edit | Where-Object { $_.Current.Name -eq 'File name:' }).Count -eq 1 }
+            (Find-Control $ct::Edit '^File name:$').GetCurrentPattern(
+              [Windows.Automation.ValuePattern]::Pattern).SetValue($config)
+            Click (Find-Control $ct::Button '^Save$')
+            Wait-Ready { Test-Path $config }
+            $stage = 'capture readiness'
+            Menu '^File$' '^Capture Events'
+            Set-Menu '^File$' $true
+            if (!(Checked (Find-Control $ct::MenuItem '^Capture Events'))) { throw 'Capture did not start' }
+            Set-Menu '^File$' $false
+            Run-Procmon '/WaitForIdle'
+            $stage = 'focused test'
+            & cargo test --locked -p qid-storage --test user_deletion sql_user_deletion_cleans_only_owned_authentication_state -- --exact --nocapture
+            $testExit = $LASTEXITCODE
+          } catch {
+            # Do not print UI, download, or trace exceptions containing host paths.
+            Write-Host "Diagnostic failed during $stage (raw exception suppressed)."
+            $failed = $true
+          } finally {
+            if ($started) {
+              try {
+                Run-Procmon '/Terminate'
+                if (!$proc.WaitForExit(15000)) { throw 'Capture process did not exit' }
+                $stopped = $true
+              } catch {
+                Write-Host 'ERROR: Procmon stop failed; final cleanup still runs.'
+                $failed = $true
+              }
+            }
+          }
+          if ($null -ne $testExit -and $stopped) {
+            try {
+              Run-Procmon "/AcceptEula /Quiet /OpenLog `"$pml`" /SaveApplyFilter /SaveAs `"$csv`""
+              $count = 0
+              Import-Csv $csv | ForEach-Object {
+                $row = $_
+                # Check again at output, even though capture used a destructive filter.
+                if ($row.Path.StartsWith($db, [StringComparison]::OrdinalIgnoreCase)) {
+                  $suffix = $row.Path.Substring($db.Length)
+                  if ($suffix -notmatch '^(-wal|-shm|-journal)?$') { throw 'Unexpected matching path suffix' }
+                  $process = [IO.Path]::GetFileName($row.'Process Name')
+                  if ($process -notmatch '^[A-Za-z0-9_.-]+$' -or $row.PID -notmatch '^\d+$' -or
+                      $row.'Time of Day' -notmatch '^[0-9/:. APMapm-]+$' -or
+                      $row.Operation -notmatch '^[A-Za-z0-9_ ]+$' -or
+                      $row.Result -notmatch '^[A-Za-z0-9_ ]+$') { throw 'Unexpected event field' }
+                  # Never print full Detail: it can contain paths and arguments.
+                  $safe = [regex]::Matches($row.Detail, '(?:^|, )(ShareMode|Desired Access): ([^:]*?)(?=, [^,:]+: |$)') |
+                    ForEach-Object {
+                      $key = $_.Groups[1].Value
+                      $value = $_.Groups[2].Value
+                      $flags = if ($key -eq 'ShareMode') { 'None|Read|Write|Delete' } else {
+                        'Generic Read|Generic Write|Generic Execute|Generic All|Read Data/List Directory|Write Data/Add File|Append Data/Add Subdirectory|Read EA|Write EA|Execute/Traverse|Delete Child|Read Attributes|Write Attributes|Delete|Read Control|Write DAC|Write Owner|Synchronize|Access System Security|Maximum Allowed'
+                      }
+                      if ($value -match "^(?:$flags)(?:, (?:$flags))*`$") { "$key`: $value" }
+                    }
+                  Write-Host "$($row.'Time of Day') $process $($row.PID) $($row.Operation) $($row.Result) <test-db>$suffix $($safe -join '; ')"
+                  $count++
+                }
+              }
+              if ($count -eq 0) { throw 'No matching trace events were exported' }
+            } catch {
+              Write-Host 'ERROR: Trace export or sanitization failed (raw exception suppressed).'
+              $failed = $true
+            }
+          }
+          if ($failed -or $null -eq $testExit -or $testExit -ne 0) { exit 1 }
+      - name: Stop capture and erase all diagnostic files
+        timeout-minutes: 2
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:QID_DIAGNOSTIC_OWNED -ne 'true') { exit 0 }
+          $dir = Join-Path $env:RUNNER_TEMP "qid-sqlite-$env:QID_SQLITE_CLEANUP_SUFFIX"
+          $db = Join-Path ([IO.Path]::GetTempPath()) "qid-user-deletion-$env:QID_SQLITE_CLEANUP_SUFFIX.db"
+          $tool = Join-Path $dir 'Procmon64.exe'
+          $failed = $false
+          if (Test-Path $tool) {
+            try {
+              $signature = Get-AuthenticodeSignature $tool
+              if ($signature.Status -ne 'Valid' -or
+                  $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+                throw 'Untrusted cleanup executable'
+              }
+              $p = Start-Process $tool -ArgumentList '/AcceptEula /Quiet /Terminate' -PassThru
+              if (!$p.WaitForExit(15000) -or $p.ExitCode -ne 0) { throw 'Procmon cleanup stop failed' }
+            } catch {
+              Write-Host 'ERROR: Could not confirm Procmon termination.'
+              $failed = $true
+            }
+          }
+          # Each removal is independent: a locked DB must not skip trace erasure.
+          $paths = @($db, "$db-wal", "$db-shm", "$db-journal")
+          if (Test-Path -LiteralPath $dir) {
+            try {
+              $paths += @(Get-ChildItem -LiteralPath $dir -File -Recurse | ForEach-Object FullName)
+            } catch {
+              Write-Host 'ERROR: Could not enumerate all diagnostic files for erasure.'
+              $failed = $true
+            }
+            $paths += $dir
+          }
+          foreach ($path in $paths) {
+            try {
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+            } catch {
+              Write-Host 'ERROR: Diagnostic cleanup could not remove a temporary file.'
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }

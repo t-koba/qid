@@ -155,15 +155,26 @@ where
         id: "cert-api-duplicate".to_string(),
         ..certificate.clone()
     };
-    let err = repo
+    let error = repo
         .store_workload_certificate(&duplicate)
         .await
         .expect_err("duplicate workload certificate thumbprint must fail");
     assert!(
-        err.message()
-            .contains("workload certificate thumbprint already exists"),
-        "unexpected error: {}",
-        err.message()
+        matches!(error, qid_core::error::QidError::BadRequest { .. }),
+        "duplicate thumbprint must be a bad request, got: {}",
+        error.message()
+    );
+    assert!(
+        error
+            .message()
+            .contains("workload certificate thumbprint already exists")
+    );
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&workload.id))
+            .await
+            .expect("list incumbent workload certificate failed"),
+        vec![certificate.clone()],
+        "duplicate thumbprint changed the incumbent certificate"
     );
 
     let same_realm_workload = WorkloadIdentity {

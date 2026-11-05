@@ -95,20 +95,6 @@ impl WorkloadRepository for SqlRepository {
                 message: "workload certificate identity does not match workload".to_string(),
             });
         }
-        let duplicate_thumbprint: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM workload_certificates WHERE realm_id = ? AND x5t_s256 = ? AND id <> ?",
-        )
-        .bind(&certificate.realm_id)
-        .bind(&certificate.x5t_s256)
-        .bind(&certificate.id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage_to_qid_error)?;
-        if duplicate_thumbprint.is_some() {
-            return Err(QidError::BadRequest {
-                message: "workload certificate thumbprint already exists".to_string(),
-            });
-        }
         let result = sqlx::query(
             "INSERT INTO workload_certificates (id, realm_id, workload_id, spiffe_id, serial_number, x5t_s256, csr_sha256, certificate_pem, issuer_key_ref, issued_at, not_before, not_after, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET serial_number = excluded.serial_number, x5t_s256 = excluded.x5t_s256, csr_sha256 = excluded.csr_sha256, certificate_pem = excluded.certificate_pem, issuer_key_ref = excluded.issuer_key_ref, issued_at = excluded.issued_at, not_before = excluded.not_before, not_after = excluded.not_after, revoked_at = excluded.revoked_at \
@@ -129,7 +115,14 @@ impl WorkloadRepository for SqlRepository {
         .bind(certificate.revoked_at.map(|value| value as i64))
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(|error| match &error {
+            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
+                QidError::BadRequest {
+                    message: "workload certificate thumbprint already exists".to_string(),
+                }
+            }
+            _ => storage_to_qid_error(error),
+        })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "workload certificate ID belongs to another identity".to_string()
         })

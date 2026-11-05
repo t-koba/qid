@@ -51,6 +51,8 @@ realms:
           - client_credentials
     protocols:
       vc:
+        credential_audience: "api://qid/vc"
+        status_audience: "api://qid/vc-status"
         issuer_key_ref: "credential-status-issuer"
       oidc:
         authorization_code:
@@ -80,6 +82,18 @@ realms:
           access_token_format: jwt
           access_token_ttl_seconds: 300
         resource_servers:
+          - audience: "api://qid/vc"
+            resources:
+              - "https://id.example.com/vc/v1"
+            scopes:
+              - openid
+              - qid_identity
+              - vc.issue
+              - vc.verify
+            introspection_client_ids:
+              - vc-status-reader
+            require_sender_constraint: true
+            high_risk: true
           - audience: "api://qid/vc-status"
             resources:
               - "https://id.example.com/vc/v1/status"

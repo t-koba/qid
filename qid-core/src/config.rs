@@ -131,6 +131,22 @@ impl QidConfig {
     pub fn validate_vc_issuer_keys(&self) -> QidResult<()> {
         for realm in &self.realms {
             let vc = &realm.protocols.vc;
+            for (name, target) in [
+                ("credential_audience", &vc.credential_audience),
+                ("status_audience", &vc.status_audience),
+            ] {
+                if target
+                    .as_ref()
+                    .is_some_and(|value| value.is_empty() || value.chars().any(char::is_whitespace))
+                {
+                    return Err(QidError::Config {
+                        message: format!(
+                            "realm {} VC {name} must be nonempty and contain no whitespace",
+                            realm.id
+                        ),
+                    });
+                }
+            }
             let Some(reference) = vc.issuer_key_ref.as_deref() else {
                 continue;
             };

@@ -71,6 +71,8 @@ pub struct RuntimeRealm {
     pub mfa: MfaConfig,
     pub saml_clock_skew_seconds: u64,
     pub vc_max_credential_lifetime_seconds: u64,
+    pub vc_credential_audience: Option<String>,
+    pub vc_status_audience: Option<String>,
 }
 
 impl RuntimeRealm {
@@ -110,6 +112,8 @@ impl RuntimeRealm {
             mfa: config.authentication.mfa.clone(),
             saml_clock_skew_seconds: config.protocols.saml.max_clock_skew_seconds,
             vc_max_credential_lifetime_seconds: config.protocols.vc.max_credential_lifetime_seconds,
+            vc_credential_audience: config.protocols.vc.credential_audience.clone(),
+            vc_status_audience: config.protocols.vc.status_audience.clone(),
         })
     }
 }

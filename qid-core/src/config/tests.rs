@@ -675,6 +675,46 @@ fn vc_max_credential_lifetime_defaults_to_24h() {
 }
 
 #[test]
+fn vc_consumer_audiences_are_optional_exact_and_validated() {
+    let mut config = minimal_config();
+    let parsed: VcProtocolConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(parsed.credential_audience.is_none());
+    assert!(parsed.status_audience.is_none());
+    config.validate().unwrap();
+    for name in ["credential_audience", "status_audience"] {
+        for value in [
+            "",
+            " ",
+            "\t",
+            " api://qid/vc",
+            "api://qid/vc ",
+            "api://qid/v c",
+        ] {
+            config.realms[0].protocols.vc =
+                serde_json::from_value(serde_json::json!({name: value})).unwrap();
+            let error = config.validate().unwrap_err();
+            assert!(error.message().contains(name), "{error}");
+        }
+    }
+    config.realms[0].protocols.vc = serde_json::from_value(serde_json::json!({
+        "credential_audience": "api://qid/vc",
+        "status_audience": "api://qid/vc-status"
+    }))
+    .unwrap();
+    config.validate().unwrap();
+    let plan = crate::plan::RuntimePlan::from_config(&config).unwrap();
+    let realm = plan.first_realm().unwrap();
+    assert_eq!(
+        realm.vc_credential_audience.as_deref(),
+        Some("api://qid/vc")
+    );
+    assert_eq!(
+        realm.vc_status_audience.as_deref(),
+        Some("api://qid/vc-status")
+    );
+}
+
+#[test]
 fn token_ttl_default_values() {
     let ttl = TokenTtlConfig::default();
     assert_eq!(ttl.access_token_ttl_seconds, 3600);

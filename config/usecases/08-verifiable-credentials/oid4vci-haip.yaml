@@ -60,6 +60,8 @@ realms:
           - client_credentials
     protocols:
       vc:
+        credential_audience: "api://qid/vc"
+        status_audience: "api://qid/vc-status"
         issuer_key_ref: "vc-issuer"
       oidc:
         authorization_code:
@@ -101,6 +103,18 @@ realms:
           - audience: "api://qid/vc"
             resources:
               - "https://id.example.com/vc/v1"
+            scopes:
+              - openid
+              - qid_identity
+              - vc.issue
+              - vc.verify
+            introspection_client_ids:
+              - vc-api
+            require_sender_constraint: true
+            high_risk: true
+          - audience: "api://qid/vc-status"
+            resources:
+              - "https://id.example.com/vc/v1/status"
             scopes:
               - openid
               - qid_identity

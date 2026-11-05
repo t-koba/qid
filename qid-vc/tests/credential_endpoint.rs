@@ -43,6 +43,31 @@ fn vc_keyring(realm: &str, name: &str) -> qid_core::config::KeyringConfig {
     }
 }
 
+const CREDENTIAL_AUDIENCE: &str = "api://qid/vc";
+const STATUS_AUDIENCE: &str = "api://qid/vc-status";
+
+fn vc_audiences() -> Vec<String> {
+    vec![CREDENTIAL_AUDIENCE.into(), STATUS_AUDIENCE.into()]
+}
+
+fn vc_config() -> qid_core::config::QidConfig {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.vc.issuer_key_ref = Some("vc-test".into());
+    config.crypto.keyrings = vec![
+        qid_core::config::KeyringConfig {
+            name: "oidc-primary".into(),
+            realm_id: None,
+            purposes: vec!["oidc_token".into()],
+            signer: Default::default(),
+            rotation: Default::default(),
+        },
+        vc_keyring("test", "vc-test"),
+    ];
+    config.realms[0].protocols.vc.credential_audience = Some(CREDENTIAL_AUDIENCE.into());
+    config.realms[0].protocols.vc.status_audience = Some(STATUS_AUDIENCE.into());
+    config
+}
+
 async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, User) {
     let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
     repo.migrate().await.unwrap();
@@ -67,18 +92,7 @@ async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, User) {
     repo.create_user(&user).await.unwrap();
 
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-vc"));
-    let mut config = test_helpers::test_config();
-    config.realms[0].protocols.vc.issuer_key_ref = Some("vc-test".into());
-    config.crypto.keyrings = vec![
-        qid_core::config::KeyringConfig {
-            name: "oidc-primary".into(),
-            realm_id: None,
-            purposes: vec!["oidc_token".into()],
-            signer: Default::default(),
-            rotation: Default::default(),
-        },
-        vc_keyring("test", "vc-test"),
-    ];
+    let config = vc_config();
     let mut state = SharedState::new(config, repo, signer, serde_json::json!({})).unwrap();
     state.vc_issuer_signers.insert(
         "test".into(),
@@ -102,7 +116,7 @@ async fn issue_identity_access_token(state: &SharedState<SqlRepository>, user: &
             access_token: None,
             access_expires_at: None,
             session_id: None,
-            audience: None,
+            audience: Some(&vc_audiences()),
             resource: None,
             authorization_details: None,
             cnf: None,
@@ -166,7 +180,7 @@ async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
             access_token: None,
             access_expires_at: None,
             session_id: None,
-            audience: None,
+            audience: Some(&vc_audiences()),
             resource: None,
             authorization_details: None,
             cnf: None,
@@ -436,7 +450,7 @@ async fn credential_endpoint_rejects_missing_scope() {
             access_token: None,
             access_expires_at: None,
             session_id: None,
-            audience: None,
+            audience: Some(&vc_audiences()),
             resource: None,
             authorization_details: None,
             cnf: None,
@@ -850,7 +864,10 @@ async fn realm_issuers_isolate_credentials_keys_status_and_metadata() {
             "vc-client",
             &realm.id,
             &["openid".into(), "qid_identity".into()],
-            TokenIssueClaims::default(),
+            TokenIssueClaims {
+                audience: Some(&vc_audiences()),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1087,4 +1104,208 @@ async fn single_realm_metadata_path_matches_exact_issuer_identifier() {
             assert_eq!(body["display"][0]["name"], "test");
         }
     }
+}
+
+// Direct consumer coverage uses an immediate-flush File store so every refusal
+// can assert that no credential or revocation was persisted, not just an error.
+#[tokio::test]
+async fn bearer_consumers_require_their_exact_configured_audience_without_mutation() {
+    use qid_core::{error::QidError, models::AccessToken};
+    use qid_storage::FileRepository;
+
+    let dir = std::env::temp_dir().join(format!("qid-vc-audience-{}", ulid::Ulid::new()));
+    let path = dir.join("store.json");
+    let repo = Arc::new(FileRepository::new(path.to_str().unwrap()).await.unwrap());
+    let user = User {
+        id: "vc-user".into(),
+        realm_id: "test".into(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user).await.unwrap();
+    let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-vc"));
+    let mut state = SharedState::new(vc_config(), repo, signer, serde_json::json!({})).unwrap();
+    state.vc_issuer_signers.insert(
+        "test".into(),
+        Arc::new(LocalSigner::from_secret("vc-test", b"dedicated-vc-secret")),
+    );
+    let mut state = Arc::new(state);
+    let holder = generate_es256("audience-holder").unwrap();
+    let nonce = "audience-nonce";
+    let request: qid_vc::CredentialRequest = serde_json::from_value(serde_json::json!({
+        "claims": ["sub"], "holder_jwk": holder.public_jwk,
+        "proof": {"jwt": credential_proof(&holder.private_pem, &holder.public_jwk, nonce)},
+        "nonce": nonce
+    }))
+    .unwrap();
+    let revocation = qid_vc::CredentialRevocationRequest {
+        reason: "owner_request".into(),
+    };
+
+    async fn headers(
+        state: &SharedState<FileRepository>,
+        audiences: &[&str],
+        resources: &[&str],
+    ) -> axum::http::HeaderMap {
+        let jti = ulid::Ulid::new().to_string();
+        // Explicit stored audiences also cover legacy empty sets, which normal
+        // issuance replaces with a client audience. Generic decoding must not
+        // authorize this consumer based on a resource or any other token field.
+        let record: AccessToken = serde_json::from_value(serde_json::json!({
+            "jti": jti, "family_id": null, "user_id": "vc-user",
+            "client_id": "vc-client", "realm_id": "test", "scopes": ["qid_identity"],
+            "audience": audiences, "resource": resources, "token_format": "opaque",
+            "expires_at": util::now_seconds() + 300, "issued_at": util::now_seconds(),
+            "revoked": false
+        }))
+        .unwrap();
+        state.repo.create_access_token(&record).await.unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!(
+                "Bearer {}",
+                qid_oauth::endpoints::encode_opaque_access_token(&jti)
+            )
+            .parse()
+            .unwrap(),
+        );
+        headers
+    }
+
+    // A target in a multi-audience set suffices; status audience is not needed
+    // to issue, and the issuance audience is not needed to revoke.
+    let issuance_headers = headers(&state, &["api://unrelated", CREDENTIAL_AUDIENCE], &[]).await;
+    let issued = qid_vc::issue_credential_from_bearer(&state, &issuance_headers, request.clone())
+        .await
+        .unwrap();
+    let claims = state.vc_issuer_signers["test"]
+        .decode_signature_only(&issued.credential)
+        .unwrap();
+    let credential_id = claims.claims.extra["vc"]["status"]["credential_id"]
+        .as_str()
+        .unwrap();
+    let original = state
+        .repo
+        .get_vc_credential_status(credential_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!original.revoked);
+
+    for issuance in [true, false] {
+        let (target, other, resource) = if issuance {
+            (
+                CREDENTIAL_AUDIENCE,
+                STATUS_AUDIENCE,
+                "https://id.example.com/vc/v1",
+            )
+        } else {
+            (
+                STATUS_AUDIENCE,
+                CREDENTIAL_AUDIENCE,
+                "https://id.example.com/vc/v1/status",
+            )
+        };
+        for (configured, audiences, resources) in [
+            (None, vec![target], vec![]),
+            (Some(""), vec![target], vec![]),
+            (Some(" \t"), vec![" \t"], vec![]),
+            (Some(target), vec![], vec![]),
+            (Some(target), vec!["api://wrong"], vec![]),
+            (Some(target), vec![other], vec![]),
+            (Some(target), vec!["https://id.example.com"], vec![]),
+            (Some(target), vec!["api://wrong"], vec![resource, target]),
+            (
+                Some(target),
+                vec!["API://qid/vc", "API://qid/vc-status"],
+                vec![],
+            ),
+        ] {
+            let realm = &mut Arc::get_mut(&mut state).unwrap().plan.realms[0];
+            if issuance {
+                realm.vc_credential_audience = configured.map(str::to_string);
+            } else {
+                realm.vc_status_audience = configured.map(str::to_string);
+            }
+            let headers = headers(&state, &audiences, &resources).await;
+            let before = std::fs::read(&path).unwrap();
+            let error = if issuance {
+                qid_vc::issue_credential_from_bearer(&state, &headers, request.clone())
+                    .await
+                    .unwrap_err()
+            } else {
+                qid_vc::revoke_credential_from_bearer(
+                    &state,
+                    &headers,
+                    credential_id,
+                    revocation.clone(),
+                )
+                .await
+                .unwrap_err()
+            };
+            assert!(matches!(error, QidError::Unauthorized { .. }), "{error}");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "refusal must not persist a credential or change status"
+            );
+            assert_eq!(
+                serde_json::to_value(
+                    state
+                        .repo
+                        .get_vc_credential_status(credential_id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                )
+                .unwrap(),
+                serde_json::to_value(&original).unwrap()
+            );
+        }
+    }
+    Arc::get_mut(&mut state).unwrap().plan.realms[0].vc_status_audience =
+        Some(STATUS_AUDIENCE.into());
+    let status_headers = headers(&state, &["api://unrelated", STATUS_AUDIENCE], &[]).await;
+    // The target audience must not disable the independent issuer check.
+    let mut wrong_issuer = original.clone();
+    wrong_issuer.credential_id = ulid::Ulid::new().to_string();
+    wrong_issuer.issuer = "https://other-issuer.example.com".into();
+    state
+        .repo
+        .store_vc_credential_status(&wrong_issuer)
+        .await
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let error = qid_vc::revoke_credential_from_bearer(
+        &state,
+        &status_headers,
+        &wrong_issuer.credential_id,
+        revocation.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, QidError::Unauthorized { .. }));
+    assert!(error.message().contains("issuer"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let revoked =
+        qid_vc::revoke_credential_from_bearer(&state, &status_headers, credential_id, revocation)
+            .await
+            .unwrap();
+    assert!(revoked.revoked);
+    assert!(
+        state
+            .repo
+            .get_vc_credential_status(credential_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked
+    );
+    drop(state);
+    std::fs::remove_dir_all(dir).unwrap();
 }

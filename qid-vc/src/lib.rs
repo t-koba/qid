@@ -172,6 +172,18 @@ pub fn build_credential_offer(
     })
 }
 
+fn require_target_audience(target: Option<&str>, audiences: &[String]) -> QidResult<()> {
+    if target.is_some_and(|target| {
+        !target.trim().is_empty() && audiences.iter().any(|audience| audience == target)
+    }) {
+        Ok(())
+    } else {
+        Err(QidError::Unauthorized {
+            message: "credential access token requires the configured consumer audience".into(),
+        })
+    }
+}
+
 pub(crate) fn bearer_token(headers: &HeaderMap) -> QidResult<&str> {
     qid_oauth::endpoints::extract_bearer_token(headers).map_err(|_| QidError::Unauthorized {
         message: "credential endpoint requires a bearer token".to_string(),

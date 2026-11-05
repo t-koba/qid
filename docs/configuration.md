@@ -399,6 +399,20 @@ between the host and configured path, preserving every path segment and
 trailing slash. The deployment must forward that path without rewriting or
 normalizing it.
 
+Set `realms[].protocols.vc.credential_audience` for bearer-authorized issuance
+and `realms[].protocols.vc.status_audience` for holder-authorized revocation.
+Both are optional, exact, case-sensitive audience strings; configured values
+must be nonempty and contain no whitespace (they are not trimmed). Omission
+fails closed at the corresponding endpoint with `401 Unauthorized`; a blank
+runtime target also refuses access. Public status lookup stays public.
+Register each target in `protocols.oauth.resource_servers` with its resources
+and scopes, as in the VC samples (`api://qid/vc` and `api://qid/vc-status`),
+and request a token for the intended consumer. The decoded token audience set
+must contain that consumer's configured target. A matching `resource`, realm
+issuer, `qid_identity` scope, holder proof, subject or realm does not substitute
+for audience authorization. Scope, sender constraints, holder ownership and
+realm/issuer checks still apply independently.
+
 Configure a separate deployment-level `oidc_token` keyring for the primary,
 as in the VC samples. VC configurations require the selected first `oidc_token`
 keyring to be deployment-level, so primary signing cannot reuse a VC-only or

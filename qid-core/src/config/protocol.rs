@@ -610,6 +610,13 @@ pub struct VcProtocolConfig {
     /// Exact name of a dedicated `other:vc_issuer` keyring owned by this realm.
     /// Without a reference, credential issuance and verification fail closed.
     pub issuer_key_ref: Option<String>,
+    /// Exact bearer-token audience for credential issuance; absent disables it.
+    #[serde(default)]
+    pub credential_audience: Option<String>,
+    /// Exact bearer-token audience for holder status/revocation management.
+    /// Absent disables revocation, not public status lookup.
+    #[serde(default)]
+    pub status_audience: Option<String>,
     /// Policy ceiling for requested credential lifetimes in seconds.
     /// Issuance rejects `lifetime_seconds` above this value fail-closed.
     /// Default: 86400 (24 hours, matching the default refresh-token TTL);
@@ -622,6 +629,8 @@ impl Default for VcProtocolConfig {
     fn default() -> Self {
         Self {
             issuer_key_ref: None,
+            credential_audience: None,
+            status_audience: None,
             max_credential_lifetime_seconds: default_vc_max_credential_lifetime(),
         }
     }

@@ -114,6 +114,12 @@ pub async fn revoke_credential_from_bearer<R: Repository>(
         .map_err(|_| QidError::Unauthorized {
             message: "invalid credential revocation access token".to_string(),
         })?;
+    crate::require_target_audience(
+        state
+            .realm(&decoded.realm_id)
+            .and_then(|realm| realm.vc_status_audience.as_deref()),
+        &decoded.aud,
+    )?;
     let htu = format!(
         "{}/vc/v1/status/{}/revoke",
         state.plan.public_base_url.trim_end_matches('/'),
@@ -155,7 +161,6 @@ pub async fn revoke_credential_from_bearer<R: Repository>(
         });
     }
     if let Some(realm) = state.realm(&status.realm_id)
-        && decoded.aud.iter().any(|aud| aud == &realm.issuer)
         && status.issuer != realm.issuer
     {
         return Err(QidError::Unauthorized {

@@ -101,6 +101,12 @@ pub async fn issue_credential_from_bearer<R: Repository>(
         .map_err(|_| QidError::Unauthorized {
             message: "invalid credential access token".to_string(),
         })?;
+    crate::require_target_audience(
+        state
+            .realm(&decoded.realm_id)
+            .and_then(|realm| realm.vc_credential_audience.as_deref()),
+        &decoded.aud,
+    )?;
     let htu = format!(
         "{}/vc/v1/credential",
         state.plan.public_base_url.trim_end_matches('/')

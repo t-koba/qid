@@ -530,8 +530,16 @@ endpoint's base URL. The metadata advertises the qid-private credential format
 `qid_sd_jwt_vc`, and the credential response repeats that value; no registered
 OID4VCI format is advertised or accepted. Credential revocation is holder-only:
 the bearer token's subject must equal the credential subject, the token realm
-must match the credential realm, and the token audience's realm issuer must
+must match the credential realm, and that realm's configured issuer must
 match the credential issuer; a client-credentials token cannot revoke.
+Issuance requires the exact `protocols.vc.credential_audience` in the decoded
+bearer-token audience set; revocation requires `protocols.vc.status_audience`.
+These per-realm targets have no implicit default: a missing or blank target,
+or an empty or wrong token audience set, returns `401` before mutation.
+A matching resource, issuer, scope or holder proof is not a target match.
+Both consumers still require `qid_identity` and enforce sender constraints;
+public status lookup is unaffected. See [configuration](configuration.md)
+for target registration and the two VC samples.
 
 ### Inbound HR lifecycle batches
 

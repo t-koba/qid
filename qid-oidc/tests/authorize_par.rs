@@ -2182,6 +2182,193 @@ async fn userinfo_401_omits_pointer_when_userinfo_unconfigured() {
     );
 }
 
+// Exercise the production issuer: persist the access-token record and sign a real user token.
+async fn issue_userinfo_token(
+    state: &SharedState<SqlRepository>,
+    claims: qid_oauth::endpoints::TokenIssueClaims<'_>,
+) -> String {
+    let user = state
+        .repo
+        .get_user_by_id("par-user")
+        .await
+        .unwrap()
+        .unwrap();
+    let (token, _) = qid_oauth::endpoints::issue_access_token(
+        state,
+        &state.config.realms[0].issuer,
+        &user,
+        "par-client",
+        "test",
+        &["openid".into(), "email".into(), "profile".into()],
+        claims,
+    )
+    .await
+    .unwrap();
+    token
+}
+
+#[tokio::test]
+async fn userinfo_checks_realm_resource_and_audience_before_claims() {
+    let userinfo_url = "https://id.example.com/oidc/userinfo";
+    let foreign_url = "https://api.example.com/data";
+    let server = |audience: &str, resource: &str| OAuthResourceServerConfig {
+        audience: audience.into(),
+        resources: vec![resource.into()],
+        scopes: Vec::new(),
+        introspection_client_ids: Vec::new(),
+        require_sender_constraint: false,
+        high_risk: false,
+    };
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        server("api://userinfo", userinfo_url),
+        server("api://foreign", foreign_url),
+    ];
+    // Another realm's mapping must not make the token realm's mapping ambiguous.
+    let mut other_realm = config.realms[0].clone();
+    other_realm.id = "other".into();
+    other_realm.issuer = "https://other.example.com".into();
+    config.realms.push(other_realm);
+    let (app, state) = setup_with_config(config).await;
+    for (audiences, resources, allowed) in [
+        (vec!["par-client"], vec![], true),
+        (vec!["api://userinfo"], vec![], true),
+        (vec!["api://userinfo", "par-client"], vec![], true),
+        (vec!["api://foreign"], vec![], false),
+        (vec!["api://foreign", "par-client"], vec![], false),
+        (vec!["unknown"], vec![], false),
+        (vec!["unknown", "par-client"], vec![], false),
+        (vec!["api://userinfo", "api://foreign"], vec![], false),
+        (
+            vec!["api://foreign", "par-client"],
+            vec![foreign_url],
+            false,
+        ),
+        (
+            vec!["api://userinfo", "par-client"],
+            vec![foreign_url],
+            false,
+        ),
+        (vec!["par-client"], vec![userinfo_url], false),
+        (vec!["api://userinfo"], vec![userinfo_url], true),
+        (
+            vec!["api://userinfo"],
+            vec!["https://id.example.com/oidc/userinfo/"],
+            false,
+        ),
+    ] {
+        let audience: Vec<String> = audiences.iter().map(|s| (*s).into()).collect();
+        let resource: Vec<String> = resources.iter().map(|s| (*s).into()).collect();
+        let token = issue_userinfo_token(
+            &state,
+            qid_oauth::endpoints::TokenIssueClaims {
+                audience: Some(&audience),
+                resource: Some(&resource),
+                ..Default::default()
+            },
+        )
+        .await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&state.paths.userinfo)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if allowed {
+                StatusCode::OK
+            } else {
+                StatusCode::UNAUTHORIZED
+            },
+            "aud={audiences:?}, resource={resources:?}"
+        );
+        let body = json_body(response).await;
+        if allowed {
+            assert_eq!(
+                body,
+                serde_json::json!({
+                    "sub": "par-user", "email": "par@example.com", "name": "PAR User",
+                })
+            );
+        } else {
+            assert_eq!(body["error"], "invalid_token");
+            assert_eq!(
+                body["error_description"],
+                "access token is not valid for UserInfo"
+            );
+            for claim in ["sub", "email", "name"] {
+                assert!(body.get(claim).is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn userinfo_requires_unique_mapping_for_explicit_resource() {
+    let userinfo_url = "https://id.example.com/oidc/userinfo";
+    for mapping_count in [0, 1, 2] {
+        let mut config = test_helpers::test_config();
+        // Matching the URL as the audience is also a valid mapping; two matches are not.
+        config.realms[0].protocols.oauth.resource_servers = (0..mapping_count)
+            .map(|_| OAuthResourceServerConfig {
+                audience: userinfo_url.into(),
+                resources: Vec::new(),
+                scopes: Vec::new(),
+                introspection_client_ids: Vec::new(),
+                require_sender_constraint: false,
+                high_risk: false,
+            })
+            .collect();
+        let (app, state) = setup_with_config(config).await;
+        for explicit in [false, true] {
+            let audience = vec![userinfo_url.to_string()];
+            let resource = vec![userinfo_url.to_string()];
+            let token = issue_userinfo_token(
+                &state,
+                qid_oauth::endpoints::TokenIssueClaims {
+                    audience: explicit.then_some(audience.as_slice()),
+                    resource: explicit.then_some(resource.as_slice()),
+                    ..Default::default()
+                },
+            )
+            .await;
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&state.paths.userinfo)
+                        .header("Authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let allowed = !explicit || mapping_count == 1;
+            assert_eq!(
+                response.status(),
+                if allowed {
+                    StatusCode::OK
+                } else {
+                    StatusCode::UNAUTHORIZED
+                }
+            );
+            let body = json_body(response).await;
+            if allowed {
+                assert_eq!(body["sub"], "par-user");
+            } else {
+                assert_eq!(body["error"], "invalid_token");
+                assert!(body.get("sub").is_none());
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
     // RFC 9449 section 7.1: an issued DPoP-bound token must work with the
@@ -2189,52 +2376,16 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.dpop.enabled = true;
     let (app, state) = setup_with_config(config).await;
-    state
-        .repo
-        .create_client(&Client {
-            id: "client-userinfo-service".to_string(),
-            realm_id: "test".to_string(),
-            client_id: "userinfo-service".to_string(),
-            client_type: ClientType::Confidential,
-            token_endpoint_auth_method: "client_secret_post".to_string(),
-            client_secret_hash: Some(qid_core::util::client_secret_hash("secret")),
-            mtls_certificate_thumbprints: Vec::new(),
-            jwks: qid_core::models::default_client_jwks(),
-            redirect_uris: Vec::new(),
-            grant_types: vec!["client_credentials".to_string()],
-            client_name: None,
-            client_uri: None,
-            logo_uri: None,
-            contacts: Vec::new(),
-            post_logout_redirect_uris: Vec::new(),
-            default_max_age: None,
-            require_auth_time: false,
-            sector_identifier_uri: None,
-            subject_type: None,
-            backchannel_logout_uri: None,
-            frontchannel_logout_uri: None,
-            backchannel_client_notification_endpoint: None,
-            require_pushed_authorization_requests: false,
-        })
-        .await
-        .unwrap();
-
-    let token_htu = format!("https://id.example.com{}", state.paths.token);
-    let issue_proof = dpop_proof("userinfo-issue-1", "POST", &token_htu, None, None);
-    let token_request = Request::builder()
-        .method(Method::POST)
-        .uri(&state.paths.token)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("DPoP", issue_proof)
-        .body(Body::from(
-            "grant_type=client_credentials&client_id=userinfo-service&client_secret=secret&scope=openid",
-        ))
-        .unwrap();
-    let token_response = app.clone().oneshot(token_request).await.unwrap();
-    assert_eq!(token_response.status(), StatusCode::OK);
-    let token_json = json_body(token_response).await;
-    assert_eq!(token_json["token_type"], "DPoP");
-    let bound_token = token_json["access_token"].as_str().unwrap().to_string();
+    let (_, jwk) = dpop_test_key();
+    let cnf = serde_json::json!({"jkt": qid_crypto::jwk::jwk_thumbprint(&jwk).unwrap()});
+    let bound_token = issue_userinfo_token(
+        &state,
+        qid_oauth::endpoints::TokenIssueClaims {
+            cnf: Some(&cnf),
+            ..Default::default()
+        },
+    )
+    .await;
 
     let userinfo_htu = format!("https://id.example.com{}", state.paths.userinfo);
     let ath = util::sha256_base64url(&bound_token);
@@ -2255,6 +2406,7 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["sub"], "par-user");
 
     // Missing proof, wrong key, and wrong ath all fail without disclosing.
     let response = get_userinfo("DPoP", &bound_token, None).await.unwrap();
@@ -2290,19 +2442,11 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // The DPoP scheme requires a sender-constrained token.
-    let plain_response = post_form(
-        app.clone(),
-        state.paths.token.clone(),
-        "grant_type=client_credentials&client_id=userinfo-service&client_secret=secret&scope=openid",
-    )
-    .await;
-    assert_eq!(plain_response.status(), StatusCode::OK);
-    let plain_json = json_body(plain_response).await;
-    let plain_token = plain_json["access_token"].as_str().unwrap();
-    let plain_ath = util::sha256_base64url(plain_token);
+    let plain_token = issue_userinfo_token(&state, Default::default()).await;
+    let plain_ath = util::sha256_base64url(&plain_token);
     let response = get_userinfo(
         "DPoP",
-        plain_token,
+        &plain_token,
         Some(dpop_proof(
             "userinfo-plain",
             "GET",
@@ -2328,6 +2472,7 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
         .await
         .unwrap();
     assert_eq!(bearer_response.status(), StatusCode::OK);
+    assert_eq!(json_body(bearer_response).await["sub"], "par-user");
 }
 
 /// Base authorize query with PKCE; `extra` appends raw query parameters.

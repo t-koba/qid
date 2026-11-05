@@ -746,27 +746,21 @@ async fn userinfo<R: Repository>(
         return qid_http::error_response(bad_request("OIDC UserInfo is disabled"));
     }
     let resource_metadata = userinfo_resource_metadata_url(&state);
+    let invalid_token = |description: &str| {
+        qid_http::oauth_error_response_with_bearer_and_metadata(
+            axum::http::StatusCode::UNAUTHORIZED,
+            "invalid_token",
+            description,
+            resource_metadata.as_deref(),
+        )
+    };
     let (token, is_dpop_scheme) = match extract_userinfo_token(&headers) {
         Ok(parsed) => parsed,
-        Err(_) => {
-            return qid_http::oauth_error_response_with_bearer_and_metadata(
-                axum::http::StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "missing bearer access token",
-                resource_metadata.as_deref(),
-            );
-        }
+        Err(_) => return invalid_token("missing bearer access token"),
     };
     let decoded = match qid_oauth::endpoints::decode_access_token(&state, token).await {
         Ok(data) => data,
-        Err(_) => {
-            return qid_http::oauth_error_response_with_bearer_and_metadata(
-                axum::http::StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "failed to verify access token",
-                resource_metadata.as_deref(),
-            );
-        }
+        Err(_) => return invalid_token("failed to verify access token"),
     };
     let Some(realm) = state
         .config
@@ -774,26 +768,11 @@ async fn userinfo<R: Repository>(
         .iter()
         .find(|realm| realm.id == decoded.realm_id)
     else {
-        return qid_http::oauth_error_response_with_bearer_and_metadata(
-            axum::http::StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            "token realm is not configured",
-            resource_metadata.as_deref(),
-        );
+        return invalid_token("token realm is not configured");
     };
-    if is_dpop_scheme
-        && decoded
-            .cnf
-            .as_ref()
-            .and_then(|cnf| cnf.get("jkt"))
-            .is_none()
-    {
-        return qid_http::oauth_error_response_with_bearer_and_metadata(
-            axum::http::StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            "DPoP scheme requires a sender-constrained access token",
-            resource_metadata.as_deref(),
-        );
+    let dpop_binding = decoded.cnf.as_ref().and_then(|cnf| cnf.get("jkt"));
+    if is_dpop_scheme && dpop_binding.is_none() {
+        return invalid_token("DPoP scheme requires a sender-constrained access token");
     }
     if !realm.protocols.oidc.enabled || !realm.protocols.oidc.userinfo {
         return qid_http::error_response(bad_request("OIDC UserInfo is disabled for token realm"));
@@ -803,6 +782,36 @@ async fn userinfo<R: Repository>(
         state.plan.public_base_url.trim_end_matches('/'),
         state.paths.userinfo
     );
+    let servers = &realm.protocols.oauth.resource_servers;
+    let is_userinfo = |server: &&OAuthResourceServerConfig| {
+        server.audience == htu || server.resources.contains(&htu)
+    };
+    let mut mappings = servers.iter().filter(is_userinfo);
+    let mapping = mappings.next();
+    let mapping_is_unique = mappings.next().is_none();
+    let eligible = if !decoded.resource.is_empty() {
+        mapping_is_unique
+            && mapping.is_some_and(|server| {
+                decoded.resource.contains(&htu) && decoded.aud.contains(&server.audience)
+            })
+    } else {
+        // An ambiguous UserInfo mapping prevents resource-target authorization, but does not
+        // revoke the ordinary OIDC client audience, which does not rely on that mapping.
+        let has_userinfo_audience = mapping_is_unique
+            && mapping.is_some_and(|server| decoded.aud.contains(&server.audience));
+        (has_userinfo_audience || decoded.aud == [decoded.client_id.clone()])
+            && decoded.aud.iter().all(|audience| {
+                (audience == &decoded.client_id
+                    || (mapping_is_unique
+                        && mapping.is_some_and(|server| audience == &server.audience)))
+                    && !servers
+                        .iter()
+                        .any(|server| audience == &server.audience && !is_userinfo(&server))
+            })
+    };
+    if !eligible {
+        return invalid_token("access token is not valid for UserInfo");
+    }
     if let Err(error) = qid_oauth::endpoints::enforce_sender_constrained_access_token(
         &state,
         &headers,
@@ -811,20 +820,14 @@ async fn userinfo<R: Repository>(
         token,
         &decoded,
     ) {
-        return qid_http::oauth_error_response_with_bearer_and_metadata(
-            axum::http::StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            &error.to_string(),
-            resource_metadata.as_deref(),
-        );
+        return invalid_token(&error.to_string());
     }
     let sub = decoded.user_id;
-    let scope = decoded.scope;
 
     let mut result = serde_json::Map::new();
     result.insert("sub".to_string(), serde_json::Value::String(sub.clone()));
 
-    let scopes: Vec<&str> = scope.split(' ').collect();
+    let scopes: Vec<&str> = decoded.scope.split(' ').collect();
     if scopes.contains(&"email")
         && let Ok(Some(user)) = state.repo.get_user_by_id(&sub).await
         && let Some(email) = user.email

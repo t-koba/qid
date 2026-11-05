@@ -4608,6 +4608,7 @@ where
     let tenant_b = "tenant-custom-domain-owner-b";
     let realm_a = "realm-custom-domain-owner-a";
     let realm_b = "realm-custom-domain-owner-b";
+    let realm_a_second = "realm-custom-domain-owner-a-second";
     for (tenant, realm, issuer) in [
         (
             tenant_a,
@@ -4618,6 +4619,11 @@ where
             tenant_b,
             realm_b,
             "https://custom-domain-owner-b.example.com",
+        ),
+        (
+            tenant_a,
+            realm_a_second,
+            "https://custom-domain-owner-a-second.example.com",
         ),
     ] {
         repo.create_realm(
@@ -4657,6 +4663,35 @@ where
         repo.list_custom_domains(tenant_a)
             .await
             .expect("list updated custom domain failed"),
+        vec![updated.clone()]
+    );
+
+    let rebinding = CustomDomain {
+        realm_id: realm_a_second.to_string(),
+        hostname: "login.custom-domain-owner-a-updated.example.com".to_string(),
+        certificate_ref: "kms://certificates/custom-domain-owner-a-rebinding".to_string(),
+        verified: false,
+        verification_status: "pending".to_string(),
+        dns_challenge_name: Some(
+            "_qid.login.custom-domain-owner-a-updated.example.com".to_string(),
+        ),
+        dns_challenge_value: Some("custom-domain-owner-updated-proof".to_string()),
+        certificate_expires_at: Some(1_920_000_000),
+        certificate_renew_after: Some(1_900_000_000),
+        last_verified_at: Some(1_820_000_000),
+        ..updated.clone()
+    };
+    repo.store_custom_domain(&rebinding)
+        .await
+        .expect("same-tenant custom-domain rebinding update failed");
+    updated = CustomDomain {
+        realm_id: realm_a.to_string(),
+        ..rebinding
+    };
+    assert_eq!(
+        repo.list_custom_domains(tenant_a)
+            .await
+            .expect("list custom domain after rebinding attempt failed"),
         vec![updated.clone()]
     );
 

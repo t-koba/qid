@@ -80,9 +80,11 @@ impl SaasRepository for FileRepository {
             &domain.tenant_id,
             || "custom domain ID already belongs to another tenant".to_string(),
         )?;
-        store
-            .custom_domains
-            .insert(domain.id.clone(), domain.clone());
+        let mut stored = domain.clone();
+        if let Some(existing) = store.custom_domains.get(&domain.id) {
+            stored.realm_id.clone_from(&existing.realm_id);
+        }
+        store.custom_domains.insert(stored.id.clone(), stored);
         drop(store);
         self.save().await
     }

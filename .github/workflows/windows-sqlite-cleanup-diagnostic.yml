@@ -35,6 +35,18 @@ jobs:
           $stopped = $false
           $failed = $false
           $testExit = $null
+          $proc = $null
+          $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
+
+          function Owned-Processes {
+            # The launcher can hand off to another PID. Match the verified image
+            # in this session, not a process name or the Start-Process result.
+            return @(Get-CimInstance Win32_Process -Filter "Name = 'Procmon64.exe' AND SessionId = $session" |
+              Where-Object {
+                if (!$_.ExecutablePath) { throw 'Cannot establish Procmon ownership' }
+                [string]::Equals($_.ExecutablePath, $tool, [StringComparison]::OrdinalIgnoreCase)
+              })
+          }
 
           function Run-Procmon([string]$arguments) {
             $p = Start-Process $tool -ArgumentList $arguments -PassThru
@@ -76,10 +88,28 @@ jobs:
             $scope = [Windows.Automation.TreeScope]::Descendants
             $ae = [Windows.Automation.AutomationElement]
             $ct = [Windows.Automation.ControlType]
-            $proc = Start-Process $tool -ArgumentList "/AcceptEula /Quiet /NoConnect /BackingFile `"$pml`"" -PassThru
+            if (@(Owned-Processes).Count -ne 0) { throw 'Procmon image already running' }
             $started = $true
-            if (!$proc.WaitForInputIdle(15000)) { throw 'Procmon did not initialize' }
-            $pidCondition = [Windows.Automation.PropertyCondition]::new($ae::ProcessIdProperty, $proc.Id)
+            Start-Process $tool -ArgumentList "/AcceptEula /Quiet /NoConnect /BackingFile `"$pml`"" | Out-Null
+            Wait-Ready {
+              $owners = @(Owned-Processes)
+              if ($owners.Count -gt 1) { throw 'Ambiguous Procmon owner' }
+              if ($owners.Count -eq 0) { return $false }
+              $script:pidCondition = [Windows.Automation.PropertyCondition]::new(
+                $ae::ProcessIdProperty, [int]$owners[0].ProcessId)
+              $windows = @($ae::RootElement.FindAll([Windows.Automation.TreeScope]::Children,
+                [Windows.Automation.AndCondition]::new($pidCondition,
+                  [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $ct::Window))))
+              if ($windows.Count -gt 1) { throw 'Ambiguous Procmon window' }
+              if ($windows.Count -eq 0) { return $false }
+              if (!$windows[0].Current.NativeWindowHandle -or !$windows[0].Current.IsEnabled) { return $false }
+              $menus = @($windows[0].FindAll($scope,
+                [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $ct::MenuItem)) |
+                Where-Object { $_.Current.Name -eq 'File' })
+              if ($menus.Count -ne 1) { return $false }
+              $script:proc = [Diagnostics.Process]::GetProcessById([int]$owners[0].ProcessId)
+              return $true
+            }
             function Elements($type) {
               $condition = [Windows.Automation.AndCondition]::new(
                 $pidCondition, [Windows.Automation.PropertyCondition]::new($ae::ControlTypeProperty, $type))
@@ -154,13 +184,16 @@ jobs:
             $edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($db)
             Select-Value $combos[3] 'Include'
             Click (Find-Control $ct::Button '^Add$')
-            $rules = @(Rules)
-            if ($rules.Count -ne 1) { throw 'Expected exactly one path rule' }
-            $labels = @($rules[0].Current.Name) + @($rules[0].FindAll($scope,
-              [Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name })
-            foreach ($expected in @('Path', 'begins with', $db, 'Include')) {
-              if ($labels -notcontains $expected) { throw 'Could not verify the exact path rule' }
+            function Assert-ExactRule {
+              $rules = @(Rules)
+              if ($rules.Count -ne 1) { throw 'Expected exactly one path rule' }
+              $labels = @($rules[0].Current.Name) + @($rules[0].FindAll($scope,
+                [Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name })
+              foreach ($expected in @('Path', 'begins with', $db, 'Include')) {
+                if ($labels -notcontains $expected) { throw 'Could not verify the exact path rule' }
+              }
             }
+            Assert-ExactRule
             Click (Find-Control $ct::Button '^OK$')
             Set-Menu '^Filter$' $true
             $drop = Find-Control $ct::MenuItem '^Drop Filtered Events$'
@@ -180,7 +213,25 @@ jobs:
             Click (Find-Control $ct::Button '^Save$')
             Wait-Ready { Test-Path $config }
             $stage = 'capture readiness'
-            Menu '^File$' '^Capture Events'
+            # Re-read the live rule and destructive-filter state after export.
+            # No toggle is allowed unless capture is still unchecked.
+            Menu '^Filter$' '^Filter\.\.\.'
+            Wait-Ready { @(Elements $ct::Window | Where-Object { $_.Current.Name -eq 'Process Monitor Filter' }).Count -eq 1 }
+            $dialog = Find-Control $ct::Window '^Process Monitor Filter$'
+            $list = $dialog.FindFirst($scope,
+              [Windows.Automation.PropertyCondition]::new($ae::ClassNameProperty, 'SysListView32'))
+            if ($null -eq $list) { throw 'Procmon filter list unavailable' }
+            Assert-ExactRule
+            Click (Find-Control $ct::Button '^OK$')
+            Set-Menu '^Filter$' $true
+            if (!(Checked (Find-Control $ct::MenuItem '^Drop Filtered Events$'))) {
+              throw 'Destructive filtering is not enabled'
+            }
+            Set-Menu '^Filter$' $false
+            Set-Menu '^File$' $true
+            $capture = Find-Control $ct::MenuItem '^Capture Events'
+            if (Checked $capture) { throw 'Unexpected active capture before toggle' }
+            Click $capture
             Set-Menu '^File$' $true
             if (!(Checked (Find-Control $ct::MenuItem '^Capture Events'))) { throw 'Capture did not start' }
             Set-Menu '^File$' $false
@@ -190,16 +241,20 @@ jobs:
             $testExit = $LASTEXITCODE
           } catch {
             # Do not print UI, download, or trace exceptions containing host paths.
-            Write-Host "Diagnostic failed during $stage (raw exception suppressed)."
+            Write-Host "Diagnostic failed during $stage (HRESULT $($_.Exception.HResult))."
             $failed = $true
           } finally {
             if ($started) {
               try {
-                Run-Procmon '/Terminate'
-                if (!$proc.WaitForExit(15000)) { throw 'Capture process did not exit' }
-                $stopped = $true
+                if ($null -ne $proc -and !$proc.HasExited) {
+                  if (@(Owned-Processes).Count -eq 0) { throw 'Owned process disappeared from its verified image' }
+                  Run-Procmon '/Terminate'
+                  if (!$proc.WaitForExit(15000)) { throw 'Owned process did not exit' }
+                }
+                Wait-Ready { @(Owned-Processes).Count -eq 0 }
+                $stopped = $null -ne $proc -and $proc.HasExited
               } catch {
-                Write-Host 'ERROR: Procmon stop failed; final cleanup still runs.'
+                Write-Host "Diagnostic failed during capture shutdown (HRESULT $($_.Exception.HResult))."
                 $failed = $true
               }
             }
@@ -251,6 +306,14 @@ jobs:
           $db = Join-Path ([IO.Path]::GetTempPath()) "qid-user-deletion-$env:QID_SQLITE_CLEANUP_SUFFIX.db"
           $tool = Join-Path $dir 'Procmon64.exe'
           $failed = $false
+          $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
+          function Owned-Processes {
+            return @(Get-CimInstance Win32_Process -Filter "Name = 'Procmon64.exe' AND SessionId = $session" |
+              Where-Object {
+                if (!$_.ExecutablePath) { throw 'Cannot establish Procmon ownership' }
+                [string]::Equals($_.ExecutablePath, $tool, [StringComparison]::OrdinalIgnoreCase)
+              })
+          }
           if (Test-Path $tool) {
             try {
               $signature = Get-AuthenticodeSignature $tool
@@ -258,10 +321,25 @@ jobs:
                   $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
                 throw 'Untrusted cleanup executable'
               }
-              $p = Start-Process $tool -ArgumentList '/AcceptEula /Quiet /Terminate' -PassThru
-              if (!$p.WaitForExit(15000) -or $p.ExitCode -ne 0) { throw 'Procmon cleanup stop failed' }
+              $owned = @(Owned-Processes | ForEach-Object { [Diagnostics.Process]::GetProcessById([int]$_.ProcessId) })
+              if ($owned.Count -gt 0) {
+                $p = Start-Process $tool -ArgumentList '/AcceptEula /Quiet /Terminate' -PassThru
+                if (!$p.WaitForExit(15000) -or $p.ExitCode -ne 0) { throw 'Procmon cleanup stop failed' }
+                $deadline = [DateTime]::UtcNow.AddSeconds(15)
+                $signal = [Threading.ManualResetEvent]::new($false)
+                try {
+                  do {
+                    $remaining = @(Owned-Processes)
+                    if ($remaining.Count -eq 0 -and @($owned | Where-Object { !$_.HasExited }).Count -eq 0) { break }
+                    [void]$signal.WaitOne(100)
+                  } while ([DateTime]::UtcNow -lt $deadline)
+                  if ($remaining.Count -ne 0 -or @($owned | Where-Object { !$_.HasExited }).Count -ne 0) {
+                    throw 'Owned Procmon process did not exit'
+                  }
+                } finally { $signal.Dispose() }
+              }
             } catch {
-              Write-Host 'ERROR: Could not confirm Procmon termination.'
+              Write-Host "Diagnostic failed during final shutdown (HRESULT $($_.Exception.HResult))."
               $failed = $true
             }
           }

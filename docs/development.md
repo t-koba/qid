@@ -78,10 +78,20 @@ SHA, so this workflow requires a public repository and deployment on the default
 branch. Fork-headed runs are excluded. API failures or incomplete pagination fail
 the report rather than presenting a complete total; there is no automatic retry.
 
+Each native `test.yml` matrix job uploads a run-attempt-unique `test-binary-timings-<OS/architecture>-<run-id>-<attempt>`
+with a compact CSV from that job's existing test run (no rerun). Rows contain the
+executable basename, libtest duration in seconds, result and aggregate counts;
+no raw logs, source paths or test names are uploaded. These are binary test times,
+not compilation, process startup, doc-test or job durations. Failed libtest
+summaries are included; missing/malformed summaries (including an aborted binary)
+fail the reporter instead of producing incomplete evidence. Cargo failures remain
+failures. Temporary captured output is removed after reporting; CSV artifacts use
+the repository's default retention.
+
 Reporter tests (stdlib only):
 
 ```sh
-python3 -m unittest discover -s scripts -p 'test_report_ci_job_timings.py'
+python3 -m unittest discover -s scripts -p 'test_report_*timings.py'
 ```
 
 ## Test

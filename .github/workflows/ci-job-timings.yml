@@ -1,0 +1,38 @@
+name: CI Job Timings
+
+on:
+  workflow_run:
+    workflows: [CI, Test]
+    types: [completed]
+
+permissions:
+  actions: read
+
+jobs:
+  report:
+    if: >-
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # qid is public: fetch only this workflow revision's trusted reporter,
+      # anonymously. Never checkout or execute upstream-run code or artifacts.
+      - name: Load trusted reporter and tests
+        env:
+          REPORTER_BASE: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.workflow_sha }}/scripts
+        run: |
+          curl --fail --silent --show-error --proto '=https' "$REPORTER_BASE/report-ci-job-timings.py" -o "$RUNNER_TEMP/report-ci-job-timings.py"
+          curl --fail --silent --show-error --proto '=https' "$REPORTER_BASE/test_report_ci_job_timings.py" -o "$RUNNER_TEMP/test_report_ci_job_timings.py"
+      - name: Test trusted reporter
+        run: python3 "$RUNNER_TEMP/test_report_ci_job_timings.py"
+      - name: Report upstream job timings
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 "$RUNNER_TEMP/report-ci-job-timings.py" --output "$RUNNER_TEMP/ci-job-timings.csv" --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload upstream job timings
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-job-timings-${{ github.event.workflow_run.id }}-attempt-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/ci-job-timings.csv
+          if-no-files-found: error

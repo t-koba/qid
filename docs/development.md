@@ -59,13 +59,30 @@ platform's compiler, SDK, and system headers.
 | Workflow | Purpose |
 | --- | --- |
 | `ci.yml` | Fast quality gates: format, clippy, docs, structure, the source budget, and a lint that rejects blocking reqwest clients. |
-| `test.yml` | Workspace build/test matrix, an MSRV job, all-features tests, config sample validation, sister-PEP smoke, fuzz smoke on pull requests, and coverage. |
+| `test.yml` | Workspace build/test matrix, an MSRV job, all-features tests, config sample validation, sister-PEP smoke, fuzz smoke on pushes and pull requests, and coverage. |
+| `ci-job-timings.yml` | Completed same-repository CI/Test run-attempt job durations, Markdown summary, and CSV artifact. |
 | `security.yml` | Sensitive artifact checks, cargo-deny, cargo-audit, package metadata checks, crate packaging, and SBOM. |
 | `release.yml` | Release preflight, qpx-aligned release target builds, binary archives, crate tarballs, SBOM, and tag-based GitHub Releases. |
 
 `release.yml` creates GitHub Releases only for `v*` tags. Manual dispatch runs
 the same release checks and uploads artifacts without publishing a GitHub
 Release.
+
+`ci-job-timings.yml` reports observed runner-wall seconds and job-minutes from
+Jobs API start/end timestamps, not billing or workflow elapsed time. Its report
+job has a configurable five-minute timeout. It shows
+timestamp coverage and excludes unavailable durations from the sum. CSV artifacts
+use the repository's default retention. The read-only reporter never checks out
+upstream code: it anonymously downloads its script from its own trusted workflow
+SHA, so this workflow requires a public repository and deployment on the default
+branch. Fork-headed runs are excluded. API failures or incomplete pagination fail
+the report rather than presenting a complete total; there is no automatic retry.
+
+Reporter tests (stdlib only):
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_report_ci_job_timings.py'
+```
 
 ## Test
 

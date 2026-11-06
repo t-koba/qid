@@ -14,9 +14,13 @@
 //! after the copy, on the per-test database only.
 
 use super::super::SqlRepository;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "../../tests/support/sqlite_cleanup.rs"]
+mod sqlite_cleanup;
+use sqlite_cleanup::{remove_sqlite_database_files, remove_sqlite_database_files_once};
 
 static TEMPLATE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
 static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -44,25 +48,13 @@ fn test_root() -> &'static PathBuf {
     })
 }
 
-fn remove_sqlite_files(path: &Path) -> std::io::Result<()> {
-    for suffix in ["-wal", "-shm", "-journal", ""] {
-        let mut candidate = path.as_os_str().to_os_string();
-        candidate.push(suffix);
-        match std::fs::remove_file(PathBuf::from(candidate)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
-}
-
 /// Migrated schema template for this test process, built once.
 async fn schema_template() -> PathBuf {
     TEMPLATE
         .get_or_init(|| async {
             let path = test_root().join("schema.db");
-            remove_sqlite_files(&path).expect("clear unit-test schema template failed");
+            remove_sqlite_database_files_once(&path)
+                .expect("clear unit-test schema template failed");
             let url = format!("sqlite:{}", path.display());
             let repo = SqlRepository::connect(&url)
                 .await
@@ -130,7 +122,7 @@ impl IsolatedDb {
         if let Some(repo) = self.repo.take() {
             repo.close().await;
         }
-        remove_sqlite_files(&self.path).unwrap_or_else(|error| {
+        remove_sqlite_database_files(&self.path).unwrap_or_else(|error| {
             panic!("remove unit-test database {}: {error}", self.path.display())
         });
     }
@@ -142,6 +134,6 @@ impl Drop for IsolatedDb {
         // and try only this database; Windows may retain open handles until
         // the runtime exits. PID reuse cleanup handles any leftovers.
         drop(self.repo.take());
-        let _ = remove_sqlite_files(&self.path);
+        let _ = remove_sqlite_database_files_once(&self.path);
     }
 }

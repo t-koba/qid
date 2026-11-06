@@ -2,6 +2,9 @@
 //! cleanup parity fixtures live in the private push_tests unit module.
 use qid_core::{models::*, util::now_seconds};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
+#[path = "support/sqlite_cleanup.rs"]
+mod sqlite_cleanup;
+
 async fn admission(repo: &impl Repository) {
     repo.create_realm(
         &"tenant".into(),
@@ -119,7 +122,7 @@ async fn sql_uses_server_admission_time() {
     repo.migrate().await.unwrap();
     admission(&repo).await;
     repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    sqlite_cleanup::remove_dir_all(&dir).unwrap();
 }
 async fn device_metadata_roundtrip(repo: &impl Repository) {
     repo.create_realm(
@@ -241,5 +244,5 @@ async fn sql_persists_device_metadata() {
     repo.migrate().await.unwrap();
     device_metadata_roundtrip(&repo).await;
     repo.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    sqlite_cleanup::remove_dir_all(&dir).unwrap();
 }

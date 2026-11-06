@@ -1,3 +1,6 @@
+mod common;
+use common::sql_repo;
+
 use axum::{
     body::Body,
     http::{Method, Request, StatusCode},
@@ -7,29 +10,7 @@ use qid_core::{config::QidConfig, state::SharedState, tenant::RealmId, test_help
 use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, Ordering};
 use tower::ServiceExt;
-
-static DB_SEQ: AtomicU16 = AtomicU16::new(0);
-
-fn db_url() -> String {
-    let dir = std::env::temp_dir().join("qid_test_resource_fedcm");
-    std::fs::create_dir_all(&dir).ok();
-    static CLEANED: OnceLock<()> = OnceLock::new();
-    CLEANED.get_or_init(|| {
-        for entry in std::fs::read_dir(&dir).ok().into_iter().flatten().flatten() {
-            let name = entry.file_name();
-            let s = name.to_string_lossy();
-            if s.starts_with("test_") && s.ends_with(".db") {
-                std::fs::remove_file(entry.path()).ok();
-            }
-        }
-    });
-    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("test_{n}.db"));
-    format!("sqlite:{}", path.display())
-}
 
 async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>) {
     let mut config = test_helpers::test_config();
@@ -67,8 +48,7 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Valu
 }
 
 async fn setup_with_config(config: QidConfig) -> (axum::Router, Arc<SharedState<SqlRepository>>) {
-    let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
-    repo.migrate().await.unwrap();
+    let repo = Arc::new(sql_repo("qid_test_resource_fedcm").await);
     repo.create_realm(
         &"tenant-1".into(),
         &"test".into(),

@@ -47,6 +47,12 @@ def markdown(value):
     return re.sub(r"[\\`*_{}\[\]()#+.!|~-]", lambda match: f"&#{ord(match[0])};", text)
 
 
+def csv_text(value):
+    text = str(value)
+    # CSV quoting does not stop spreadsheets from evaluating formula cells.
+    return "'" + text if normalized(text).startswith(("=", "+", "-", "@")) else text
+
+
 def fetch_jobs(api_url, repository, run_id, attempt, token):
     # 100 is the Jobs API's maximum page size, not a reporting cap.
     base = f"{api_url}/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}/jobs"
@@ -88,8 +94,9 @@ def write_report(jobs, output, summary, run_id, attempt, workflow_name, head_sha
                          "job_name", "status", "conclusion", "observed_seconds", "observed_minutes"])
         for job, seconds in zip(jobs, durations):
             writer.writerow([
-                workflow_name, run_id, attempt, head_sha, normalized(job["name"]),
-                job["status"], job.get("conclusion") or "unavailable",
+                csv_text(workflow_name), run_id, attempt, csv_text(head_sha),
+                csv_text(normalized(job["name"])), csv_text(job["status"]),
+                csv_text(job.get("conclusion") or "unavailable"),
                 "unavailable" if seconds is None else f"{seconds:.3f}",
                 "unavailable" if seconds is None else f"{seconds / 60:.6f}",
             ])

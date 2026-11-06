@@ -57,6 +57,32 @@ class JobTimingsTests(unittest.TestCase):
         self.assertIn("&lt;img", escaped)
         self.assertIn("&#124;", escaped)
 
+    def test_csv_formula_text_is_neutralized(self):
+        names = ['=HYPERLINK("https://example.invalid","open")',
+                 "+1+1", "-1+1", "@SUM(1,1)", " \t\r=1+1", "Build, Linux", ""]
+        with tempfile.TemporaryDirectory() as directory:
+            output, summary = Path(directory) / "jobs.csv", Path(directory) / "summary.md"
+            timings.write_report([job(id=index, name=name) for index, name in enumerate(names)],
+                                 output, summary, 42, 2, "Test", "a" * 40)
+            with output.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            for row, name in zip(rows, names):
+                expected = timings.normalized(name)
+                if name not in ("Build, Linux", ""):
+                    expected = "'" + expected
+                self.assertEqual(row["job_name"], expected)
+                self.assertEqual([row[key] for key in ("workflow_name", "run_id", "run_attempt",
+                                                      "head_sha", "status", "conclusion",
+                                                      "observed_seconds", "observed_minutes")],
+                                 ["Test", "42", "2", "a" * 40, "completed", "success", "90.000", "1.500000"])
+            timings.write_report([job(status="-1+1", conclusion="@SUM(1,1)")],
+                                 output, summary, 42, 2, "=1+1", "+1+1")
+            with output.open(newline="") as handle:
+                row = next(csv.DictReader(handle))
+            for key, value in (("workflow_name", "=1+1"), ("head_sha", "+1+1"),
+                               ("status", "-1+1"), ("conclusion", "@SUM(1,1)")):
+                self.assertEqual(row[key], "'" + value)
+
     @patch.object(timings, "urlopen")
     def test_pagination_covers_total_and_pins_attempt(self, opener):
         # A short first page must not terminate collection before total_count.

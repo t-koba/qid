@@ -9,6 +9,8 @@ pub mod smtp;
 pub mod sync;
 #[cfg(test)]
 mod sync_audit_test;
+#[cfg(test)]
+mod test_support;
 
 pub use audit::*;
 pub use delivery::*;
@@ -35,35 +37,16 @@ mod tests {
     };
     use std::cell::RefCell;
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU16, Ordering};
     #[path = "delivery_test.rs"]
     mod delivery_test;
-    use std::sync::{Mutex, OnceLock};
-
-    static DB_SEQ: AtomicU16 = AtomicU16::new(0);
-
-    fn db_url() -> String {
-        let dir = std::env::temp_dir().join("qid_worker_test");
-        std::fs::create_dir_all(&dir).ok();
-        static CLEANED: OnceLock<()> = OnceLock::new();
-        CLEANED.get_or_init(|| {
-            for e in std::fs::read_dir(&dir).ok().into_iter().flatten().flatten() {
-                let name = e.file_name();
-                let s = name.to_string_lossy();
-                if s.starts_with("test_") && s.ends_with(".db") {
-                    std::fs::remove_file(e.path()).ok();
-                }
-            }
-        });
-        let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("test_{n}.db"));
-        format!("sqlite:{}", path.display())
-    }
+    use std::sync::Mutex;
 
     async fn repo() -> SqlRepository {
-        let repo = SqlRepository::connect(&db_url()).await.unwrap();
-        repo.migrate().await.unwrap();
-        repo
+        let url = format!(
+            "sqlite:{}",
+            crate::test_support::test_db_path().await.display()
+        );
+        SqlRepository::connect(&url).await.unwrap()
     }
 
     async fn seed_audit_event(repo: &SqlRepository, id: &str, created_at: u64) {

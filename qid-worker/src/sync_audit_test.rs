@@ -59,10 +59,9 @@ async fn sync_fixture() -> (
 ) {
     let dir = std::env::temp_dir().join(format!("qid-sync-fixture-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    let db_path = dir.join("sync.db");
+    let db_path = crate::test_support::test_db_path().await;
     let db_url = format!("sqlite:{}", db_path.display());
     let repo = SqlRepository::connect(&db_url).await.expect("connect");
-    repo.migrate().await.expect("migrate");
     repo.create_realm(
         &"default".into(),
         &"corp".into(),
@@ -93,10 +92,9 @@ fn sync_job_config() -> crate::DirectorySyncJobConfig {
 async fn directory_sync_reports_failed_audit_without_losing_deactivation() {
     let dir = std::env::temp_dir().join(format!("qid-sync-audit-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    let db_path = dir.join("sync.db");
+    let db_path = crate::test_support::test_db_path().await;
     let db_url = format!("sqlite:{}", db_path.display());
     let repo = SqlRepository::connect(&db_url).await.expect("connect");
-    repo.migrate().await.expect("migrate");
     repo.create_realm(
         &"default".into(),
         &"corp".into(),
@@ -323,10 +321,9 @@ async fn csv_sync_fixture(
 ) {
     let dir = std::env::temp_dir().join(format!("qid-csv-fixture-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    let db_path = dir.join("sync.db");
+    let db_path = crate::test_support::test_db_path().await;
     let db_url = format!("sqlite:{}", db_path.display());
     let repo = SqlRepository::connect(&db_url).await.expect("connect");
-    repo.migrate().await.expect("migrate");
     repo.create_realm(
         &"default".into(),
         &"corp".into(),

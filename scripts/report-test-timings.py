@@ -32,6 +32,7 @@ import os
 import subprocess
 import sys
 import time
+import unicodedata
 
 CSV_HEADER = ["target", "test", "wall_seconds", "status"]
 DEFAULT_TOP = 25
@@ -146,6 +147,17 @@ def list_tests(executable):
     return names
 
 
+def csv_text(value):
+    text = str(value)
+    normalized = " ".join(
+        "".join(
+            " " if unicodedata.category(char).startswith("C") else char
+            for char in text
+        ).split()
+    )
+    return "'" + text if normalized.startswith(("=", "+", "-", "@")) else text
+
+
 def classify(output, returncode, test_name):
     if returncode != 0:
         return "fail"
@@ -224,7 +236,9 @@ def main(argv=None):
         writer = csv.writer(handle)
         writer.writerow(CSV_HEADER)
         for target_name, test_name, elapsed, status in rows:
-            writer.writerow([target_name, test_name, "{:.3f}".format(elapsed), status])
+            writer.writerow(
+                [csv_text(target_name), csv_text(test_name), "{:.3f}".format(elapsed), status]
+            )
 
     total = len(rows)
     print(

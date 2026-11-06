@@ -60,6 +60,8 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo run -p xtask -- structure
       - run: cargo run -p xtask -- budget
+      - name: Test timing report scripts
+        run: python3 -m unittest discover -s scripts -p 'test_report_*timings.py'
       - name: Lint blocking reqwest clients
         run: |
           ! grep -rn 'reqwest::blocking::Client::new()' --include='*.rs' src/ ./*/src/ 2>/dev/null | grep -v target || {

@@ -96,28 +96,42 @@ class BinaryTimingsTests(unittest.TestCase):
                 ]), 1)
             self.assertIn("timing report failed", errors.getvalue())
 
-    def test_workflow_capture_displays_output_and_preserves_cargo_status(self):
-        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/test.yml").read_text()
+    def test_workflow_capture_reports_same_run_and_preserves_status(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/test.yml").read_text()
         block = workflow.split("      - name: Test workspace\n", 1)[1].split("      - name:", 1)[0]
         script = "\n".join(line[10:] for line in block.split("        run: |\n", 1)[1].splitlines())
         # Exercise the actual workflow shell without invoking Cargo or running tests.
         fake_cargo = '''cargo() {
           [[ "$*" == 'test --workspace --locked -- --test-threads=1' ]] || return 99
+          echo '     Running unittests src/lib.rs (target/debug/deps/qid_worker-ab12)'
+          if [[ "$FAKE_STATUS" -eq 0 ]]; then
+            echo 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s'
+          else
+            echo 'test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s'
+          fi
           echo standard-output
           echo standard-error >&2
           return "$FAKE_STATUS"
         }
 '''
         with tempfile.TemporaryDirectory() as directory:
-            for status in (0, 17):
+            for status, expected_result in ((0, "ok"), (17, "FAILED")):
                 result = subprocess.run(
                     ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", fake_cargo + script],
+                    cwd=root,
                     env=dict(os.environ, RUNNER_TEMP=directory, FAKE_STATUS=str(status)),
                     capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode, status, result.stderr)
-                self.assertEqual(result.stdout, "standard-output\nstandard-error\n")
-                self.assertEqual((Path(directory) / "workspace-tests.log").read_text(), result.stdout)
+                self.assertIn("standard-output\nstandard-error\n", result.stdout)
+                self.assertEqual(result.stdout.count("Running unittests"), 1)
+                self.assertFalse((Path(directory) / "workspace-tests.log").exists())
+                with (Path(directory) / "test-binary-timings.csv").open(newline="", encoding="utf-8") as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["binary"], "qid_worker-ab12")
+                self.assertEqual(rows[0]["result"], expected_result)
 
 
 if __name__ == "__main__":

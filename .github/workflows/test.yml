@@ -55,20 +55,18 @@ jobs:
           RUSTFLAGS: "-D warnings"
         run: |
           set +e
+          trap 'rm -f "$RUNNER_TEMP/workspace-tests.log"' EXIT
           cargo test --workspace --locked -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/workspace-tests.log"
           status=("${PIPESTATUS[@]}")
-          if [[ ${status[0]} -ne 0 ]]; then exit "${status[0]}"; fi
-          exit "${status[1]}"
-      - name: Report test binary timings
-        if: always()
-        shell: bash
-        run: |
-          trap 'rm -f "$RUNNER_TEMP/workspace-tests.log"' EXIT
           if command -v python3 >/dev/null 2>&1; then
             python3 scripts/report-test-binary-timings.py --input "$RUNNER_TEMP/workspace-tests.log" --output "$RUNNER_TEMP/test-binary-timings.csv"
           else
             python scripts/report-test-binary-timings.py --input "$RUNNER_TEMP/workspace-tests.log" --output "$RUNNER_TEMP/test-binary-timings.csv"
           fi
+          report_status=$?
+          if [[ ${status[0]} -ne 0 ]]; then exit "${status[0]}"; fi
+          if [[ ${status[1]} -ne 0 ]]; then exit "${status[1]}"; fi
+          exit "$report_status"
       - name: Upload test binary timings
         if: always()
         uses: actions/upload-artifact@v7

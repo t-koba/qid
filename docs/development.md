@@ -84,9 +84,9 @@ executable basename, libtest duration in seconds, result and aggregate counts;
 no raw logs, source paths or test names are uploaded. These are binary test times,
 not compilation, process startup, doc-test or job durations. Failed libtest
 summaries are included; missing/malformed summaries (including an aborted binary)
-fail the reporter instead of producing incomplete evidence. Cargo failures remain
-failures. Temporary captured output is removed after reporting; CSV artifacts use
-the repository's default retention.
+fail the reporter instead of producing incomplete evidence. Capture and reporting
+run in the same test step; Cargo failures remain failures, and its captured output is
+removed after reporting. CSV artifacts use the repository's default retention.
 
 Reporter tests (stdlib only):
 

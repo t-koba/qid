@@ -1192,6 +1192,30 @@ pub struct RealmConfig {
 }
 
 impl RealmConfig {
+    pub(crate) fn validate_iga_access_request(&self) -> QidResult<()> {
+        if let Some(target) = &self.protocols.iga.access_request_audience
+            && (target.is_empty()
+                || target
+                    .chars()
+                    .any(|ch| ch.is_whitespace() || ch.is_control())
+                || !self.protocols.oauth.resource_servers.iter().any(|server| {
+                    server.audience == *target
+                        && server
+                            .scopes
+                            .iter()
+                            .any(|scope| scope == IGA_ACCESS_REQUEST_SCOPE)
+                }))
+        {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {} IGA access_request_audience must be nonempty, contain no whitespace or controls, and name an OAuth resource server with scope {IGA_ACCESS_REQUEST_SCOPE}",
+                    self.id
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Whether this realm has an inbound provider meeting the CIAM profile requirements.
     pub fn has_ciam_compatible_inbound_provider(&self) -> bool {
         self.protocols
@@ -1260,6 +1284,7 @@ impl RealmConfig {
                 ),
             });
         }
+        self.validate_iga_access_request()?;
         let mut seen_resource_server_audiences = std::collections::HashSet::new();
         let mut seen_resource_indicators = std::collections::HashSet::new();
         for resource_server in &self.protocols.oauth.resource_servers {

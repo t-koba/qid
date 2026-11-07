@@ -47,6 +47,20 @@ pub(super) async fn access_request<R: Repository>(
         ) {
             return unauthorized_response(&error.to_string());
         }
+        let target = state
+            .plan
+            .realm(&decoded.realm_id)
+            .and_then(|realm| realm.iga_access_request_audience.as_deref());
+        if !target.is_some_and(|target| decoded.aud.iter().any(|audience| audience == target))
+            || !decoded
+                .scope
+                .split_whitespace()
+                .any(|scope| scope == qid_core::config::IGA_ACCESS_REQUEST_SCOPE)
+        {
+            return unauthorized_response(
+                "access request requires the configured IGA audience and qid_iga_access_request scope",
+            );
+        }
         if decoded.user_id != req.subject {
             return unauthorized_response("access request subject must match authenticated user");
         }

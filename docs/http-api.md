@@ -454,7 +454,7 @@ or no trust domain is refused wherever it is named.
 | `DELETE` | `/iga/v1/entitlements/:id` | Delete entitlement. |
 | `GET, POST` | `/iga/v1/access-packages` | List/upsert access package. |
 | `DELETE` | `/iga/v1/access-packages/:id` | Delete access package. |
-| `POST` | `/iga/v1/access-requests` | Create access request. |
+| `POST` | `/iga/v1/access-requests` | Create access request using an admin session, or a bearer token with the [configured IGA audience and scope](configuration.md#iga-self-service-bearer-permission). |
 | `POST` | `/iga/v1/access-requests/approvals/validate` | Validate approvals. |
 | `GET` | `/iga/v1/access-grants` | List access grants. |
 | `POST` | `/iga/v1/access-grants/:id/revoke` | Revoke grant. |

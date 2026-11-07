@@ -3119,3 +3119,66 @@ fn password_screening_is_opt_in_and_validates_sources_and_bounds() {
     assert_eq!(screening.max_retries, 2);
     assert_eq!(screening.retry_delay_ms, 0);
 }
+
+#[test]
+fn iga_access_request_audience_requires_a_registered_realm_permission() {
+    let mut config = minimal_config();
+    assert!(
+        config.realms[0]
+            .protocols
+            .iga
+            .access_request_audience
+            .is_none()
+    );
+    config.validate().unwrap();
+    let protocols: ProtocolConfig = serde_json::from_value(serde_json::json!({
+        "iga": {"access_request_audience": "api://iga"},
+        "oauth": {"resource_servers": [{"audience": "api://iga", "scopes": ["qid_iga_access_request"]}]}
+    })).unwrap();
+    config.realms[0].protocols = protocols;
+    config.validate().unwrap();
+    let plan = crate::plan::RuntimePlan::from_config(&config).unwrap();
+    assert_eq!(
+        plan.realms[0].iga_access_request_audience.as_deref(),
+        Some("api://iga")
+    );
+
+    for target in [
+        "",
+        " ",
+        "api://iga ",
+        "api://iga\n",
+        "api://iga\u{0000}",
+        "api://unknown",
+    ] {
+        let mut invalid = config.clone();
+        invalid.realms[0].protocols.iga.access_request_audience = Some(target.into());
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .message()
+                .contains("IGA access_request_audience"),
+            "{target:?}"
+        );
+        assert!(crate::plan::RuntimePlan::from_config(&invalid).is_err());
+    }
+    // A registration in a different realm cannot authorize the target realm.
+    let mut other_realm = config.realms[0].clone();
+    other_realm.id = "other".into();
+    config.realms.push(other_realm);
+    config.realms[0].protocols.oauth.resource_servers.clear();
+    assert!(config.validate().is_err());
+    assert!(crate::plan::RuntimePlan::from_config(&config).is_err());
+    config.realms[0].protocols.oauth.resource_servers =
+        config.realms[1].protocols.oauth.resource_servers.clone();
+    for scopes in [
+        vec![],
+        vec!["qid_identity".into()],
+        vec!["qid_iga_access_request_extra".into()],
+    ] {
+        config.realms[0].protocols.oauth.resource_servers[0].scopes = scopes;
+        assert!(config.validate().is_err());
+        assert!(crate::plan::RuntimePlan::from_config(&config).is_err());
+    }
+}

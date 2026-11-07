@@ -64,6 +64,39 @@ unchanged. The preflight uses the already-fetched tuple groups; this is an
 output budget, not a bound on repository reads or raw tuple storage. Raising it
 permits larger response allocations and serialization work.
 
+## IGA self-service bearer permission
+
+Bearer-authenticated `POST /iga/v1/access-requests` (including access-package
+requests) requires `realms[].protocols.iga.access_request_audience`. It defaults
+to absent: bearer requests are refused with HTTP 401 before evaluation or
+persistence. The independent AdminElevation/session path is unchanged.
+
+Configure an exact audience and register it with the dedicated
+`qid_iga_access_request` scope in the **same realm's** OAuth resource servers:
+
+```yaml
+realms:
+  - id: corp
+    issuer: https://id.example.com/realms/corp
+    protocols:
+      iga:
+        access_request_audience: api://iga
+      oauth:
+        resource_servers:
+          - audience: api://iga
+            scopes: [qid_iga_access_request]
+```
+
+A configured audience must be nonempty, contain no whitespace or control
+characters, and match a resource-server registration allowing that exact
+scope; invalid configuration is rejected. Clients must be deliberately allowed
+to request this scope and audience through the existing OAuth issuance policy.
+The decoded token must contain both the exact configured audience and the exact
+scope, not merely a matching resource indicator or another IGA-related scope.
+Token validity, sender constraints (DPoP/mTLS), subject equality and tenant
+matching still apply. This permission creates a request only: entitlement and
+access-package policy, approvals and all other IGA routes are unchanged.
+
 ## Profiles
 
 `profile` can be one of:

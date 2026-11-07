@@ -82,9 +82,22 @@ pub struct ProtocolConfig {
     #[serde(default)]
     pub vc: VcProtocolConfig,
     #[serde(default)]
+    pub iga: IgaProtocolConfig,
+    #[serde(default)]
     pub workload: WorkloadProtocolConfig,
     #[serde(default)]
     pub network_aaa: NetworkAaaProtocolConfig,
+}
+
+/// Permission for bearer-authenticated IGA self-service access requests.
+pub const IGA_ACCESS_REQUEST_SCOPE: &str = "qid_iga_access_request";
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IgaProtocolConfig {
+    /// Absent disables bearer self-service; admin sessions remain independent.
+    #[serde(default)]
+    pub access_request_audience: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

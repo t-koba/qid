@@ -73,6 +73,7 @@ pub struct RuntimeRealm {
     pub vc_max_credential_lifetime_seconds: u64,
     pub vc_credential_audience: Option<String>,
     pub vc_status_audience: Option<String>,
+    pub iga_access_request_audience: Option<String>,
 }
 
 impl RuntimeRealm {
@@ -90,6 +91,7 @@ impl RuntimeRealm {
     }
 
     fn from_config(config: &crate::config::RealmConfig) -> QidResult<Self> {
+        config.validate_iga_access_request()?;
         Ok(Self {
             id: config.id.clone(),
             issuer: config.issuer.clone(),
@@ -114,6 +116,7 @@ impl RuntimeRealm {
             vc_max_credential_lifetime_seconds: config.protocols.vc.max_credential_lifetime_seconds,
             vc_credential_audience: config.protocols.vc.credential_audience.clone(),
             vc_status_audience: config.protocols.vc.status_audience.clone(),
+            iga_access_request_audience: config.protocols.iga.access_request_audience.clone(),
         })
     }
 }

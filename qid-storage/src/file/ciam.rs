@@ -108,31 +108,57 @@ impl CiamRepository for FileRepository {
         attempted_at: u64,
         max_attempts: u32,
     ) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        let challenge = store
-            .ciam_verification_challenges
-            .get_mut(id)
-            .filter(|challenge| challenge.realm_id == realm_id.0)
-            .ok_or_else(|| QidError::NotFound {
-                resource: format!("CIAM verification challenge {id}"),
-            })?;
-        if !qid_core::util::constant_time_eq(
-            challenge.code_hash.as_bytes(),
-            expected_code_hash.as_bytes(),
-        ) || challenge.consumed_at_epoch_seconds.is_some()
-            || attempted_at > challenge.expires_at_epoch_seconds
-            || challenge.attempt_count >= max_attempts
-        {
-            return Err(QidError::Conflict {
-                message: "CIAM verification challenge unavailable".to_string(),
-            });
-        }
-        challenge.attempt_count += 1;
-        if verified {
-            challenge.consumed_at_epoch_seconds = Some(attempted_at);
-        }
-        drop(store);
-        self.save().await
+        let repo = self.clone();
+        let (realm_id, id, expected_code_hash) = (
+            realm_id.clone(),
+            id.to_owned(),
+            expected_code_hash.to_owned(),
+        );
+        tokio::spawn(async move {
+            let save_guard = if repo.flush_mode == FileFlushMode::Immediate {
+                Some(repo.save_lock.lock().await)
+            } else {
+                None
+            };
+            let mut store = repo.store.write().await;
+            let challenge = store
+                .ciam_verification_challenges
+                .get_mut(&id)
+                .filter(|challenge| challenge.realm_id == realm_id.0)
+                .ok_or_else(|| QidError::NotFound {
+                    resource: format!("CIAM verification challenge {id}"),
+                })?;
+            if !qid_core::util::constant_time_eq(
+                challenge.code_hash.as_bytes(),
+                expected_code_hash.as_bytes(),
+            ) || challenge.consumed_at_epoch_seconds.is_some()
+                || attempted_at > challenge.expires_at_epoch_seconds
+                || challenge.attempt_count >= max_attempts
+            {
+                return Err(QidError::Conflict {
+                    message: "CIAM verification challenge unavailable".to_string(),
+                });
+            }
+            let previous = challenge.clone();
+            challenge.attempt_count += 1;
+            if verified {
+                challenge.consumed_at_epoch_seconds = Some(attempted_at);
+            }
+            if let Some(save_guard) = save_guard.as_ref() {
+                let result = repo.write_challenge_store_locked(save_guard, &store).await;
+                if result.is_err() {
+                    store.ciam_verification_challenges.insert(id, previous);
+                }
+                result
+            } else {
+                repo.dirty.store(true, Ordering::Release);
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|_| QidError::Internal {
+            message: "CIAM attempt task failed".into(),
+        })?
     }
 
     async fn confirm_ciam_email_verification(

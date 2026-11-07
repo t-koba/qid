@@ -879,3 +879,155 @@ async fn file_audit_retention_duplicate_streams_fail_without_rewriting() {
         "failed rekey must also leave in-memory records intact"
     );
 }
+
+fn verification_challenge() -> CiamVerificationChallengeRecord {
+    CiamVerificationChallengeRecord {
+        id: "attempt-test".into(),
+        realm_id: "test".into(),
+        user_id: "user".into(),
+        channel: "email".into(),
+        address: "user@example.com".into(),
+        purpose: "email_verification".into(),
+        code_hash: "code-hash".into(),
+        attempt_count: 0,
+        expires_at_epoch_seconds: 200,
+        consumed_at_epoch_seconds: None,
+        created_at_epoch_seconds: 100,
+    }
+}
+
+#[tokio::test]
+async fn failed_immediate_ciam_attempt_restores_live_and_persisted_challenge() {
+    let (file, repo) = TestFile::new().await;
+    let challenge = verification_challenge();
+    repo.store_ciam_verification_challenge(&challenge)
+        .await
+        .unwrap();
+    let persisted = tokio::fs::read(&file.0).await.unwrap();
+    let (reached, resume) = pause_next_write(&repo, true);
+    let realm_id = "test".into();
+    let mut attempt = Box::pin(repo.attempt_ciam_verification_challenge(
+        &realm_id,
+        &challenge.id,
+        &challenge.code_hash,
+        true,
+        150,
+        3,
+    ));
+    assert_pending(attempt.as_mut()).await;
+    complete(reached).await.unwrap();
+    assert!(repo.store.try_read().is_err());
+    resume.send(()).unwrap();
+    assert!(complete(attempt).await.is_err());
+
+    let current = repo
+        .get_ciam_verification_challenge(&realm_id, &challenge.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.attempt_count, 0);
+    assert_eq!(current.consumed_at_epoch_seconds, None);
+    assert_eq!(tokio::fs::read(&file.0).await.unwrap(), persisted);
+    drop(repo);
+    let reopened = file.reopen().await;
+    let current = reopened
+        .get_ciam_verification_challenge(&realm_id, &challenge.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.attempt_count, 0);
+    assert_eq!(current.consumed_at_epoch_seconds, None);
+}
+
+#[tokio::test]
+async fn cancelled_immediate_ciam_attempt_finishes_persistence() {
+    let (file, repo) = TestFile::new().await;
+    let challenge = verification_challenge();
+    repo.store_ciam_verification_challenge(&challenge)
+        .await
+        .unwrap();
+    let (reached, resume) = pause_next_write(&repo, false);
+    let realm_id = "test".into();
+    let mut attempt = Box::pin(repo.attempt_ciam_verification_challenge(
+        &realm_id,
+        &challenge.id,
+        &challenge.code_hash,
+        true,
+        150,
+        3,
+    ));
+    assert_pending(attempt.as_mut()).await;
+    complete(reached).await.unwrap();
+    assert!(repo.store.try_read().is_err());
+    drop(attempt);
+    resume.send(()).unwrap();
+    drop(complete(repo.save_lock.lock()).await);
+
+    let current = repo
+        .get_ciam_verification_challenge(&realm_id, &challenge.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.attempt_count, 1);
+    assert_eq!(current.consumed_at_epoch_seconds, Some(150));
+    let persisted: Store =
+        serde_json::from_slice(&tokio::fs::read(&file.0).await.unwrap()).unwrap();
+    let stored = &persisted.ciam_verification_challenges[&challenge.id];
+    assert_eq!(stored.attempt_count, 1);
+    assert_eq!(stored.consumed_at_epoch_seconds, Some(150));
+    drop(repo);
+    let reopened = file.reopen().await;
+    let current = reopened
+        .get_ciam_verification_challenge(&realm_id, &challenge.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.attempt_count, 1);
+    assert_eq!(current.consumed_at_epoch_seconds, Some(150));
+}
+
+#[tokio::test]
+async fn interval_ciam_attempt_remains_dirty_until_flush() {
+    let (file, mut repo) = TestFile::new().await;
+    let challenge = verification_challenge();
+    repo.store_ciam_verification_challenge(&challenge)
+        .await
+        .unwrap();
+    let persisted = tokio::fs::read(&file.0).await.unwrap();
+    repo.flush_mode = FileFlushMode::Interval(Duration::from_secs(3600));
+    let realm_id = "test".into();
+    repo.attempt_ciam_verification_challenge(
+        &realm_id,
+        &challenge.id,
+        &challenge.code_hash,
+        false,
+        150,
+        3,
+    )
+    .await
+    .unwrap();
+
+    assert!(repo.dirty.load(Ordering::Acquire));
+    assert_eq!(tokio::fs::read(&file.0).await.unwrap(), persisted);
+    assert_eq!(
+        repo.get_ciam_verification_challenge(&realm_id, &challenge.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt_count,
+        1
+    );
+    repo.flush().await.unwrap();
+    assert!(!repo.dirty.load(Ordering::Acquire));
+    drop(repo);
+    let reopened = file.reopen().await;
+    assert_eq!(
+        reopened
+            .get_ciam_verification_challenge(&realm_id, &challenge.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt_count,
+        1
+    );
+}

@@ -61,6 +61,17 @@ class BinaryTimingsTests(unittest.TestCase):
             for private in ("D:", "project", "private_test_name", "error:", "tests/worker.rs"):
                 self.assertNotIn(private, output.read_text(encoding="utf-8"))
 
+    def test_summary_diagnostics_identify_safe_category_line_and_binary(self):
+        with self.assertRaisesRegex(ValueError, "libtest summary has no executable at line 1"):
+            timings.parse_timings(io.StringIO(OK))
+        malformed = RUN + "test result: ok. private_test_name\n"
+        with self.assertRaisesRegex(
+            ValueError, "malformed libtest summary for qid_worker-ab12 at line 2"
+        ) as caught:
+            timings.parse_timings(io.StringIO(malformed))
+        self.assertNotIn("private_test_name", str(caught.exception))
+        self.assertNotIn("target/debug", str(caught.exception))
+
     def test_incomplete_unpaired_and_malformed_input_fails_closed(self):
         for log in (
             "", "Compiling only\n", OK, RUN, RUN + RUN + OK,
@@ -91,7 +102,10 @@ class BinaryTimingsTests(unittest.TestCase):
                 if content is None:
                     self.assertIn("capture or CSV file could not be accessed", errors.getvalue())
                 else:
-                    self.assertIn("incomplete or empty binary timings", errors.getvalue())
+                    self.assertIn(
+                        "missing libtest summary for qid_worker-ab12 at end of capture",
+                        errors.getvalue(),
+                    )
                 self.assertNotIn("sensitive_name", errors.getvalue())
             source.write_text(RUN + OK, encoding="utf-8")
             with contextlib.redirect_stderr(io.StringIO()) as errors:

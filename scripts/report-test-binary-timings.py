@@ -28,34 +28,44 @@ def parse_timings(lines):
     rows = []
     binary = None
     doctests = False
-    for raw in lines:
+    for line_number, raw in enumerate(lines, 1):
         line = ANSI.sub("", raw).strip()
         if line.startswith("Running "):
             if binary is not None:
-                raise ValueError("missing binary summary")
+                raise ValueError(
+                    f"missing summary for {binary} before executable at line {line_number}"
+                )
             match = RUNNING.fullmatch(line)
             if not match:
-                raise ValueError("invalid Cargo executable line")
+                raise ValueError(f"invalid Cargo executable line at line {line_number}")
             binary = match[1].replace("\\", "/").rsplit("/", 1)[-1]
             # Cargo executable names are identifiers, not arbitrary CSV cells.
             if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", binary):
-                raise ValueError("invalid executable basename")
+                raise ValueError(f"invalid executable basename at line {line_number}")
             doctests = False
         elif line.startswith("Doc-tests "):
             if binary is not None:
-                raise ValueError("missing binary summary before doc-tests")
+                raise ValueError(
+                    f"missing summary for {binary} before doc-tests at line {line_number}"
+                )
             doctests = True
         elif line.startswith("test result:"):
             if doctests:
                 continue
+            if binary is None:
+                raise ValueError(f"libtest summary has no executable at line {line_number}")
             match = SUMMARY.fullmatch(line)
-            if binary is None or not match:
-                raise ValueError("unpaired or invalid libtest summary")
+            if not match:
+                raise ValueError(
+                    f"malformed libtest summary for {binary} at line {line_number}"
+                )
             result, passed, failed, ignored, measured, filtered, duration = match.groups()
             rows.append((binary, duration, result, passed, failed, ignored, measured, filtered))
             binary = None
-    if binary is not None or not rows:
-        raise ValueError("incomplete or empty binary timings")
+    if binary is not None:
+        raise ValueError(f"missing libtest summary for {binary} at end of capture")
+    if not rows:
+        raise ValueError("capture contains no binary timings")
     return rows
 
 

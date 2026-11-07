@@ -25,9 +25,12 @@ impl AdminRepository for SqlRepository {
     }
 
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()> {
-        sqlx::query(
+        let conflict = || format!("Admin ID {} belongs to another identity", admin.id);
+        let result = sqlx::query(
             "INSERT INTO admins (id, tenant_id, subject, roles_json, created_at) VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT(tenant_id, subject) DO UPDATE SET roles_json = excluded.roles_json",
+             ON CONFLICT(tenant_id, subject) DO UPDATE SET roles_json = excluded.roles_json \
+             WHERE NOT EXISTS (SELECT 1 FROM admins WHERE id = excluded.id \
+             AND (tenant_id <> excluded.tenant_id OR subject <> excluded.subject))",
         )
         .bind(&admin.id)
         .bind(&admin.tenant_id)
@@ -36,8 +39,10 @@ impl AdminRepository for SqlRepository {
         .bind(admin.created_at as i64)
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
-        Ok(())
+        .map_err(|err| unique_violation_to_qid_error(err, || QidError::Conflict {
+            message: conflict(),
+        }))?;
+        crate::ownership::ensure_upsert_applied(result.rows_affected(), conflict)
     }
 
     async fn get_admin_elevation(&self, id: &str) -> QidResult<Option<AdminElevation>> {

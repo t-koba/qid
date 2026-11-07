@@ -1988,7 +1988,7 @@ where
     );
 }
 
-/// Updating a membership changes only roles and preserves existing elevation owners.
+/// Admin IDs cannot move identities; membership updates change only roles and preserve references.
 pub async fn assert_admin_upsert_preserves_identity<R>(repo: &R)
 where
     R: AdminRepository,
@@ -2012,6 +2012,80 @@ where
         created_at: 1_700_000_001,
     };
     repo.store_admin_elevation(&elevation).await.unwrap();
+    let approval = AdminApproval {
+        id: "admin-upsert-approval".to_string(),
+        tenant_id: incumbent.tenant_id.clone(),
+        approver_admin_id: incumbent.id.clone(),
+        target_admin_id: incumbent.id.clone(),
+        reason: Some("preserve both references".to_string()),
+        approved_at: 1_700_000_001,
+        expires_at: 1_700_000_100,
+        consumed: true,
+    };
+    repo.store_admin_approval(&approval).await.unwrap();
+    for (index, (tenant_id, subject)) in [
+        ("other-tenant", incumbent.subject.as_str()),
+        (incumbent.tenant_id.as_str(), "other-subject"),
+        ("other-tenant", "other-subject"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let collision = Admin {
+            tenant_id: tenant_id.to_string(),
+            subject: subject.to_string(),
+            roles: vec!["admin".to_string()],
+            created_at: 1_700_000_002,
+            ..incumbent.clone()
+        };
+        // Exercise both a new natural identity (PK violation) and an existing
+        // natural identity (the upsert must not silently update its roles).
+        let other = Admin {
+            id: format!("admin-other-{index}"),
+            roles: vec!["reader".to_string()],
+            ..collision.clone()
+        };
+        for natural_identity_exists in [false, true] {
+            if natural_identity_exists {
+                repo.upsert_admin(&other).await.unwrap();
+            }
+            let err = repo.upsert_admin(&collision).await.unwrap_err();
+            assert!(matches!(err, QidError::Conflict { .. }), "{err:?}");
+            assert_eq!(
+                serde_json::to_value(repo.get_admin_by_id(&incumbent.id).await.unwrap()).unwrap(),
+                serde_json::to_value(Some(&incumbent)).unwrap(),
+            );
+            assert_eq!(
+                serde_json::to_value(repo.get_admin(tenant_id, subject).await.unwrap()).unwrap(),
+                serde_json::to_value(natural_identity_exists.then_some(&other)).unwrap(),
+            );
+            assert_eq!(
+                serde_json::to_value(repo.get_admin_elevation(&elevation.id).await.unwrap())
+                    .unwrap(),
+                serde_json::to_value(Some(&elevation)).unwrap(),
+            );
+            assert_eq!(
+                serde_json::to_value(repo.get_admin_approval(&approval.id).await.unwrap()).unwrap(),
+                serde_json::to_value(Some(&approval)).unwrap(),
+            );
+        }
+    }
+    // Supplying the incumbent ID is also a role-only update, not replacement.
+    let same_id = Admin {
+        roles: vec!["auditor".to_string()],
+        created_at: 1_700_000_002,
+        ..incumbent.clone()
+    };
+    repo.upsert_admin(&same_id).await.unwrap();
+    let same_id_stored = repo.get_admin_by_id(&incumbent.id).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(same_id_stored).unwrap(),
+        serde_json::to_value(Admin {
+            roles: same_id.roles,
+            ..incumbent.clone()
+        })
+        .unwrap(),
+    );
     let incoming = Admin {
         id: "admin-2".to_string(),
         roles: vec!["admin".to_string(), "auditor".to_string()],
@@ -2048,6 +2122,14 @@ where
     assert_eq!(owner.subject, incumbent.subject);
     assert_eq!(owner.created_at, incumbent.created_at);
     assert_eq!(owner.roles, incoming.roles);
+    assert_eq!(
+        serde_json::to_value(repo.get_admin_elevation(&elevation.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&elevation)).unwrap(),
+    );
+    assert_eq!(
+        serde_json::to_value(repo.get_admin_approval(&approval.id).await.unwrap()).unwrap(),
+        serde_json::to_value(Some(&approval)).unwrap(),
+    );
 }
 
 /// An admin-elevation ID names one identity-bound context and must never

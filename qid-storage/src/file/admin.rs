@@ -18,6 +18,14 @@ impl AdminRepository for FileRepository {
 
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()> {
         let mut store = self.store.write().await;
+        crate::ownership::ensure_same_binding(
+            store
+                .admins
+                .get(&admin.id)
+                .map(|a| (&a.tenant_id, &a.subject)),
+            (&admin.tenant_id, &admin.subject),
+            || format!("Admin ID {} belongs to another identity", admin.id),
+        )?;
         let matches = store
             .admins
             .values_mut()

@@ -3290,3 +3290,18 @@ fn workload_ca_references_are_exact_local_dedicated_and_realm_owned() {
     config.crypto.keyrings.push(ca);
     config.validate_workload_ca_keys().unwrap();
 }
+
+#[test]
+fn workload_csr_limit_defaults_and_overrides() {
+    let default = WorkloadProtocolConfig::default();
+    assert_eq!(default.max_csr_bytes, 16_384);
+    let omitted: WorkloadProtocolConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(omitted, default);
+    assert_eq!(ProtocolConfig::default().workload.max_csr_bytes, 16_384);
+    for limit in [0, 473, 32_768] {
+        let parsed: WorkloadProtocolConfig =
+            serde_json::from_value(serde_json::json!({"max_csr_bytes": limit})).unwrap();
+        assert_eq!(parsed.max_csr_bytes, limit);
+    }
+    assert!(serde_json::from_str::<WorkloadProtocolConfig>(r#"{"max_csr_bytes":-1}"#).is_err());
+}

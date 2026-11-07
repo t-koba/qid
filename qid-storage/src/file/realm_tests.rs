@@ -53,9 +53,42 @@ fn legacy_workload_csr_digest_deserializes_as_public_key_digest() {
     let certificate: qid_core::models::WorkloadCertificate =
         serde_json::from_value(legacy).expect("read legacy workload certificate");
     assert_eq!(certificate.public_key_sha256, "test");
+    assert_eq!(certificate.csr_sha256, None);
     let serialized = serde_json::to_value(certificate).expect("write current workload certificate");
     assert_eq!(serialized["public_key_sha256"], "test");
     assert!(serialized.get("csr_sha256").is_none());
+}
+
+#[tokio::test]
+async fn legacy_workload_digest_survives_file_rewrite_and_reopen() {
+    let (file, repo) = TestFile::new().await;
+    repo.migrate().await.unwrap();
+    drop(repo);
+    let mut legacy: Value = serde_json::from_slice(&std::fs::read(&file.0).unwrap()).unwrap();
+    merge(&mut legacy, fixture("realm"), false);
+    std::fs::write(&file.0, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let repo = file.reopen().await;
+    let certificates = repo
+        .list_workload_certificates(&RealmId::from("realm"), None)
+        .await
+        .unwrap();
+    assert_eq!(certificates.len(), 1);
+    assert_eq!(certificates[0].public_key_sha256, "test");
+    assert_eq!(certificates[0].csr_sha256, None);
+    repo.flush().await.unwrap();
+    drop(repo);
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&file.0).unwrap()).unwrap();
+    let record = &persisted["workload_certificates"]["realm-record"];
+    assert_eq!(record["public_key_sha256"], "test");
+    assert!(record.get("csr_sha256").is_none());
+    let reopened = file.reopen().await;
+    assert_eq!(
+        reopened
+            .list_workload_certificates(&RealmId::from("realm"), None)
+            .await
+            .unwrap(),
+        certificates
+    );
 }
 
 fn merge(store: &mut Value, fixture: Value, only_retained: bool) {

@@ -152,6 +152,18 @@ be `local`, with no remote URI/public JWK, and `crypto.default_alg` must be
 `ES256`. A separate deployment-level (`realm_id` absent) `oidc_token` keyring
 signs JWTs. CA keys are never published in the deployment JWT JWKS or used as
 its primary JWT signer. Sanitized/case-insensitive filename aliases fail startup.
+Each realm's `protocols.workload.max_csr_bytes` bounds the exact UTF-8 byte
+length of the decoded `csr_pem` JSON string for authenticated PKCS#10 issuance
+(including any accepted outer ASCII whitespace). It defaults to **16,384** bytes;
+**0** disables acceptance of all CSR requests, without changing server-generated
+key issuance. This allows ample room over a measured 473-byte P-256 SPIFFE CSR
+while bounding parser input. Configure a different nonnegative byte count when
+needed; other HTTP request-body limits still apply. Only one `CERTIFICATE REQUEST`
+PEM block with a valid signature and no trailing DER is accepted. See the
+[CSR API](http-api.md#device-workload-spiffe) for the fixed one-hour,
+registered-identity policy. This is PKCS#10 only; EST, CMS, CRMF, PKCS#12 and
+delegated credentials are not supported by this endpoint.
+
 See the three examples in `config/usecases/07-workload-and-device-identity/`.
 
 **Upgrade impact:** older workload configurations without a deployment-level

@@ -90,47 +90,54 @@ fn vc_status_record(credential_id: &str) -> VcCredentialStatusRecord {
 
 #[tokio::test]
 async fn workload_certificate_digest_migration_preserves_legacy_spki_value() {
-    const VERSION: i64 = 20261107000001;
-    let dir = std::env::temp_dir().join(format!(
-        "qid-workload-digest-migration-{}",
-        ulid::Ulid::new()
-    ));
-    std::fs::create_dir_all(&dir).expect("create workload migration fixture directory");
-    let database = dir.join("legacy.db");
-    std::fs::File::create(&database).expect("create workload migration fixture database");
-    let url = format!("sqlite:{}", database.display());
-    let pool = sqlx::SqlitePool::connect(&url)
-        .await
-        .expect("connect workload migration fixture");
-    let mut legacy = sqlx::migrate!("./migrations");
-    legacy.migrations = Cow::Owned(
-        legacy
-            .iter()
-            .filter(|migration| migration.version < VERSION)
-            .cloned()
-            .collect(),
-    );
-    legacy.run(&pool).await.expect("apply previous migrations");
-    let digest = "b".repeat(64);
-    sqlx::query("INSERT INTO workload_certificates (id, realm_id, workload_id, spiffe_id, serial_number, x5t_s256, csr_sha256, certificate_pem, issuer_key_ref, issued_at, not_before, not_after, revoked_at) VALUES ('cert', 'realm', 'workload', 'spiffe://example.com/workload', 'serial', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 'certificate', 'ca', 1, 1, 900, NULL)")
-        .bind(&digest)
-        .execute(&pool)
-        .await
-        .expect("insert legacy workload certificate");
+    for version in [20261107000001, 20261107000002] {
+        let dir = std::env::temp_dir().join(format!(
+            "qid-workload-digest-migration-{}",
+            ulid::Ulid::new()
+        ));
+        std::fs::create_dir_all(&dir).expect("create workload migration fixture directory");
+        let database = dir.join("legacy.db");
+        std::fs::File::create(&database).expect("create workload migration fixture database");
+        let url = format!("sqlite:{}", database.display());
+        let pool = sqlx::SqlitePool::connect(&url)
+            .await
+            .expect("connect workload migration fixture");
+        let mut legacy = sqlx::migrate!("./migrations");
+        legacy.migrations = Cow::Owned(
+            legacy
+                .iter()
+                .filter(|migration| migration.version < version)
+                .cloned()
+                .collect(),
+        );
+        legacy.run(&pool).await.expect("apply previous migrations");
+        let digest = "b".repeat(64);
+        let insert = "INSERT INTO workload_certificates (id, realm_id, workload_id, spiffe_id, serial_number, x5t_s256, csr_sha256, certificate_pem, issuer_key_ref, issued_at, not_before, not_after, revoked_at) VALUES ('cert', 'realm', 'workload', 'spiffe://example.com/workload', 'serial', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 'certificate', 'ca', 1, 1, 900, NULL)";
+        let insert = if version == 20261107000002 {
+            insert.replace("csr_sha256", "public_key_sha256")
+        } else {
+            insert.to_string()
+        };
+        sqlx::query(&insert)
+            .bind(&digest)
+            .execute(&pool)
+            .await
+            .expect("insert legacy workload certificate");
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate legacy digest columns");
+        let migrated = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT public_key_sha256, csr_sha256 FROM workload_certificates WHERE id = 'cert'",
+        )
+        .fetch_one(&pool)
         .await
-        .expect("rename legacy digest column");
-    let migrated = sqlx::query_scalar::<_, String>(
-        "SELECT public_key_sha256 FROM workload_certificates WHERE id = 'cert'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("read migrated workload digest");
-    assert_eq!(migrated, digest);
-    pool.close().await;
-    std::fs::remove_dir_all(dir).expect("remove workload migration fixture");
+        .expect("read migrated workload digest");
+        assert_eq!(migrated, (digest, None));
+        pool.close().await;
+        std::fs::remove_dir_all(dir).expect("remove workload migration fixture");
+    }
 }
 
 async fn assert_workload_certificate_round_trip<R>(repo: &R)
@@ -167,6 +174,7 @@ where
         x5t_s256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         public_key_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             .to_string(),
+        csr_sha256: None,
         certificate_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
             .to_string(),
         issuer_key_ref: "kms://realm-workload/ca-main".to_string(),
@@ -188,6 +196,7 @@ where
     let mut renewed_certificate = certificate.clone();
     renewed_certificate.serial_number = "01:02:04".to_string();
     renewed_certificate.x5t_s256 = "e".repeat(64);
+    renewed_certificate.csr_sha256 = Some("c".repeat(64));
     repo.store_workload_certificate(&renewed_certificate)
         .await
         .expect("same-identity certificate update failed");
@@ -196,6 +205,31 @@ where
         .await
         .expect("list updated workload certificate failed");
     assert_eq!(listed, vec![renewed_certificate.clone()]);
+    // Both digests survive replacements, including clearing the nullable CSR field.
+    for digest in [None, Some("d".repeat(64)), Some("c".repeat(64))] {
+        renewed_certificate.csr_sha256 = digest;
+        repo.store_workload_certificate(&renewed_certificate)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.list_workload_certificates(&realm, Some(&workload.id))
+                .await
+                .unwrap(),
+            vec![renewed_certificate.clone()]
+        );
+    }
+    let mut invalid = renewed_certificate.clone();
+    invalid.csr_sha256 = Some("A".repeat(64));
+    assert!(matches!(
+        repo.store_workload_certificate(&invalid).await,
+        Err(qid_core::error::QidError::BadRequest { .. })
+    ));
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&workload.id))
+            .await
+            .unwrap(),
+        vec![renewed_certificate.clone()]
+    );
     let certificate = renewed_certificate;
 
     let duplicate = WorkloadCertificate {
@@ -433,6 +467,13 @@ async fn test_connect_and_migrate() {
     let url = db_url();
     let repo = SqlRepository::connect(&url).await.expect("connect failed");
     repo.migrate().await.expect("migration failed");
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    let column: (String, i64) = sqlx::query_as(
+        "SELECT type, [notnull] FROM pragma_table_info('workload_certificates') WHERE name = 'csr_sha256'",
+    ).fetch_one(&pool).await.unwrap();
+    assert_eq!(column, ("TEXT".to_string(), 0));
+    pool.close().await;
+    repo.close().await;
 }
 
 #[tokio::test]
@@ -2129,9 +2170,24 @@ async fn test_file_ciam_consent_grant_owner_conflict() {
 
 #[tokio::test]
 async fn test_sql_workload_certificate_round_trip() {
-    let repo = sql_repo().await;
-
+    let url = db_url();
+    let repo = SqlRepository::connect(&url).await.unwrap();
+    repo.migrate().await.unwrap();
     assert_workload_certificate_round_trip(&repo).await;
+    let realm = RealmId::from("realm-workload");
+    let expected = repo.list_workload_certificates(&realm, None).await.unwrap();
+    repo.close().await;
+    let reopened = SqlRepository::connect(&url).await.unwrap();
+    assert_eq!(
+        reopened
+            .list_workload_certificates(&realm, None)
+            .await
+            .unwrap(),
+        expected
+    );
+    reopened.close().await;
+    remove_sqlite_database_files(std::path::Path::new(url.strip_prefix("sqlite:").unwrap()))
+        .unwrap();
 }
 
 #[tokio::test]
@@ -2143,6 +2199,19 @@ async fn test_file_workload_certificate_round_trip() {
     repo.migrate().await.expect("file migration failed");
 
     assert_workload_certificate_round_trip(&repo).await;
+    let realm = RealmId::from("realm-workload");
+    let expected = repo.list_workload_certificates(&realm, None).await.unwrap();
+    drop(repo);
+    let reopened = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        reopened
+            .list_workload_certificates(&realm, None)
+            .await
+            .unwrap(),
+        expected
+    );
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[tokio::test]

@@ -133,6 +133,103 @@ pub async fn get_workload_identity<R: Repository>(
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssueWorkloadCsrRequest {
+    csr_pem: String,
+}
+
+pub async fn issue_workload_certificate_from_csr<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    headers: HeaderMap,
+    Path(realm): Path<String>,
+    JsonObject(req): JsonObject<IssueWorkloadCsrRequest>,
+) -> Response {
+    let workload = match workload_auth::authenticate_workload(&headers, &state, &realm).await {
+        Ok(workload) => workload,
+        Err(e) => return e,
+    };
+    let max_bytes = state
+        .config
+        .realms
+        .iter()
+        .find(|config| config.id == realm)
+        .map_or(0, |config| config.protocols.workload.max_csr_bytes);
+    let csr = match parse_workload_csr(&req.csr_pem, max_bytes) {
+        Ok(csr) => csr,
+        Err(e) => return qid_http::error_response(e),
+    };
+    // Only the verified public key is used; all requested certificate claims are discarded.
+    let mut certificate =
+        match sign_workload_certificate(&state, &realm, &workload, &csr.public_key, None) {
+            Ok(certificate) => certificate,
+            Err(e) => return qid_http::error_response(e),
+        };
+    certificate.csr_sha256 = Some(qid_core::util::sha256_hex(req.csr_pem.as_bytes()));
+    if let Err(e) = state.repo.store_workload_certificate(&certificate).await {
+        return qid_http::error_response(e);
+    }
+    let event = qid_core::models::AuditEvent {
+        id: format!("audit_{}", ulid::Ulid::new()),
+        realm_id: Some(workload.realm_id.clone()),
+        actor: workload.id.clone(),
+        action: "workload.certificate.issue_csr".into(),
+        target_type: "workload_certificate".into(),
+        target_id: certificate.id.clone(),
+        reason: "Authenticated workload PKCS#10 issuance".into(),
+        metadata_json: serde_json::json!({
+            "spiffe_id": workload.spiffe_id,
+            "csr_sha256": certificate.csr_sha256,
+            "public_key_sha256": certificate.public_key_sha256,
+            "x5t_s256": certificate.x5t_s256,
+        }),
+        created_at: certificate.issued_at,
+        previous_hash: None,
+        event_hash: None,
+    };
+    if let Err(e) = state.repo.append_audit_event(&event).await {
+        return qid_http::error_response(e);
+    }
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({"certificate": certificate})),
+    )
+        .into_response()
+}
+
+fn parse_workload_csr(
+    pem: &str,
+    max_bytes: usize,
+) -> qid_core::error::QidResult<rcgen::CertificateSigningRequestParams> {
+    use x509_parser::prelude::FromDer;
+    let invalid = || qid_core::error::QidError::BadRequest {
+        message: "invalid workload CSR".into(),
+    };
+    if max_bytes == 0 || pem.len() > max_bytes {
+        return Err(invalid());
+    }
+    let envelope = pem.trim_matches(|c: char| c.is_ascii_whitespace());
+    if !envelope.starts_with("-----BEGIN CERTIFICATE REQUEST-----")
+        || !envelope.ends_with("-----END CERTIFICATE REQUEST-----")
+    {
+        return Err(invalid());
+    }
+    let Some((rustls_pemfile::Item::Csr(der), rest)) =
+        rustls_pemfile::read_one_from_slice(envelope.as_bytes()).map_err(|_| invalid())?
+    else {
+        return Err(invalid());
+    };
+    if !rest.iter().all(u8::is_ascii_whitespace) {
+        return Err(invalid());
+    }
+    let (rest, _) = x509_parser::certification_request::X509CertificationRequest::from_der(&der)
+        .map_err(|_| invalid())?;
+    if !rest.is_empty() {
+        return Err(invalid());
+    }
+    rcgen::CertificateSigningRequestParams::from_der(&der).map_err(|_| invalid())
+}
+
 pub async fn issue_workload_certificate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
@@ -188,6 +285,25 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
     workload: &WorkloadIdentity,
     ttl_seconds: Option<u64>,
 ) -> qid_core::error::QidResult<IssuedWorkloadCertificate> {
+    let leaf_key =
+        rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).map_err(|error| {
+            qid_core::error::QidError::Crypto {
+                message: format!("workload SVID key generation failed: {error}"),
+            }
+        })?;
+    Ok(IssuedWorkloadCertificate {
+        certificate: sign_workload_certificate(state, realm, workload, &leaf_key, ttl_seconds)?,
+        private_key_pem: leaf_key.serialize_pem(),
+    })
+}
+
+fn sign_workload_certificate(
+    state: &SharedState<impl Repository>,
+    realm: &str,
+    workload: &WorkloadIdentity,
+    public_key: &impl rcgen::PublicKeyData,
+    ttl_seconds: Option<u64>,
+) -> qid_core::error::QidResult<WorkloadCertificate> {
     crate::validate_spiffe_id(&workload.spiffe_id)?;
     let now = qid_core::util::now_seconds();
     let ttl = ttl_seconds.unwrap_or(3600).clamp(60, 3600);
@@ -220,12 +336,6 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
                 message: format!("workload CA certificate reconstruction failed: {error}"),
             })?;
 
-    let leaf_key =
-        rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).map_err(|error| {
-            qid_core::error::QidError::Crypto {
-                message: format!("workload SVID key generation failed: {error}"),
-            }
-        })?;
     let mut params = rcgen::CertificateParams::default();
     params.distinguished_name = {
         let mut dn = rcgen::DistinguishedName::new();
@@ -245,13 +355,18 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
     params.not_before = epoch_to_offset(now)?;
     params.not_after = epoch_to_offset(not_after)?;
     let cert = params
-        .signed_by(&leaf_key, &ca_cert, &ca_key)
+        .signed_by(public_key, &ca_cert, &ca_key)
         .map_err(|error| qid_core::error::QidError::Crypto {
             message: format!("workload SVID certificate signing failed: {error}"),
         })?;
     let cert_der = cert.der().as_ref();
     let x5t_s256 = qid_core::util::sha256_hex(cert_der);
-    let public_key_sha256 = qid_core::util::sha256_hex(leaf_key.public_key_der());
+    let (_, leaf) = x509_parser::parse_x509_certificate(cert_der).map_err(|_| {
+        qid_core::error::QidError::Crypto {
+            message: "invalid issued workload certificate".into(),
+        }
+    })?;
+    let public_key_sha256 = qid_core::util::sha256_hex(leaf.public_key().raw);
     let serial_number = ulid::Ulid::new().to_string();
     let certificate_pem = format!("{}{}", cert.pem(), ca_certificate_pem);
     let certificate = WorkloadCertificate {
@@ -262,6 +377,7 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
         serial_number,
         x5t_s256,
         public_key_sha256,
+        csr_sha256: None,
         certificate_pem,
         issuer_key_ref: ca.key_ref.clone(),
         issued_at: now,
@@ -270,10 +386,7 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
         revoked_at: None,
     };
     certificate.validate()?;
-    Ok(IssuedWorkloadCertificate {
-        certificate,
-        private_key_pem: leaf_key.serialize_pem(),
-    })
+    Ok(certificate)
 }
 
 fn epoch_to_offset(epoch_seconds: u64) -> qid_core::error::QidResult<time::OffsetDateTime> {

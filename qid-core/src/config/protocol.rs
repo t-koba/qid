@@ -653,9 +653,11 @@ fn default_vc_max_credential_lifetime() -> u64 {
     86400
 }
 
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WorkloadProtocolConfig {
+    #[serde(default = "default_max_csr_bytes")]
+    pub max_csr_bytes: usize,
     #[serde(default)]
     pub spiffe_workload_api: bool,
     #[serde(default)]
@@ -670,6 +672,25 @@ pub struct WorkloadProtocolConfig {
     pub token_exchange: bool,
     #[serde(default)]
     pub workload_ca_key_ref: Option<String>,
+}
+
+fn default_max_csr_bytes() -> usize {
+    16_384
+}
+
+impl Default for WorkloadProtocolConfig {
+    fn default() -> Self {
+        Self {
+            max_csr_bytes: default_max_csr_bytes(),
+            spiffe_workload_api: false,
+            x509_svid: false,
+            jwt_svid: false,
+            short_lived_credentials: false,
+            rats_eat: false,
+            token_exchange: false,
+            workload_ca_key_ref: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]

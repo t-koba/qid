@@ -235,6 +235,10 @@ where
             post(issue_workload_certificate::<R>),
         )
         .route(
+            "/api/v1/:realm/workload-certificates/csr",
+            post(issue_workload_certificate_from_csr::<R>),
+        )
+        .route(
             "/api/v1/:realm/workload-certificates/:certificate_id/revoke",
             post(revoke_workload_certificate::<R>),
         )

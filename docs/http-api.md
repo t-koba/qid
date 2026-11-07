@@ -430,6 +430,7 @@ only; a trusted verified mapping can coexist with unverified legacy rows.
 | `POST` | `/api/v1/:realm/workload-identities` | Register a workload identity; `201 Created` for a new SPIFFE ID and `200 OK` for one the realm already holds. |
 | `GET` | `/api/v1/:realm/workload-identities/:spiffe_id` | Get workload identity. |
 | `GET, POST` | `/api/v1/:realm/workload-certificates` | List/issue workload certificates. |
+| `POST` | `/api/v1/:realm/workload-certificates/csr` | Issue from a workload-authenticated PKCS#10 request; no private key returned. |
 | `POST` | `/api/v1/:realm/workload-certificates/:certificate_id/revoke` | Revoke workload certificate. |
 | `GET` | `/api/v1/:realm/spiffe/workload-api/x509-svid` | Fetch X.509-SVID. |
 | `GET` | `/api/v1/:realm/spiffe/workload-api/jwt-svid` | Fetch JWT-SVID. |
@@ -443,7 +444,37 @@ original CA certificate; only certificate metadata/chain, not that client privat
 key, is stored. The SPIFFE bundle groups each configured realm's public CA by
 the trust domain derived from its issuer; realms sharing a trust domain contribute
 all their public CAs. Authentication, expiry and revocation APIs are unchanged.
-This surface is not an EST or client-CSR enrollment endpoint. The issued certificate metadata exposes `public_key_sha256`, the lower-case SHA-256 digest of the leaf SubjectPublicKeyInfo DER; it does not report a CSR digest because this server-generated-key path accepts no CSR. Existing File records using the former `csr_sha256` key and SQL rows are migrated/read as the same public-key digest.
+`POST /api/v1/:realm/workload-certificates/csr` accepts only
+`{"csr_pem":"-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----\n"}`.
+It requires a registered workload's `qid-workload-api` JWT-SVID for that realm
+in `Authorization: Bearer ...`; a provisioning token is not sufficient. qid
+verifies PKCS#10 proof of possession and uses only the verified public key.
+Subject, SAN, usages and extensions in the request never select identity or
+policy. The leaf has the authenticated registered SPIFFE ID as CN and sole URI
+SAN, is not a CA, and has digitalSignature and clientAuth usages with a one-hour
+lifetime. The target realm's protected CA signs it. IDs are server-generated;
+no target, ID or TTL fields are accepted. Success returns `201 Created` with
+`{"certificate": ...}` only, including the leaf and original CA chain, never a
+private key. The existing server-generated-key endpoint and response are unchanged.
+
+The CSR envelope must contain exactly one `CERTIFICATE REQUEST` PEM block,
+with only outer ASCII whitespace and no trailing DER bytes. Malformed input,
+invalid signatures, wrong labels and multiple blocks are rejected with a generic
+`400 Bad Request`. The decoded JSON string's exact UTF-8 bytes (including outer
+whitespace) count toward `protocols.workload.max_csr_bytes` (default 16,384;
+zero rejects every CSR request). See [configuration](configuration.md#workload-ca-custody).
+
+Certificate metadata exposes `public_key_sha256`, the lower-case SHA-256 digest
+of the leaf SubjectPublicKeyInfo DER, and `x5t_s256`, the leaf DER digest.
+CSR issuance also stores `csr_sha256`, the SHA-256 of the exact accepted UTF-8
+`csr_pem` bytes; server-generated-key issuance has no CSR digest. Legacy File
+records with only the former `csr_sha256` key remain readable as public-key
+digests, while new records distinguish both fields. SQL migration adds a separate
+nullable CSR digest. A successful store is followed by an audit event attributed
+to the authenticated workload, containing the certificate ID and identity/digests,
+not CSR content. Listing and revocation use the existing authenticated lifecycle.
+This is PKCS#10 over HTTP/JSON only, not EST, CMS, CRMF, PKCS#12 or delegated
+credentials support.
 
 One SPIFFE ID names one workload identity in a realm. Registering that SPIFFE
 ID again updates the identity that carries it: the identity keeps its ID, and

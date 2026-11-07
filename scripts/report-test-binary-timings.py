@@ -27,13 +27,17 @@ FIELDS = ("binary", "duration_seconds", "result", "passed", "failed", "ignored",
 def parse_timings(lines):
     rows = []
     binary = None
-    doctests = False
+    pending_doctests = 0
     for line_number, raw in enumerate(lines, 1):
         line = ANSI.sub("", raw).strip()
         if line.startswith("Running "):
             if binary is not None:
                 raise ValueError(
                     f"missing summary for {binary} before executable at line {line_number}"
+                )
+            if pending_doctests:
+                raise ValueError(
+                    f"interleaved doc-test output before executable at line {line_number}"
                 )
             match = RUNNING.fullmatch(line)
             if not match:
@@ -47,13 +51,15 @@ def parse_timings(lines):
                 raise ValueError(
                     f"missing summary for {binary} before doc-tests at line {line_number}"
                 )
-            # Cargo may interleave doc-test markers with other targets' output.
-            # Keep doc-test mode latched; an active executable still owns its
-            # next summary.
-            doctests = True
+            pending_doctests += 1
         elif line.startswith("test result:"):
             if binary is None:
-                if doctests:
+                if pending_doctests:
+                    if not SUMMARY.fullmatch(line):
+                        raise ValueError(
+                            f"malformed doc-test summary at line {line_number}"
+                        )
+                    pending_doctests -= 1
                     continue
                 raise ValueError(f"libtest summary has no executable at line {line_number}")
             match = SUMMARY.fullmatch(line)

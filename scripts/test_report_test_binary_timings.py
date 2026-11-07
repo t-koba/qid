@@ -43,13 +43,25 @@ class BinaryTimingsTests(unittest.TestCase):
     def test_doc_test_marker_does_not_detach_a_later_binary_summary(self):
         log = (
             "   Doc-tests qid_core\n"
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; "
+            "0 filtered out; finished in 0.01s\n"
             + RUN + OK
-            + "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; "
-              "0 filtered out; finished in 0.00s\n"
         )
         self.assertEqual(timings.parse_timings(io.StringIO(log)), [
             ("qid_worker-ab12", "1.23", "ok", "2", "0", "1", "0", "0"),
         ])
+
+    def test_interleaved_doc_test_summary_cannot_be_attributed_to_binary(self):
+        log = (
+            "   Doc-tests qid_core\n"
+            + RUN
+            + "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; "
+              "0 filtered out; finished in 0.01s\n"
+            + "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; "
+              "0 filtered out; finished in 12.34s\n"
+        )
+        with self.assertRaisesRegex(ValueError, "interleaved doc-test output"):
+            timings.parse_timings(io.StringIO(log))
 
     def test_windows_crlf_failed_binary_csv_has_no_paths_or_test_names(self):
         log = (

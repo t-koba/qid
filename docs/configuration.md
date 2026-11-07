@@ -84,6 +84,7 @@ realms:
       oauth:
         resource_servers:
           - audience: api://iga
+            resources: [api://iga]
             scopes: [qid_iga_access_request]
 ```
 
@@ -91,8 +92,24 @@ A configured audience must be nonempty, contain no whitespace or control
 characters, and match a resource-server registration allowing that exact
 scope; invalid configuration is rejected. Clients must be deliberately allowed
 to request this scope and audience through the existing OAuth issuance policy.
-The decoded token must contain both the exact configured audience and the exact
-scope, not merely a matching resource indicator or another IGA-related scope.
+For a user token, register the client's redirect URI and allow its
+`authorization_code` grant. With an authenticated user browser session, send an
+authorization request to the realm's OIDC authorize endpoint with
+`response_type=code`, `client_id`, the registered `redirect_uri`,
+`resource=api://iga`, `scope=qid_iga_access_request`, `state`, and an S256 PKCE
+`code_challenge`/`code_challenge_method`. Redeem the returned code at the token
+endpoint with the same client and redirect URI, the PKCE `code_verifier`, and
+any required client authentication. The `resources` entry above maps the saved
+resource indicator to the `api://iga` access-token audience; registering only
+`audience` does not make `resource=api://iga` issuable. This request uses only
+the IGA scope; requesting additional scopes (such as `openid`) also requires
+allowing them under the applicable resource-server and client issuance policy.
+
+Send the returned **access token**, not an ID token or a client-credentials
+token, as `Authorization: Bearer <access_token>` to
+`POST /iga/v1/access-requests`, with `subject` equal to the authenticated user's
+ID. The decoded token must contain both the exact configured audience and the
+exact scope, not merely a matching resource indicator or another IGA-related scope.
 Token validity, sender constraints (DPoP/mTLS), subject equality and tenant
 matching still apply. This permission creates a request only: entitlement and
 access-package policy, approvals and all other IGA routes are unchanged.

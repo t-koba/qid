@@ -3652,6 +3652,7 @@ dependencies = [
  "qid-core",
  "qid-crypto",
  "qid-oauth",
+ "qid-oidc",
  "qid-policy",
  "qid-storage",
  "serde",
@@ -3660,6 +3661,7 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "ulid",
+ "urlencoding",
 ]
 
 [[package]]

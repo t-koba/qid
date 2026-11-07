@@ -62,7 +62,7 @@ impl AuditRepository for FileRepository {
 
     async fn set_audit_retention_config(&self, config: &AuditRetentionConfig) -> QidResult<()> {
         let key = audit_retention_stream_id(config.realm_id.as_deref());
-        self.map_write(|store| store.audit_retention_configs.insert(key, config.clone()))
+        self.map_write(|store| drop(store.audit_retention_configs.insert(key, config.clone())))
             .await
     }
 

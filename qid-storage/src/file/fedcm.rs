@@ -37,7 +37,7 @@ impl FedCmRepository for FileRepository {
     }
 
     async fn delete_fedcm_identity(&self, id: &str) -> QidResult<()> {
-        self.map_write(|store| store.fedcm_identities.remove(id))
+        self.map_write(|store| drop(store.fedcm_identities.remove(id)))
             .await
     }
 }

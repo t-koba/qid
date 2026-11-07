@@ -106,7 +106,6 @@ impl SaasRepository for FileRepository {
             store
                 .custom_domains
                 .retain(|key, domain| key != id || domain.tenant_id != tenant_id);
-            None::<()>
         })
         .await
     }
@@ -158,7 +157,6 @@ impl SaasRepository for FileRepository {
             store
                 .ciam_brands
                 .retain(|key, brand| key != id || brand.tenant_id != tenant_id);
-            None::<()>
         })
         .await
     }
@@ -240,7 +238,6 @@ impl SaasRepository for FileRepository {
             store
                 .app_catalog_entries
                 .retain(|key, entry| key != id || entry.tenant_id != tenant_id);
-            None::<()>
         })
         .await
     }

@@ -74,9 +74,7 @@ impl ClientRepository for FileRepository {
         self.map_write(|store| {
             store
                 .clients
-                .get(id)
-                .filter(|client| client.realm_id.as_str() == realm_id.as_str())?;
-            store.clients.remove(id)
+                .retain(|key, client| key != id || client.realm_id.as_str() != realm_id.as_str());
         })
         .await
     }

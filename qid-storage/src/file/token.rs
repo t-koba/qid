@@ -129,10 +129,10 @@ impl TokenRepository for FileRepository {
 
     async fn revoke_token_family(&self, id: &str, realm_id: &str) -> QidResult<()> {
         self.map_write(|store| {
-            let family = store.token_families.get_mut(id)?;
-            // Revocation is monotonic; foreign realms leave the state unchanged.
-            family.revoked |= family.realm_id == realm_id;
-            Some(())
+            if let Some(family) = store.token_families.get_mut(id) {
+                // Revocation is monotonic; foreign realms leave the state unchanged.
+                family.revoked |= family.realm_id == realm_id;
+            }
         })
         .await
     }
@@ -174,8 +174,9 @@ impl TokenRepository for FileRepository {
 
     async fn revoke_access_token(&self, jti: &str, realm_id: &str) -> QidResult<()> {
         self.map_write(|store| {
-            let token = store.access_tokens.get_mut(jti)?;
-            (token.realm_id == realm_id).then(|| token.revoked = true)
+            if let Some(token) = store.access_tokens.get_mut(jti) {
+                token.revoked |= token.realm_id == realm_id;
+            }
         })
         .await
     }
@@ -275,10 +276,10 @@ impl TokenRepository for FileRepository {
         poll_interval_seconds: u64,
     ) -> QidResult<()> {
         self.map_write(|s| {
-            let grant = s.device_authorization_grants.get_mut(device_code_hash)?;
-            grant.last_poll_at = Some(polled_at);
-            grant.poll_interval_seconds = poll_interval_seconds;
-            Some(())
+            if let Some(grant) = s.device_authorization_grants.get_mut(device_code_hash) {
+                grant.last_poll_at = Some(polled_at);
+                grant.poll_interval_seconds = poll_interval_seconds;
+            }
         })
         .await
     }
@@ -346,12 +347,13 @@ impl TokenRepository for FileRepository {
         poll_interval_seconds: u64,
     ) -> QidResult<()> {
         self.map_write(|s| {
-            let grant = s
+            if let Some(grant) = s
                 .backchannel_authentication_grants
-                .get_mut(auth_req_id_hash)?;
-            grant.last_poll_at = Some(polled_at);
-            grant.poll_interval_seconds = poll_interval_seconds;
-            Some(())
+                .get_mut(auth_req_id_hash)
+            {
+                grant.last_poll_at = Some(polled_at);
+                grant.poll_interval_seconds = poll_interval_seconds;
+            }
         })
         .await
     }

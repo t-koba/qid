@@ -464,7 +464,6 @@ impl CiamRepository for FileRepository {
             store
                 .ciam_identity_links
                 .retain(|key, link| key != id || link.realm_id != realm_id.0);
-            None::<()>
         })
         .await
     }

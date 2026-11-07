@@ -211,12 +211,12 @@ impl FileRepository {
 
     /// Change one of the store's maps under the shared write lock, then
     /// persist the store.
-    async fn map_write<F, T>(&self, write: F) -> QidResult<()>
+    async fn map_write<F>(&self, write: F) -> QidResult<()>
     where
-        F: FnOnce(&mut Store) -> Option<T>,
+        F: FnOnce(&mut Store),
     {
         let mut store = self.store.write().await;
-        let _ = write(&mut store);
+        write(&mut store);
         drop(store);
         self.save().await
     }

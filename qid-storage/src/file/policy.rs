@@ -36,7 +36,7 @@ impl PolicyRepository for FileRepository {
     }
 
     async fn delete_policy_bundle(&self, id: &str) -> QidResult<()> {
-        self.map_write(|store| store.policy_bundles.remove(id))
+        self.map_write(|store| drop(store.policy_bundles.remove(id)))
             .await
     }
 }

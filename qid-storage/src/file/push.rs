@@ -46,6 +46,39 @@ fn login_issued(store: &Store, id: &str, c: &PushLoginChallenge) -> QidResult<u6
     Ok(issued)
 }
 
+// Callers validate the expected record and any binding before inspecting current state.
+fn update_current_login(
+    store: &mut Store,
+    expected: &PushLoginChallenge,
+    update: impl FnOnce(&mut PushLoginChallenge) -> bool,
+) -> QidResult<bool> {
+    let Some(a) = store.push.authenticators.get(&expected.authenticator_id) else {
+        return Ok(false);
+    };
+    let Some(a) = state::enrolled(a, &expected.authenticator_id)? else {
+        return Ok(false);
+    };
+    if !state::current(a, expected) {
+        return Ok(false);
+    }
+    let Some(row) = store.push.logins.get(&expected.id) else {
+        return Ok(false);
+    };
+    login_issued(store, &expected.id, row)?;
+    let Some(c) = store.push.logins.get_mut(&expected.id) else {
+        return Ok(false);
+    };
+    state::validate_login_record(c)?;
+    if c.id != expected.id {
+        return Err(state::corrupt());
+    }
+    let accepted = update(c);
+    if accepted {
+        state::validate_login_record(c)?;
+    }
+    Ok(accepted)
+}
+
 /// Keep only the smallest `limit` keys. O(N log limit) time, O(limit) memory;
 /// references avoid even cloning IDs for the unselected backlog.
 fn select_oldest<'a>(
@@ -271,31 +304,9 @@ impl PushRepository for FileRepository {
         let expected = expected.clone();
         self.mutate_push(move |s| {
             state::validate_login_record(&expected)?;
-            let Some(a) = s.push.authenticators.get(&expected.authenticator_id) else {
-                return Ok(false);
-            };
-            let Some(a) = state::enrolled(a, &expected.authenticator_id)? else {
-                return Ok(false);
-            };
-            if !state::current(a, &expected) {
-                return Ok(false);
-            }
-            let Some(row) = s.push.logins.get(&expected.id) else {
-                return Ok(false);
-            };
-            login_issued(s, &expected.id, row)?;
-            let Some(c) = s.push.logins.get_mut(&expected.id) else {
-                return Ok(false);
-            };
-            state::validate_login_record(c)?;
-            if c.id != expected.id {
-                return Err(state::corrupt());
-            }
-            let accepted = state::login_attempt(c, &expected, decision, now);
-            if accepted {
-                state::validate_login_record(c)?;
-            }
-            Ok(accepted)
+            update_current_login(s, &expected, |c| {
+                state::login_attempt(c, &expected, decision, now)
+            })
         })
         .await
     }
@@ -315,31 +326,7 @@ impl PushRepository for FileRepository {
             {
                 return Ok(false);
             }
-            let Some(a) = s.push.authenticators.get(&expected.authenticator_id) else {
-                return Ok(false);
-            };
-            let Some(a) = state::enrolled(a, &expected.authenticator_id)? else {
-                return Ok(false);
-            };
-            if !state::current(a, &expected) {
-                return Ok(false);
-            }
-            let Some(row) = s.push.logins.get(&expected.id) else {
-                return Ok(false);
-            };
-            login_issued(s, &expected.id, row)?;
-            let Some(c) = s.push.logins.get_mut(&expected.id) else {
-                return Ok(false);
-            };
-            state::validate_login_record(c)?;
-            if c.id != expected.id {
-                return Err(state::corrupt());
-            }
-            let accepted = state::redeem(c, &expected, &binding, now);
-            if accepted {
-                state::validate_login_record(c)?;
-            }
-            Ok(accepted)
+            update_current_login(s, &expected, |c| state::redeem(c, &expected, &binding, now))
         })
         .await
     }

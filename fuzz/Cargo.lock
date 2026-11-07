@@ -2550,6 +2550,7 @@ dependencies = [
  "ulid",
  "unicode-normalization",
  "url",
+ "zeroize",
 ]
 
 [[package]]

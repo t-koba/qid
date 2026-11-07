@@ -74,13 +74,7 @@ impl CiamRepository for FileRepository {
             store
                 .ciam_verification_challenges
                 .insert(challenge.id.clone(), challenge.clone());
-            let result = async {
-                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
-                    message: "challenge serialization failed".into(),
-                })?;
-                repo.write_store_content_locked(&save_guard, &content).await
-            }
-            .await;
+            let result = repo.write_challenge_store_locked(&save_guard, &store).await;
             if result.is_err() {
                 store.ciam_verification_challenges.remove(&challenge.id);
             }
@@ -216,13 +210,7 @@ impl CiamRepository for FileRepository {
                 };
                 current_user.email_verified = true;
             }
-            let result = async {
-                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
-                    message: "challenge serialization failed".into(),
-                })?;
-                repo.write_store_content_locked(&save_guard, &content).await
-            }
-            .await;
+            let result = repo.write_challenge_store_locked(&save_guard, &store).await;
             if let Err(error) = result {
                 store.ciam_verification_challenges.insert(id, challenge);
                 store.users.insert(user_id, user);
@@ -279,13 +267,7 @@ impl CiamRepository for FileRepository {
             store
                 .ciam_verification_challenges
                 .insert(challenge.id.clone(), challenge.clone());
-            let result = async {
-                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
-                    message: "challenge serialization failed".into(),
-                })?;
-                repo.write_store_content_locked(&save_guard, &content).await
-            }
-            .await;
+            let result = repo.write_challenge_store_locked(&save_guard, &store).await;
             if result.is_err() {
                 store.ciam_verification_challenges.remove(&challenge.id);
             }
@@ -358,13 +340,7 @@ impl CiamRepository for FileRepository {
             if verified {
                 current.consumed_at_epoch_seconds = Some(attempted_at);
             }
-            let result = async {
-                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
-                    message: "challenge serialization failed".into(),
-                })?;
-                repo.write_store_content_locked(&save_guard, &content).await
-            }
-            .await;
+            let result = repo.write_challenge_store_locked(&save_guard, &store).await;
             if result.is_err() {
                 store.ciam_verification_challenges.insert(id, challenge);
             }
@@ -664,6 +640,17 @@ impl CiamRepository for FileRepository {
 }
 
 impl FileRepository {
+    async fn write_challenge_store_locked(
+        &self,
+        save_guard: &tokio::sync::MutexGuard<'_, ()>,
+        store: &Store,
+    ) -> QidResult<()> {
+        let content = serde_json::to_string(store).map_err(|_| QidError::Internal {
+            message: "challenge serialization failed".into(),
+        })?;
+        self.write_store_content_locked(save_guard, &content).await
+    }
+
     async fn replace_password_with_reset_token_inner(
         &self,
         id: &str,

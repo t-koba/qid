@@ -73,13 +73,20 @@ def main(argv=None):
             writer = csv.writer(output)
             writer.writerow(FIELDS)
             writer.writerows(rows)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
         try:
             args.output.unlink(missing_ok=True)
         except OSError:
             pass  # The diagnostic below also covers an inaccessible output path.
-        print("Test binary timing report failed: readable Cargo output with complete "
-              "executable/summary pairs and a writable CSV path is required.", file=sys.stderr)
+        if isinstance(error, UnicodeError):
+            detail = "captured output is not valid UTF-8"
+        elif isinstance(error, OSError):
+            detail = "capture or CSV file could not be accessed"
+        else:
+            # Parser errors are fixed, content-free categories; never echo a
+            # path, test name, or raw line from the Cargo log.
+            detail = str(error)
+        print(f"Test binary timing report failed: {detail}.", file=sys.stderr)
         return 1
     return 0
 

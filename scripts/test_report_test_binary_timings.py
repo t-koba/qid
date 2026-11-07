@@ -88,6 +88,10 @@ class BinaryTimingsTests(unittest.TestCase):
                     ]), 1)
                 self.assertFalse(output.exists())
                 self.assertIn("timing report failed", errors.getvalue())
+                if content is None:
+                    self.assertIn("capture or CSV file could not be accessed", errors.getvalue())
+                else:
+                    self.assertIn("incomplete or empty binary timings", errors.getvalue())
                 self.assertNotIn("sensitive_name", errors.getvalue())
             source.write_text(RUN + OK, encoding="utf-8")
             with contextlib.redirect_stderr(io.StringIO()) as errors:

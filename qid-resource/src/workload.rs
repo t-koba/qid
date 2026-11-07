@@ -214,6 +214,10 @@ fn parse_workload_csr(
     {
         return Err(invalid());
     }
+    // rustls-pemfile resets its section on nested markers, so reject them first.
+    if envelope.matches("-----BEGIN").count() != 1 || envelope.matches("-----END").count() != 1 {
+        return Err(invalid());
+    }
     let Some((rustls_pemfile::Item::Csr(der), rest)) =
         rustls_pemfile::read_one_from_slice(envelope.as_bytes()).map_err(|_| invalid())?
     else {

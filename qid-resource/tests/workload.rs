@@ -1003,6 +1003,7 @@ async fn csr_route_rejects_invalid_envelopes_and_signatures_without_storage_or_a
         format!("prefix{pem}"),
         format!("{pem}suffix"),
         format!("{pem}{pem}"),
+        format!("-----BEGIN CERTIFICATE REQUEST-----\n{pem}"),
         pem.replace("CERTIFICATE REQUEST", "NEW CERTIFICATE REQUEST"),
         pem.replace("CERTIFICATE REQUEST", "CERTIFICATE"),
         format!("\u{a0}{pem}"),

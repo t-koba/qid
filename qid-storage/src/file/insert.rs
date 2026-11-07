@@ -66,29 +66,35 @@ impl InsertIdentity for Client {
     }
 }
 
-/// Check both keys and insert under the caller's exclusive store lock.
-/// An absent identity is not unique, matching SQL's multiple-NULL behavior.
-pub(super) fn insert_new<T: InsertIdentity>(
-    map: &mut HashMap<String, T>,
-    record: &T,
-) -> QidResult<()> {
-    reject_duplicate_id(map.contains_key(record.id()), || {
-        format!("{} record ID {} already exists", T::RECORD, record.id())
-    })?;
-    if let Some((owner, identity)) = record.identity()
-        && map
-            .values()
-            .any(|stored| stored.identity() == Some((owner, identity)))
-    {
-        let message = if T::GLOBAL_IDENTITY {
-            format!("{} {identity} already exists globally", T::IDENTITY)
-        } else {
-            format!("{} {identity} already exists in realm {owner}", T::IDENTITY)
-        };
-        return Err(QidError::Conflict { message });
+impl FileRepository {
+    /// Check both keys and insert under the exclusive store lock, then persist.
+    /// An absent identity is not unique, matching SQL's multiple-NULL behavior.
+    pub(super) async fn insert_new<T: InsertIdentity>(
+        &self,
+        record: &T,
+        select: fn(&mut Store) -> &mut HashMap<String, T>,
+    ) -> QidResult<()> {
+        let mut store = self.store.write().await;
+        let map = select(&mut store);
+        reject_duplicate_id(map.contains_key(record.id()), || {
+            format!("{} record ID {} already exists", T::RECORD, record.id())
+        })?;
+        if let Some((owner, identity)) = record.identity()
+            && map
+                .values()
+                .any(|stored| stored.identity() == Some((owner, identity)))
+        {
+            let message = if T::GLOBAL_IDENTITY {
+                format!("{} {identity} already exists globally", T::IDENTITY)
+            } else {
+                format!("{} {identity} already exists in realm {owner}", T::IDENTITY)
+            };
+            return Err(QidError::Conflict { message });
+        }
+        map.insert(record.id().to_owned(), record.clone());
+        drop(store);
+        self.save().await
     }
-    map.insert(record.id().to_owned(), record.clone());
-    Ok(())
 }
 
 impl InsertIdentity for ParRequest {

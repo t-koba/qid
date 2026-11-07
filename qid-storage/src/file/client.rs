@@ -5,10 +5,7 @@ use super::*;
 #[async_trait]
 impl ClientRepository for FileRepository {
     async fn create_client(&self, client: &Client) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.clients, client)?;
-        drop(store);
-        self.save().await
+        self.insert_new(client, |store| &mut store.clients).await
     }
 
     async fn update_client(&self, client: &Client) -> QidResult<()> {

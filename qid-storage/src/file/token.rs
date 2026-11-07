@@ -182,10 +182,7 @@ impl TokenRepository for FileRepository {
     }
 
     async fn store_par_request(&self, req: &ParRequest) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.par_requests, req)?;
-        drop(store);
-        self.save().await
+        self.insert_new(req, |store| &mut store.par_requests).await
     }
 
     async fn get_par_request(&self, request_uri: &str) -> QidResult<Option<ParRequest>> {
@@ -216,10 +213,8 @@ impl TokenRepository for FileRepository {
         &self,
         grant: &DeviceAuthorizationGrant,
     ) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.device_authorization_grants, grant)?;
-        drop(store);
-        self.save().await
+        self.insert_new(grant, |store| &mut store.device_authorization_grants)
+            .await
     }
 
     async fn get_device_authorization_grant(
@@ -306,10 +301,8 @@ impl TokenRepository for FileRepository {
         &self,
         grant: &BackchannelAuthenticationGrant,
     ) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.backchannel_authentication_grants, grant)?;
-        drop(store);
-        self.save().await
+        self.insert_new(grant, |store| &mut store.backchannel_authentication_grants)
+            .await
     }
 
     async fn get_backchannel_authentication_grant(

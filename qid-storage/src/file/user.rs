@@ -5,10 +5,7 @@ use super::*;
 #[async_trait]
 impl UserRepository for FileRepository {
     async fn create_user(&self, user: &User) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.users, user)?;
-        drop(store);
-        self.save().await
+        self.insert_new(user, |store| &mut store.users).await
     }
 
     async fn get_user_by_id(&self, id: &str) -> QidResult<Option<User>> {

@@ -17,10 +17,7 @@ impl ScimRepository for FileRepository {
     }
 
     async fn create_scim_user(&self, user: &ScimUser) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.scim_users, user)?;
-        drop(store);
-        self.save().await
+        self.insert_new(user, |store| &mut store.scim_users).await
     }
 
     async fn get_scim_user(&self, id: &str) -> QidResult<Option<ScimUser>> {
@@ -76,10 +73,7 @@ impl ScimRepository for FileRepository {
     }
 
     async fn create_scim_group(&self, group: &ScimGroup) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.scim_groups, group)?;
-        drop(store);
-        self.save().await
+        self.insert_new(group, |store| &mut store.scim_groups).await
     }
 
     async fn list_scim_groups(&self, realm_id: &RealmId) -> QidResult<Vec<ScimGroup>> {

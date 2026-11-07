@@ -5,10 +5,8 @@ use super::*;
 #[async_trait]
 impl PolicyRepository for FileRepository {
     async fn create_policy_bundle(&self, bundle: &PolicyBundle) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        super::insert::insert_new(&mut store.policy_bundles, bundle)?;
-        drop(store);
-        self.save().await
+        self.insert_new(bundle, |store| &mut store.policy_bundles)
+            .await
     }
 
     async fn get_active_policy_bundle(

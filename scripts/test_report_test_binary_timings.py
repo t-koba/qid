@@ -51,6 +51,29 @@ class BinaryTimingsTests(unittest.TestCase):
             ("qid_worker-ab12", "1.23", "ok", "2", "0", "1", "0", "0"),
         ])
 
+    def test_nested_child_output_fails_closed_with_safe_event_context(self):
+        log = (
+            RUN
+            + "running 128 tests\n"
+            + "test private_outer_name ... \n"
+            + "running 1 test\n"
+            + "test private_child_name ... ok\n"
+            + "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+              "127 filtered out; finished in 0.00s\n"
+            + "ok\n"
+            + "test result: ok. 128 passed; 0 failed; 0 ignored; 0 measured; "
+              "0 filtered out; finished in 1.00s\n"
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "libtest summary has no executable at line 8 "
+            "\(parser context: Cargo libtest summary at line 6\)",
+        ) as caught:
+            timings.parse_timings(io.StringIO(log))
+        self.assertNotIn("private_outer_name", str(caught.exception))
+        self.assertNotIn("private_child_name", str(caught.exception))
+        self.assertNotIn("target/debug", str(caught.exception))
+
     def test_interleaved_doc_test_summary_cannot_be_attributed_to_binary(self):
         log = (
             "   Doc-tests qid_core\n"
@@ -85,7 +108,11 @@ class BinaryTimingsTests(unittest.TestCase):
                 self.assertNotIn(private, output.read_text(encoding="utf-8"))
 
     def test_summary_diagnostics_identify_safe_category_line_and_binary(self):
-        with self.assertRaisesRegex(ValueError, "libtest summary has no executable at line 1"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "libtest summary has no executable at line 1 "
+            "\(parser context: capture start at line 0\)",
+        ):
             timings.parse_timings(io.StringIO(OK))
         malformed = RUN + "test result: ok. private_test_name\n"
         with self.assertRaisesRegex(

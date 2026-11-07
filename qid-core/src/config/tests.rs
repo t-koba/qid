@@ -3039,17 +3039,22 @@ realms:
 #[test]
 fn rebac_response_budget_environment_override() {
     // Re-execute in a child rather than mutate the parallel test process's env.
+    // Keep its libtest output out of the parent Cargo timing stream.
     if std::env::var_os("REBAC_BUDGET_ENV_CHILD").is_none() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "config::tests::rebac_response_budget_environment_override",
             ])
             .env("REBAC_BUDGET_ENV_CHILD", "1")
             .env("QID_IGA__REBAC__EXPAND_MAX_RESPONSE_BYTES", "37")
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success());
+        assert!(
+            output.status.success(),
+            "isolated config test process exited with {}",
+            output.status
+        );
         return;
     }
     let path = temp_config_path("rebac-env.yaml");

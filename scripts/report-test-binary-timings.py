@@ -28,6 +28,9 @@ def parse_timings(lines):
     rows = []
     binary = None
     pending_doctests = 0
+    # Diagnostics use fixed parser-state labels, never captured log content.
+    last_event = "capture start"
+    last_event_line = 0
     for line_number, raw in enumerate(lines, 1):
         line = ANSI.sub("", raw).strip()
         if line.startswith("Running "):
@@ -46,12 +49,16 @@ def parse_timings(lines):
             # Cargo executable names are identifiers, not arbitrary CSV cells.
             if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", binary):
                 raise ValueError(f"invalid executable basename at line {line_number}")
+            last_event = "Cargo executable header"
+            last_event_line = line_number
         elif line.startswith("Doc-tests "):
             if binary is not None:
                 raise ValueError(
                     f"missing summary for {binary} before doc-tests at line {line_number}"
                 )
             pending_doctests += 1
+            last_event = "Cargo doc-test marker"
+            last_event_line = line_number
         elif line.startswith("test result:"):
             if binary is None:
                 if pending_doctests:
@@ -60,8 +67,13 @@ def parse_timings(lines):
                             f"malformed doc-test summary at line {line_number}"
                         )
                     pending_doctests -= 1
+                    last_event = "Cargo doc-test summary"
+                    last_event_line = line_number
                     continue
-                raise ValueError(f"libtest summary has no executable at line {line_number}")
+                raise ValueError(
+                    f"libtest summary has no executable at line {line_number} "
+                    f"(parser context: {last_event} at line {last_event_line})"
+                )
             match = SUMMARY.fullmatch(line)
             if not match:
                 raise ValueError(
@@ -70,6 +82,8 @@ def parse_timings(lines):
             result, passed, failed, ignored, measured, filtered, duration = match.groups()
             rows.append((binary, duration, result, passed, failed, ignored, measured, filtered))
             binary = None
+            last_event = "Cargo libtest summary"
+            last_event_line = line_number
     if binary is not None:
         raise ValueError(f"missing libtest summary for {binary} at end of capture")
     if not rows:

@@ -168,12 +168,10 @@ pub async fn spiffe_bundle_endpoint<R: Repository>(
     let mut bundle: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for realm in &state.config.realms {
         if let Some(trust_domain) = realm.trust_domain() {
-            let certificates = state
-                .workload_ca_certificate_pem
-                .as_ref()
-                .map(|certificate| vec![certificate.clone()])
-                .unwrap_or_default();
-            bundle.insert(trust_domain, certificates);
+            let certificates = bundle.entry(trust_domain).or_default();
+            if let Some(ca) = state.workload_cas.get(&realm.id) {
+                certificates.push(ca.certificate_pem.clone());
+            }
         }
     }
     Json(serde_json::json!({ "bundles": bundle })).into_response()

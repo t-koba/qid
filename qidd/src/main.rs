@@ -10,7 +10,7 @@ use clap::Parser;
 use qid_core::config::{DeploymentProfile, QidConfig, StaticClientConfig, effective_hsts_config};
 use qid_core::jwt::Signer;
 use qid_core::models::{Client, PolicyBundle};
-use qid_core::state::SharedState;
+use qid_core::state::{SharedState, WorkloadCaMaterial};
 use qid_core::tenant::{RealmId, TenantId};
 use qid_core::{MemoryCache, QidResult, SharedCache};
 use qid_crypto::jwk::{generate_eddsa, generate_es256};
@@ -44,6 +44,9 @@ use tracing::{error, info, warn};
 use zeroize::{Zeroize, Zeroizing};
 
 mod tls;
+mod workload_ca;
+#[cfg(test)]
+mod workload_ca_tests;
 
 #[cfg(test)]
 mod tenant_binding_tests;
@@ -247,12 +250,7 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
     shared_state = shared_state.with_shared_cache(
         build_shared_cache(&config).context("failed to initialize shared cache")?,
     );
-    if matches!(config.profile, DeploymentProfile::Workload) {
-        let workload_ca =
-            load_or_generate_workload_ca(&state_dir).context("failed to initialize workload CA")?;
-        shared_state =
-            shared_state.with_workload_ca(workload_ca.certificate_pem, workload_ca.private_key_pem);
-    }
+    shared_state.workload_cas = signing_material.workload_cas;
     if let Some(transport) =
         compose_notification_transport(&config).context("invalid server.notification")?
     {
@@ -1307,51 +1305,7 @@ struct SigningMaterial {
     signer: Arc<dyn Signer>,
     pep_assertion_signers: BTreeMap<String, Arc<dyn Signer>>,
     jwks: serde_json::Value,
-}
-
-struct WorkloadCaMaterial {
-    certificate_pem: String,
-    private_key_pem: String,
-}
-
-fn load_or_generate_workload_ca(state_dir: &Path) -> anyhow::Result<WorkloadCaMaterial> {
-    std::fs::create_dir_all(state_dir)?;
-    let cert_path = state_dir.join("workload-ca.pem");
-    let key_path = state_dir.join("workload-ca-key.pem");
-    if cert_path.exists() && key_path.exists() {
-        return Ok(WorkloadCaMaterial {
-            certificate_pem: std::fs::read_to_string(cert_path)
-                .context("failed to read workload CA certificate")?,
-            private_key_pem: std::fs::read_to_string(key_path)
-                .context("failed to read workload CA private key")?,
-        });
-    }
-    let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
-        .context("failed to generate workload CA key")?;
-    let mut params = rcgen::CertificateParams::default();
-    params.distinguished_name = {
-        let mut dn = rcgen::DistinguishedName::new();
-        dn.push(rcgen::DnType::CommonName, "qid workload CA");
-        dn
-    };
-    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    params.key_usages = vec![
-        rcgen::KeyUsagePurpose::KeyCertSign,
-        rcgen::KeyUsagePurpose::CrlSign,
-    ];
-    let cert = params
-        .self_signed(&key_pair)
-        .context("failed to generate workload CA certificate")?;
-    let certificate_pem = cert.pem();
-    let private_key_pem = key_pair.serialize_pem();
-    std::fs::write(&cert_path, &certificate_pem)
-        .context("failed to write workload CA certificate")?;
-    std::fs::write(&key_path, &private_key_pem)
-        .context("failed to write workload CA private key")?;
-    Ok(WorkloadCaMaterial {
-        certificate_pem,
-        private_key_pem,
-    })
+    workload_cas: BTreeMap<String, WorkloadCaMaterial>,
 }
 
 fn initialize_signing_material(
@@ -1359,8 +1313,25 @@ fn initialize_signing_material(
     state_dir: &Path,
 ) -> anyhow::Result<SigningMaterial> {
     config.validate_vc_issuer_keys()?;
+    config.validate_workload_ca_keys()?;
     let key_protector = key_protector_from_config(config, state_dir)
         .context("failed to initialize signing key protector")?;
+    // Distinct configured references must not alias the same sanitized key file.
+    let mut key_paths = std::collections::HashSet::new();
+    for keyring in &config.crypto.keyrings {
+        let (private, public) =
+            signing_key_paths(state_dir, &keyring.name, &config.crypto.default_alg);
+        // Windows and common macOS filesystems are case-insensitive.
+        let identity = (
+            private.to_string_lossy().to_ascii_lowercase(),
+            public.to_string_lossy().to_ascii_lowercase(),
+        );
+        if !key_paths.insert(identity) {
+            anyhow::bail!("configured signing keyrings resolve to the same local key path");
+        }
+    }
+
+    let workload_cas = workload_ca::initialize(config, state_dir, key_protector.as_ref())?;
     if config.crypto.keyrings.is_empty() {
         let keyring = load_or_generate_local_keyring(
             state_dir,
@@ -1377,24 +1348,17 @@ fn initialize_signing_material(
             pep_assertion_signers: BTreeMap::new(),
             vc_issuer_signers: BTreeMap::new(),
             jwks,
+            workload_cas,
         });
     }
 
-    // Distinct configured references must not alias the same sanitized key file.
-    let mut key_paths = std::collections::HashSet::new();
-    for keyring in &config.crypto.keyrings {
-        let (private, public) =
-            signing_key_paths(state_dir, &keyring.name, &config.crypto.default_alg);
-        // Windows and common macOS filesystems are case-insensitive.
-        let identity = (
-            private.to_string_lossy().to_ascii_lowercase(),
-            public.to_string_lossy().to_ascii_lowercase(),
-        );
-        if !key_paths.insert(identity) {
-            anyhow::bail!("configured signing keyrings resolve to the same local key path");
-        }
-    }
-
+    let ca_thumbprints = workload_cas
+        .values()
+        .map(|ca| {
+            let jwk = qid_crypto::jwk::es256_jwk_from_pem("workload-ca", &ca.private_key_pem)?;
+            Ok(qid_crypto::jwk::jwk_thumbprint(&jwk)?)
+        })
+        .collect::<anyhow::Result<HashSet<_>>>()?;
     let primary_index = config
         .crypto
         .keyrings
@@ -1404,6 +1368,8 @@ fn initialize_signing_material(
                 .purposes
                 .iter()
                 .any(|purpose| purpose == "oidc_token")
+                && (!matches!(config.profile, DeploymentProfile::Workload)
+                    || keyring.realm_id.is_none())
         })
         .unwrap_or(0);
     let mut vc_issuer_signers = BTreeMap::new();
@@ -1412,6 +1378,14 @@ fn initialize_signing_material(
     let mut jwks = Vec::new();
 
     for (idx, configured) in config.crypto.keyrings.iter().enumerate() {
+        // CA keys must never become a JWT signer or enter the public JWKS.
+        if configured
+            .purposes
+            .iter()
+            .any(|purpose| purpose == "other:workload_ca")
+        {
+            continue;
+        }
         if configured.signer.r#type != "local" {
             anyhow::bail!(
                 "remote signer {} for keyring {} is configured but no remote signer transport is available",
@@ -1444,6 +1418,14 @@ fn initialize_signing_material(
             }
         }
         let kr_jwks = keyring.jwks();
+        for jwk in &kr_jwks.keys {
+            if ca_thumbprints.contains(&qid_crypto::jwk::jwk_thumbprint(jwk)?) {
+                bail!(
+                    "workload CA key material is reused by JWT keyring {}; provision a separate JWT signing key",
+                    configured.name
+                );
+            }
+        }
         append_keyring_jwks(&mut jwks, &kr_jwks)?;
     }
 
@@ -1452,6 +1434,7 @@ fn initialize_signing_material(
         vc_issuer_signers,
         pep_assertion_signers,
         jwks: json!({ "keys": jwks }),
+        workload_cas,
     })
 }
 

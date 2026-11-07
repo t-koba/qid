@@ -219,6 +219,71 @@ impl QidConfig {
         Ok(())
     }
 
+    /// Bind workload CAs to dedicated local realm-owned ES256 keyrings.
+    pub fn validate_workload_ca_keys(&self) -> QidResult<()> {
+        let has_workload_ca = self.crypto.keyrings.iter().any(|key| {
+            key.purposes
+                .iter()
+                .any(|purpose| purpose == "other:workload_ca")
+        });
+        if !matches!(self.profile, DeploymentProfile::Workload) {
+            if has_workload_ca {
+                return Err(QidError::Config {
+                    message: "other:workload_ca keyrings may only be configured with the workload profile".into(),
+                });
+            }
+            return Ok(());
+        }
+        let mut references = HashSet::new();
+        for realm in &self.realms {
+            let reference = realm.protocols.workload.workload_ca_key_ref.as_deref();
+            let mut keys = self
+                .crypto
+                .keyrings
+                .iter()
+                .filter(|key| Some(key.name.as_str()) == reference);
+            let key = keys.next();
+            if reference.is_none_or(|name| name.trim().is_empty() || !references.insert(name))
+                || keys.next().is_some()
+                || self.crypto.default_alg != "ES256"
+                || key.is_none_or(|key| {
+                    key.realm_id.as_deref() != Some(&realm.id)
+                        || key.purposes != ["other:workload_ca"]
+                        || key.signer.r#type != "local"
+                        || key.signer.uri.is_some()
+                        || key.signer.public_jwk.is_some()
+                })
+            {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} workload_ca_key_ref must name exactly one dedicated realm-owned local ES256 other:workload_ca keyring; references cannot be shared",
+                        realm.id
+                    ),
+                });
+            }
+        }
+        if self.crypto.keyrings.iter().any(|key| {
+            key.purposes
+                .iter()
+                .any(|purpose| purpose == "other:workload_ca")
+                && !references.contains(key.name.as_str())
+        }) {
+            return Err(QidError::Config {
+                message: "every other:workload_ca keyring must be referenced by exactly one workload realm".into(),
+            });
+        }
+        if !self.crypto.keyrings.iter().any(|key| {
+            key.realm_id.is_none() && key.purposes.iter().any(|purpose| purpose == "oidc_token")
+        }) {
+            return Err(QidError::Config {
+                message:
+                    "workload CA keys require a deployment-level oidc_token keyring for JWT signing"
+                        .into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> QidResult<()> {
         if self.realms.is_empty() {
@@ -228,6 +293,7 @@ impl QidConfig {
         }
 
         self.validate_vc_issuer_keys()?;
+        self.validate_workload_ca_keys()?;
         let mut seen_ids = std::collections::HashSet::new();
         let mut seen_registration_audiences = std::collections::HashSet::new();
         for realm in &self.realms {
@@ -978,18 +1044,6 @@ fn validate_workload_profile(config: &QidConfig) -> QidResult<()> {
                     message: format!("profile workload requires {feature} for realm {}", realm.id),
                 });
             }
-        }
-        if workload
-            .workload_ca_key_ref
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty())
-        {
-            return Err(QidError::Config {
-                message: format!(
-                    "profile workload requires workload_ca_key_ref for realm {}",
-                    realm.id
-                ),
-            });
         }
         if !realm.protocols.oauth.mtls.enabled {
             return Err(QidError::Config {

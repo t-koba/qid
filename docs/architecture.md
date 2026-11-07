@@ -120,7 +120,7 @@ Typical files:
 
 - `signing-key.pem` / `signing-key.pub.pem` for the default ES256 signer.
 - `signing-key-<keyring>-<alg>.pem` for configured local keyrings.
-- `workload-ca.pem` / `workload-ca-key.pem` when the workload profile needs a local workload CA.
+- `signing-key-<keyring>-ES256.pem.enc` and `signing-key-<keyring>-ES256.pub.ca.pem` for each realm's workload CA. CA private keys require the configured protector; they never enter JWT JWKS. Legacy `workload-ca.pem` / `workload-ca-key.pem` stop startup non-destructively (see [CA custody](configuration.md#workload-ca-custody)).
 
 Remote signer configuration is validated, but current `qidd` startup only has a local signer transport. Configuring `kms`, `hsm`, or `pkcs11` keyrings stops daemon startup until the corresponding transport is implemented.
 

@@ -435,7 +435,15 @@ only; a trusted verified mapping can coexist with unverified legacy rows.
 | `GET` | `/api/v1/:realm/spiffe/workload-api/jwt-svid` | Fetch JWT-SVID. |
 | `GET` | `/.well-known/spiffe-bundle` | SPIFFE bundle. |
 
-Workload and SPIFFE routes are only merged in the `workload` profile.
+Workload and SPIFFE routes are only merged in the `workload` profile. X.509
+issuance uses the target realm's resolved dedicated CA, with no global fallback;
+see [CA custody](configuration.md#workload-ca-custody). The existing authenticated
+HTTP/JSON SVID fetch generates a client key and returns it with the leaf and the
+original CA certificate; only certificate metadata/chain, not that client private
+key, is stored. The SPIFFE bundle groups each configured realm's public CA by
+the trust domain derived from its issuer; realms sharing a trust domain contribute
+all their public CAs. Authentication, expiry and revocation APIs are unchanged.
+This surface is not an EST or client-CSR enrollment endpoint.
 
 One SPIFFE ID names one workload identity in a realm. Registering that SPIFFE
 ID again updates the identity that carries it: the identity keeps its ID, and

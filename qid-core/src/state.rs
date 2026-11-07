@@ -30,6 +30,13 @@ pub trait PasswordCredentials: Send + Sync {
     ) -> (bool, bool);
 }
 
+/// Resolved realm CA. Private material is only retained in zeroizing memory.
+pub struct WorkloadCaMaterial {
+    pub key_ref: String,
+    pub certificate_pem: String,
+    pub private_key_pem: zeroize::Zeroizing<String>,
+}
+
 /// Shared state passed to axum handlers.
 ///
 /// This type intentionally stays in `qid-core` so that protocol crates
@@ -59,10 +66,8 @@ pub struct SharedState<Repository> {
     /// of failed password logins here.
     pub failure_budget: Arc<FailureBudget>,
     native_mtls_metadata_key: Vec<u8>,
-    /// PEM-encoded workload CA certificate used to issue X.509-SVIDs.
-    pub workload_ca_certificate_pem: Option<String>,
-    /// PEM-encoded workload CA private key used to issue X.509-SVIDs.
-    pub workload_ca_private_key_pem: Option<String>,
+    /// Dedicated workload CAs, keyed by realm; no deployment-wide fallback.
+    pub workload_cas: BTreeMap<String, WorkloadCaMaterial>,
     /// Process-local bound for background reset persistence, delivery and audit.
     pub notification_delivery_slots: Arc<tokio::sync::Semaphore>,
     /// Optional configured notification transport. Absent by default.
@@ -88,6 +93,7 @@ impl<Repository> SharedState<Repository> {
         jwks: Value,
     ) -> QidResult<Self> {
         config.validate_vc_issuer_keys()?;
+        config.validate_workload_ca_keys()?;
         let plan = RuntimePlan::from_config(&config)?;
         let paths = config.server.paths.clone();
         let delivery_limit = if let Some(notification) = &config.server.notification {
@@ -113,8 +119,7 @@ impl<Repository> SharedState<Repository> {
             shared_cache,
             failure_budget: Arc::new(FailureBudget::new()),
             native_mtls_metadata_key: random_pepper(),
-            workload_ca_certificate_pem: None,
-            workload_ca_private_key_pem: None,
+            workload_cas: BTreeMap::new(),
             notification_transport: None,
             notification_delivery_slots: Arc::new(tokio::sync::Semaphore::new(delivery_limit)),
             jwks,
@@ -136,9 +141,21 @@ impl<Repository> SharedState<Repository> {
         crate::util::constant_time_eq(expected.as_bytes(), proof.as_bytes())
     }
 
-    pub fn with_workload_ca(mut self, certificate_pem: String, private_key_pem: String) -> Self {
-        self.workload_ca_certificate_pem = Some(certificate_pem);
-        self.workload_ca_private_key_pem = Some(private_key_pem);
+    pub fn with_workload_ca(
+        mut self,
+        realm: String,
+        key_ref: String,
+        certificate_pem: String,
+        private_key_pem: String,
+    ) -> Self {
+        self.workload_cas.insert(
+            realm,
+            WorkloadCaMaterial {
+                key_ref,
+                certificate_pem,
+                private_key_pem: zeroize::Zeroizing::new(private_key_pem),
+            },
+        );
         self
     }
 

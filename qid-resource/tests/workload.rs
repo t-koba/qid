@@ -67,13 +67,25 @@ async fn setup() -> (axum::Router, Arc<SharedState<SqlRepository>>, String) {
 }
 
 async fn setup_with_workload_ca() -> (axum::Router, Arc<SharedState<SqlRepository>>, String) {
-    let config = test_helpers::test_config();
+    let mut config = test_helpers::test_config();
+    let mut other = config.realms[0].clone();
+    other.id = "second".into();
+    other.issuer = "https://second.example".into();
+    config.realms.push(other);
     let repo = Arc::new(sql_repo("qid_test_resource_workload").await);
     repo.create_realm(
         &"tenant-1".into(),
         &"test".into(),
         "https://id.example.com",
         Some("Test Realm"),
+    )
+    .await
+    .unwrap();
+    repo.create_realm(
+        &"tenant-1".into(),
+        &"second".into(),
+        "https://second.example",
+        None,
     )
     .await
     .unwrap();
@@ -90,11 +102,24 @@ async fn setup_with_workload_ca() -> (axum::Router, Arc<SharedState<SqlRepositor
         rcgen::KeyUsagePurpose::KeyCertSign,
         rcgen::KeyUsagePurpose::CrlSign,
     ];
-    let ca_cert = params.self_signed(&ca_key).unwrap();
+    let ca_cert = params.clone().self_signed(&ca_key).unwrap();
+    let other_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let other_cert = params.self_signed(&other_key).unwrap();
     let state = Arc::new(
         SharedState::new(config, repo, signer.clone(), serde_json::json!({}))
             .unwrap()
-            .with_workload_ca(ca_cert.pem(), ca_key.serialize_pem()),
+            .with_workload_ca(
+                "test".into(),
+                "test-ca".into(),
+                ca_cert.pem(),
+                ca_key.serialize_pem(),
+            )
+            .with_workload_ca(
+                "second".into(),
+                "second-ca".into(),
+                other_cert.pem(),
+                other_key.serialize_pem(),
+            ),
     );
     let identity = WorkloadIdentity {
         id: "workload-api".to_string(),
@@ -107,6 +132,14 @@ async fn setup_with_workload_ca() -> (axum::Router, Arc<SharedState<SqlRepositor
     state
         .repo
         .create_workload_identity(&identity)
+        .await
+        .unwrap();
+    let mut other_identity = identity.clone();
+    other_identity.id = "second-workload".into();
+    other_identity.realm_id = "second".into();
+    state
+        .repo
+        .create_workload_identity(&other_identity)
         .await
         .unwrap();
     let now = qid_core::util::now_seconds();
@@ -583,6 +616,7 @@ async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca()
     let (app, state, token) = setup_with_workload_ca().await;
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -614,6 +648,58 @@ async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca()
             .contains("BEGIN CERTIFICATE")
     );
 
+    assert_svid_chain(
+        svid,
+        &state.workload_cas["test"].certificate_pem,
+        &state.workload_cas["second"].certificate_pem,
+    );
+    let now = qid_core::util::now_seconds();
+    let second_token = state
+        .signer
+        .sign(&JwtClaims {
+            iss: Some("https://second.example".into()),
+            sub: Some(WORKLOAD_SPIFFE_ID.into()),
+            aud: Some(Audience::single("qid-workload-api")),
+            exp: Some((now + 3600) as usize),
+            nbf: None,
+            iat: Some(now as usize),
+            jti: Some("second-svid".into()),
+            extra: Default::default(),
+        })
+        .unwrap();
+    let second_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/second/spiffe/workload-api/x509-svid")
+                .header(
+                    axum::http::header::AUTHORIZATION,
+                    format!("Bearer {second_token}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_response.status(), StatusCode::OK);
+    let second_body = json(second_response).await;
+    assert_svid_chain(
+        &second_body["svids"][0],
+        &state.workload_cas["second"].certificate_pem,
+        &state.workload_cas["test"].certificate_pem,
+    );
+    let cross_realm = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/second/spiffe/workload-api/x509-svid")
+                .header(axum::http::header::AUTHORIZATION, &token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_realm.status(), StatusCode::UNAUTHORIZED);
+
     let stored = state
         .repo
         .list_workload_certificates(&"test".into(), None)
@@ -621,10 +707,11 @@ async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca()
         .unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].spiffe_id, WORKLOAD_SPIFFE_ID);
+    assert_eq!(stored[0].issuer_key_ref, "test-ca");
 
     let bundle_response = qid_resource::workload_routes()
         .merge(qid_resource::spiffe_routes(&state.config.server.paths))
-        .with_state(state)
+        .with_state(state.clone())
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -636,10 +723,43 @@ async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca()
         .unwrap();
     assert_eq!(bundle_response.status(), StatusCode::OK);
     let bundle = json(bundle_response).await;
+    assert_eq!(
+        bundle["bundles"]["id.example.com"],
+        serde_json::json!([state.workload_cas["test"].certificate_pem])
+    );
+    assert_eq!(
+        bundle["bundles"]["second.example"],
+        serde_json::json!([state.workload_cas["second"].certificate_pem])
+    );
     assert!(
         bundle["bundles"]["id.example.com"][0]
             .as_str()
             .unwrap()
             .contains("BEGIN CERTIFICATE")
+    );
+}
+
+fn assert_svid_chain(svid: &serde_json::Value, expected_ca: &str, foreign_ca: &str) {
+    use x509_parser::prelude::*;
+    let chain = svid["certificate_chain"][0].as_str().unwrap();
+    let (remaining, leaf_pem) = parse_x509_pem(chain.as_bytes()).unwrap();
+    assert_eq!(std::str::from_utf8(remaining).unwrap(), expected_ca);
+    let (_, ca_pem) = parse_x509_pem(expected_ca.as_bytes()).unwrap();
+    let (_, foreign_pem) = parse_x509_pem(foreign_ca.as_bytes()).unwrap();
+    let (_, leaf) = X509Certificate::from_der(&leaf_pem.contents).unwrap();
+    let (_, ca) = X509Certificate::from_der(&ca_pem.contents).unwrap();
+    let (_, foreign) = X509Certificate::from_der(&foreign_pem.contents).unwrap();
+    leaf.verify_signature(Some(ca.public_key())).unwrap();
+    assert!(leaf.verify_signature(Some(foreign.public_key())).is_err());
+    let client_key = rcgen::KeyPair::from_pem(svid["private_key"].as_str().unwrap()).unwrap();
+    assert_eq!(leaf.public_key().raw, client_key.public_key_der());
+    assert!(
+        leaf.subject_alternative_name()
+            .unwrap()
+            .unwrap()
+            .value
+            .general_names
+            .iter()
+            .any(|name| matches!(name, GeneralName::URI(uri) if *uri == WORKLOAD_SPIFFE_ID))
     );
 }

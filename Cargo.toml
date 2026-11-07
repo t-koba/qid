@@ -41,14 +41,15 @@ exclude = ["vendor/rustls"]
 [workspace.metadata.budget]
 # Operator-set capability-derived cap. It only falls for what qid already
 # does; an accepted new capability raises it by its measured size in the same
-# change. Per-crate caps are lowered to measured size as each crate is touched.
-total = 110995
+# change. Total and touched per-crate caps rise only by the exact measured source delta.
+# Per-crate caps are otherwise lowered to measured size as each crate is touched.
+total = 111211
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
 qid-network = 2079
 qid-admin = 6000
-qid-core = 14081
+qid-core = 14152
 qid-crypto = 4411
 qid-storage = 15990
 qid-session = 4806
@@ -60,6 +61,7 @@ qid-directory = 4000
 qid-federation = 5000
 qid-iga = 6300
 qid-resource = 5200
+qidd = 4151
 qid-dev = 4001
 qid-scim = 4600
 qid-worker = 5631

@@ -192,20 +192,16 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
     let now = qid_core::util::now_seconds();
     let ttl = ttl_seconds.unwrap_or(3600).clamp(60, 3600);
     let not_after = now + ttl;
-    let ca_certificate_pem = state
-        .workload_ca_certificate_pem
-        .as_deref()
+    let ca = state
+        .workload_cas
+        .get(realm)
         .ok_or_else(|| qid_core::error::QidError::Config {
-            message: "workload certificate issuance requires configured workload CA certificate"
-                .to_string(),
+            message: format!(
+                "workload certificate issuance requires configured CA for realm {realm}"
+            ),
         })?;
-    let ca_private_key_pem = state
-        .workload_ca_private_key_pem
-        .as_deref()
-        .ok_or_else(|| qid_core::error::QidError::Config {
-            message: "workload certificate issuance requires configured workload CA private key"
-                .to_string(),
-        })?;
+    let ca_certificate_pem = &ca.certificate_pem;
+    let ca_private_key_pem = ca.private_key_pem.as_str();
     let ca_key = rcgen::KeyPair::from_pem(ca_private_key_pem).map_err(|error| {
         qid_core::error::QidError::Crypto {
             message: format!("workload CA private key is invalid: {error}"),
@@ -257,7 +253,7 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
     let x5t_s256 = qid_core::util::sha256_hex(cert_der);
     let csr_sha256 = qid_core::util::sha256_hex(leaf_key.public_key_der());
     let serial_number = ulid::Ulid::new().to_string();
-    let certificate_pem = format!("{}{}", cert.pem(), ca_cert.pem());
+    let certificate_pem = format!("{}{}", cert.pem(), ca_certificate_pem);
     let certificate = WorkloadCertificate {
         id: format!("wcert_{serial_number}"),
         realm_id: realm.to_string(),
@@ -267,7 +263,7 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
         x5t_s256,
         csr_sha256,
         certificate_pem,
-        issuer_key_ref: format!("qid-workload-ca:{realm}"),
+        issuer_key_ref: ca.key_ref.clone(),
         issued_at: now,
         not_before: now,
         not_after,

@@ -142,6 +142,83 @@ Profiles are not marketing labels. They are validation bundles that make a deplo
 | `network-aaa` | RADIUS, RADIUS/TLS, EAP, EAP-TLS, CAPPORT, CoA, accounting, directory authority, mTLS, 16+ byte shared secret, bind addresses, TLS material paths, and an enabled directory provider. |
 | `high-assurance` | All `fapi` requirements plus remote KMS/HSM/PKCS#11 keyrings, admin approval, admin step-up, a declared backup target, passkeys, mTLS, and passwordless-only realms. |
 
+## Workload CA custody
+
+The `workload` profile is opt-in. Each realm's
+`protocols.workload.workload_ca_key_ref` must exactly name one `crypto.keyrings`
+entry owned by that realm (`realm_id`) with **only** the purpose
+`other:workload_ca`. References cannot be shared between realms. The signer must
+be `local`, with no remote URI/public JWK, and `crypto.default_alg` must be
+`ES256`. A separate deployment-level (`realm_id` absent) `oidc_token` keyring
+signs JWTs. CA keys are never published in the deployment JWT JWKS or used as
+its primary JWT signer. Sanitized/case-insensitive filename aliases fail startup.
+See the three examples in `config/usecases/07-workload-and-device-identity/`.
+
+**Upgrade impact:** older workload configurations without a deployment-level
+`oidc_token` keyring could have selected their first (workload-CA) keyring as the
+JWT signer. This configuration now requires a separate deployment JWT key and
+removes the CA key from JWT JWKS; when upgrading such a deployment, plan the JWT
+signing-key/JWKS transition and active-token lifetime before switching. qidd does
+not automatically reuse a CA key for JWTs, convert its key purpose, or provide a
+legacy verification-key overlap. Workload CA file migration is described below.
+
+Before starting `qidd`, supply `QID_KEY_PASSPHRASE` through the deployment's secret
+manager, or set `crypto.key_passphrase_file` to an operator-protected file. The
+environment takes precedence. Relative file paths resolve beside the primary
+config file; an empty protector is rejected. Do not put passphrases in config
+examples, logs, or source control. Restrict access to both the state directory
+and the passphrase file and back up the protector separately from encrypted keys.
+
+On a completely fresh state directory, qidd generates one CA key per realm via
+the encrypted local keyring path (Argon2id + AES-256-GCM). It writes no raw CA
+private PEM or plaintext backup. For a keyring named `mesh-ca`, files are:
+
+- `signing-key-mesh-ca-ES256.pem.enc`: protected private key envelope;
+- `signing-key-mesh-ca-ES256.pub.pem`: public key;
+- `signing-key-mesh-ca-ES256.pub.ca.pem`: public self-signed CA certificate;
+- `signing-key-mesh-ca-ES256.pub.ca.state`: initialization marker that prevents
+  accidental regeneration if all CA key/certificate files are later lost.
+
+Keyring names are sanitized for filenames; `default` has the existing special
+paths `signing-key.pem.enc`, `signing-key.pub.pem`, and
+`signing-key.pub.ca.pem`. Keep the encrypted key and CA certificate together.
+On restart, qidd validates envelope reference/algorithm, ES256 key type, public
+certificate/key match, certificate validity, critical CA constraints with
+pathLen absent or zero, critical keyCertSign usage, and self-signature. New
+CAs use pathLen zero; an existing unconstrained self-signed CA can be explicitly
+provisioned for continuity. Existing invalid or incomplete
+material causes an error, never a replacement CA. The initialization marker
+also refuses to generate a CA if all key/certificate files are missing. If both
+CA material and marker are lost, qidd cannot distinguish that state loss from a
+first startup; restore a protected backup before starting. Deleting CA files or
+the marker is not a supported rotation operation. Decrypted CA PEM is retained
+in zeroizing process memory, not written to disk. Reusing the same CA key across
+realms or a JWT keyring is rejected.
+
+**Existing legacy installations:** finding either `workload-ca.pem` or
+`workload-ca-key.pem` stops startup before CA files are read or generated. qidd
+does not automatically assign the former deployment-wide CA to a realm, encrypt
+it into a new identity, or reissue its certificate. Stop the daemon and retain
+both files in a protected backup. An operator must verify the existing ES256 CA
+certificate/private-key match, validity, self-signature, critical CA and
+keyCertSign constraints (an absent pathLen is accepted for the former qidd CA),
+choose its single owning realm, and explicitly
+provision that same private key using the existing
+`qid_crypto::KeyProtector` /
+`PassphraseProtector::seal` encrypted-envelope format (`kid` = exact keyring
+name, `alg` = `ES256`) under the configured protector. Preserve the certificate
+bytes as that keyring's `.pub.ca.pem` file. There is no automatic migration CLI.
+Only after provisioning and backing up the matching pair should the operator
+remove the legacy files (and any raw keyring PEM/backup) from the active state
+directory, keeping plaintext backups under separate secure custody. Never
+share the old CA between realms. Other realms need their own dedicated CA;
+introducing those trust anchors requires an explicit deployment trust rollout.
+If material is missing or unverifiable, restore it or plan an explicit trust
+rotation outside qidd; do not delete files to bypass startup errors.
+
+This is local CA custody for the existing HTTP/JSON SVID API, not an enrollment
+protocol. It adds no EST, CSR/CMS/CRMF, PKCS#12 or delegated-credential support.
+
 ## Server and Paths
 
 `server.listen` must be a valid socket address. `server.public_base_url` must be a valid URL.

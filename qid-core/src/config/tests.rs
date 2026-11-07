@@ -3187,3 +3187,106 @@ fn iga_access_request_audience_requires_a_registered_realm_permission() {
         assert!(crate::plan::RuntimePlan::from_config(&config).is_err());
     }
 }
+
+#[test]
+fn workload_ca_references_are_exact_local_dedicated_and_realm_owned() {
+    let mut config = minimal_config();
+    config.profile = DeploymentProfile::Workload;
+    config.realms[0].protocols.workload.workload_ca_key_ref = Some("ca".into());
+    config.crypto.keyrings = vec![
+        KeyringConfig {
+            name: "ca".into(),
+            realm_id: Some(config.realms[0].id.clone()),
+            purposes: vec!["other:workload_ca".into()],
+            signer: Default::default(),
+            rotation: Default::default(),
+        },
+        KeyringConfig {
+            name: "jwt".into(),
+            realm_id: None,
+            purposes: vec!["oidc_token".into()],
+            signer: Default::default(),
+            rotation: Default::default(),
+        },
+    ];
+    config.validate_workload_ca_keys().unwrap();
+    for reference in [
+        None,
+        Some(""),
+        Some("CA"),
+        Some(" ca"),
+        Some("ca "),
+        Some("missing"),
+    ] {
+        let mut invalid = config.clone();
+        invalid.realms[0].protocols.workload.workload_ca_key_ref = reference.map(str::to_string);
+        assert!(
+            invalid.validate_workload_ca_keys().is_err(),
+            "{reference:?}"
+        );
+    }
+    for owner in [None, Some("foreign")] {
+        let mut invalid = config.clone();
+        invalid.crypto.keyrings[0].realm_id = owner.map(str::to_string);
+        assert!(invalid.validate_workload_ca_keys().is_err());
+    }
+    for purposes in [
+        vec![],
+        vec!["oidc_token".into()],
+        vec!["other:workload_ca".into(), "oidc_token".into()],
+    ] {
+        let mut invalid = config.clone();
+        invalid.crypto.keyrings[0].purposes = purposes;
+        assert!(invalid.validate_workload_ca_keys().is_err());
+    }
+    for signer in ["kms", "hsm", "pkcs11"] {
+        let mut invalid = config.clone();
+        invalid.crypto.keyrings[0].signer.r#type = signer.into();
+        assert!(invalid.validate_workload_ca_keys().is_err());
+    }
+    let mut invalid = config.clone();
+    invalid.crypto.default_alg = "EdDSA".into();
+    assert!(invalid.validate_workload_ca_keys().is_err());
+    let mut invalid = config.clone();
+    invalid
+        .crypto
+        .keyrings
+        .push(config.crypto.keyrings[0].clone());
+    assert!(invalid.validate_workload_ca_keys().is_err());
+    let mut invalid = config.clone();
+    invalid.realms.push(config.realms[0].clone());
+    invalid.realms[1].id = "foreign".into();
+    assert!(invalid.validate_workload_ca_keys().is_err());
+    let mut invalid = config.clone();
+    invalid.crypto.keyrings.pop();
+    assert!(invalid.validate_workload_ca_keys().is_err());
+    let mut invalid = config.clone();
+    invalid.crypto.keyrings[1].realm_id = Some(config.realms[0].id.clone());
+    assert!(invalid.validate_workload_ca_keys().is_err());
+    let mut orphan = config.clone();
+    orphan.crypto.keyrings.push(KeyringConfig {
+        name: "unused-ca".into(),
+        realm_id: Some(config.realms[0].id.clone()),
+        purposes: vec!["other:workload_ca".into()],
+        signer: Default::default(),
+        rotation: Default::default(),
+    });
+    assert!(orphan.validate_workload_ca_keys().is_err());
+    let mut dormant = minimal_config();
+    dormant.crypto.keyrings.push(KeyringConfig {
+        name: "unused-ca".into(),
+        realm_id: Some(dormant.realms[0].id.clone()),
+        purposes: vec!["other:workload_ca".into()],
+        signer: Default::default(),
+        rotation: Default::default(),
+    });
+    assert!(dormant.validate_workload_ca_keys().is_err());
+    config.realms.push(config.realms[0].clone());
+    config.realms[1].id = "second".into();
+    config.realms[1].protocols.workload.workload_ca_key_ref = Some("second-ca".into());
+    let mut ca = config.crypto.keyrings[0].clone();
+    ca.name = "second-ca".into();
+    ca.realm_id = Some("second".into());
+    config.crypto.keyrings.push(ca);
+    config.validate_workload_ca_keys().unwrap();
+}

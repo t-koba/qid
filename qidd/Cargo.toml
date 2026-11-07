@@ -20,6 +20,7 @@ otel-otlp = ["qid-observability/otel-otlp"]
 quic = ["qid-network/quic"]
 
 [dependencies]
+x509-parser = { workspace = true, features = ["verify"] }
 anyhow = { workspace = true }
 axum = { workspace = true }
 metrics = { workspace = true }

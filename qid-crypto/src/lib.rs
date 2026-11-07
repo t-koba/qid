@@ -10,7 +10,6 @@ pub mod kdf;
 pub mod keyring;
 pub mod keystore;
 pub mod password;
-pub mod pki;
 pub mod totp;
 
 pub use aead::{chacha20poly1305_decrypt, chacha20poly1305_encrypt};

@@ -5,19 +5,13 @@ use super::*;
 #[async_trait]
 impl FedCmRepository for FileRepository {
     async fn store_fedcm_identity(&self, identity: &FedCmIdentity) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        // A FedCM identity record ID names one identity, so a store that
-        // carries an ID the store already holds is refused instead of
-        // replacing the incumbent. The check runs under the store's
-        // exclusive write lock, as atomic as the SQL backend's primary key.
-        reject_duplicate_id(store.fedcm_identities.contains_key(&identity.id), || {
-            format!("fedcm identity record ID {} already exists", identity.id)
-        })?;
-        store
-            .fedcm_identities
-            .insert(identity.id.clone(), identity.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.fedcm_identities,
+            identity.id.clone(),
+            identity.clone(),
+            || format!("fedcm identity record ID {} already exists", identity.id),
+        )
+        .await
     }
 
     async fn get_fedcm_identities(

@@ -244,16 +244,13 @@ impl SaasRepository for FileRepository {
 
     async fn store_marketplace_connector(&self, connector: &MarketplaceConnector) -> QidResult<()> {
         connector.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(
-            store.marketplace_connectors.contains_key(&connector.id),
-            || "marketplace connector ID already exists".to_string(),
-        )?;
-        store
-            .marketplace_connectors
-            .insert(connector.id.clone(), connector.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.marketplace_connectors,
+            connector.id.clone(),
+            connector.clone(),
+            || "marketplace connector ID already exists".into(),
+        )
+        .await
     }
 
     async fn list_marketplace_connectors(
@@ -334,16 +331,13 @@ impl SaasRepository for FileRepository {
 
     async fn store_compliance_evidence_pack(&self, pack: &ComplianceEvidencePack) -> QidResult<()> {
         pack.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(
-            store.compliance_evidence_packs.contains_key(&pack.id),
-            || "compliance evidence pack ID already exists".to_string(),
-        )?;
-        store
-            .compliance_evidence_packs
-            .insert(pack.id.clone(), pack.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.compliance_evidence_packs,
+            pack.id.clone(),
+            pack.clone(),
+            || "compliance evidence pack ID already exists".into(),
+        )
+        .await
     }
 
     async fn list_compliance_evidence_packs(

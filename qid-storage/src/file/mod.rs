@@ -209,6 +209,22 @@ impl FileRepository {
         select(&store).cloned()
     }
 
+    /// Create-only ID insert under the exclusive lock, then persist the store.
+    async fn insert_id_if_absent<T>(
+        &self,
+        select: fn(&mut Store) -> &mut HashMap<String, T>,
+        id: String,
+        record: T,
+        conflict: impl FnOnce() -> String,
+    ) -> QidResult<()> {
+        let mut store = self.store.write().await;
+        let map = select(&mut store);
+        reject_duplicate_id(map.contains_key(&id), conflict)?;
+        map.insert(id, record);
+        drop(store);
+        self.save().await
+    }
+
     /// Change one of the store's maps under the shared write lock, then
     /// persist the store.
     async fn map_write<F>(&self, write: F) -> QidResult<()>

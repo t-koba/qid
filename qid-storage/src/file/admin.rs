@@ -36,15 +36,13 @@ impl AdminRepository for FileRepository {
     }
 
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.admin_elevations.contains_key(&elevation.id), || {
-            format!("Admin elevation ID {} already exists", elevation.id)
-        })?;
-        store
-            .admin_elevations
-            .insert(elevation.id.clone(), elevation.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.admin_elevations,
+            elevation.id.clone(),
+            elevation.clone(),
+            || format!("Admin elevation ID {} already exists", elevation.id),
+        )
+        .await
     }
 
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {
@@ -52,15 +50,13 @@ impl AdminRepository for FileRepository {
     }
 
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.admin_approvals.contains_key(&approval.id), || {
-            format!("Admin approval ID {} already exists", approval.id)
-        })?;
-        store
-            .admin_approvals
-            .insert(approval.id.clone(), approval.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.admin_approvals,
+            approval.id.clone(),
+            approval.clone(),
+            || format!("Admin approval ID {} already exists", approval.id),
+        )
+        .await
     }
 
     async fn consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool> {

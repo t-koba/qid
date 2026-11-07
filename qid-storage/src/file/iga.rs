@@ -73,15 +73,13 @@ impl IgaRepository for FileRepository {
 
     async fn store_iga_access_request(&self, request: &IgaAccessRequestRecord) -> QidResult<()> {
         request.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.iga_access_requests.contains_key(&request.id), || {
-            format!("IGA access request ID {} already exists", request.id)
-        })?;
-        store
-            .iga_access_requests
-            .insert(request.id.clone(), request.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.iga_access_requests,
+            request.id.clone(),
+            request.clone(),
+            || format!("IGA access request ID {} already exists", request.id),
+        )
+        .await
     }
 
     async fn get_iga_access_request(
@@ -135,15 +133,13 @@ impl IgaRepository for FileRepository {
 
     async fn store_iga_approval(&self, approval: &IgaApprovalRecord) -> QidResult<()> {
         approval.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.iga_approvals.contains_key(&approval.id), || {
-            format!("IGA approval ID {} already exists", approval.id)
-        })?;
-        store
-            .iga_approvals
-            .insert(approval.id.clone(), approval.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.iga_approvals,
+            approval.id.clone(),
+            approval.clone(),
+            || format!("IGA approval ID {} already exists", approval.id),
+        )
+        .await
     }
 
     async fn list_iga_approvals(
@@ -168,15 +164,13 @@ impl IgaRepository for FileRepository {
 
     async fn store_iga_access_grant(&self, grant: &IgaAccessGrantRecord) -> QidResult<()> {
         grant.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.iga_access_grants.contains_key(&grant.id), || {
-            format!("IGA access grant ID {} already exists", grant.id)
-        })?;
-        store
-            .iga_access_grants
-            .insert(grant.id.clone(), grant.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.iga_access_grants,
+            grant.id.clone(),
+            grant.clone(),
+            || format!("IGA access grant ID {} already exists", grant.id),
+        )
+        .await
     }
 
     async fn ensure_iga_access_grants(
@@ -238,16 +232,13 @@ impl IgaRepository for FileRepository {
         grant: &IgaJitPrivilegeGrantRecord,
     ) -> QidResult<()> {
         grant.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(
-            store.iga_jit_privilege_grants.contains_key(&grant.id),
+        self.insert_id_if_absent(
+            |store| &mut store.iga_jit_privilege_grants,
+            grant.id.clone(),
+            grant.clone(),
             || format!("IGA JIT privilege grant ID {} already exists", grant.id),
-        )?;
-        store
-            .iga_jit_privilege_grants
-            .insert(grant.id.clone(), grant.clone());
-        drop(store);
-        self.save().await
+        )
+        .await
     }
 
     async fn list_iga_jit_privilege_grants(
@@ -288,21 +279,18 @@ impl IgaRepository for FileRepository {
         campaign: &IgaAccessReviewCampaignRecord,
     ) -> QidResult<()> {
         campaign.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(
-            store.iga_access_review_campaigns.contains_key(&campaign.id),
+        self.insert_id_if_absent(
+            |store| &mut store.iga_access_review_campaigns,
+            campaign.id.clone(),
+            campaign.clone(),
             || {
                 format!(
                     "IGA access review campaign ID {} already exists",
                     campaign.id
                 )
             },
-        )?;
-        store
-            .iga_access_review_campaigns
-            .insert(campaign.id.clone(), campaign.clone());
-        drop(store);
-        self.save().await
+        )
+        .await
     }
 
     async fn get_iga_access_review_campaign(
@@ -362,21 +350,18 @@ impl IgaRepository for FileRepository {
         decision: &IgaAccessReviewDecisionRecord,
     ) -> QidResult<()> {
         decision.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(
-            store.iga_access_review_decisions.contains_key(&decision.id),
+        self.insert_id_if_absent(
+            |store| &mut store.iga_access_review_decisions,
+            decision.id.clone(),
+            decision.clone(),
             || {
                 format!(
                     "IGA access review decision ID {} already exists",
                     decision.id
                 )
             },
-        )?;
-        store
-            .iga_access_review_decisions
-            .insert(decision.id.clone(), decision.clone());
-        drop(store);
-        self.save().await
+        )
+        .await
     }
 
     async fn list_iga_access_review_decisions(
@@ -406,16 +391,13 @@ impl IgaRepository for FileRepository {
         certification: &IgaCertificationRecord,
     ) -> QidResult<()> {
         certification.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(
-            store.iga_certifications.contains_key(&certification.id),
+        self.insert_id_if_absent(
+            |store| &mut store.iga_certifications,
+            certification.id.clone(),
+            certification.clone(),
             || format!("IGA certification ID {} already exists", certification.id),
-        )?;
-        store
-            .iga_certifications
-            .insert(certification.id.clone(), certification.clone());
-        drop(store);
-        self.save().await
+        )
+        .await
     }
 
     async fn list_iga_certifications(
@@ -444,15 +426,13 @@ impl IgaRepository for FileRepository {
 
     async fn store_iga_finding(&self, finding: &IgaFindingRecord) -> QidResult<()> {
         finding.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.iga_findings.contains_key(&finding.id), || {
-            format!("IGA finding ID {} already exists", finding.id)
-        })?;
-        store
-            .iga_findings
-            .insert(finding.id.clone(), finding.clone());
-        drop(store);
-        self.save().await
+        self.insert_id_if_absent(
+            |store| &mut store.iga_findings,
+            finding.id.clone(),
+            finding.clone(),
+            || format!("IGA finding ID {} already exists", finding.id),
+        )
+        .await
     }
 
     async fn list_iga_findings(

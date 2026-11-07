@@ -502,13 +502,7 @@ impl SqlRepository {
             .bind(&a.id).bind(&a.realm_id).bind(&a.user_id).bind(state::PUSH_REGISTRATION_PURPOSE)
             .bind(issued as i64).bind(json(&PushAuthenticatorRecord::Pending(challenge.clone()))?)
             .bind(start as i64).bind(i64::from(max_issuances)).bind(challenge.expires_at as i64)
-            .execute(&mut *tx).await.map_err(|err| {
-                if err.as_database_error().is_some_and(|db| db.is_unique_violation()) {
-                    state::conflict()
-                } else {
-                    storage_to_qid_error(err)
-                }
-            })?;
+            .execute(&mut *tx).await.map_err(|error| unique_violation_to_qid_error(error, state::conflict))?;
         tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(written.rows_affected() == 1)
     }
@@ -659,13 +653,7 @@ impl SqlRepository {
         let written = sqlx::query("INSERT INTO push_login_challenges (id, realm_id, user_id, authenticator_id, purpose, issued_at, expires_at, record_json) VALUES ($1, $2, $3, $4, $5, $6, $8, $7)")
             .bind(&challenge.id).bind(&challenge.realm_id).bind(&challenge.user_id).bind(&challenge.authenticator_id)
             .bind(purpose).bind(issued as i64).bind(json(challenge)?).bind(challenge.expires_at as i64)
-            .execute(&mut *tx).await.map_err(|err| {
-                if err.as_database_error().is_some_and(|db| db.is_unique_violation()) {
-                    state::conflict()
-                } else {
-                    storage_to_qid_error(err)
-                }
-            })?;
+            .execute(&mut *tx).await.map_err(|error| unique_violation_to_qid_error(error, state::conflict))?;
         tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(written.rows_affected() == 1)
     }

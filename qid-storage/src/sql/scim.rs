@@ -98,16 +98,13 @@ impl ScimRepository for SqlRepository {
         .bind(user.active as i64)
         .execute(&self.pool)
         .await
-        .map_err(|error| match &error {
-            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
-                QidError::Conflict {
-                    message: format!(
-                        "SCIM user id {} or user name {} already exists in realm {}",
-                        user.id, user.user_name, user.realm_id
-                    ),
-                }
-            }
-            _ => storage_to_qid_error(error),
+        .map_err(|error| {
+            unique_violation_to_qid_error(error, || QidError::Conflict {
+                message: format!(
+                    "SCIM user id {} or user name {} already exists in realm {}",
+                    user.id, user.user_name, user.realm_id
+                ),
+            })
         })?;
         Ok(())
     }
@@ -217,16 +214,13 @@ impl ScimRepository for SqlRepository {
         .bind(group.members_json.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|error| match &error {
-            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
-                QidError::Conflict {
-                    message: format!(
-                        "SCIM group id {} or display name {} already exists in realm {}",
-                        group.id, group.display_name, group.realm_id
-                    ),
-                }
-            }
-            _ => storage_to_qid_error(error),
+        .map_err(|error| {
+            unique_violation_to_qid_error(error, || QidError::Conflict {
+                message: format!(
+                    "SCIM group id {} or display name {} already exists in realm {}",
+                    group.id, group.display_name, group.realm_id
+                ),
+            })
         })?;
         Ok(())
     }

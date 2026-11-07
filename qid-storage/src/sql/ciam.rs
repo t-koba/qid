@@ -273,13 +273,9 @@ impl CiamRepository for SqlRepository {
         .bind(&challenge.code_hash).bind(challenge.expires_at_epoch_seconds as i64)
         .bind(challenge.created_at_epoch_seconds as i64).bind(start as i64)
         .bind(i64::from(max_issuances))
-        .execute(&mut *tx).await.map_err(|err| {
-            if err.as_database_error().is_some_and(|db| db.is_unique_violation()) {
-                QidError::Conflict { message: "CIAM verification challenge ID already exists".into() }
-            } else {
-                storage_to_qid_error(err)
-            }
-        })?;
+        .execute(&mut *tx).await.map_err(|error| unique_violation_to_qid_error(error, || QidError::Conflict {
+            message: "CIAM verification challenge ID already exists".into()
+        }))?;
         tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(result.rows_affected() == 1)
     }
@@ -665,13 +661,10 @@ impl CiamRepository for SqlRepository {
         .bind(profile.updated_at as i64)
         .execute(&self.pool)
         .await
-        .map_err(|err| match err {
-            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
-                QidError::Conflict {
-                    message: "CIAM progressive profile identity cannot change".to_string(),
-                }
-            }
-            other => storage_to_qid_error(other),
+        .map_err(|error| {
+            unique_violation_to_qid_error(error, || QidError::Conflict {
+                message: "CIAM progressive profile identity cannot change".to_string(),
+            })
         })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!(

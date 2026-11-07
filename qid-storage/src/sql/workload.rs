@@ -22,13 +22,10 @@ impl WorkloadRepository for SqlRepository {
         .bind(wi.authorities_json.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|error| match &error {
-            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
-                QidError::BadRequest {
-                    message: "SPIFFE identity already registered in this realm".to_string(),
-                }
-            }
-            _ => storage_to_qid_error(error),
+        .map_err(|error| {
+            unique_violation_to_qid_error(error, || QidError::BadRequest {
+                message: "SPIFFE identity already registered in this realm".to_string(),
+            })
         })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "workload identity ID belongs to another identity".to_string()
@@ -116,13 +113,10 @@ impl WorkloadRepository for SqlRepository {
         .bind(certificate.revoked_at.map(|value| value as i64))
         .execute(&self.pool)
         .await
-        .map_err(|error| match &error {
-            sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
-                QidError::BadRequest {
-                    message: "workload certificate thumbprint already exists".to_string(),
-                }
-            }
-            _ => storage_to_qid_error(error),
+        .map_err(|error| {
+            unique_violation_to_qid_error(error, || QidError::BadRequest {
+                message: "workload certificate thumbprint already exists".to_string(),
+            })
         })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             "workload certificate ID belongs to another identity".to_string()

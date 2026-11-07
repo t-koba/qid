@@ -190,15 +190,12 @@ impl UserRepository for SqlRepository {
             .bind(realm)
             .execute(&self.pool)
             .await
-            .map_err(|error| match &error {
-                sqlx::Error::Database(database_error) if database_error.is_unique_violation() => {
-                    crate::ownership::user_email_conflict(
-                        user.email.as_deref().unwrap_or_default(),
-                        &user.realm_id,
-                    )
-                }
-                _ => storage_to_qid_error(error),
-            })?;
+            .map_err(|error| unique_violation_to_qid_error(error, || {
+                crate::ownership::user_email_conflict(
+                    user.email.as_deref().unwrap_or_default(),
+                    &user.realm_id,
+                )
+            }))?;
         if realm.is_some() {
             crate::ownership::ensure_row_present(result.rows_affected(), || {
                 format!("user {}", user.id)

@@ -20,6 +20,16 @@ pub(super) fn initialize(
             "legacy workload-ca.pem / workload-ca-key.pem found; no files changed: preserve both files, verify their CA/key match, and explicitly provision that identity into the dedicated encrypted keyring and its .ca.pem certificate before removing legacy files from the active state directory; see docs/configuration.md"
         );
     }
+    let configured_keyring_files = config
+        .crypto
+        .keyrings
+        .iter()
+        .map(|keyring| {
+            let (private, _) =
+                signing_key_paths(state_dir, &keyring.name, &config.crypto.default_alg);
+            encrypted_key_path(&private)
+        })
+        .collect::<HashSet<_>>();
     let mut public_keys = HashSet::new();
     for realm in &config.realms {
         let name = realm
@@ -34,7 +44,12 @@ pub(super) fn initialize(
             Ok(entries) => {
                 let mut found = false;
                 for entry in entries {
-                    let file_name = entry?.file_name();
+                    let entry = entry?;
+                    let path = entry.path();
+                    if configured_keyring_files.contains(&path) {
+                        continue;
+                    }
+                    let file_name = entry.file_name();
                     let file_name = file_name.to_string_lossy();
                     found |=
                         file_name.starts_with(&successor_prefix) && file_name.ends_with(".pem.enc");

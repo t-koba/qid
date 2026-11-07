@@ -341,3 +341,20 @@ fn workload_ca_preserves_explicitly_provisioned_identity_and_validates_constrain
             .contains("key must be ES256")
     );
 }
+
+#[test]
+fn workload_ca_restart_does_not_mistake_another_active_keyring_for_successor() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = protected_config(dir.path());
+    config.realms[0].protocols.workload.workload_ca_key_ref = Some("foo".into());
+    config.crypto.keyrings[0].name = "foo-ES256-bar".into();
+    config.crypto.keyrings[1].name = "foo".into();
+
+    let first = initialize_signing_material(&config, dir.path()).unwrap();
+    let second = initialize_signing_material(&config, dir.path()).unwrap();
+    assert_eq!(
+        first.workload_cas["mesh"].certificate_pem,
+        second.workload_cas["mesh"].certificate_pem
+    );
+    assert_eq!(first.jwks, second.jwks);
+}

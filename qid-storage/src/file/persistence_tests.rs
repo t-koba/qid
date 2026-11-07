@@ -471,7 +471,13 @@ async fn seed_reset(repo: &FileRepository) {
     repo.store_password_credential(&reset_credential("previous"))
         .await
         .unwrap();
-    repo.store_password_reset_token(&PasswordResetToken {
+    repo.store_password_reset_token(&reset_token())
+        .await
+        .unwrap();
+}
+
+fn reset_token() -> PasswordResetToken {
+    PasswordResetToken {
         id: "reset".into(),
         realm_id: "test".into(),
         user_id: "user".into(),
@@ -481,9 +487,7 @@ async fn seed_reset(repo: &FileRepository) {
         expires_at_epoch_seconds: 200,
         consumed_at_epoch_seconds: None,
         created_at_epoch_seconds: 100,
-    })
-    .await
-    .unwrap();
+    }
 }
 
 async fn assert_reset(repo: &FileRepository, hash: &str, consumed_at: Option<u64>) {
@@ -503,6 +507,211 @@ async fn assert_reset(repo: &FileRepository, hash: &str, consumed_at: Option<u64
             .consumed_at_epoch_seconds,
         consumed_at
     );
+}
+
+// The issuance window excludes the unrelated seed token. A failed issuance
+// must leave the candidate absent so a retry can consume the available slot.
+async fn reset_token_write(
+    repo: &FileRepository,
+    operation: &str,
+    token: &PasswordResetToken,
+) -> QidResult<()> {
+    match operation {
+        "store" => repo.store_password_reset_token(token).await,
+        "issue" => {
+            assert!(repo.try_issue_password_reset_token(token, 1, 10).await?);
+            Ok(())
+        }
+        "consume" => repo.consume_password_reset_token(&token.id, 150).await,
+        _ => unreachable!(),
+    }
+}
+
+async fn prepare_reset_token_write(repo: &FileRepository, operation: &str) -> PasswordResetToken {
+    seed_reset(repo).await;
+    let mut token = reset_token();
+    token.id = "candidate".into();
+    token.created_at_epoch_seconds = 111;
+    if operation == "consume" {
+        repo.store_password_reset_token(&token).await.unwrap();
+    }
+    token
+}
+
+async fn reset_store_snapshot(repo: &FileRepository) -> serde_json::Value {
+    serde_json::to_value(&*repo.store.read().await).unwrap()
+}
+
+#[tokio::test]
+async fn immediate_password_reset_token_writes_roll_back_failures_and_retry() {
+    for operation in ["store", "issue", "consume"] {
+        for before_write in [true, false] {
+            let (file, repo) = TestFile::new().await;
+            let token = prepare_reset_token_write(&repo, operation).await;
+            let previous = reset_store_snapshot(&repo).await;
+            let persisted = tokio::fs::read(&file.0).await.unwrap();
+            {
+                let guard = repo.save_lock.lock().await;
+                let mut write = Box::pin(reset_token_write(&repo, operation, &token));
+                assert_pending(write.as_mut()).await;
+                // No tentative mutation may precede save_lock acquisition.
+                assert_eq!(reset_store_snapshot(&repo).await, previous);
+                let (reached, resume) = if before_write {
+                    fail_next_flush(&repo)
+                } else {
+                    pause_next_write(&repo, true)
+                };
+                drop(guard);
+                complete(reached).await.unwrap();
+                assert!(repo.store.try_read().is_err());
+                assert!(repo.save_lock.try_lock().is_err());
+                resume.send(()).unwrap();
+                assert!(matches!(
+                    complete(write).await,
+                    Err(QidError::Internal { .. })
+                ));
+            }
+            assert_eq!(reset_store_snapshot(&repo).await, previous);
+            assert_eq!(tokio::fs::read(&file.0).await.unwrap(), persisted);
+            drop(repo);
+            let repo = file.reopen().await;
+            assert_eq!(reset_store_snapshot(&repo).await, previous);
+            complete(reset_token_write(&repo, operation, &token))
+                .await
+                .unwrap();
+            let committed = reset_store_snapshot(&repo).await;
+            assert_ne!(committed, previous);
+            assert!(!file.0.with_extension("tmp").exists());
+            drop(repo);
+            let reopened = file.reopen().await;
+            assert_eq!(reset_store_snapshot(&reopened).await, committed);
+            drop(reopened);
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelled_immediate_password_reset_token_writes_finish_or_roll_back() {
+    for operation in ["store", "issue", "consume"] {
+        // Also cancel after rename, where rollback is no longer appropriate.
+        for stage in ["failure", "before-rename", "after-rename"] {
+            let (file, repo) = TestFile::new().await;
+            let token = prepare_reset_token_write(&repo, operation).await;
+            let previous = reset_store_snapshot(&repo).await;
+            let (reached, resume) = if stage == "after-rename" {
+                pause_after_rename(&repo)
+            } else {
+                pause_next_write(&repo, stage == "failure")
+            };
+            let mut write = Box::pin(reset_token_write(&repo, operation, &token));
+            assert_pending(write.as_mut()).await;
+            complete(reached).await.unwrap();
+            let tentative_path = if stage == "after-rename" {
+                file.0.clone()
+            } else {
+                file.0.with_extension("tmp")
+            };
+            let tentative: serde_json::Value =
+                serde_json::from_slice(&tokio::fs::read(tentative_path).await.unwrap()).unwrap();
+            let mut expected = previous.clone();
+            let mut committed_token = token.clone();
+            if operation == "consume" {
+                committed_token.consumed_at_epoch_seconds = Some(150);
+            }
+            expected["password_reset_tokens"][&token.id] =
+                serde_json::to_value(committed_token).unwrap();
+            assert_eq!(tentative, expected);
+            drop(write); // Cancel only the caller, not the persistence task.
+            assert!(repo.store.try_read().is_err());
+            assert!(repo.save_lock.try_lock().is_err());
+            resume.send(()).unwrap();
+            drop(complete(repo.save_lock.lock()).await);
+            let outcome = if stage == "failure" {
+                &previous
+            } else {
+                &expected
+            };
+            assert_eq!(&reset_store_snapshot(&repo).await, outcome);
+            drop(repo);
+            let repo = file.reopen().await;
+            assert_eq!(&reset_store_snapshot(&repo).await, outcome);
+            if stage == "failure" {
+                complete(reset_token_write(&repo, operation, &token))
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(reset_store_snapshot(&repo).await, expected);
+            assert!(!file.0.with_extension("tmp").exists());
+            drop(repo);
+            let reopened = file.reopen().await;
+            assert_eq!(reset_store_snapshot(&reopened).await, expected);
+            drop(reopened);
+        }
+    }
+}
+
+#[tokio::test]
+async fn interval_password_reset_token_writes_keep_dirty_state_and_classifications() {
+    let (file, mut repo) = TestFile::new().await;
+    repo.migrate().await.unwrap();
+    repo.flush_mode = FileFlushMode::Interval(Duration::from_secs(3600));
+    let persisted = tokio::fs::read(&file.0).await.unwrap();
+    let token = reset_token();
+    {
+        let _guard = repo.save_lock.lock().await;
+        complete(repo.store_password_reset_token(&token))
+            .await
+            .unwrap();
+        assert!(matches!(
+            repo.store_password_reset_token(&token).await,
+            Err(QidError::Conflict { .. })
+        ));
+        // Duplicate IDs are conflicts even when the rolling budget is full.
+        assert!(matches!(
+            repo.try_issue_password_reset_token(&token, 1, 10).await,
+            Err(QidError::Conflict { .. })
+        ));
+        let mut next = token.clone();
+        next.id = "next".into();
+        assert!(
+            !complete(repo.try_issue_password_reset_token(&next, 1, 10))
+                .await
+                .unwrap()
+        );
+        next.created_at_epoch_seconds = 111;
+        assert!(
+            complete(repo.try_issue_password_reset_token(&next, 1, 10))
+                .await
+                .unwrap()
+        );
+        complete(repo.consume_password_reset_token(&next.id, 150))
+            .await
+            .unwrap();
+        assert!(matches!(
+            repo.consume_password_reset_token(&next.id, 151).await,
+            Err(QidError::Conflict { .. })
+        ));
+        assert!(matches!(
+            repo.consume_password_reset_token("missing", 150).await,
+            Err(QidError::NotFound { .. })
+        ));
+    }
+    assert!(repo.dirty.load(Ordering::Acquire));
+    assert_eq!(tokio::fs::read(&file.0).await.unwrap(), persisted);
+    let expected = reset_store_snapshot(&repo).await;
+    let (reached, resume) = fail_next_flush(&repo);
+    let mut flush = Box::pin(repo.flush());
+    assert_pending(flush.as_mut()).await;
+    complete(reached).await.unwrap();
+    resume.send(()).unwrap();
+    assert!(complete(flush).await.is_err());
+    assert!(repo.dirty.load(Ordering::Acquire));
+    assert_eq!(reset_store_snapshot(&repo).await, expected);
+    complete(repo.flush()).await.unwrap();
+    drop(repo);
+    let reopened = file.reopen().await;
+    assert_eq!(reset_store_snapshot(&reopened).await, expected);
+    drop(reopened);
 }
 
 #[tokio::test]

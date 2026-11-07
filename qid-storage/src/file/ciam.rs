@@ -472,15 +472,9 @@ impl CiamRepository for FileRepository {
 
     async fn store_password_reset_token(&self, token: &PasswordResetToken) -> QidResult<()> {
         token.validate()?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.password_reset_tokens.contains_key(&token.id), || {
-            format!("Password reset token ID {} already exists", token.id)
-        })?;
-        store
-            .password_reset_tokens
-            .insert(token.id.clone(), token.clone());
-        drop(store);
-        self.save().await
+        self.insert_password_reset_token(token.clone(), None)
+            .await
+            .map(|_| ())
     }
 
     async fn try_issue_password_reset_token(
@@ -491,28 +485,8 @@ impl CiamRepository for FileRepository {
     ) -> QidResult<bool> {
         let start =
             crate::domain::password_reset_window_start(token, max_issuances, window_seconds)?;
-        let mut store = self.store.write().await;
-        reject_duplicate_id(store.password_reset_tokens.contains_key(&token.id), || {
-            format!("Password reset token ID {} already exists", token.id)
-        })?;
-        let count = store
-            .password_reset_tokens
-            .values()
-            .filter(|existing| {
-                existing.realm_id == token.realm_id
-                    && existing.user_id == token.user_id
-                    && existing.created_at_epoch_seconds >= start
-            })
-            .count();
-        if count as u128 >= u128::from(max_issuances) {
-            return Ok(false);
-        }
-        store
-            .password_reset_tokens
-            .insert(token.id.clone(), token.clone());
-        drop(store);
-        self.save().await?;
-        Ok(true)
+        self.insert_password_reset_token(token.clone(), Some((start, max_issuances)))
+            .await
     }
 
     async fn get_password_reset_token(&self, id: &str) -> QidResult<Option<PasswordResetToken>> {
@@ -522,21 +496,43 @@ impl CiamRepository for FileRepository {
     }
 
     async fn consume_password_reset_token(&self, id: &str, consumed_at: u64) -> QidResult<()> {
-        let mut store = self.store.write().await;
-        let token = store
-            .password_reset_tokens
-            .get_mut(id)
-            .ok_or_else(|| QidError::NotFound {
-                resource: format!("password reset token {id}"),
-            })?;
-        if token.consumed_at_epoch_seconds.is_some() {
-            return Err(QidError::Conflict {
-                message: "password reset token already consumed".to_string(),
-            });
+        let repo = self.clone();
+        let id = id.to_owned();
+        let mutation = async move {
+            let save_guard = match repo.flush_mode {
+                FileFlushMode::Immediate => Some(repo.save_lock.lock().await),
+                FileFlushMode::Interval(_) => None,
+            };
+            let mut store = repo.store.write().await;
+            let token =
+                store
+                    .password_reset_tokens
+                    .get_mut(&id)
+                    .ok_or_else(|| QidError::NotFound {
+                        resource: format!("password reset token {id}"),
+                    })?;
+            if token.consumed_at_epoch_seconds.is_some() {
+                return Err(QidError::Conflict {
+                    message: "password reset token already consumed".to_string(),
+                });
+            }
+            token.consumed_at_epoch_seconds = Some(consumed_at);
+            let result = repo.persist_reset_store(save_guard.as_ref(), &store).await;
+            if result.is_err() {
+                let token = store.password_reset_tokens.get_mut(&id).unwrap();
+                token.consumed_at_epoch_seconds = None;
+            }
+            result
+        };
+        if self.flush_mode == FileFlushMode::Immediate {
+            tokio::spawn(mutation)
+                .await
+                .map_err(|e| QidError::Internal {
+                    message: format!("password reset consume task failed: {e}"),
+                })?
+        } else {
+            mutation.await
         }
-        token.consumed_at_epoch_seconds = Some(consumed_at);
-        drop(store);
-        self.save().await
     }
 
     async fn replace_password_with_reset_token(
@@ -677,6 +673,73 @@ impl FileRepository {
         self.write_store_content_locked(save_guard, &content).await
     }
 
+    async fn insert_password_reset_token(
+        &self,
+        token: PasswordResetToken,
+        budget: Option<(u64, u32)>,
+    ) -> QidResult<bool> {
+        let repo = self.clone();
+        let mutation = async move {
+            // Keep tentative state isolated until persistence or rollback completes.
+            let save_guard = match repo.flush_mode {
+                FileFlushMode::Immediate => Some(repo.save_lock.lock().await),
+                FileFlushMode::Interval(_) => None,
+            };
+            let mut store = repo.store.write().await;
+            reject_duplicate_id(store.password_reset_tokens.contains_key(&token.id), || {
+                format!("Password reset token ID {} already exists", token.id)
+            })?;
+            if let Some((start, max_issuances)) = budget {
+                let count = store
+                    .password_reset_tokens
+                    .values()
+                    .filter(|existing| {
+                        existing.realm_id == token.realm_id
+                            && existing.user_id == token.user_id
+                            && existing.created_at_epoch_seconds >= start
+                    })
+                    .count();
+                if count as u128 >= u128::from(max_issuances) {
+                    return Ok(false);
+                }
+            }
+            let id = token.id.clone();
+            store.password_reset_tokens.insert(id.clone(), token);
+            let result = repo.persist_reset_store(save_guard.as_ref(), &store).await;
+            if result.is_err() {
+                store.password_reset_tokens.remove(&id);
+            }
+            result.map(|()| true)
+        };
+        if self.flush_mode == FileFlushMode::Immediate {
+            // Dropping the caller must not abandon persistence or rollback.
+            tokio::spawn(mutation)
+                .await
+                .map_err(|e| QidError::Internal {
+                    message: format!("password reset insert task failed: {e}"),
+                })?
+        } else {
+            mutation.await
+        }
+    }
+
+    async fn persist_reset_store(
+        &self,
+        save_guard: Option<&tokio::sync::MutexGuard<'_, ()>>,
+        store: &Store,
+    ) -> QidResult<()> {
+        let Some(save_guard) = save_guard else {
+            self.dirty.store(true, Ordering::Release);
+            return Ok(());
+        };
+        #[cfg(test)]
+        self.before_flush().await?;
+        let content = serde_json::to_string(store).map_err(|e| QidError::Internal {
+            message: format!("failed to serialize store: {e}"),
+        })?;
+        self.write_store_content_locked(save_guard, &content).await
+    }
+
     async fn replace_password_with_reset_token_inner(
         &self,
         id: &str,
@@ -717,21 +780,7 @@ impl FileRepository {
             .get_mut(id)
             .unwrap()
             .consumed_at_epoch_seconds = Some(consumed_at);
-        let Some(save_guard) = save_guard else {
-            // Mark dirty while still holding Store; interval flushes snapshot
-            // both mutations together and retain their existing retry semantics.
-            self.dirty.store(true, Ordering::Release);
-            return Ok(());
-        };
-        let result = async {
-            #[cfg(test)]
-            self.before_flush().await?;
-            let content = serde_json::to_string(&*store).map_err(|e| QidError::Internal {
-                message: format!("failed to serialize store: {e}"),
-            })?;
-            self.write_store_content_locked(&save_guard, &content).await
-        }
-        .await;
+        let result = self.persist_reset_store(save_guard.as_ref(), &store).await;
         if result.is_err() {
             match previous {
                 Some(previous) => {

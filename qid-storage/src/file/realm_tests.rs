@@ -47,6 +47,17 @@ fn fixture(realm: &str) -> Value {
     fixture
 }
 
+#[test]
+fn legacy_workload_csr_digest_deserializes_as_public_key_digest() {
+    let legacy = fixture("realm")["workload_certificates"]["realm-record"].clone();
+    let certificate: qid_core::models::WorkloadCertificate =
+        serde_json::from_value(legacy).expect("read legacy workload certificate");
+    assert_eq!(certificate.public_key_sha256, "test");
+    let serialized = serde_json::to_value(certificate).expect("write current workload certificate");
+    assert_eq!(serialized["public_key_sha256"], "test");
+    assert!(serialized.get("csr_sha256").is_none());
+}
+
 fn merge(store: &mut Value, fixture: Value, only_retained: bool) {
     for (field, value) in fixture.as_object().unwrap() {
         if only_retained && !RETAINED.contains(&field.as_str()) {

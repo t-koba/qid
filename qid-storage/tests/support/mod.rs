@@ -1010,7 +1010,7 @@ where
         spiffe_id: identity.spiffe_id.clone(),
         serial_number: "01".to_string(),
         x5t_s256: "a".repeat(64),
-        csr_sha256: "b".repeat(64),
+        public_key_sha256: "b".repeat(64),
         certificate_pem: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----"
             .to_string(),
         issuer_key_ref: "qid-ca://workload/test".to_string(),

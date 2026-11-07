@@ -393,6 +393,34 @@ async fn a_registration_refuses_a_spiffe_id_the_product_cannot_use() {
 }
 
 #[tokio::test]
+async fn issued_certificate_reports_spki_digest_not_a_missing_csr_digest() {
+    let (app, state, token) = setup_with_workload_ca().await;
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/test/workload-certificates",
+            format!(r#"{{"workload_id":"workload-api","spiffe_id":"{WORKLOAD_SPIFFE_ID}"}}"#),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json(response).await;
+    let certificate = &body["certificate"];
+    let private_key = rcgen::KeyPair::from_pem(body["private_key_pem"].as_str().unwrap()).unwrap();
+    let expected = qid_core::util::sha256_hex(private_key.public_key_der());
+    assert_eq!(certificate["public_key_sha256"], expected);
+    assert!(certificate.get("csr_sha256").is_none());
+    let stored = state
+        .repo
+        .list_workload_certificates(&"test".into(), Some("workload-api"))
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].public_key_sha256, expected);
+}
+
+#[tokio::test]
 async fn workload_certificate_lifecycle_requires_bound_workload_svid() {
     let (app, state, token) = setup().await;
     let workload_id = state
@@ -411,7 +439,7 @@ async fn workload_certificate_lifecycle_requires_bound_workload_svid() {
             "spiffe_id":"spiffe://prod.example/ns/default/sa/api",
             "serial_number":"01",
             "x5t_s256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "csr_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "public_key_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "certificate_pem":"{certificate_pem}",
             "issuer_key_ref":"kms://workload-ca/prod",
             "issued_at":1800000000,
@@ -442,7 +470,7 @@ async fn workload_certificate_lifecycle_requires_bound_workload_svid() {
             serial_number: "01".to_string(),
             x5t_s256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
-            csr_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            public_key_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_string(),
             certificate_pem: certificate_pem.replace("\\n", "\n"),
             issuer_key_ref: "qid-ca://workload/test".to_string(),
@@ -525,7 +553,7 @@ async fn workload_certificate_access_does_not_follow_reused_record_id() {
         spiffe_id: WORKLOAD_SPIFFE_ID.to_string(),
         serial_number: "01".to_string(),
         x5t_s256: "a".repeat(64),
-        csr_sha256: "b".repeat(64),
+        public_key_sha256: "b".repeat(64),
         certificate_pem: "-----BEGIN CERTIFICATE-----\\nZmFrZQ==\\n-----END CERTIFICATE-----"
             .to_string(),
         issuer_key_ref: "qid-ca://workload/test".to_string(),

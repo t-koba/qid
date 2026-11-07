@@ -251,7 +251,7 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
         })?;
     let cert_der = cert.der().as_ref();
     let x5t_s256 = qid_core::util::sha256_hex(cert_der);
-    let csr_sha256 = qid_core::util::sha256_hex(leaf_key.public_key_der());
+    let public_key_sha256 = qid_core::util::sha256_hex(leaf_key.public_key_der());
     let serial_number = ulid::Ulid::new().to_string();
     let certificate_pem = format!("{}{}", cert.pem(), ca_certificate_pem);
     let certificate = WorkloadCertificate {
@@ -261,7 +261,7 @@ pub(crate) fn issue_qid_controlled_workload_certificate(
         spiffe_id: workload.spiffe_id.clone(),
         serial_number,
         x5t_s256,
-        csr_sha256,
+        public_key_sha256,
         certificate_pem,
         issuer_key_ref: ca.key_ref.clone(),
         issued_at: now,

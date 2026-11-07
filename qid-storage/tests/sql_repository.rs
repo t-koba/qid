@@ -15,6 +15,7 @@ use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{
     FileRepository, ScimDeviceRecord, ScimEventSubscriptionRecord, SqlRepository, prelude::*,
 };
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -87,6 +88,51 @@ fn vc_status_record(credential_id: &str) -> VcCredentialStatusRecord {
     }
 }
 
+#[tokio::test]
+async fn workload_certificate_digest_migration_preserves_legacy_spki_value() {
+    const VERSION: i64 = 20261107000001;
+    let dir = std::env::temp_dir().join(format!(
+        "qid-workload-digest-migration-{}",
+        ulid::Ulid::new()
+    ));
+    std::fs::create_dir_all(&dir).expect("create workload migration fixture directory");
+    let database = dir.join("legacy.db");
+    std::fs::File::create(&database).expect("create workload migration fixture database");
+    let url = format!("sqlite:{}", database.display());
+    let pool = sqlx::SqlitePool::connect(&url)
+        .await
+        .expect("connect workload migration fixture");
+    let mut legacy = sqlx::migrate!("./migrations");
+    legacy.migrations = Cow::Owned(
+        legacy
+            .iter()
+            .filter(|migration| migration.version < VERSION)
+            .cloned()
+            .collect(),
+    );
+    legacy.run(&pool).await.expect("apply previous migrations");
+    let digest = "b".repeat(64);
+    sqlx::query("INSERT INTO workload_certificates (id, realm_id, workload_id, spiffe_id, serial_number, x5t_s256, csr_sha256, certificate_pem, issuer_key_ref, issued_at, not_before, not_after, revoked_at) VALUES ('cert', 'realm', 'workload', 'spiffe://example.com/workload', 'serial', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 'certificate', 'ca', 1, 1, 900, NULL)")
+        .bind(&digest)
+        .execute(&pool)
+        .await
+        .expect("insert legacy workload certificate");
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("rename legacy digest column");
+    let migrated = sqlx::query_scalar::<_, String>(
+        "SELECT public_key_sha256 FROM workload_certificates WHERE id = 'cert'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read migrated workload digest");
+    assert_eq!(migrated, digest);
+    pool.close().await;
+    std::fs::remove_dir_all(dir).expect("remove workload migration fixture");
+}
+
 async fn assert_workload_certificate_round_trip<R>(repo: &R)
 where
     R: RealmRepository + WorkloadRepository,
@@ -119,7 +165,8 @@ where
         spiffe_id: workload.spiffe_id.clone(),
         serial_number: "01:02:03".to_string(),
         x5t_s256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-        csr_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        public_key_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            .to_string(),
         certificate_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
             .to_string(),
         issuer_key_ref: "kms://realm-workload/ca-main".to_string(),

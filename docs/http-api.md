@@ -443,7 +443,7 @@ original CA certificate; only certificate metadata/chain, not that client privat
 key, is stored. The SPIFFE bundle groups each configured realm's public CA by
 the trust domain derived from its issuer; realms sharing a trust domain contribute
 all their public CAs. Authentication, expiry and revocation APIs are unchanged.
-This surface is not an EST or client-CSR enrollment endpoint.
+This surface is not an EST or client-CSR enrollment endpoint. The issued certificate metadata exposes `public_key_sha256`, the lower-case SHA-256 digest of the leaf SubjectPublicKeyInfo DER; it does not report a CSR digest because this server-generated-key path accepts no CSR. Existing File records using the former `csr_sha256` key and SQL rows are migrated/read as the same public-key digest.
 
 One SPIFFE ID names one workload identity in a realm. Registering that SPIFFE
 ID again updates the identity that carries it: the identity keeps its ID, and

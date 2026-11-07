@@ -24,7 +24,8 @@ pub struct WorkloadCertificate {
     pub spiffe_id: String,
     pub serial_number: String,
     pub x5t_s256: String,
-    pub csr_sha256: String,
+    #[serde(alias = "csr_sha256")]
+    pub public_key_sha256: String,
     pub certificate_pem: String,
     pub issuer_key_ref: String,
     pub issued_at: u64,
@@ -43,7 +44,10 @@ impl WorkloadCertificate {
         require_non_empty("workload certificate serial_number", &self.serial_number)?;
         require_non_empty("workload certificate issuer_key_ref", &self.issuer_key_ref)?;
         require_lower_hex_sha256("workload certificate x5t_s256", &self.x5t_s256)?;
-        require_lower_hex_sha256("workload certificate csr_sha256", &self.csr_sha256)?;
+        require_lower_hex_sha256(
+            "workload certificate public_key_sha256",
+            &self.public_key_sha256,
+        )?;
         if !self.certificate_pem.contains("BEGIN CERTIFICATE")
             || !self.certificate_pem.contains("END CERTIFICATE")
         {

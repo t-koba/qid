@@ -90,9 +90,7 @@ pub(super) fn initialize(
                 "workload CA {name}: the initialization marker proves this CA was previously provisioned, but all key/certificate material is missing; restore it or plan an explicit trust rotation"
             );
         }
-        if (initialized && (!encrypted.exists() || !certificate.exists()))
-            || (!initialized && !encrypted.exists() && (public.exists() || certificate.exists()))
-        {
+        if has_ca_material && (!encrypted.exists() || !certificate.exists()) {
             bail!(
                 "workload CA {name}: incomplete existing material; restore the matching encrypted key and .ca.pem certificate from backup; refusing to generate a replacement"
             );

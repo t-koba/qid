@@ -358,3 +358,23 @@ fn workload_ca_restart_does_not_mistake_another_active_keyring_for_successor() {
     );
     assert_eq!(first.jwks, second.jwks);
 }
+
+#[test]
+fn workload_ca_missing_certificate_and_marker_never_regenerates_trust() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = protected_config(dir.path());
+    initialize_signing_material(&config, dir.path()).unwrap();
+    let (encrypted, certificate, _) = ca_paths(dir.path(), "workload-ca");
+    let marker = certificate.with_extension("ca.state");
+    let original_key = std::fs::read(&encrypted).unwrap();
+
+    std::fs::remove_file(&certificate).unwrap();
+    std::fs::remove_file(&marker).unwrap();
+    let error = initialize_signing_material(&config, dir.path())
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("incomplete existing material"));
+    assert_eq!(std::fs::read(&encrypted).unwrap(), original_key);
+    assert!(!certificate.exists());
+    assert!(!marker.exists());
+}

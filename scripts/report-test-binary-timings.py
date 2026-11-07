@@ -42,17 +42,19 @@ def parse_timings(lines):
             # Cargo executable names are identifiers, not arbitrary CSV cells.
             if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", binary):
                 raise ValueError(f"invalid executable basename at line {line_number}")
-            doctests = False
         elif line.startswith("Doc-tests "):
             if binary is not None:
                 raise ValueError(
                     f"missing summary for {binary} before doc-tests at line {line_number}"
                 )
+            # Cargo may interleave doc-test markers with other targets' output.
+            # Keep doc-test mode latched; an active executable still owns its
+            # next summary.
             doctests = True
         elif line.startswith("test result:"):
-            if doctests:
-                continue
             if binary is None:
+                if doctests:
+                    continue
                 raise ValueError(f"libtest summary has no executable at line {line_number}")
             match = SUMMARY.fullmatch(line)
             if not match:

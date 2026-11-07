@@ -40,6 +40,17 @@ class BinaryTimingsTests(unittest.TestCase):
             ("qidd-cd34", "0.00", "ok", "0", "0", "0", "0", "0"),
         ])
 
+    def test_doc_test_marker_does_not_detach_a_later_binary_summary(self):
+        log = (
+            "   Doc-tests qid_core\n"
+            + RUN + OK
+            + "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; "
+              "0 filtered out; finished in 0.00s\n"
+        )
+        self.assertEqual(timings.parse_timings(io.StringIO(log)), [
+            ("qid_worker-ab12", "1.23", "ok", "2", "0", "1", "0", "0"),
+        ])
+
     def test_windows_crlf_failed_binary_csv_has_no_paths_or_test_names(self):
         log = (
             "     Running tests/worker.rs "

@@ -27,18 +27,30 @@ use tower::ServiceExt;
 static DATABASES: SqliteTestFixture = SqliteTestFixture::new("admin_saas");
 
 async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, TestDatabase) {
-    let config = test_helpers::test_config();
-    setup_with_config(config).await
+    setup_with_config(test_helpers::test_config()).await
 }
 
 async fn setup_with_config(
     config: qid_core::config::QidConfig,
 ) -> (Router, Arc<SharedState<SqlRepository>>, TestDatabase) {
+    setup_with_config_and_admins(config, &[]).await
+}
+
+async fn setup_with_admins(
+    additional_admins: &[&str],
+) -> (Router, Arc<SharedState<SqlRepository>>, TestDatabase) {
+    setup_with_config_and_admins(test_helpers::test_config(), additional_admins).await
+}
+
+async fn setup_with_config_and_admins(
+    config: qid_core::config::QidConfig,
+    additional_admins: &[&str],
+) -> (Router, Arc<SharedState<SqlRepository>>, TestDatabase) {
     let db = DATABASES.repository().await;
     let repo = Arc::new(db.repo().clone());
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
-    seed_base_admin(&state).await;
+    seed_base_admin(&state, additional_admins).await;
     let app = qid_admin::admin_routes(&state.paths).with_state(state.clone());
     (app, state, db)
 }
@@ -232,7 +244,7 @@ async fn seed_source_session(repo: &SqlRepository, realm: &str, subject: &str, i
     .unwrap();
 }
 
-async fn seed_base_admin(state: &SharedState<SqlRepository>) {
+async fn seed_base_admin(state: &SharedState<SqlRepository>, additional_admins: &[&str]) {
     state
         .repo
         .create_realm(
@@ -275,6 +287,9 @@ async fn seed_base_admin(state: &SharedState<SqlRepository>) {
             vec!["webauthn".to_string()],
         ),
     ] {
+        if subject != "admin@example.com" && !additional_admins.contains(&subject) {
+            continue;
+        }
         let admin = Admin {
             id: format!("admin-{subject}"),
             tenant_id: "tenant-saas".to_string(),
@@ -328,7 +343,7 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
 
 #[tokio::test]
 async fn breakglass_session_revoke_requires_breakglass_role_and_audits_incident() {
-    let (app, state, db) = setup().await;
+    let (app, state, db) = setup_with_admins(&["breakglass@example.com"]).await;
     let now = qid_core::util::now_seconds();
     state
         .repo
@@ -440,7 +455,7 @@ async fn breakglass_session_revoke_requires_breakglass_role_and_audits_incident(
 
 #[tokio::test]
 async fn key_rotation_plan_route_requires_security_admin_and_audits_plan() {
-    let (app, state, db) = setup().await;
+    let (app, state, db) = setup_with_admins(&["security-admin@example.com"]).await;
     state
         .repo
         .create_realm(
@@ -546,7 +561,7 @@ async fn key_rotation_plan_route_requires_security_admin_and_audits_plan() {
 
 #[tokio::test]
 async fn policy_simulator_uses_active_bundle_and_records_audit() {
-    let (app, state, db) = setup().await;
+    let (app, state, db) = setup_with_admins(&["security-admin@example.com"]).await;
     state
         .repo
         .create_realm(
@@ -623,7 +638,12 @@ async fn policy_simulator_uses_active_bundle_and_records_audit() {
 
 #[tokio::test]
 async fn admin_ui_shell_and_dashboard_report_operational_status() {
-    let (app, state, db) = setup().await;
+    let (app, state, db) = setup_with_admins(&[
+        "security-admin@example.com",
+        "breakglass@example.com",
+        "approver@example.com",
+    ])
+    .await;
     state
         .repo
         .create_realm(
@@ -1785,7 +1805,7 @@ async fn saas_admin_routes_enforce_approval_when_configured() {
     let mut config = test_helpers::test_config();
     config.admin.security.require_approval = true;
     config.admin.security.max_approval_age_seconds = 120;
-    let (app, state, db) = setup_with_config(config).await;
+    let (app, state, db) = setup_with_config_and_admins(config, &["approver@example.com"]).await;
     seed_saas_realm_client(&state).await;
     let body = r#"{
         "id":"app-approval",
@@ -1866,7 +1886,7 @@ async fn saas_admin_routes_reject_self_or_stale_approval() {
     let mut config = test_helpers::test_config();
     config.admin.security.require_approval = true;
     config.admin.security.max_approval_age_seconds = 60;
-    let (app, _, db) = setup_with_config(config).await;
+    let (app, _, db) = setup_with_config_and_admins(config, &["approver@example.com"]).await;
     let body = r#"{
         "id":"app-approval",
         "tenant_id":"tenant-saas",
@@ -2391,7 +2411,12 @@ async fn directory_update_is_bound_to_the_path_realm() {
 
 #[tokio::test]
 async fn admin_routes_reject_invalid_source_sessions() {
-    let (app, state, db) = setup().await;
+    let (app, state, db) = setup_with_admins(&[
+        "security-admin@example.com",
+        "breakglass@example.com",
+        "approver@example.com",
+    ])
+    .await;
     let baseline = state
         .repo
         .get_admin_elevation("admin-session-1")

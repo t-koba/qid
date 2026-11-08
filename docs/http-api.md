@@ -567,10 +567,14 @@ uses the access token's realm and rejects a subject from another realm. Holder
 proofs use the realm issuer as their audience, not the shared credential
 endpoint's base URL. The metadata advertises the qid-private credential format
 `qid_sd_jwt_vc`, and the credential response repeats that value; no registered
-OID4VCI format is advertised or accepted. Credential revocation is holder-only:
-the bearer token's subject must equal the credential subject, the token realm
-must match the credential realm, and that realm's configured issuer must
-match the credential issuer; a client-credentials token cannot revoke.
+OID4VCI format is advertised or accepted. Credential revocation is
+subject-bound, not issuer-admin: the bearer token's account subject must equal
+the credential subject, the token realm must match the credential realm, and
+that realm's configured issuer must match the credential issuer. Authorization
+is not rejected solely by OAuth grant type: a client-credentials token uses
+its service-account identity, so that grant type does not prevent revocation of
+a credential with the same subject if the token also meets the audience, scope,
+and sender-constraint checks. No issuer-wide revocation route is exposed.
 Issuance requires the exact `protocols.vc.credential_audience` in the decoded
 bearer-token audience set; revocation requires `protocols.vc.status_audience`.
 These per-realm targets have no implicit default: a missing or blank target,

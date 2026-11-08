@@ -324,9 +324,9 @@ async fn run(sql: bool) {
     remove_fixture_dir(&dir).await;
 }
 
-/// Windows can briefly keep a closed SQLite handle busy while another process
-/// inspects the fixture files. Retry for a bounded time, then report the
-/// directory so a persistent leak still fails the test.
+/// A prior Windows run returned OS error 32 while removing the fixture.
+/// The lock owner and cause were not established. Retry is bounded, and a
+/// final failure still fails the test.
 async fn remove_fixture_dir(dir: &std::path::Path) {
     for attempt in 0..40 {
         match std::fs::remove_dir_all(dir) {

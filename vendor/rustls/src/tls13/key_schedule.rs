@@ -86,17 +86,6 @@ impl KeyScheduleEarly {
         self.ks
             .sign_verify_data(&resumption_psk_binder_key, hs_hash)
     }
-
-    pub(crate) fn imported_psk_binder_key_and_sign_verify_data(
-        &self,
-        hs_hash: &hash::Output,
-    ) -> hmac::Tag {
-        let imported_psk_binder_key = self
-            .ks
-            .derive_for_empty_hash(SecretKind::ImportedPskBinderKey);
-        self.ks
-            .sign_verify_data(&imported_psk_binder_key, hs_hash)
-    }
 }
 
 /// The "early secret" stage of the key schedule.
@@ -1000,7 +989,6 @@ where
 /// The kinds of secret we can extract from `KeySchedule`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SecretKind {
-    ImportedPskBinderKey,
     ResumptionPskBinderKey,
     ClientEarlyTrafficSecret,
     ClientHandshakeTrafficSecret,
@@ -1018,7 +1006,6 @@ impl SecretKind {
     fn to_bytes(self) -> &'static [u8] {
         use self::SecretKind::*;
         match self {
-            ImportedPskBinderKey => b"imp binder",
             ResumptionPskBinderKey => b"res binder",
             ClientEarlyTrafficSecret => b"c e traffic",
             ClientHandshakeTrafficSecret => b"c hs traffic",

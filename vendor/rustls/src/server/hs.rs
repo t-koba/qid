@@ -164,7 +164,11 @@ impl ExtensionProcessing {
         // RFC 6961 status_request_v2 is negotiated only for TLS 1.2.
         if cx.common.is_tls13() {
             ocsp_multi_response.take();
-            if for_resume || hello.certificate_status_request.is_none() {
+            if for_resume
+                || hello
+                    .certificate_status_request
+                    .is_none()
+            {
                 ocsp_response.take();
             }
         } else if for_resume {
@@ -180,15 +184,22 @@ impl ExtensionProcessing {
 
             match selected_v2 {
                 Some(CertificateStatusType::OCSPMulti) => {
-                    self.extensions.certificate_status_request_v2_ack = Some(());
+                    self.extensions
+                        .certificate_status_request_v2_ack = Some(());
                     ocsp_response.take();
                 }
                 Some(CertificateStatusType::OCSP) => {
-                    self.extensions.certificate_status_request_v2_ack = Some(());
+                    self.extensions
+                        .certificate_status_request_v2_ack = Some(());
                     ocsp_multi_response.take();
                 }
-                _ if hello.certificate_status_request.is_some() && ocsp_response.is_some() => {
-                    self.extensions.certificate_status_request_ack = Some(());
+                _ if hello
+                    .certificate_status_request
+                    .is_some()
+                    && ocsp_response.is_some() =>
+                {
+                    self.extensions
+                        .certificate_status_request_ack = Some(());
                     ocsp_multi_response.take();
                 }
                 _ => {

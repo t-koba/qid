@@ -84,11 +84,7 @@ impl ClientHelloInput {
         cx: &mut ClientContext<'_>,
         config: Arc<ClientConfig>,
     ) -> Result<Self, Error> {
-        let mut resuming = if config.imported_psk.is_some() {
-            None
-        } else {
-            ClientSessionValue::retrieve(&server_name, &config, cx)
-        };
+        let mut resuming = ClientSessionValue::retrieve(&server_name, &config, cx);
         let session_id = match &mut resuming {
             Some(_resuming) => {
                 debug!("Resuming session");
@@ -207,10 +203,8 @@ fn emit_client_hello_for_retry(
     // builder semantics.
     let forbids_tls12 = cx.common.is_quic() || ech_state.is_some();
 
-    let imported_psk = config.imported_psk.clone();
     let supported_versions = SupportedProtocolVersions {
-        tls12: config.imported_psk.is_none()
-            && config.supports_version(ProtocolVersion::TLSv1_2, cx.common.protocol)
+        tls12: config.supports_version(ProtocolVersion::TLSv1_2, cx.common.protocol)
             && !forbids_tls12,
         tls13: config.supports_version(ProtocolVersion::TLSv1_3, cx.common.protocol),
     };
@@ -240,7 +234,9 @@ fn emit_client_hello_for_retry(
         #[cfg(feature = "tls12")]
         certificate_status_request_v2: (config
             .supports_version(ProtocolVersion::TLSv1_2, cx.common.protocol)
-            && config.verifier.supports_ocsp_multi_stapling())
+            && config
+                .verifier
+                .supports_ocsp_multi_stapling())
         .then(CertificateStatusRequestListV2::build_ocsp_multi),
         protocols: extra_exts.protocols.clone(),
         ..Default::default()
@@ -382,23 +378,8 @@ fn emit_client_hello_for_retry(
         }
     }
 
-    let imported_psk_suite = match &imported_psk {
-        Some(imported_psk) => Some(tls13::prepare_imported_psk(
-            config,
-            cx,
-            imported_psk,
-            &mut exts,
-            suite,
-        )?),
-        None => None,
-    };
-
     // Do we have a SessionID or ticket cached for this host?
-    let tls13_session = if imported_psk.is_none() {
-        prepare_resumption(&input.resuming, &mut exts, suite, cx, config)
-    } else {
-        None
-    };
+    let tls13_session = prepare_resumption(&input.resuming, &mut exts, suite, cx, config);
 
     // Extensions MAY be randomized
     // but they also need to keep the same order as the previous ClientHello
@@ -409,16 +390,8 @@ fn emit_client_hello_for_retry(
         .cipher_suites
         .iter()
         .filter_map(|cs| match cs.usable_for_protocol(cx.common.protocol) {
-            true
-                if imported_psk
-                    .as_ref()
-                    .map(|psk| {
-                        cs.hash_provider().algorithm() == psk.hash_algorithm()
-                            && matches!(cs, SupportedCipherSuite::Tls13(_))
-                    })
-                    .unwrap_or(true) => Some(cs.suite()),
+            true => Some(cs.suite()),
             false => None,
-            true => None,
         })
         .collect();
 
@@ -482,20 +455,7 @@ fn emit_client_hello_for_retry(
 
     let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(chp_payload));
 
-    let tls13_early_data_key_schedule = if let (Some(imported_psk), Some(imported_suite)) =
-        (&imported_psk, imported_psk_suite)
-    {
-        Some((
-            imported_suite,
-            tls13::fill_in_imported_psk_binder(
-                imported_psk,
-                imported_suite,
-                &transcript_buffer,
-                &mut chp,
-            ),
-        ))
-    } else {
-        match (ech_state.as_mut(), tls13_session) {
+    let tls13_early_data_key_schedule = match (ech_state.as_mut(), tls13_session) {
         // If we're performing ECH and resuming, then the PSK binder will have been dealt with
         // separately, and we need to take the early_data_key_schedule computed for the inner hello.
         (Some(ech_state), Some(tls13_session)) => ech_state
@@ -511,8 +471,7 @@ fn emit_client_hello_for_retry(
         )),
 
         // No early key schedule in other cases.
-            _ => None,
-        }
+        _ => None,
     };
 
     let ch = Message {

@@ -66,7 +66,7 @@ fn clean_oauth_test_databases(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Build and close one migrated schema for independent per-test database copies.
+/// Build and close one migrated, seeded schema for independent per-test database copies.
 async fn schema_template_path() -> &'static PathBuf {
     SCHEMA_TEMPLATE
         .get_or_init(|| async {
@@ -78,6 +78,24 @@ async fn schema_template_path() -> &'static PathBuf {
                 .await
                 .unwrap();
             repo.migrate().await.unwrap();
+            repo.create_realm(
+                &"tenant-1".into(),
+                &"test".into(),
+                "https://id.example.com",
+                Some("Test Realm"),
+            )
+            .await
+            .unwrap();
+            let state = Arc::new(
+                SharedState::new(
+                    test_helpers::test_config(),
+                    Arc::new(repo.clone()),
+                    Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests")),
+                    serde_json::json!({ "keys": [] }),
+                )
+                .unwrap(),
+            );
+            seed_token_flow_clients(&state).await;
             repo.close().await;
             for suffix in ["-wal", "-shm", "-journal"] {
                 let mut sidecar = path.as_os_str().to_os_string();
@@ -338,24 +356,13 @@ async fn setup() -> (Router, String, Arc<SharedState<SqlRepository>>) {
 async fn setup_with_config(config: QidConfig) -> (Router, String, Arc<SharedState<SqlRepository>>) {
     let url = db_url();
     let path = std::path::Path::new(url.strip_prefix("sqlite:").unwrap());
-    // Migrations are run once here and covered on fresh databases by qid-storage;
-    // copying keeps every OAuth case isolated without repeating the migration set.
+    // The shared fixture includes the realm and clients; each case gets its own file.
+    // Fresh-database migration behavior remains covered by qid-storage.
     std::fs::copy(schema_template_path().await, path).unwrap();
     let repo = Arc::new(SqlRepository::connect(&url).await.unwrap());
-    // Seed the realm so FK constraints are satisfied.
-    repo.create_realm(
-        &"tenant-1".into(),
-        &"test".into(),
-        "https://id.example.com",
-        Some("Test Realm"),
-    )
-    .await
-    .unwrap();
-
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let jwks = serde_json::json!({ "keys": [] });
     let state = Arc::new(SharedState::new(config, repo, signer, jwks).unwrap());
-    seed_token_flow_clients(&state).await;
     let token_path = state.paths.token.clone();
 
     let app = qid_oauth::routes(&state.paths).with_state(state.clone());

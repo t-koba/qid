@@ -9,28 +9,56 @@ use qid_crypto::{LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_
 use qid_oauth::endpoints::{TokenIssueClaims, issue_access_token};
 use qid_storage::{SqlRepository, prelude::*};
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, Ordering};
+use tempfile::TempDir;
+use tokio::sync::OnceCell;
 use tower::ServiceExt;
 
-static DB_SEQ: AtomicU16 = AtomicU16::new(0);
+struct TestDb {
+    repo: SqlRepository,
+    dir: TempDir,
+}
 
-fn db_url() -> String {
-    let dir = std::env::temp_dir().join("qid_test_vc");
-    std::fs::create_dir_all(&dir).ok();
-    static CLEANED: OnceLock<()> = OnceLock::new();
-    CLEANED.get_or_init(|| {
-        for entry in std::fs::read_dir(&dir).ok().into_iter().flatten().flatten() {
-            let name = entry.file_name();
-            let value = name.to_string_lossy();
-            if value.starts_with("test_") && value.ends_with(".db") {
-                std::fs::remove_file(entry.path()).ok();
-            }
-        }
-    });
-    let sequence = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("test_{sequence}.db"));
-    format!("sqlite:{}", path.display())
+impl TestDb {
+    async fn new() -> Self {
+        // Retain only bytes, not a pool or path tied to the first test's runtime.
+        static SCHEMA: OnceCell<Vec<u8>> = OnceCell::const_new();
+        let schema = SCHEMA
+            .get_or_init(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("schema.db");
+                let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                    .await
+                    .unwrap();
+                let migration = repo.migrate().await;
+                repo.close().await;
+                migration.unwrap();
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    let mut sidecar = path.as_os_str().to_os_string();
+                    sidecar.push(suffix);
+                    assert!(
+                        !std::path::Path::new(&sidecar).try_exists().unwrap(),
+                        "closed SQLite schema template retained sidecar {suffix}"
+                    );
+                }
+                let bytes = std::fs::read(path).unwrap();
+                dir.close().unwrap();
+                bytes
+            })
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        std::fs::write(&path, schema).unwrap();
+        let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap();
+        Self { repo, dir }
+    }
+
+    async fn close(self) {
+        // Clones in router state share this pool; close it after all requests/tasks.
+        self.repo.close().await;
+        self.dir.close().unwrap();
+    }
 }
 
 fn vc_keyring(realm: &str, name: &str) -> qid_core::config::KeyringConfig {
@@ -68,9 +96,9 @@ fn vc_config() -> qid_core::config::QidConfig {
     config
 }
 
-async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, User) {
-    let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
-    repo.migrate().await.unwrap();
+async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, User, TestDb) {
+    let db = TestDb::new().await;
+    let repo = Arc::new(db.repo.clone());
     repo.create_realm(
         &"tenant-1".into(),
         &"test".into(),
@@ -100,7 +128,7 @@ async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, User) {
     );
     let state = Arc::new(state);
     let app = qid_vc::vc_routes::<SqlRepository>().with_state(state.clone());
-    (app, state, user)
+    (app, state, user, db)
 }
 
 async fn issue_identity_access_token(state: &SharedState<SqlRepository>, user: &User) -> String {
@@ -161,7 +189,7 @@ fn credential_proof_for_issuer(
 
 #[tokio::test]
 async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
-    let (app, state, user) = setup().await;
+    let (app, state, user, db) = setup().await;
     let holder_key = generate_es256("holder").unwrap();
     let holder_thumbprint = qid_vc::holder_binding_from_jwk(&holder_key.public_jwk)
         .unwrap()
@@ -345,11 +373,12 @@ async fn credential_endpoint_issues_sd_jwt_for_authorized_scope() {
     let revoked_verify_body: serde_json::Value =
         serde_json::from_slice(&revoked_verify_bytes).unwrap();
     assert_eq!(revoked_verify_body["error"], "invalid_request");
+    db.close().await;
 }
 
 #[tokio::test]
 async fn credential_revoke_requires_credential_owner() {
-    let (app, state, user) = setup().await;
+    let (app, state, user, db) = setup().await;
     let owner_token = issue_identity_access_token(&state, &user).await;
     let holder_key = generate_es256("revoke-owner-holder").unwrap();
     let nonce = "credential-revoke-nonce";
@@ -433,11 +462,12 @@ async fn credential_revoke_requires_credential_owner() {
         .await
         .unwrap();
     assert_eq!(revoke_response.status(), StatusCode::OK);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn credential_endpoint_rejects_missing_scope() {
-    let (app, state, user) = setup().await;
+    let (app, state, user, db) = setup().await;
     let (access_token, _) = issue_access_token(
         &state,
         "https://id.example.com",
@@ -477,11 +507,12 @@ async fn credential_endpoint_rejects_missing_scope() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["error"], "invalid_token");
+    db.close().await;
 }
 
 #[tokio::test]
 async fn credential_issuer_metadata_advertises_supported_configuration() {
-    let (app, _, _) = setup().await;
+    let (app, _, _, db) = setup().await;
     let request = Request::builder()
         .method(Method::GET)
         .uri("/.well-known/openid-credential-issuer")
@@ -502,6 +533,7 @@ async fn credential_issuer_metadata_advertises_supported_configuration() {
         body["credential_configurations_supported"]["qid_identity_sd_jwt"]["format"],
         "qid_sd_jwt_vc"
     );
+    db.close().await;
 }
 
 #[tokio::test]
@@ -552,7 +584,7 @@ async fn credential_second_issuance_revokes_independently() {
             .to_string()
     }
 
-    let (app, state, user) = setup().await;
+    let (app, state, user, db) = setup().await;
     let access_token = issue_identity_access_token(&state, &user).await;
     let first_holder = generate_es256("holder-first").unwrap();
     let second_holder = generate_es256("holder-second").unwrap();
@@ -628,11 +660,12 @@ async fn credential_second_issuance_revokes_independently() {
         .unwrap();
     let verify_response = app.clone().oneshot(verify_request).await.unwrap();
     assert_eq!(verify_response.status(), StatusCode::OK);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn credential_issuance_rejects_overflowing_lifetime() {
-    let (app, state, user) = setup().await;
+    let (app, state, user, db) = setup().await;
     let access_token = issue_identity_access_token(&state, &user).await;
     let holder = generate_es256("holder-overflow").unwrap();
     let proof = credential_proof(&holder.private_pem, &holder.public_jwk, "nonce-overflow");
@@ -655,6 +688,7 @@ async fn credential_issuance_rejects_overflowing_lifetime() {
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    db.close().await;
 }
 
 #[tokio::test]
@@ -690,7 +724,7 @@ async fn credential_issuance_enforces_configured_lifetime_ceiling() {
         app.oneshot(request).await.unwrap().status()
     }
 
-    let (app, state, user) = setup().await;
+    let (app, state, user, db) = setup().await;
     let access_token = issue_identity_access_token(&state, &user).await;
     let holder = generate_es256("holder-ceiling").unwrap();
     for (nonce, lifetime, expected) in [
@@ -711,6 +745,7 @@ async fn credential_issuance_enforces_configured_lifetime_ceiling() {
             "lifetime {lifetime} must map to {expected:?}"
         );
     }
+    db.close().await;
 }
 
 #[tokio::test]
@@ -719,7 +754,7 @@ async fn credential_concurrent_issuances_use_distinct_revocable_identifiers() {
 
     const PARALLEL_ISSUANCES: usize = 8;
 
-    let (app, state, user) = setup().await;
+    let (app, state, user, db) = setup().await;
     let access_token = issue_identity_access_token(&state, &user).await;
 
     // Same subject issued back-to-back (same second) with distinct holders and
@@ -790,11 +825,12 @@ async fn credential_concurrent_issuances_use_distinct_revocable_identifiers() {
             .unwrap();
         assert!(!stored.revoked);
     }
+    db.close().await;
 }
 
 #[tokio::test]
 async fn realm_issuers_isolate_credentials_keys_status_and_metadata() {
-    let (app, state, first_user) = setup().await;
+    let (app, state, first_user, db) = setup().await;
     drop(app);
     let mut state = Arc::try_unwrap(state).ok().unwrap();
     state.config.realms[0].issuer = "https://id.example.com/realms/test".into();
@@ -1035,11 +1071,12 @@ async fn realm_issuers_isolate_credentials_keys_status_and_metadata() {
             );
         }
     }
+    db.close().await;
 }
 
 #[tokio::test]
 async fn single_realm_metadata_path_matches_exact_issuer_identifier() {
-    let (app, state, _) = setup().await;
+    let (app, state, _, db) = setup().await;
     let response = app
         .clone()
         .oneshot(
@@ -1104,6 +1141,7 @@ async fn single_realm_metadata_path_matches_exact_issuer_identifier() {
             assert_eq!(body["display"][0]["name"], "test");
         }
     }
+    db.close().await;
 }
 
 // Direct consumer coverage uses an immediate-flush File store so every refusal

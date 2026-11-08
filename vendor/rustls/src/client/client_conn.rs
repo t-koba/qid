@@ -17,6 +17,7 @@ use crate::crypto::{CryptoProvider, SupportedKxGroup};
 use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
 use crate::kernel::KernelConnection;
+use crate::imported_psk::ClientImportedPsk;
 use crate::log::trace;
 use crate::msgs::enums::NamedGroup;
 use crate::msgs::handshake::ClientExtensionsInput;
@@ -226,6 +227,9 @@ pub struct ClientConfig {
     /// The default is false.
     pub enable_early_data: bool,
 
+    /// RFC 9258 imported PSK used with RFC 9973 certificate authentication.
+    pub(crate) imported_psk: Option<Arc<ClientImportedPsk>>,
+
     /// If set to `true`, requires the server to support the extended
     /// master secret extraction method defined in [RFC 7627].
     ///
@@ -411,6 +415,33 @@ impl ClientConfig {
     /// Return the crypto provider used to construct this client configuration.
     pub fn crypto_provider(&self) -> &Arc<CryptoProvider> {
         &self.provider
+    }
+
+    /// Configures an RFC 9258 imported PSK for RFC 9973 certificate authentication.
+    ///
+    /// Connections made with this configuration require TLS 1.3, external-PSK
+    /// DHE, and a client Raw Public Key. Session resumption and early data are
+    /// disabled for these connections.
+    pub fn with_imported_psk(mut self, imported_psk: ClientImportedPsk) -> Result<Self, Error> {
+        if !self.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp) {
+            return Err(Error::General(
+                "imported PSK requires TLS 1.3 support".into(),
+            ));
+        }
+        if !self.client_auth_cert_resolver.only_raw_public_keys() {
+            return Err(Error::General(
+                "imported PSK requires a client raw public key".into(),
+            ));
+        }
+        if self.ech_mode.is_some() {
+            return Err(Error::General(
+                "imported PSK cannot be combined with ECH".into(),
+            ));
+        }
+
+        self.enable_early_data = false;
+        self.imported_psk = Some(Arc::new(imported_psk));
+        Ok(self)
     }
 
     /// Access configuration options whose use is dangerous and requires
@@ -877,6 +908,17 @@ impl ConnectionCore<ClientConnectionData> {
         let mut common_state = CommonState::new(Side::Client);
         common_state.set_max_fragment_size(config.max_fragment_size)?;
         common_state.protocol = proto;
+        if config.imported_psk.is_some()
+            && (common_state.is_quic()
+                || config.enable_early_data
+                || config.ech_mode.is_some()
+                || !config.supports_version(ProtocolVersion::TLSv1_3, proto)
+                || !config.client_auth_cert_resolver.only_raw_public_keys())
+        {
+            return Err(Error::General(
+                "invalid imported PSK client configuration".into(),
+            ));
+        }
         common_state.enable_secret_extraction = config.enable_secret_extraction;
         common_state.fips = config.fips();
         let mut data = ClientConnectionData::new();

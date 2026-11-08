@@ -23,6 +23,7 @@ use crate::crypto::CryptoProvider;
 use crate::enums::{CertificateType, CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
 use crate::kernel::KernelConnection;
+use crate::imported_psk::ResolvesServerImportedPsk;
 use crate::log::trace;
 use crate::msgs::base::Payload;
 use crate::msgs::handshake::{ClientHelloPayload, ProtocolName, ServerExtensionsInput};
@@ -344,6 +345,9 @@ pub struct ServerConfig {
     /// How to verify client certificates.
     pub(super) verifier: Arc<dyn verify::ClientCertVerifier>,
 
+    /// Resolves RFC 9258 imported PSKs for RFC 9973 certificate authentication.
+    pub(crate) imported_psk_resolver: Option<Arc<dyn ResolvesServerImportedPsk>>,
+
     /// How to output key material for debugging.  The default
     /// does nothing.
     pub key_log: Arc<dyn KeyLog>,
@@ -567,6 +571,35 @@ impl ServerConfig {
         &self.provider
     }
 
+    /// Configures RFC 9258 imported PSKs for RFC 9973 certificate authentication.
+    ///
+    /// The configured client verifier must require RFC 7250 Raw Public Keys.
+    /// TLS 1.3 session tickets and early data are disabled for this mode.
+    pub fn with_imported_psk_resolver(
+        mut self,
+        resolver: Arc<dyn ResolvesServerImportedPsk>,
+    ) -> Result<Self, Error> {
+        if !self.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp) {
+            return Err(Error::General(
+                "imported PSK requires TLS 1.3 support".into(),
+            ));
+        }
+        if !self.verifier.offer_client_auth()
+            || !self.verifier.client_auth_mandatory()
+            || !self.verifier.requires_raw_public_keys()
+        {
+            return Err(Error::General(
+                "imported PSK requires mandatory client raw public key authentication".into(),
+            ));
+        }
+
+        self.max_early_data_size = 0;
+        self.send_tls13_tickets = 0;
+        self.send_half_rtt_data = false;
+        self.imported_psk_resolver = Some(resolver);
+        Ok(self)
+    }
+
     /// We support a given TLS version if it's quoted in the configured
     /// versions *and* at least one ciphersuite for this version is
     /// also configured.
@@ -678,6 +711,14 @@ mod connection {
         /// The server name is also used to match sessions during session resumption.
         pub fn server_name(&self) -> Option<&str> {
             self.inner.core.get_sni_str()
+        }
+
+        /// Returns the selected RFC 9258 ImportedIdentity after authentication.
+        pub fn imported_psk_identity(&self) -> Option<&[u8]> {
+            self.inner
+                .core
+                .data
+                .imported_psk_identity()
         }
 
         /// Application-controlled portion of the resumption ticket supplied by the client, if any.
@@ -1223,6 +1264,19 @@ impl ConnectionCore<ServerConnectionData> {
         config: Arc<ServerConfig>,
         extra_exts: ServerExtensionsInput<'static>,
     ) -> Result<Self, Error> {
+        if config.imported_psk_resolver.is_some()
+            && (config.max_early_data_size != 0
+                || config.send_tls13_tickets != 0
+                || config.send_half_rtt_data
+                || !config.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp)
+                || !config.verifier.offer_client_auth()
+                || !config.verifier.client_auth_mandatory()
+                || !config.verifier.requires_raw_public_keys())
+        {
+            return Err(Error::General(
+                "invalid imported PSK server configuration".into(),
+            ));
+        }
         let mut common = CommonState::new(Side::Server);
         common.set_max_fragment_size(config.max_fragment_size)?;
         common.enable_secret_extraction = config.enable_secret_extraction;
@@ -1256,9 +1310,16 @@ pub struct ServerConnectionData {
     pub(super) received_resumption_data: Option<Vec<u8>>,
     pub(super) resumption_data: Vec<u8>,
     pub(super) early_data: EarlyDataState,
+    pub(super) imported_psk_identity: Option<Vec<u8>>,
+    pub(super) imported_psk_client_raw_public_key: Option<Vec<u8>>,
 }
 
 impl ServerConnectionData {
+    /// Returns the selected RFC 9258 ImportedIdentity after authentication.
+    pub fn imported_psk_identity(&self) -> Option<&[u8]> {
+        self.imported_psk_identity.as_deref()
+    }
+
     #[cfg(feature = "std")]
     pub(super) fn get_sni_str(&self) -> Option<&str> {
         self.sni.as_ref().map(AsRef::as_ref)

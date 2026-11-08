@@ -10,7 +10,7 @@ use super::hs::{ClientContext, ClientHelloInput, ClientSessionValue};
 use crate::check::inappropriate_handshake_message;
 use crate::client::common::{ClientAuthDetails, ClientHelloDetails, ServerCertDetails};
 use crate::client::ech::{self, EchState, EchStatus};
-use crate::client::{ClientConfig, ClientSessionStore, hs};
+use crate::client::{ClientConfig, ClientImportedPsk, ClientSessionStore, hs};
 use crate::common_state::{
     CommonState, HandshakeFlightTls13, HandshakeKind, KxState, Protocol, Side, State,
 };
@@ -54,6 +54,7 @@ static ALLOWED_PLAINTEXT_EXTS: &[ExtensionType] = &[
     ExtensionType::KeyShare,
     ExtensionType::PreSharedKey,
     ExtensionType::SupportedVersions,
+    ExtensionType::TlsCertWithExternPsk,
 ];
 
 // Only the intersection of things we offer, and those disallowed
@@ -116,7 +117,47 @@ pub(super) fn handle_server_hello(
             )
         })?;
 
-    let key_schedule_pre_handshake = match (server_hello.preshared_key, early_data_key_schedule) {
+    let key_schedule_pre_handshake = if let Some(imported_psk) = &config.imported_psk {
+        if server_hello.tls_cert_with_extern_psk.is_none() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::MissingExtension,
+                PeerMisbehaved::ImportedPskExtensionMissing,
+            ));
+        }
+        if server_hello.preshared_key != Some(0) {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::IllegalParameter,
+                PeerMisbehaved::ImportedPskSelectedWithoutCertificateAuthentication,
+            ));
+        }
+        if suite.common.hash_provider.algorithm() != imported_psk.hash_algorithm() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::IllegalParameter,
+                PeerMisbehaved::SelectedInvalidPsk,
+            ));
+        }
+        let early_key_schedule = early_data_key_schedule.ok_or_else(|| {
+            cx.common.send_fatal_alert(
+                AlertDescription::IllegalParameter,
+                PeerMisbehaved::SelectedUnofferedPsk,
+            )
+        })?;
+        if resuming_session.is_some() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::IllegalParameter,
+                PeerMisbehaved::ImportedPskSelectedWithoutCertificateAuthentication,
+            ));
+        }
+        debug!("Using imported PSK with certificate authentication");
+        KeySchedulePreHandshake::from(early_key_schedule)
+    } else {
+        if server_hello.tls_cert_with_extern_psk.is_some() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::UnsupportedExtension,
+                PeerMisbehaved::ImportedPskExtensionUnexpected,
+            ));
+        }
+        match (server_hello.preshared_key, early_data_key_schedule) {
         (Some(selected_psk), Some(early_key_schedule)) => {
             match &resuming_session {
                 Some(resuming) => {
@@ -165,6 +206,7 @@ pub(super) fn handle_server_hello(
             cx.common.early_traffic = false;
             resuming_session.take();
             KeySchedulePreHandshake::new(suite)
+        }
         }
     };
 
@@ -365,6 +407,82 @@ pub(super) fn fill_in_psk_binder(
     };
 
     key_schedule
+}
+
+pub(super) fn fill_in_imported_psk_binder(
+    imported_psk: &ClientImportedPsk,
+    suite: &'static Tls13CipherSuite,
+    transcript: &HandshakeHashBuffer,
+    hmp: &mut HandshakeMessagePayload<'_>,
+) -> KeyScheduleEarly {
+    let suite_hash = suite.common.hash_provider;
+    let binder_plaintext = hmp.encoding_for_binder_signing();
+    let handshake_hash = transcript.hash_given(suite_hash, &binder_plaintext);
+
+    let key_schedule = KeyScheduleEarly::new(suite, imported_psk.secret());
+    let real_binder =
+        key_schedule.imported_psk_binder_key_and_sign_verify_data(&handshake_hash);
+
+    if let HandshakePayload::ClientHello(ch) = &mut hmp.0 {
+        if let Some(PresharedKeyOffer {
+            binders,
+            identities,
+        }) = &mut ch.preshared_key_offer
+        {
+            debug_assert_eq!(identities.len(), 1);
+            debug_assert_eq!(binders.len(), 1);
+            debug_assert_eq!(binders[0].as_ref().len(), real_binder.as_ref().len());
+            binders[0] = PresharedKeyBinder::from(real_binder.as_ref().to_vec());
+        }
+    }
+
+    key_schedule
+}
+
+pub(super) fn prepare_imported_psk(
+    config: &ClientConfig,
+    cx: &mut ClientContext<'_>,
+    imported_psk: &ClientImportedPsk,
+    exts: &mut ClientExtensions<'_>,
+    selected_suite: Option<crate::SupportedCipherSuite>,
+) -> Result<&'static Tls13CipherSuite, Error> {
+    let suite = match selected_suite {
+        Some(crate::SupportedCipherSuite::Tls13(suite))
+            if suite.common.hash_provider.algorithm() == imported_psk.hash_algorithm() =>
+        {
+            suite
+        }
+        Some(_) => {
+            return Err(Error::General(
+                "HelloRetryRequest selected a cipher suite incompatible with imported PSK".into(),
+            ));
+        }
+        None => config
+            .provider
+            .cipher_suites
+            .iter()
+            .find_map(|suite| match suite {
+                crate::SupportedCipherSuite::Tls13(suite)
+                    if suite.common.hash_provider.algorithm() == imported_psk.hash_algorithm() =>
+                {
+                    Some(*suite)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                Error::General("no TLS 1.3 cipher suite matches imported PSK hash".into())
+            })?,
+    };
+
+    cx.common.suite = Some(suite.into());
+    exts.tls_cert_with_extern_psk = Some(());
+    let binder_len = suite.common.hash_provider.output_len();
+    let psk_identity = PresharedKeyIdentity::new(imported_psk.identity().to_vec(), 0);
+    exts.preshared_key_offer = Some(PresharedKeyOffer::new(
+        psk_identity,
+        vec![0u8; binder_len],
+    ));
+    Ok(suite)
 }
 
 pub(super) fn prepare_resumption(
@@ -1039,7 +1157,7 @@ impl State<ClientConnectionData> for ExpectCompressedCertificate {
                 Err(err) => {
                     return Err(cx
                         .common
-                        .send_fatal_alert(AlertDescription::BadCertificate, err));
+                        .send_fatal_alert(err.compressed_certificate_alert(), err));
                 }
             };
         trace!(

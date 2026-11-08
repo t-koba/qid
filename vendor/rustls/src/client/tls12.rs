@@ -130,12 +130,8 @@ mod server_hello {
             // Might the server send a CertificateStatus between Certificate and
             // ServerKeyExchange?
             let may_send_cert_status = match (
-                server_hello
-                    .certificate_status_request_ack
-                    .is_some(),
-                server_hello
-                    .certificate_status_request_v2_ack
-                    .is_some(),
+                server_hello.certificate_status_request_ack.is_some(),
+                server_hello.certificate_status_request_v2_ack.is_some(),
             ) {
                 (true, true) => {
                     return Err(cx.common.send_fatal_alert(
@@ -926,15 +922,13 @@ impl State<ClientConnectionData> for ExpectServerDone<'_> {
         let now = st.config.current_time()?;
 
         let cert_verified = if let Some(ocsp_responses) = &st.server_cert.ocsp_multi_responses {
-            st.config
-                .verifier
-                .verify_server_cert_with_ocsp_multi(
-                    end_entity,
-                    intermediates,
-                    &st.server_name,
-                    ocsp_responses,
-                    now,
-                )
+            st.config.verifier.verify_server_cert_with_ocsp_multi(
+                end_entity,
+                intermediates,
+                &st.server_name,
+                ocsp_responses,
+                now,
+            )
         } else {
             st.config.verifier.verify_server_cert(
                 end_entity,
@@ -944,10 +938,10 @@ impl State<ClientConnectionData> for ExpectServerDone<'_> {
                 now,
             )
         }
-        .map_err(|err| {
-            cx.common
-                .send_cert_verify_error_alert(err)
-        })?;
+            .map_err(|err| {
+                cx.common
+                    .send_cert_verify_error_alert(err)
+            })?;
 
         // 2.
         // Build up the contents of the signed message.

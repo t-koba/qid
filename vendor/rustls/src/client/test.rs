@@ -29,6 +29,7 @@ mod tests {
     use crate::crypto::cipher::{MessageDecrypter, MessageEncrypter};
     use crate::crypto::tls13::OkmBlock;
     use crate::enums::{AlertDescription, CertificateType, ContentType};
+    use crate::error::InvalidMessage;
     use crate::msgs::base::PayloadU8;
     use crate::msgs::ccs::ChangeCipherSpecPayload;
     use crate::msgs::enums::AlertLevel;
@@ -398,15 +399,25 @@ mod tests {
     }
 
     #[test]
-    fn test_disallowed_encrypted_extension_sends_unsupported_extension_alert() {
-        for (extensions, expected_error, expected_alert) in [(
-            ServerExtensions {
-                key_share: Some(KeyShareEntry::new(NamedGroup::X25519, &[0xaa; 32])),
-                ..ServerExtensions::default()
-            },
-            Error::PeerMisbehaved(PeerMisbehaved::DisallowedEncryptedExtension),
-            AlertDescription::UnsupportedExtension,
-        )] {
+    fn test_encrypted_extensions_placement_sends_the_specific_fatal_alert() {
+        for (extensions, expected_error, expected_alert) in [
+            (
+                ServerExtensions {
+                    tls_cert_with_extern_psk: Some(()),
+                    ..ServerExtensions::default()
+                },
+                Error::InvalidMessage(InvalidMessage::TlsCertWithExternPskNotInHello),
+                AlertDescription::IllegalParameter,
+            ),
+            (
+                ServerExtensions {
+                    key_share: Some(KeyShareEntry::new(NamedGroup::X25519, &[0xaa; 32])),
+                    ..ServerExtensions::default()
+                },
+                Error::PeerMisbehaved(PeerMisbehaved::DisallowedEncryptedExtension),
+                AlertDescription::UnsupportedExtension,
+            ),
+        ] {
             let (mut conn, crypto, result) = client_requiring_rpk_server_ee(extensions);
             assert_eq!(result, Err(expected_error));
             let mut sent = Vec::new();
@@ -426,10 +437,7 @@ mod tests {
                         0,
                     )
                     .unwrap();
-                match Message::try_from(decrypted)
-                    .unwrap()
-                    .payload
-                {
+                match Message::try_from(decrypted).unwrap().payload {
                     MessagePayload::Alert(alert) => {
                         assert_eq!(alert.level, AlertLevel::Fatal);
                         assert_eq!(alert.description, expected_alert);
@@ -708,10 +716,7 @@ mod tests {
             let cipher_suite = super::provider::cipher_suite::TLS13_AES_128_GCM_SHA256
                 .tls13()
                 .unwrap();
-            let secret = self
-                .client_handshake_secret
-                .get()
-                .unwrap();
+            let secret = self.client_handshake_secret.get().unwrap();
             let expander = cipher_suite
                 .hkdf_provider
                 .expander_for_okm(&OkmBlock::new(secret));
@@ -748,9 +753,7 @@ mod tests {
 
         fn log(&self, label: &str, _client_random: &[u8], secret: &[u8]) {
             if label == "CLIENT_HANDSHAKE_TRAFFIC_SECRET" {
-                self.client_handshake_secret
-                    .set(secret.to_vec())
-                    .unwrap();
+                self.client_handshake_secret.set(secret.to_vec()).unwrap();
             }
             if label == "SERVER_HANDSHAKE_TRAFFIC_SECRET" {
                 self.server_handshake_secret

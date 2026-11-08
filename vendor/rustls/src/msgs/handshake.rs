@@ -742,15 +742,13 @@ impl CertificateStatusRequestListV2 {
         has_ocsp: bool,
         has_ocsp_multi: bool,
     ) -> Option<CertificateStatusType> {
-        self.requests
-            .iter()
-            .find_map(|request| match request.status_type {
-                CertificateStatusType::OCSPMulti if has_ocsp_multi => {
-                    Some(CertificateStatusType::OCSPMulti)
-                }
-                CertificateStatusType::OCSP if has_ocsp => Some(CertificateStatusType::OCSP),
-                _ => None,
-            })
+        self.requests.iter().find_map(|request| match request.status_type {
+            CertificateStatusType::OCSPMulti if has_ocsp_multi => {
+                Some(CertificateStatusType::OCSPMulti)
+            }
+            CertificateStatusType::OCSP if has_ocsp => Some(CertificateStatusType::OCSP),
+            _ => None,
+        })
     }
 }
 
@@ -1035,6 +1033,10 @@ extension_struct! {
         ExtensionType::CompressCertificate =>
             pub(crate) certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
 
+        /// Certificate authentication with external PSKs (RFC 9973)
+        ExtensionType::TlsCertWithExternPsk =>
+            pub(crate) tls_cert_with_extern_psk: Option<()>,
+
         /// Session ticket offer or request (RFC5077/RFC8446)
         ExtensionType::SessionTicket =>
             pub(crate) session_ticket: Option<ClientSessionTicket>,
@@ -1113,6 +1115,7 @@ impl ClientExtensions<'_> {
             server_certificate_types,
             extended_master_secret_request,
             certificate_compression_algorithms,
+            tls_cert_with_extern_psk,
             session_ticket,
             preshared_key_offer,
             early_data_request,
@@ -1142,6 +1145,7 @@ impl ClientExtensions<'_> {
             server_certificate_types,
             extended_master_secret_request,
             certificate_compression_algorithms,
+            tls_cert_with_extern_psk,
             session_ticket,
             preshared_key_offer,
             early_data_request,
@@ -1327,6 +1331,10 @@ extension_struct! {
         ExtensionType::PreSharedKey =>
             pub(crate) preshared_key: Option<u16>,
 
+        /// Certificate authentication with external PSKs (RFC 9973)
+        ExtensionType::TlsCertWithExternPsk =>
+            pub(crate) tls_cert_with_extern_psk: Option<()>,
+
         /// Required client certificate type (RFC7250)
         ExtensionType::ClientCertificateType =>
             pub(crate) client_certificate_type: Option<CertificateType>,
@@ -1375,6 +1383,33 @@ extension_struct! {
     }
 }
 
+impl<'a> ServerExtensions<'a> {
+    fn read_encrypted_extensions(r: &mut Reader<'a>) -> Result<Self, InvalidMessage> {
+        let mut out = Self::default();
+        let mut checker = DuplicateExtensionChecker::new();
+        let len = usize::from(u16::read(r)?);
+        let mut sub = r.sub(len)?;
+
+        while sub.any_left() {
+            let typ = ExtensionType::read(&mut sub)?;
+            let len = usize::from(u16::read(&mut sub)?);
+            let mut body = sub.sub(len)?;
+            // Unlike ServerHello, EncryptedExtensions cannot acknowledge this
+            // extension (RFC 9973 section 5). Check placement before its body.
+            if typ == ExtensionType::TlsCertWithExternPsk {
+                return Err(InvalidMessage::TlsCertWithExternPskNotInHello);
+            }
+            match out.read_extension_body(typ, &mut body)? {
+                true => body.expect_empty("ServerExtensions")?,
+                false => checker.check(typ)?,
+            }
+        }
+
+        out.unknown_extensions = checker.0;
+        Ok(out)
+    }
+}
+
 impl ServerExtensions<'_> {
     fn into_owned(self) -> ServerExtensions<'static> {
         let Self {
@@ -1385,6 +1420,7 @@ impl ServerExtensions<'_> {
             selected_protocol,
             key_share,
             preshared_key,
+            tls_cert_with_extern_psk,
             client_certificate_type,
             server_certificate_type,
             extended_master_secret_ack,
@@ -1406,6 +1442,7 @@ impl ServerExtensions<'_> {
             selected_protocol,
             key_share,
             preshared_key,
+            tls_cert_with_extern_psk,
             client_certificate_type,
             server_certificate_type,
             extended_master_secret_ack,
@@ -1640,8 +1677,15 @@ impl<'a> Codec<'a> for HelloRetryRequestExtensions<'a> {
         let mut sub = r.sub(len)?;
 
         while sub.any_left() {
-            let typ = out.read_one(&mut sub, |_unk| {
-                Err(InvalidMessage::UnknownHelloRetryRequestExtension)
+            let typ = out.read_one(&mut sub, |unknown| {
+                // HRR shares ServerHello's wire format, but is a distinct message
+                // with separately permitted extensions (RFC 8446 sections 4.1.4 and 4.2).
+                Err(match unknown {
+                    ExtensionType::TlsCertWithExternPsk => {
+                        InvalidMessage::TlsCertWithExternPskNotInHello
+                    }
+                    _ => InvalidMessage::UnknownHelloRetryRequestExtension,
+                })
             })?;
 
             order.push(typ);
@@ -1882,8 +1926,13 @@ impl<'a> Codec<'a> for CertificateExtensions<'a> {
         let mut sub = r.sub(len)?;
 
         while sub.any_left() {
-            out.read_one(&mut sub, |_unk| {
-                Err(InvalidMessage::UnknownCertificateExtension)
+            out.read_one(&mut sub, |unknown| {
+                Err(match unknown {
+                    ExtensionType::TlsCertWithExternPsk => {
+                        InvalidMessage::TlsCertWithExternPskNotInHello
+                    }
+                    _ => InvalidMessage::UnknownCertificateExtension,
+                })
             })?;
         }
 
@@ -2438,7 +2487,12 @@ impl Codec<'_> for CertificateRequestExtensions {
         let mut sub = r.sub(len)?;
 
         while sub.any_left() {
-            out.read_one(&mut sub, |unknown| checker.check(unknown))?;
+            out.read_one(&mut sub, |unknown| match unknown {
+                ExtensionType::TlsCertWithExternPsk => {
+                    Err(InvalidMessage::TlsCertWithExternPskNotInHello)
+                }
+                _ => checker.check(unknown),
+            })?;
         }
 
         if out
@@ -2540,7 +2594,12 @@ impl Codec<'_> for NewSessionTicketExtensions {
         let mut sub = r.sub(len)?;
 
         while sub.any_left() {
-            out.read_one(&mut sub, |unknown| checker.check(unknown))?;
+            out.read_one(&mut sub, |unknown| match unknown {
+                ExtensionType::TlsCertWithExternPsk => {
+                    Err(InvalidMessage::TlsCertWithExternPskNotInHello)
+                }
+                _ => checker.check(unknown),
+            })?;
         }
 
         Ok(out)
@@ -2943,7 +3002,9 @@ impl<'a> HandshakeMessagePayload<'a> {
                 HandshakePayload::NewSessionTicket(p)
             }
             HandshakeType::EncryptedExtensions => {
-                HandshakePayload::EncryptedExtensions(Box::new(ServerExtensions::read(&mut sub)?))
+                HandshakePayload::EncryptedExtensions(Box::new(
+                    ServerExtensions::read_encrypted_extensions(&mut sub)?,
+                ))
             }
             HandshakeType::KeyUpdate => {
                 HandshakePayload::KeyUpdate(KeyUpdateRequest::read(&mut sub)?)

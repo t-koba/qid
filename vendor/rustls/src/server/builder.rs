@@ -154,6 +154,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
         ServerConfig {
             provider: self.provider,
             verifier: self.state.verifier,
+            imported_psk_resolver: None,
             cert_resolver,
             ignore_client_order: false,
             max_fragment_size: None,

@@ -436,6 +436,7 @@ mod conn;
 pub mod crypto;
 mod error;
 mod hash_hs;
+mod imported_psk;
 #[cfg(any(feature = "std", feature = "hashbrown"))]
 mod limited_cache;
 mod rand;
@@ -597,6 +598,7 @@ pub mod client {
         ClientConfig, ClientConnectionData, ClientSessionStore, EarlyDataError, ResolvesClientCert,
         Resumption, TicketRequest, Tls12Resumption, UnbufferedClientConnection,
     };
+    pub use crate::imported_psk::ClientImportedPsk;
     #[cfg(feature = "std")]
     pub use client_conn::{ClientConnection, WriteEarlyData};
     pub use ech::{EchConfig, EchGreaseConfig, EchMode, EchStatus};
@@ -645,6 +647,7 @@ pub mod server {
         Accepted, ClientHello, ProducesTickets, ResolvesServerCert, ServerConfig,
         ServerConnectionData, StoresServerSessions, UnbufferedServerConnection,
     };
+    pub use crate::imported_psk::{ResolvesServerImportedPsk, ServerImportedPsk};
     #[cfg(feature = "std")]
     pub use server_conn::{AcceptedAlert, Acceptor, ReadEarlyData, ServerConnection};
 

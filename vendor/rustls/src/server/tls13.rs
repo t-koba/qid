@@ -98,6 +98,7 @@ mod client_hello {
             client_hello: &Message<'_>,
             psk: &[u8],
             binder: &[u8],
+            imported: bool,
         ) -> bool {
             let binder_plaintext = match &client_hello.payload {
                 MessagePayload::Handshake { parsed, encoded } => &encoded.bytes()[..encoded
@@ -112,8 +113,11 @@ mod client_hello {
                 .hash_given(binder_plaintext);
 
             let key_schedule = KeyScheduleEarly::new(suite, psk);
-            let real_binder =
-                key_schedule.resumption_psk_binder_key_and_sign_verify_data(&handshake_hash);
+            let real_binder = if imported {
+                key_schedule.imported_psk_binder_key_and_sign_verify_data(&handshake_hash)
+            } else {
+                key_schedule.resumption_psk_binder_key_and_sign_verify_data(&handshake_hash)
+            };
 
             ConstantTimeEq::ct_eq(real_binder.as_ref(), binder).into()
         }
@@ -192,6 +196,32 @@ mod client_hello {
             let early_data_requested = client_hello
                 .early_data_request
                 .is_some();
+
+            let imported_psk_required = self.config.imported_psk_resolver.is_some();
+            if imported_psk_required {
+                if cx.common.is_quic() {
+                    return Err(Error::General(
+                        "imported PSK certificate authentication is not available for QUIC".into(),
+                    ));
+                }
+                if client_hello.tls_cert_with_extern_psk.is_none() {
+                    return Err(cx.common.send_fatal_alert(
+                        AlertDescription::MissingExtension,
+                        PeerMisbehaved::ImportedPskExtensionMissing,
+                    ));
+                }
+                if early_data_requested {
+                    return Err(cx.common.send_fatal_alert(
+                        AlertDescription::IllegalParameter,
+                        PeerMisbehaved::ImportedPskOfferedWithEarlyData,
+                    ));
+                }
+            } else if client_hello.tls_cert_with_extern_psk.is_some() {
+                return Err(cx.common.send_fatal_alert(
+                    AlertDescription::UnknownPSKIdentity,
+                    PeerMisbehaved::ImportedPskExtensionUnexpected,
+                ));
+            }
 
             if let Some(prior) = &self.previous_hello {
                 // EarlyData extension is illegal in second ClientHello
@@ -275,6 +305,8 @@ mod client_hello {
 
             let mut chosen_psk_index = None;
             let mut resumedata = None;
+            let mut imported_psk = None;
+            let mut imported_psk_identity = None;
 
             if let Some(psk_offer) = &client_hello.preshared_key_offer {
                 // "A client MUST provide a "psk_key_exchange_modes" extension if it
@@ -305,38 +337,77 @@ mod client_hello {
                     ));
                 }
 
-                let now = self.config.current_time()?;
+                if let Some(resolver) = &self.config.imported_psk_resolver {
+                    for (i, psk_id) in psk_offer.identities.iter().enumerate() {
+                        // RFC 9973 section 5.1: servers MUST ignore the ticket age
+                        // for external PSKs. The encoded age is still covered by the binder.
+                        let Some(resolved) = resolver.resolve(
+                            &psk_id.identity.0,
+                            self.suite.common.hash_provider.algorithm(),
+                        ) else {
+                            continue;
+                        };
 
-                for (i, psk_id) in psk_offer.identities.iter().enumerate() {
-                    let maybe_resume_data = self
-                        .attempt_tls13_ticket_decryption(&psk_id.identity.0)
-                        .map(|resumedata| {
-                            resumedata.set_freshness(psk_id.obfuscated_ticket_age, now)
-                        })
-                        .filter(|resumedata| {
-                            hs::can_resume(self.suite.into(), &cx.data.sni, false, resumedata)
-                        });
+                        if !self.check_binder(
+                            self.suite,
+                            chm,
+                            resolved.secret(),
+                            psk_offer.binders[i].as_ref(),
+                            true,
+                        ) {
+                            return Err(cx.common.send_fatal_alert(
+                                AlertDescription::DecryptError,
+                                PeerMisbehaved::IncorrectBinder,
+                            ));
+                        }
 
-                    let Some(resume) = maybe_resume_data else {
-                        continue;
-                    };
-
-                    if !self.check_binder(
-                        self.suite,
-                        chm,
-                        &resume.master_secret.0,
-                        psk_offer.binders[i].as_ref(),
-                    ) {
-                        return Err(cx.common.send_fatal_alert(
-                            AlertDescription::DecryptError,
-                            PeerMisbehaved::IncorrectBinder,
-                        ));
+                        chosen_psk_index = Some(i);
+                        imported_psk_identity = Some(psk_id.identity.0.clone());
+                        imported_psk = Some(resolved);
+                        break;
                     }
+                } else {
+                    let now = self.config.current_time()?;
 
-                    chosen_psk_index = Some(i);
-                    resumedata = Some(resume);
-                    break;
+                    for (i, psk_id) in psk_offer.identities.iter().enumerate() {
+                        let maybe_resume_data = self
+                            .attempt_tls13_ticket_decryption(&psk_id.identity.0)
+                            .map(|resumedata| {
+                                resumedata.set_freshness(psk_id.obfuscated_ticket_age, now)
+                            })
+                            .filter(|resumedata| {
+                                hs::can_resume(self.suite.into(), &cx.data.sni, false, resumedata)
+                            });
+
+                        let Some(resume) = maybe_resume_data else {
+                            continue;
+                        };
+
+                        if !self.check_binder(
+                            self.suite,
+                            chm,
+                            &resume.master_secret.0,
+                            psk_offer.binders[i].as_ref(),
+                            false,
+                        ) {
+                            return Err(cx.common.send_fatal_alert(
+                                AlertDescription::DecryptError,
+                                PeerMisbehaved::IncorrectBinder,
+                            ));
+                        }
+
+                        chosen_psk_index = Some(i);
+                        resumedata = Some(resume);
+                        break;
+                    }
                 }
+            }
+
+            if imported_psk_required && imported_psk.is_none() {
+                return Err(cx.common.send_fatal_alert(
+                    AlertDescription::UnknownPSKIdentity,
+                    Error::General("no imported PSK identity was accepted".into()),
+                ));
             }
 
             if !client_hello
@@ -345,10 +416,18 @@ mod client_hello {
                 .map(|offer| offer.psk_dhe)
                 .unwrap_or_default()
             {
+                if imported_psk_required {
+                    return Err(cx.common.send_fatal_alert(
+                        AlertDescription::IllegalParameter,
+                        PeerMisbehaved::ImportedPskSelectedWithoutCertificateAuthentication,
+                    ));
+                }
                 debug!("Client unwilling to resume, PSK_DHE_KE not offered");
                 self.send_tickets = 0;
                 chosen_psk_index = None;
                 resumedata = None;
+            } else if imported_psk_required {
+                self.send_tickets = 0;
             } else {
                 // RFC 9149: if the client sent a ticket_request extension and the
                 // server has configured a max, honor the client's request.
@@ -375,7 +454,13 @@ mod client_hello {
                     .clone_from(&resume.client_cert_chain);
             }
 
-            let full_handshake = resumedata.is_none();
+            if let Some(imported_psk) = &imported_psk {
+                cx.data.imported_psk_identity = imported_psk_identity;
+                cx.data.imported_psk_client_raw_public_key =
+                    Some(imported_psk.client_raw_public_key().as_ref().to_vec());
+            }
+
+            let full_handshake = imported_psk.is_some() || resumedata.is_none();
             self.transcript.add_message(chm);
             let key_schedule = emit_server_hello(
                 &mut self.transcript,
@@ -385,9 +470,11 @@ mod client_hello {
                 &client_hello.session_id,
                 chosen_share_and_kxg,
                 chosen_psk_index,
-                resumedata
+                imported_psk
                     .as_ref()
-                    .map(|x| &x.master_secret.0[..]),
+                    .map(|psk| psk.secret())
+                    .or_else(|| resumedata.as_ref().map(|x| &x.master_secret.0[..])),
+                imported_psk.is_some(),
                 &self.config,
             )?;
             if !self.previous_hello.is_some() {
@@ -531,7 +618,8 @@ mod client_hello {
         session_id: &SessionId,
         share_and_kxgroup: (&KeyShareEntry, &'static dyn SupportedKxGroup),
         chosen_psk_idx: Option<usize>,
-        resuming_psk: Option<&[u8]>,
+        selected_psk: Option<&[u8]>,
+        imported_psk: bool,
         config: &ServerConfig,
     ) -> Result<KeyScheduleHandshake, Error> {
         // Prepare key exchange; the caller already found the matching SupportedKxGroup
@@ -549,6 +637,7 @@ mod client_hello {
             key_share: Some(KeyShareEntry::new(ckx.group, ckx.pub_key)),
             selected_version: Some(ProtocolVersion::TLSv1_3),
             preshared_key: chosen_psk_idx.map(|idx| idx as u16),
+            tls_cert_with_extern_psk: imported_psk.then_some(()),
             ..Default::default()
         });
 
@@ -575,7 +664,7 @@ mod client_hello {
         cx.common.send_msg(sh, false);
 
         // Start key schedule
-        let key_schedule_pre_handshake = if let Some(psk) = resuming_psk {
+        let key_schedule_pre_handshake = if let Some(psk) = selected_psk {
             let early_key_schedule = KeyScheduleEarly::new(suite, psk);
             early_key_schedule.client_early_traffic_secret(
                 &client_hello_hash,
@@ -1036,7 +1125,7 @@ impl State<ServerConnectionData> for ExpectCompressedCertificate {
                 Err(err) => {
                     return Err(cx
                         .common
-                        .send_fatal_alert(AlertDescription::BadCertificate, err));
+                        .send_fatal_alert(err.compressed_certificate_alert(), err));
                 }
             };
         trace!(
@@ -1146,6 +1235,21 @@ impl State<ServerConnectionData> for ExpectCertificate {
                 Error::NoCertificatesPresented,
             ));
         };
+
+        if let Some(expected_raw_public_key) =
+            cx.data.imported_psk_client_raw_public_key.as_deref()
+        {
+            let key_matches: bool = end_entity
+                .as_ref()
+                .ct_eq(expected_raw_public_key)
+                .into();
+            if !intermediates.is_empty() || !key_matches {
+                return Err(cx.common.send_fatal_alert(
+                    AlertDescription::BadCertificate,
+                    PeerMisbehaved::ImportedPskClientRawPublicKeyMismatch,
+                ));
+            }
+        }
 
         let now = self.config.current_time()?;
 

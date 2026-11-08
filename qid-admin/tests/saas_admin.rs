@@ -17,26 +17,27 @@ use qid_core::{
 };
 use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
-use qid_test_support_tests::SqliteTestFixture;
+use qid_test_support_tests::{SqliteTestFixture, TestDatabase};
 use std::sync::Arc;
 use tower::ServiceExt;
 
 static DATABASES: SqliteTestFixture = SqliteTestFixture::new("admin_saas");
 
-async fn setup() -> (Router, Arc<SharedState<SqlRepository>>) {
+async fn setup() -> (Router, Arc<SharedState<SqlRepository>>, TestDatabase) {
     let config = test_helpers::test_config();
     setup_with_config(config).await
 }
 
 async fn setup_with_config(
     config: qid_core::config::QidConfig,
-) -> (Router, Arc<SharedState<SqlRepository>>) {
-    let repo = Arc::new(DATABASES.repository().await);
+) -> (Router, Arc<SharedState<SqlRepository>>, TestDatabase) {
+    let db = DATABASES.repository().await;
+    let repo = Arc::new(db.repo().clone());
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
     seed_base_admin(&state).await;
     let app = qid_admin::admin_routes(&state.paths).with_state(state.clone());
-    (app, state)
+    (app, state, db)
 }
 
 async fn seed_saas_realm_client(state: &SharedState<SqlRepository>) {
@@ -324,7 +325,7 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
 
 #[tokio::test]
 async fn breakglass_session_revoke_requires_breakglass_role_and_audits_incident() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     let now = qid_core::util::now_seconds();
     state
         .repo
@@ -431,11 +432,12 @@ async fn breakglass_session_revoke_requires_breakglass_role_and_audits_incident(
             .get("admin_session_id")
             .is_none()
     );
+    db.close().await;
 }
 
 #[tokio::test]
 async fn key_rotation_plan_route_requires_security_admin_and_audits_plan() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     state
         .repo
         .create_realm(
@@ -536,11 +538,12 @@ async fn key_rotation_plan_route_requires_security_admin_and_audits_plan() {
     assert_eq!(event.actor, "security-admin@example.com");
     assert_eq!(event.reason, "security-ticket-123");
     assert_eq!(event.metadata_json["operation"]["rejected_count"], 1);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn policy_simulator_uses_active_bundle_and_records_audit() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     state
         .repo
         .create_realm(
@@ -612,11 +615,12 @@ async fn policy_simulator_uses_active_bundle_and_records_audit() {
     assert_eq!(events[0].action, "policy.simulate");
     assert_eq!(events[0].target_id, "sim-bundle");
     assert_eq!(events[0].metadata_json["operation"]["dry_run"], true);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn admin_ui_shell_and_dashboard_report_operational_status() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     state
         .repo
         .create_realm(
@@ -769,11 +773,12 @@ async fn admin_ui_shell_and_dashboard_report_operational_status() {
             .iter()
             .any(|item| item["name"] == "OAuth/OIDC" && item["status"] == "ready")
     );
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saas_admin_routes_create_list_delete_and_audit() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     seed_saas_realm_client(&state).await;
     let now = qid_core::util::now_seconds();
     let other_admin = Admin {
@@ -1306,11 +1311,12 @@ async fn saas_admin_routes_create_list_delete_and_audit() {
             && event.metadata_json["admin_session"]["roles"][0] == "tenant.owner"
             && event.metadata_json["operation"]["tenant_id"] == "tenant-saas"
     }));
+    db.close().await;
 }
 
 #[tokio::test]
 async fn custom_domain_cross_tenant_id_collision_returns_conflict_without_mutation() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     seed_saas_realm_client(&state).await;
     state
         .repo
@@ -1420,11 +1426,12 @@ async fn custom_domain_cross_tenant_id_collision_returns_conflict_without_mutati
             .unwrap()
             .is_empty()
     );
+    db.close().await;
 }
 
 #[tokio::test]
 async fn delegated_admin_cross_tenant_id_collision_returns_conflict_without_mutation() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     seed_saas_realm_client(&state).await;
     state
         .repo
@@ -1536,6 +1543,7 @@ async fn delegated_admin_cross_tenant_id_collision_returns_conflict_without_muta
             .unwrap()
             .is_empty()
     );
+    db.close().await;
 }
 
 #[tokio::test]
@@ -1562,7 +1570,7 @@ async fn saas_admin_routes_validate_saml_app_catalog_reference() {
             want_assertions_signed: false,
         }],
     };
-    let (app, state) = setup_with_config(config).await;
+    let (app, state, db) = setup_with_config(config).await;
     seed_saas_realm_client(&state).await;
 
     let unregistered_response = app
@@ -1605,11 +1613,12 @@ async fn saas_admin_routes_validate_saml_app_catalog_reference() {
         .await
         .unwrap();
     assert_eq!(registered_response.status(), StatusCode::CREATED);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saas_admin_routes_reject_missing_reason_and_tenant_mismatch() {
-    let (app, _) = setup().await;
+    let (app, _, db) = setup().await;
 
     let now = qid_core::util::now_seconds();
     let missing_reason = Request::builder()
@@ -1652,11 +1661,12 @@ async fn saas_admin_routes_reject_missing_reason_and_tenant_mismatch() {
         .await
         .unwrap();
     assert_eq!(tenant_mismatch_response.status(), StatusCode::BAD_REQUEST);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saas_admin_routes_reject_missing_step_up_and_wrong_role() {
-    let (app, _) = setup().await;
+    let (app, _, db) = setup().await;
 
     let missing_step_up = Request::builder()
         .method(Method::POST)
@@ -1711,11 +1721,12 @@ async fn saas_admin_routes_reject_missing_step_up_and_wrong_role() {
         .unwrap();
     let wrong_role_response = app.oneshot(wrong_role).await.unwrap();
     assert_eq!(wrong_role_response.status(), StatusCode::UNAUTHORIZED);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saas_admin_routes_reject_expired_or_overlong_elevation() {
-    let (app, _) = setup().await;
+    let (app, _, db) = setup().await;
     let body = r#"{
         "id":"app-1",
         "tenant_id":"tenant-saas",
@@ -1763,6 +1774,7 @@ async fn saas_admin_routes_reject_expired_or_overlong_elevation() {
         .unwrap();
     let overlong_response = app.oneshot(overlong).await.unwrap();
     assert_eq!(overlong_response.status(), StatusCode::UNAUTHORIZED);
+    db.close().await;
 }
 
 #[tokio::test]
@@ -1770,7 +1782,7 @@ async fn saas_admin_routes_enforce_approval_when_configured() {
     let mut config = test_helpers::test_config();
     config.admin.security.require_approval = true;
     config.admin.security.max_approval_age_seconds = 120;
-    let (app, state) = setup_with_config(config).await;
+    let (app, state, db) = setup_with_config(config).await;
     seed_saas_realm_client(&state).await;
     let body = r#"{
         "id":"app-approval",
@@ -1843,6 +1855,7 @@ async fn saas_admin_routes_enforce_approval_when_configured() {
             .iter()
             .any(|event| { event.metadata_json["operation"]["display_name"] == "Approved CRM" })
     );
+    db.close().await;
 }
 
 #[tokio::test]
@@ -1850,7 +1863,7 @@ async fn saas_admin_routes_reject_self_or_stale_approval() {
     let mut config = test_helpers::test_config();
     config.admin.security.require_approval = true;
     config.admin.security.max_approval_age_seconds = 60;
-    let (app, _) = setup_with_config(config).await;
+    let (app, _, db) = setup_with_config(config).await;
     let body = r#"{
         "id":"app-approval",
         "tenant_id":"tenant-saas",
@@ -1910,11 +1923,12 @@ async fn saas_admin_routes_reject_self_or_stale_approval() {
         .unwrap();
     let stale_approval_response = app.oneshot(stale_approval).await.unwrap();
     assert_eq!(stale_approval_response.status(), StatusCode::UNAUTHORIZED);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn a_json_array_body_is_rejected_and_no_user_is_created() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     let response = app
         .oneshot(json_request(
             Method::POST,
@@ -1938,11 +1952,12 @@ async fn a_json_array_body_is_rejected_and_no_user_is_created() {
         .await
         .expect("the users of the realm are listed");
     assert!(users.is_empty(), "no user may be created: {users:?}");
+    db.close().await;
 }
 
 #[tokio::test]
 async fn a_json_array_body_is_rejected_on_a_non_identity_admin_route() {
-    let (app, _state) = setup().await;
+    let (app, _state, db) = setup().await;
     let response = app
         .oneshot(json_request(
             Method::POST,
@@ -1960,11 +1975,12 @@ async fn a_json_array_body_is_rejected_on_a_non_identity_admin_route() {
             .contains("must be a JSON object"),
         "unexpected body: {body}"
     );
+    db.close().await;
 }
 
 #[tokio::test]
 async fn directory_delete_is_bound_to_the_path_realm() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     seed_saas_realm_client(&state).await;
     state
         .repo
@@ -2078,11 +2094,12 @@ async fn directory_delete_is_bound_to_the_path_realm() {
             .status(),
         StatusCode::NOT_FOUND
     );
+    db.close().await;
 }
 
 #[tokio::test]
 async fn service_account_delete_is_bound_to_the_path_realm_and_audits_success() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     seed_saas_realm_client(&state).await;
     state
         .repo
@@ -2214,11 +2231,12 @@ async fn service_account_delete_is_bound_to_the_path_realm_and_audits_success() 
     assert_eq!(event.realm_id.as_deref(), Some("realm-saas"));
     assert_eq!(event.target_type, "service_account");
     assert_eq!(event.target_id, local.id);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn directory_update_is_bound_to_the_path_realm() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     seed_saas_realm_client(&state).await;
     state
         .repo
@@ -2365,11 +2383,12 @@ async fn directory_update_is_bound_to_the_path_realm() {
         event.metadata_json["operation"]["email_verified_changed"],
         true
     );
+    db.close().await;
 }
 
 #[tokio::test]
 async fn admin_routes_reject_invalid_source_sessions() {
-    let (app, state) = setup().await;
+    let (app, state, db) = setup().await;
     let baseline = state
         .repo
         .get_admin_elevation("admin-session-1")
@@ -2432,4 +2451,5 @@ async fn admin_routes_reject_invalid_source_sessions() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    db.close().await;
 }

@@ -4073,6 +4073,7 @@ name = "qid-test-support-tests"
 version = "0.1.0"
 dependencies = [
  "qid-storage",
+ "tempfile",
  "tokio",
 ]
 

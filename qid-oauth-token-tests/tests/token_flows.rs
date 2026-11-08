@@ -16,7 +16,7 @@ use qid_crypto::{
     Jwk, JwtClaims, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header,
 };
 use qid_storage::{SqlRepository, prelude::*};
-use qid_test_support_tests::SqliteTestFixture;
+use qid_test_support_tests::{SqliteTestFixture, TestDatabase};
 use std::sync::{Arc, OnceLock};
 use tower::ServiceExt;
 
@@ -114,12 +114,25 @@ fn private_key_jwt_jwks() -> serde_json::Value {
     serde_json::json!({ "keys": [serde_json::to_value(jwk).expect("JWK serialization failed")] })
 }
 
-async fn setup() -> (Router, String, Arc<SharedState<SqlRepository>>) {
+async fn setup() -> (
+    Router,
+    String,
+    Arc<SharedState<SqlRepository>>,
+    TestDatabase,
+) {
     setup_with_config(test_helpers::test_config()).await
 }
 
-async fn setup_with_config(config: QidConfig) -> (Router, String, Arc<SharedState<SqlRepository>>) {
-    let repo = Arc::new(DATABASES.repository().await);
+async fn setup_with_config(
+    config: QidConfig,
+) -> (
+    Router,
+    String,
+    Arc<SharedState<SqlRepository>>,
+    TestDatabase,
+) {
+    let db = DATABASES.repository().await;
+    let repo = Arc::new(db.repo().clone());
     repo.create_realm(
         &"tenant-1".into(),
         &"test".into(),
@@ -142,7 +155,7 @@ async fn setup_with_config(config: QidConfig) -> (Router, String, Arc<SharedStat
     }
     let token_path = state.paths.token.clone();
     let app = qid_oauth::routes(&state.paths).with_state(state.clone());
-    (app, token_path, state)
+    (app, token_path, state, db)
 }
 
 fn base_test_client(
@@ -387,7 +400,12 @@ fn config_with_saml_trust(issuer: &str, certificate: &str) -> QidConfig {
 async fn setup_with_saml_trust(
     issuer: &str,
     certificate: &str,
-) -> (Router, String, Arc<SharedState<SqlRepository>>) {
+) -> (
+    Router,
+    String,
+    Arc<SharedState<SqlRepository>>,
+    TestDatabase,
+) {
     setup_with_config(config_with_saml_trust(issuer, certificate)).await
 }
 
@@ -402,7 +420,7 @@ async fn jwt_oauth_subjects_are_issuer_scoped_and_stable_across_grants() {
             "introspection-client",
         ),
     ];
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state, db) = setup_with_config(config).await;
     let key_a = generate_es256("jwt-subject-a").unwrap();
     let key_b = generate_es256("jwt-subject-b").unwrap();
     for (client_id, key) in [
@@ -491,6 +509,7 @@ async fn jwt_oauth_subjects_are_issuer_scoped_and_stable_across_grants() {
     assert_eq!(a_bearer, a_exchange);
     assert_eq!(b_bearer, b_exchange);
     assert_ne!(a_bearer, b_bearer);
+    db.close().await;
 }
 
 #[tokio::test]
@@ -504,7 +523,7 @@ async fn saml_oauth_subject_mapping_accounts_for_name_id_attributes() {
         test_server("api://saml", &["saml"], "introspection-client"),
         test_server("api://delegated", &["delegated"], "introspection-client"),
     ];
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state, db) = setup_with_config(config).await;
     let audience = format!("https://id.example.com{token_path}");
     let expires_at = util::now_seconds() + 300;
     let cert = include_str!("../../qid-oauth/tests/data/test-sp.crt");
@@ -592,6 +611,7 @@ async fn saml_oauth_subject_mapping_accounts_for_name_id_attributes() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
@@ -617,7 +637,7 @@ async fn saml_oauth_subject_is_scoped_to_trusted_issuer_and_stable_across_paths(
         test_server("api://saml", &["saml"], "introspection-client"),
         test_server("api://delegated", &["delegated"], "introspection-client"),
     ];
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state, db) = setup_with_config(config).await;
     let audience = format!("https://id.example.com{token_path}");
     let now = util::now_seconds();
     let assertion_a1 = build_saml_bearer_assertion_with_id(
@@ -723,11 +743,12 @@ async fn saml_oauth_subject_is_scoped_to_trusted_issuer_and_stable_across_paths(
     let actor_subject = exchange_a_claims.extra["act"]["sub"].as_str().unwrap();
     assert!(actor_subject.starts_with("saml2:v2:"));
     assert_ne!(actor_subject, "raw-actor-nameid");
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
-    let (app, token_path, state) = setup_with_saml_trust(
+    let (app, token_path, state, db) = setup_with_saml_trust(
         "https://saml-idp.example.com",
         include_str!("../../qid-oauth/tests/data/test-sp.crt"),
     )
@@ -762,11 +783,12 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
     assert_eq!(claims.extra["client_id"], "saml-bearer-client");
     assert_eq!(claims.extra["scope"], "saml");
     assert_eq!(claims.extra["amr"], serde_json::json!(["saml"]));
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saml_bearer_grant_rejects_default_config_without_inbound_trust() {
-    let (app, token_path, _) = setup().await;
+    let (app, token_path, _, db) = setup().await;
     let assertion = build_saml_bearer_assertion(
         "saml-no-trust-subject",
         &format!("https://id.example.com{token_path}"),
@@ -778,11 +800,12 @@ async fn saml_bearer_grant_rejects_default_config_without_inbound_trust() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saml_bearer_grant_rejects_unconfigured_issuer_even_with_trusted_key() {
-    let (app, token_path, _) = setup_with_saml_trust(
+    let (app, token_path, _, db) = setup_with_saml_trust(
         "https://saml-idp.example.com",
         include_str!("../../qid-oauth/tests/data/test-sp.crt"),
     )
@@ -801,11 +824,12 @@ async fn saml_bearer_grant_rejects_unconfigured_issuer_even_with_trusted_key() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saml_bearer_grant_rejects_matching_issuer_signed_by_untrusted_keyinfo_key() {
-    let (app, token_path, _) = setup_with_saml_trust(
+    let (app, token_path, _, db) = setup_with_saml_trust(
         "https://saml-idp.example.com",
         include_str!("../../qid-oauth/tests/data/test-sp.crt"),
     )
@@ -825,6 +849,7 @@ async fn saml_bearer_grant_rejects_matching_issuer_signed_by_untrusted_keyinfo_k
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
@@ -841,7 +866,7 @@ async fn saml_bearer_grant_rejects_a_key_trusted_for_a_different_issuer() {
             "https://saml-idp-b.example.com",
             include_str!("../../qid-oauth/tests/data/test-untrusted-saml.crt"),
         ));
-    let (app, token_path, _) = setup_with_config(config).await;
+    let (app, token_path, _, db) = setup_with_config(config).await;
     let assertion = build_saml_bearer_assertion_with(
         "saml-cross-issuer-subject",
         &format!("https://id.example.com{token_path}"),
@@ -856,6 +881,7 @@ async fn saml_bearer_grant_rejects_a_key_trusted_for_a_different_issuer() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
@@ -865,7 +891,7 @@ async fn saml_bearer_grant_rejects_provider_when_federation_is_disabled() {
         include_str!("../../qid-oauth/tests/data/test-sp.crt"),
     );
     config.realms[0].protocols.federation.enabled = false;
-    let (app, token_path, _) = setup_with_config(config).await;
+    let (app, token_path, _, db) = setup_with_config(config).await;
     let assertion = build_saml_bearer_assertion(
         "saml-disabled-federation-subject",
         &format!("https://id.example.com{token_path}"),
@@ -877,11 +903,12 @@ async fn saml_bearer_grant_rejects_provider_when_federation_is_disabled() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
 async fn token_exchange_saml_subject_rejects_without_inbound_trust() {
-    let (app, token_path, _) = setup().await;
+    let (app, token_path, _, db) = setup().await;
     let assertion = build_saml_bearer_assertion(
         "saml-exchange-subject",
         &format!("https://id.example.com{token_path}"),
@@ -893,11 +920,12 @@ async fn token_exchange_saml_subject_rejects_without_inbound_trust() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
 async fn token_exchange_saml_actor_rejects_without_inbound_trust() {
-    let (app, token_path, _) = setup().await;
+    let (app, token_path, _, db) = setup().await;
     let subject_token = mint_access_token(
         app.clone(),
         &token_path,
@@ -916,6 +944,7 @@ async fn token_exchange_saml_actor_rejects_without_inbound_trust() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_error_without_access_token(response, StatusCode::UNAUTHORIZED).await;
+    db.close().await;
 }
 
 #[tokio::test]
@@ -929,7 +958,7 @@ async fn token_exchange_saml_subject_and_actor_use_configured_trust() {
         &["delegated"],
         "introspection-client",
     )];
-    let (app, token_path, state) = setup_with_config(config).await;
+    let (app, token_path, state, db) = setup_with_config(config).await;
     let audience = format!("https://id.example.com{token_path}");
     let subject_assertion = build_saml_bearer_assertion_with_id(
         "saml-exchange-subject",
@@ -1005,11 +1034,12 @@ async fn token_exchange_saml_subject_and_actor_use_configured_trust() {
     let variant_claims = decode_claims(&state, variant_json["access_token"].as_str().unwrap());
     assert_eq!(claims.sub, variant_claims.sub);
     assert_ne!(actor_id, variant_claims.extra["act"]["sub"]);
+    db.close().await;
 }
 
 #[tokio::test]
 async fn saml_bearer_grant_rejects_wrong_audience() {
-    let (app, token_path, _) = setup_with_saml_trust(
+    let (app, token_path, _, db) = setup_with_saml_trust(
         "https://saml-idp.example.com",
         include_str!("../../qid-oauth/tests/data/test-sp.crt"),
     )
@@ -1026,4 +1056,5 @@ async fn saml_bearer_grant_rejects_wrong_audience() {
     );
     let response = post_form(app, &token_path, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    db.close().await;
 }

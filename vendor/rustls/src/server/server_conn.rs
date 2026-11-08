@@ -574,7 +574,7 @@ impl ServerConfig {
     /// Configures RFC 9258 imported PSKs for RFC 9973 certificate authentication.
     ///
     /// The configured client verifier must require RFC 7250 Raw Public Keys.
-    /// TLS 1.3 session tickets and early data are disabled for this mode.
+    /// TLS 1.3 is the only enabled version; session tickets and early data are disabled.
     pub fn with_imported_psk_resolver(
         mut self,
         resolver: Arc<dyn ResolvesServerImportedPsk>,
@@ -593,11 +593,30 @@ impl ServerConfig {
             ));
         }
 
+        self.versions = versions::EnabledVersions::new(&[&versions::TLS13]);
         self.max_early_data_size = 0;
         self.send_tls13_tickets = 0;
         self.send_half_rtt_data = false;
         self.imported_psk_resolver = Some(resolver);
         Ok(self)
+    }
+
+    pub(super) fn validate_imported_psk_config(&self) -> Result<(), Error> {
+        if self.imported_psk_resolver.is_some()
+            && (self.max_early_data_size != 0
+                || self.send_tls13_tickets != 0
+                || self.send_half_rtt_data
+                || self.versions.contains(ProtocolVersion::TLSv1_2)
+                || !self.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp)
+                || !self.verifier.offer_client_auth()
+                || !self.verifier.client_auth_mandatory()
+                || !self.verifier.requires_raw_public_keys())
+        {
+            return Err(Error::General(
+                "invalid imported PSK server configuration".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// We support a given TLS version if it's quoted in the configured
@@ -713,7 +732,8 @@ mod connection {
             self.inner.core.get_sni_str()
         }
 
-        /// Returns the selected RFC 9258 ImportedIdentity after authentication.
+        /// Returns the selected RFC 9258 ImportedIdentity only after client raw-public-key
+        /// authentication and TLS 1.3 Finished verification have succeeded.
         pub fn imported_psk_identity(&self) -> Option<&[u8]> {
             self.inner
                 .core
@@ -1264,19 +1284,7 @@ impl ConnectionCore<ServerConnectionData> {
         config: Arc<ServerConfig>,
         extra_exts: ServerExtensionsInput<'static>,
     ) -> Result<Self, Error> {
-        if config.imported_psk_resolver.is_some()
-            && (config.max_early_data_size != 0
-                || config.send_tls13_tickets != 0
-                || config.send_half_rtt_data
-                || !config.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp)
-                || !config.verifier.offer_client_auth()
-                || !config.verifier.client_auth_mandatory()
-                || !config.verifier.requires_raw_public_keys())
-        {
-            return Err(Error::General(
-                "invalid imported PSK server configuration".into(),
-            ));
-        }
+        config.validate_imported_psk_config()?;
         let mut common = CommonState::new(Side::Server);
         common.set_max_fragment_size(config.max_fragment_size)?;
         common.enable_secret_extraction = config.enable_secret_extraction;
@@ -1311,11 +1319,11 @@ pub struct ServerConnectionData {
     pub(super) resumption_data: Vec<u8>,
     pub(super) early_data: EarlyDataState,
     pub(super) imported_psk_identity: Option<Vec<u8>>,
-    pub(super) imported_psk_client_raw_public_key: Option<Vec<u8>>,
 }
 
 impl ServerConnectionData {
-    /// Returns the selected RFC 9258 ImportedIdentity after authentication.
+    /// Returns the selected RFC 9258 ImportedIdentity only after client raw-public-key
+    /// authentication and TLS 1.3 Finished verification have succeeded.
     pub fn imported_psk_identity(&self) -> Option<&[u8]> {
         self.imported_psk_identity.as_deref()
     }

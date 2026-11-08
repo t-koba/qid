@@ -370,9 +370,24 @@ impl ExpectClientHello {
         m: &Message<'_>,
         cx: &mut ServerContext<'_>,
     ) -> NextStateOrError<'static> {
+        self.config.validate_imported_psk_config()?;
         let tls13_enabled = self
             .config
             .supports_version(ProtocolVersion::TLSv1_3, cx.common.protocol);
+        // Imported PSKs must never fall back to an unauthenticated TLS 1.2 handshake,
+        // including when an Acceptor supplies a subsequently modified configuration.
+        if self.config.imported_psk_resolver.is_some()
+            && (!tls13_enabled
+                || !client_hello
+                    .supported_versions
+                    .as_ref()
+                    .is_some_and(|versions| versions.tls13))
+        {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::ProtocolVersion,
+                PeerIncompatible::Tls12NotOfferedOrEnabled,
+            ));
+        }
         let tls12_enabled = self
             .config
             .supports_version(ProtocolVersion::TLSv1_2, cx.common.protocol)

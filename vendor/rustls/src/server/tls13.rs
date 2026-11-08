@@ -454,11 +454,12 @@ mod client_hello {
                     .clone_from(&resume.client_cert_chain);
             }
 
-            if let Some(imported_psk) = &imported_psk {
-                cx.data.imported_psk_identity = imported_psk_identity;
-                cx.data.imported_psk_client_raw_public_key =
-                    Some(imported_psk.client_raw_public_key().as_ref().to_vec());
-            }
+            let pending_imported_psk = imported_psk_identity
+                .zip(imported_psk.as_ref())
+                .map(|(identity, psk)| PendingImportedPsk {
+                    identity,
+                    client_raw_public_key: psk.client_raw_public_key().as_ref().to_vec(),
+                });
 
             let full_handshake = imported_psk.is_some() || resumedata.is_none();
             self.transcript.add_message(chm);
@@ -571,6 +572,7 @@ mod client_hello {
                     .is_empty()
                 {
                     Ok(Box::new(ExpectCertificate {
+                        pending_imported_psk,
                         config: self.config,
                         transcript: self.transcript,
                         suite: self.suite,
@@ -580,6 +582,7 @@ mod client_hello {
                     }))
                 } else {
                     Ok(Box::new(ExpectCertificateOrCompressedCertificate {
+                        pending_imported_psk,
                         config: self.config,
                         transcript: self.transcript,
                         suite: self.suite,
@@ -600,6 +603,7 @@ mod client_hello {
                 }))
             } else {
                 Ok(Box::new(ExpectFinished {
+                    pending_imported_psk: None,
                     config: self.config,
                     transcript: self.transcript,
                     suite: self.suite,
@@ -1006,7 +1010,15 @@ impl State<ServerConnectionData> for ExpectAndSkipRejectedEarlyData {
     }
 }
 
+// This selection stays private until client authentication and Finished both succeed.
+// Dropping any failed handshake also drops its unauthenticated identity.
+struct PendingImportedPsk {
+    identity: Vec<u8>,
+    client_raw_public_key: Vec<u8>,
+}
+
 struct ExpectCertificateOrCompressedCertificate {
+    pending_imported_psk: Option<PendingImportedPsk>,
     config: Arc<ServerConfig>,
     transcript: HandshakeHash,
     suite: &'static Tls13CipherSuite,
@@ -1028,6 +1040,7 @@ impl State<ServerConnectionData> for ExpectCertificateOrCompressedCertificate {
                 parsed: HandshakeMessagePayload(HandshakePayload::CertificateTls13(..)),
                 ..
             } => Box::new(ExpectCertificate {
+                pending_imported_psk: self.pending_imported_psk,
                 config: self.config,
                 transcript: self.transcript,
                 suite: self.suite,
@@ -1041,6 +1054,7 @@ impl State<ServerConnectionData> for ExpectCertificateOrCompressedCertificate {
                 parsed: HandshakeMessagePayload(HandshakePayload::CompressedCertificate(..)),
                 ..
             } => Box::new(ExpectCompressedCertificate {
+                pending_imported_psk: self.pending_imported_psk,
                 config: self.config,
                 transcript: self.transcript,
                 suite: self.suite,
@@ -1066,6 +1080,7 @@ impl State<ServerConnectionData> for ExpectCertificateOrCompressedCertificate {
 }
 
 struct ExpectCompressedCertificate {
+    pending_imported_psk: Option<PendingImportedPsk>,
     config: Arc<ServerConfig>,
     transcript: HandshakeHash,
     suite: &'static Tls13CipherSuite,
@@ -1147,6 +1162,7 @@ impl State<ServerConnectionData> for ExpectCompressedCertificate {
         };
 
         Box::new(ExpectCertificate {
+            pending_imported_psk: self.pending_imported_psk,
             config: self.config,
             transcript: self.transcript,
             suite: self.suite,
@@ -1163,6 +1179,7 @@ impl State<ServerConnectionData> for ExpectCompressedCertificate {
 }
 
 struct ExpectCertificate {
+    pending_imported_psk: Option<PendingImportedPsk>,
     config: Arc<ServerConfig>,
     transcript: HandshakeHash,
     suite: &'static Tls13CipherSuite,
@@ -1218,10 +1235,11 @@ impl State<ServerConnectionData> for ExpectCertificate {
             .client_auth_mandatory();
 
         let Some((end_entity, intermediates)) = client_cert.split_first() else {
-            if !mandatory {
+            if !mandatory && self.pending_imported_psk.is_none() {
                 debug!("client auth requested but no certificate supplied");
                 self.transcript.abandon_client_auth();
                 return Ok(Box::new(ExpectFinished {
+                    pending_imported_psk: None,
                     config: self.config,
                     suite: self.suite,
                     key_schedule: self.key_schedule,
@@ -1236,12 +1254,10 @@ impl State<ServerConnectionData> for ExpectCertificate {
             ));
         };
 
-        if let Some(expected_raw_public_key) =
-            cx.data.imported_psk_client_raw_public_key.as_deref()
-        {
+        if let Some(pending) = &self.pending_imported_psk {
             let key_matches: bool = end_entity
                 .as_ref()
-                .ct_eq(expected_raw_public_key)
+                .ct_eq(&pending.client_raw_public_key)
                 .into();
             if !intermediates.is_empty() || !key_matches {
                 return Err(cx.common.send_fatal_alert(
@@ -1262,6 +1278,7 @@ impl State<ServerConnectionData> for ExpectCertificate {
             })?;
 
         Ok(Box::new(ExpectCertificateVerify {
+            pending_imported_psk: self.pending_imported_psk,
             config: self.config,
             suite: self.suite,
             transcript: self.transcript,
@@ -1277,6 +1294,7 @@ impl State<ServerConnectionData> for ExpectCertificate {
 }
 
 struct ExpectCertificateVerify {
+    pending_imported_psk: Option<PendingImportedPsk>,
     config: Arc<ServerConfig>,
     transcript: HandshakeHash,
     suite: &'static Tls13CipherSuite,
@@ -1321,6 +1339,7 @@ impl State<ServerConnectionData> for ExpectCertificateVerify {
 
         self.transcript.add_message(&m);
         Ok(Box::new(ExpectFinished {
+            pending_imported_psk: self.pending_imported_psk,
             config: self.config,
             suite: self.suite,
             key_schedule: self.key_schedule,
@@ -1376,6 +1395,7 @@ impl State<ServerConnectionData> for ExpectEarlyData {
                     .update_decrypter(cx.common);
                 self.transcript.add_message(&m);
                 Ok(Box::new(ExpectFinished {
+                    pending_imported_psk: None,
                     config: self.config,
                     suite: self.suite,
                     key_schedule: self.key_schedule,
@@ -1423,6 +1443,7 @@ fn get_server_session_value(
 }
 
 struct ExpectFinished {
+    pending_imported_psk: Option<PendingImportedPsk>,
     config: Arc<ServerConfig>,
     transcript: HandshakeHash,
     suite: &'static Tls13CipherSuite,
@@ -1527,6 +1548,8 @@ impl State<ServerConnectionData> for ExpectFinished {
             Self::emit_ticket(&mut flight, self.suite, cx, &resumption, &self.config)?;
         }
         flight.finish(cx.common);
+
+        cx.data.imported_psk_identity = self.pending_imported_psk.map(|psk| psk.identity);
 
         // Application data may now flow, even if we have client auth enabled.
         cx.common

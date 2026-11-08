@@ -358,10 +358,8 @@ mod tests {
         for age in [1, u32::MAX] {
             let mut conn =
                 process_imported_psk_client_hello(imported_psk_client_hello(age)).unwrap();
-            assert_eq!(
-                conn.imported_psk_identity(),
-                Some(&b"test imported identity"[..])
-            );
+            assert_eq!(conn.imported_psk_identity(), None);
+            assert_eq!(conn.core.data.imported_psk_identity(), None);
             assert!(conn.is_handshaking());
 
             let mut wire = Vec::new();
@@ -408,6 +406,305 @@ mod tests {
                 process_imported_psk_client_hello(hello).unwrap_err(),
                 PeerMisbehaved::IncorrectBinder.into(),
             );
+        }
+    }
+
+    fn imported_psk_server_config() -> ServerConfig {
+        // Start with all versions: enabling imported PSKs must narrow this to TLS 1.3.
+        ServerConfig::builder_with_provider(super::provider::default_provider().into())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_client_cert_verifier(Arc::new(TestImportedPsk))
+            .with_single_cert(server_cert(), server_key())
+            .unwrap()
+            .with_imported_psk_resolver(Arc::new(TestImportedPsk))
+            .unwrap()
+    }
+
+    #[cfg(feature = "tls12")]
+    #[test]
+    fn imported_psk_rejects_tls12_and_mutated_config() {
+        let config = imported_psk_server_config();
+        assert!(!config.versions.contains(ProtocolVersion::TLSv1_2));
+        assert!(config.versions.contains(ProtocolVersion::TLSv1_3));
+        let client_config =
+            crate::ClientConfig::builder_with_provider(super::provider::default_provider().into())
+                .with_protocol_versions(&[&version::TLS12])
+                .unwrap()
+                .with_root_certificates(crate::RootCertStore::empty())
+                .with_no_client_auth();
+        let mut client = crate::ClientConnection::new(
+            client_config.into(),
+            pki_types::ServerName::try_from("localhost").unwrap(),
+        )
+        .unwrap();
+        let mut hello = Vec::new();
+        client.write_tls(&mut hello).unwrap();
+        let mut server = ServerConnection::new(Arc::new(config.clone())).unwrap();
+        server.read_tls(&mut hello.as_slice()).unwrap();
+        assert_eq!(
+            server.process_new_packets().unwrap_err(),
+            PeerIncompatible::Tls12NotOfferedOrEnabled.into(),
+        );
+        assert_eq!(server.imported_psk_identity(), None);
+        assert_eq!(server.protocol_version(), None);
+
+        let mut invalid = config.clone();
+        invalid.versions = crate::versions::EnabledVersions::new(crate::DEFAULT_VERSIONS);
+        let error = Error::General("invalid imported PSK server configuration".into());
+        assert_eq!(
+            ServerConnection::new(Arc::new(invalid.clone())).unwrap_err(),
+            error
+        );
+        assert_eq!(
+            crate::server::UnbufferedServerConnection::new(Arc::new(invalid.clone())).err(),
+            Some(error),
+        );
+        // Acceptor must validate the same configuration before dispatching either
+        // version, including legacy ClientHellos without supported_versions.
+        for versions in [
+            Some(SupportedProtocolVersions {
+                tls12: true,
+                tls13: false,
+            }),
+            None,
+            Some(SupportedProtocolVersions {
+                tls12: false,
+                tls13: true,
+            }),
+        ] {
+            for config in [&config, &invalid] {
+                let mut ch = minimal_client_hello();
+                ch.extensions.supported_versions = versions;
+                let tls13 = versions.as_ref().is_some_and(|v| v.tls13);
+                if !tls13 {
+                    ch.cipher_suites = vec![CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256];
+                } else if !config.versions.contains(ProtocolVersion::TLSv1_2) {
+                    continue; // Valid TLS 1.3 handshakes are covered below.
+                }
+                let hello = Message {
+                    version: ProtocolVersion::TLSv1_2,
+                    payload: MessagePayload::handshake(HandshakeMessagePayload(
+                        HandshakePayload::ClientHello(ch),
+                    )),
+                }
+                .into_wire_bytes();
+                let mut acceptor = crate::server::Acceptor::default();
+                acceptor.read_tls(&mut hello.as_slice()).unwrap();
+                let accepted = acceptor.accept().unwrap().unwrap();
+                let error = if config.versions.contains(ProtocolVersion::TLSv1_2) {
+                    Error::General("invalid imported PSK server configuration".into())
+                } else {
+                    PeerIncompatible::Tls12NotOfferedOrEnabled.into()
+                };
+                assert_eq!(
+                    accepted
+                        .into_connection(Arc::new(config.clone()))
+                        .unwrap_err()
+                        .0,
+                    error
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn imported_psk_identity_requires_raw_key_and_finished_authentication() {
+        use crate::crypto::cipher::{InboundOpaqueMessage, PlainMessage};
+        use crate::crypto::tls13::OkmBlock;
+        use crate::enums::{ContentType, HandshakeType};
+        use crate::msgs::message::OutboundOpaqueMessage;
+        use crate::tls13::key_schedule::{derive_traffic_iv, derive_traffic_key};
+
+        // A real signed client flight, with independently authenticated records,
+        // lets the server expose its accessor at every authentication boundary.
+        for corrupt in [
+            None,
+            Some(HandshakeType::Certificate),
+            Some(HandshakeType::CertificateVerify),
+            Some(HandshakeType::Finished),
+        ] {
+            let mut config = imported_psk_server_config();
+            config.cert_decompressors.clear();
+            let mut server = ServerConnection::new(config.into()).unwrap();
+            let mut roots = crate::RootCertStore::empty();
+            roots
+                .add(CertificateDer::from(
+                    &include_bytes!("../../../test-ca/rsa-2048/ca.der")[..],
+                ))
+                .unwrap();
+            let crypto = Arc::new(ImportedPskClientSecret::default());
+            let mut client_config = crate::ClientConfig::builder_with_provider(
+                CryptoProvider {
+                    cipher_suites: vec![super::provider::cipher_suite::TLS13_AES_128_GCM_SHA256],
+                    ..super::provider::default_provider()
+                }
+                .into(),
+            )
+            .with_protocol_versions(&[&version::TLS13])
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_client_cert_resolver(Arc::new(
+                crate::client::AlwaysResolvesClientRawPublicKeys::new(Arc::new(
+                    server_certified_key(),
+                )),
+            ))
+            .with_imported_psk(
+                crate::imported_psk::ClientImportedPsk::new(
+                    b"test imported identity".to_vec(),
+                    vec![0x55; 32],
+                    HashAlgorithm::SHA256,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            client_config.key_log = crypto.clone();
+            let mut client = crate::ClientConnection::new(
+                client_config.into(),
+                pki_types::ServerName::try_from("localhost").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(server.imported_psk_identity(), None);
+            let mut wire = Vec::new();
+            client.write_tls(&mut wire).unwrap();
+            server.read_tls(&mut wire.as_slice()).unwrap();
+            server.process_new_packets().unwrap();
+            assert_eq!(server.imported_psk_identity(), None);
+            wire.clear();
+            server.write_tls(&mut wire).unwrap();
+            client.read_tls(&mut wire.as_slice()).unwrap();
+            client.process_new_packets().unwrap();
+            assert_eq!(server.imported_psk_identity(), None);
+            wire.clear();
+            client.write_tls(&mut wire).unwrap();
+
+            let suite = super::provider::cipher_suite::TLS13_AES_128_GCM_SHA256
+                .tls13()
+                .unwrap();
+            let expander = suite
+                .hkdf_provider
+                .expander_for_okm(&OkmBlock::new(crypto.0.get().unwrap()));
+            let mut decrypt = suite.aead_alg.decrypter(
+                derive_traffic_key(expander.as_ref(), suite.aead_alg),
+                derive_traffic_iv(expander.as_ref()),
+            );
+            let mut encrypt = suite.aead_alg.encrypter(
+                derive_traffic_key(expander.as_ref(), suite.aead_alg),
+                derive_traffic_iv(expander.as_ref()),
+            );
+            let mut reader = Reader::init(&wire);
+            let mut read_seq = 0;
+            let mut write_seq = 0;
+            let mut reached = Vec::new();
+            while reader.any_left() {
+                let record = OutboundOpaqueMessage::read(&mut reader).unwrap();
+                if record.typ == ContentType::ChangeCipherSpec {
+                    continue;
+                }
+                let mut payload = record.payload.as_ref().to_vec();
+                let plain = decrypt
+                    .decrypt(
+                        InboundOpaqueMessage::new(record.typ, record.version, &mut payload),
+                        read_seq,
+                    )
+                    .unwrap();
+                read_seq += 1;
+                let mut messages = Reader::init(plain.payload);
+                while messages.any_left() {
+                    let mut handshake = HandshakeMessagePayload::read_version(
+                        &mut messages,
+                        ProtocolVersion::TLSv1_3,
+                    )
+                    .unwrap();
+                    let typ = handshake.0.handshake_type();
+                    reached.push(typ);
+                    assert!(server.is_handshaking());
+                    assert_eq!(server.imported_psk_identity(), None);
+                    assert_eq!(server.core.data.imported_psk_identity(), None);
+                    if corrupt == Some(typ) {
+                        if let HandshakePayload::CertificateTls13(cert) = &mut handshake.0 {
+                            let mut key = cert.entries[0].cert.as_ref().to_vec();
+                            *key.last_mut().unwrap() ^= 1;
+                            cert.entries[0].cert = CertificateDer::from(key);
+                        } else {
+                            let mut encoded = handshake.get_encoding();
+                            *encoded.last_mut().unwrap() ^= 1;
+                            handshake = HandshakeMessagePayload::read_version(
+                                &mut Reader::init(&encoded),
+                                ProtocolVersion::TLSv1_3,
+                            )
+                            .unwrap()
+                            .into_owned();
+                        }
+                    }
+                    let message = Message {
+                        version: ProtocolVersion::TLSv1_3,
+                        payload: MessagePayload::handshake(handshake),
+                    };
+                    let record = encrypt
+                        .encrypt(PlainMessage::from(message).borrow_outbound(), write_seq)
+                        .unwrap();
+                    write_seq += 1;
+                    server.read_tls(&mut record.encode().as_slice()).unwrap();
+                    let result = server.process_new_packets();
+                    if corrupt == Some(typ) {
+                        let err = result.unwrap_err();
+                        match typ {
+                            HandshakeType::Certificate => assert_eq!(
+                                err,
+                                PeerMisbehaved::ImportedPskClientRawPublicKeyMismatch.into()
+                            ),
+                            HandshakeType::CertificateVerify => {
+                                assert!(matches!(err, Error::InvalidCertificate(_)))
+                            }
+                            HandshakeType::Finished => assert_eq!(err, Error::DecryptError),
+                            _ => unreachable!(),
+                        }
+                        assert_eq!(server.imported_psk_identity(), None);
+                        assert_eq!(server.core.data.imported_psk_identity(), None);
+                        // Reprocessing a failed connection cannot publish the pending identity.
+                        assert!(server.process_new_packets().is_err());
+                        assert_eq!(server.imported_psk_identity(), None);
+                        break;
+                    }
+                    result.unwrap();
+                }
+                if reached.last().copied() == corrupt {
+                    break;
+                }
+            }
+            if corrupt.is_none() {
+                assert_eq!(
+                    reached,
+                    vec![
+                        HandshakeType::Certificate,
+                        HandshakeType::CertificateVerify,
+                        HandshakeType::Finished
+                    ]
+                );
+                assert!(!server.is_handshaking());
+                assert_eq!(
+                    server.imported_psk_identity(),
+                    Some(&b"test imported identity"[..])
+                );
+                assert_eq!(
+                    server.core.data.imported_psk_identity(),
+                    server.imported_psk_identity()
+                );
+            } else {
+                assert_eq!(reached.last().copied(), corrupt);
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ImportedPskClientSecret(std::sync::OnceLock<Vec<u8>>);
+
+    impl crate::KeyLog for ImportedPskClientSecret {
+        fn log(&self, label: &str, _client_random: &[u8], secret: &[u8]) {
+            if label == "CLIENT_HANDSHAKE_TRAFFIC_SECRET" {
+                self.0.set(secret.to_vec()).unwrap();
+            }
         }
     }
 
@@ -462,16 +759,7 @@ mod tests {
     fn process_imported_psk_client_hello(
         hello: HandshakeMessagePayload<'static>,
     ) -> Result<ServerConnection, Error> {
-        let config =
-            ServerConfig::builder_with_provider(super::provider::default_provider().into())
-                .with_protocol_versions(&[&version::TLS13])
-                .unwrap()
-                .with_client_cert_verifier(Arc::new(ClientHelloOnlyImportedPsk))
-                .with_single_cert(server_cert(), server_key())
-                .unwrap()
-                .with_imported_psk_resolver(Arc::new(ClientHelloOnlyImportedPsk))
-                .unwrap();
-        let mut conn = ServerConnection::new(config.into()).unwrap();
+        let mut conn = ServerConnection::new(imported_psk_server_config().into()).unwrap();
         let message = Message {
             version: ProtocolVersion::TLSv1_2,
             payload: MessagePayload::handshake(hello),
@@ -482,12 +770,10 @@ mod tests {
         Ok(conn)
     }
 
-    // The tests exercise parsing, resolver selection, binder verification and the
-    // server flight, but stop before client certificate authentication.
     #[derive(Debug)]
-    struct ClientHelloOnlyImportedPsk;
+    struct TestImportedPsk;
 
-    impl ResolvesServerImportedPsk for ClientHelloOnlyImportedPsk {
+    impl ResolvesServerImportedPsk for TestImportedPsk {
         fn resolve(&self, identity: &[u8], hash: HashAlgorithm) -> Option<ServerImportedPsk> {
             if identity != b"test imported identity" || hash != HashAlgorithm::SHA256 {
                 return None;
@@ -506,7 +792,7 @@ mod tests {
         }
     }
 
-    impl ClientCertVerifier for ClientHelloOnlyImportedPsk {
+    impl ClientCertVerifier for TestImportedPsk {
         fn root_hint_subjects(&self) -> &[DistinguishedName] {
             &[]
         }
@@ -517,7 +803,8 @@ mod tests {
             _intermediates: &[CertificateDer<'_>],
             _now: UnixTime,
         ) -> Result<ClientCertVerified, Error> {
-            unreachable!("test stops after ClientHello")
+            // The imported-PSK path separately pins this key to the resolver result.
+            Ok(ClientCertVerified::assertion())
         }
 
         fn verify_tls12_signature(
@@ -531,11 +818,16 @@ mod tests {
 
         fn verify_tls13_signature(
             &self,
-            _message: &[u8],
-            _cert: &CertificateDer<'_>,
-            _dss: &DigitallySignedStruct,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
         ) -> Result<HandshakeSignatureValid, Error> {
-            unreachable!("test stops after ClientHello")
+            crate::crypto::verify_tls13_signature_with_raw_key(
+                message,
+                &pki_types::SubjectPublicKeyInfoDer::from(cert.as_ref()),
+                dss,
+                &super::provider::default_provider().signature_verification_algorithms,
+            )
         }
 
         fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {

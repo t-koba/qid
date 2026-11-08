@@ -1249,10 +1249,25 @@ async fn file_legacy_cross_tenant_app_catalog_reference_blocks_connector_delete(
         "scim_enabled": false,
         "marketplace_connector_id": "connector-a"
     });
-    let before = serde_json::to_vec(&store).unwrap();
-    std::fs::write(&path, &before).unwrap();
+    let initial = serde_json::to_vec(&store).unwrap();
+    std::fs::write(&path, &initial).unwrap();
 
     let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    repo.delete_app_catalog_entry("tenant-a", "entry-b")
+        .await
+        .expect("foreign tenant must not delete app catalog entry");
+    repo.delete_app_catalog_entry("tenant-a", "missing")
+        .await
+        .expect("missing app catalog entry delete is a no-op");
+    assert_eq!(
+        repo.list_app_catalog_entries("tenant-b")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "foreign and missing IDs must leave the catalog row intact"
+    );
+    let before = std::fs::read(&path).unwrap();
     let error = repo
         .delete_marketplace_connector("tenant-a", "connector-a")
         .await

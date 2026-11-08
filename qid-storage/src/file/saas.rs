@@ -2,6 +2,10 @@ use async_trait::async_trait;
 
 use super::*;
 
+fn remove_if<T>(map: &mut HashMap<String, T>, id: &str, pred: impl FnOnce(&T) -> bool) -> bool {
+    map.get(id).is_some_and(pred) && map.remove(id).is_some()
+}
+
 #[async_trait]
 impl SaasRepository for FileRepository {
     async fn list_saas_tenant_ids(&self) -> QidResult<Vec<String>> {
@@ -103,9 +107,7 @@ impl SaasRepository for FileRepository {
 
     async fn delete_custom_domain(&self, tenant_id: &str, id: &str) -> QidResult<()> {
         self.map_write(|store| {
-            store
-                .custom_domains
-                .retain(|key, domain| key != id || domain.tenant_id != tenant_id);
+            remove_if(&mut store.custom_domains, id, |d| d.tenant_id == tenant_id);
         })
         .await
     }
@@ -154,9 +156,7 @@ impl SaasRepository for FileRepository {
 
     async fn delete_ciam_brand(&self, tenant_id: &str, id: &str) -> QidResult<()> {
         self.map_write(|store| {
-            store
-                .ciam_brands
-                .retain(|key, brand| key != id || brand.tenant_id != tenant_id);
+            remove_if(&mut store.ciam_brands, id, |b| b.tenant_id == tenant_id);
         })
         .await
     }
@@ -235,9 +235,9 @@ impl SaasRepository for FileRepository {
 
     async fn delete_app_catalog_entry(&self, tenant_id: &str, id: &str) -> QidResult<()> {
         self.map_write(|store| {
-            store
-                .app_catalog_entries
-                .retain(|key, entry| key != id || entry.tenant_id != tenant_id);
+            remove_if(&mut store.app_catalog_entries, id, |e| {
+                e.tenant_id == tenant_id
+            });
         })
         .await
     }

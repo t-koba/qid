@@ -24,7 +24,7 @@ security:
     services:
     - name: external-authzen
       endpoint: http://127.0.0.1:8443/access/v1/evaluation
-      timeout_ms: 300
+      timeout_ms: 1000
       contract:
         driver: authzen
         profile_id: authzen-evaluation-v1

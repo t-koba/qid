@@ -16,7 +16,10 @@ use qid_crypto::{
     Jwk, JwtClaims, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header,
 };
 use qid_storage::{SqlRepository, prelude::*};
-use qid_test_support_tests::{SqliteTestFixture, TestDatabase};
+#[path = "../../qid-admin/tests/support/sqlite_fixture.rs"]
+#[allow(dead_code)]
+mod sqlite_fixture;
+use sqlite_fixture::{SqliteTestFixture, TestDatabase};
 use std::sync::{Arc, OnceLock};
 use tower::ServiceExt;
 

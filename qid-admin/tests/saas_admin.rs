@@ -17,7 +17,10 @@ use qid_core::{
 };
 use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
-use qid_test_support_tests::{SqliteTestFixture, TestDatabase};
+#[path = "support/sqlite_fixture.rs"]
+#[allow(dead_code)]
+mod sqlite_fixture;
+use sqlite_fixture::{SqliteTestFixture, TestDatabase};
 use std::sync::Arc;
 use tower::ServiceExt;
 

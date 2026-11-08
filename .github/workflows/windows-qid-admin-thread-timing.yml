@@ -1,0 +1,93 @@
+name: Windows qid-admin Thread Timing
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  timing:
+    name: Isolated qid-admin package timings
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.96"
+      - name: Build once and compare serial and four-thread package tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $csv = Join-Path $env:RUNNER_TEMP 'windows-qid-admin-thread-timings.csv'
+          'sha,threads,repeat,wall_seconds,exit_code,passed,failed,ignored' | Set-Content -LiteralPath $csv
+          @'
+          ## Isolated qid-admin package timings
+          Each row measures one warmed `cargo test -p qid-admin --locked -- --test-threads=N` command.
+          These are not total workspace, job or billing times. Build time is excluded.
+          Three pairs alternate order: 1/4, 4/1, 1/4, on the same Windows runner.
+          '@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+          & cargo test -p qid-admin --locked --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $failed = $false
+          $baseline = $null
+          foreach ($repeat in 1..3) {
+            $order = if ($repeat % 2 -eq 1) { @(1, 4) } else { @(4, 1) }
+            foreach ($threads in $order) {
+              Write-Host "qid-admin repeat=$repeat threads=$threads"
+              $watch = [Diagnostics.Stopwatch]::StartNew()
+              & cargo test -p qid-admin --locked -- "--test-threads=$threads" 2>&1 | Tee-Object -Variable output
+              $code = $LASTEXITCODE
+              $watch.Stop()
+              $passed = 0L
+              $testFailed = 0L
+              $ignored = 0L
+              $summaries = 0
+              foreach ($line in $output) {
+                if ("$line" -match '^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;') {
+                  $passed += [long]$Matches[1]
+                  $testFailed += [long]$Matches[2]
+                  $ignored += [long]$Matches[3]
+                  $summaries++
+                }
+              }
+              [pscustomobject][ordered]@{
+                sha = $env:GITHUB_SHA
+                threads = $threads
+                repeat = $repeat
+                wall_seconds = $watch.Elapsed.TotalSeconds.ToString('F6', [Globalization.CultureInfo]::InvariantCulture)
+                exit_code = $code
+                passed = $passed
+                failed = $testFailed
+                ignored = $ignored
+              } | Export-Csv -LiteralPath $csv -NoTypeInformation -Append
+
+              # Require real test results and identical coverage in all six runs.
+              $counts = "$summaries/$passed/$testFailed/$ignored"
+              if ($null -eq $baseline) { $baseline = $counts }
+              if ($code -ne 0 -or $summaries -eq 0 -or $passed -eq 0 -or $testFailed -ne 0 -or
+                  $watch.Elapsed.TotalSeconds -le 0 -or $counts -ne $baseline) {
+                Write-Host "ERROR: Test or measurement failure in repeat=$repeat threads=$threads (exit=$code, counts=$counts)."
+                $failed = $true
+              }
+            }
+          }
+          if ($failed) { exit 1 }
+          exit 0
+      - name: Upload isolated qid-admin package timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-qid-admin-thread-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-qid-admin-thread-timings.csv
+          if-no-files-found: error

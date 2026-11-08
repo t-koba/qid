@@ -20,5 +20,8 @@ urlencoding = { workspace = true }
 bergshamra-dsig = { version = "=0.11.0", default-features = false }
 bergshamra-keys = { version = "=0.11.0", default-features = false }
 
+[dev-dependencies]
+qid-test-support-tests.workspace = true
+
 [lints]
 workspace = true

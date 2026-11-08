@@ -10,6 +10,7 @@ members = [
     "qid-oidc",
     "qid-oauth",
     "qid-oauth-token-tests",
+    "qid-test-support-tests",
     "qid-policy",
     "qid-proxy",
     "qid-observability",
@@ -166,6 +167,7 @@ qid-vc = { version = "0.1.0", path = "qid-vc" }
 qid-worker = { version = "0.1.0", path = "qid-worker" }
 qid-ops = { version = "0.1.0", path = "qid-ops" }
 qid-session = { version = "0.1.0", path = "qid-session" }
+qid-test-support-tests = { version = "0.1.0", path = "qid-test-support-tests" }
 qid-storage = { version = "0.1.0", path = "qid-storage" }
 
 [workspace.lints.clippy]

@@ -17,30 +17,11 @@ use qid_core::{
 };
 use qid_crypto::LocalSigner;
 use qid_storage::{SqlRepository, prelude::*};
+use qid_test_support_tests::SqliteTestFixture;
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, Ordering};
 use tower::ServiceExt;
 
-static DB_SEQ: AtomicU16 = AtomicU16::new(0);
-
-fn db_url() -> String {
-    let dir = std::env::temp_dir().join("qid_test_admin_saas");
-    std::fs::create_dir_all(&dir).ok();
-    static CLEANED: OnceLock<()> = OnceLock::new();
-    CLEANED.get_or_init(|| {
-        for entry in std::fs::read_dir(&dir).ok().into_iter().flatten().flatten() {
-            let name = entry.file_name();
-            let s = name.to_string_lossy();
-            if s.starts_with("test_") && s.ends_with(".db") {
-                std::fs::remove_file(entry.path()).ok();
-            }
-        }
-    });
-    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("test_{n}.db"));
-    format!("sqlite:{}", path.display())
-}
+static DATABASES: SqliteTestFixture = SqliteTestFixture::new("admin_saas");
 
 async fn setup() -> (Router, Arc<SharedState<SqlRepository>>) {
     let config = test_helpers::test_config();
@@ -50,8 +31,7 @@ async fn setup() -> (Router, Arc<SharedState<SqlRepository>>) {
 async fn setup_with_config(
     config: qid_core::config::QidConfig,
 ) -> (Router, Arc<SharedState<SqlRepository>>) {
-    let repo = Arc::new(SqlRepository::connect(&db_url()).await.unwrap());
-    repo.migrate().await.unwrap();
+    let repo = Arc::new(DATABASES.repository().await);
     let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
     let state = Arc::new(SharedState::new(config, repo, signer, serde_json::json!({})).unwrap());
     seed_base_admin(&state).await;

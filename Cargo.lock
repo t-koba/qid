@@ -3457,6 +3457,7 @@ dependencies = [
  "qid-policy",
  "qid-risk",
  "qid-storage",
+ "qid-test-support-tests",
  "serde",
  "serde_json",
  "tokio",
@@ -3767,6 +3768,7 @@ dependencies = [
  "qid-crypto",
  "qid-oauth",
  "qid-storage",
+ "qid-test-support-tests",
  "serde_json",
  "tokio",
  "tower 0.5.3",
@@ -4064,6 +4066,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "ulid",
+]
+
+[[package]]
+name = "qid-test-support-tests"
+version = "0.1.0"
+dependencies = [
+ "qid-storage",
+ "tokio",
 ]
 
 [[package]]

@@ -247,7 +247,7 @@ mod tests {
     use qid_core::config::PasswordConfig;
     use qid_core::models::{PasswordCredential, User};
     use qid_core::util;
-    use qid_crypto::{PBKDF2_SHA256_ALGORITHM, encode_pbkdf2_sha256_hash};
+    use qid_crypto::PBKDF2_SHA256_ALGORITHM;
     use qid_storage::FileRepository;
 
     async fn repository_with_user(password_hash: String, algorithm: &str) -> Arc<FileRepository> {
@@ -297,8 +297,7 @@ mod tests {
     #[tokio::test]
     async fn password_auth_progressively_rehashes_imported_pbkdf2_credential() {
         let password = "legacy-password-123!";
-        let legacy_hash =
-            encode_pbkdf2_sha256_hash(password, b"0123456789abcdef", 100_000).unwrap();
+        let legacy_hash = "$pbkdf2-sha256$i=100000$MDEyMzQ1Njc4OWFiY2RlZg$mUf20X-ZzWHTtUCVbW2FMJL_u8dULwn89X540zJ8fj0".to_string();
         let repo = repository_with_user(legacy_hash, PBKDF2_SHA256_ALGORITHM).await;
         let authenticator = Authenticator::new(
             repo.clone(),

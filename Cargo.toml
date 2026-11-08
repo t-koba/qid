@@ -126,7 +126,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 webauthn = { package = "caden", version = "0.7.0", features = ["serde"] }
-x25519-dalek = { version = "2", features = ["reusable_secrets", "static_secrets"] }
 subtle = "2"
 zeroize = { version = "1", features = ["derive"] }
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }

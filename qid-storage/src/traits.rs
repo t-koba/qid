@@ -342,6 +342,7 @@ pub trait PolicyRepository: Send + Sync + 'static {
     /// A bundle ID names one bundle globally and a name names one bundle in
     /// a realm; either taken key is `Conflict` and the incumbent is unchanged.
     async fn create_policy_bundle(&self, bundle: &PolicyBundle) -> QidResult<()>;
+    /// Return the sole active bundle, `None` if absent, or `Conflict` if ambiguous; never mutate.
     async fn get_active_policy_bundle(&self, realm_id: &RealmId)
     -> QidResult<Option<PolicyBundle>>;
     async fn list_policy_bundles(&self, realm_id: &RealmId) -> QidResult<Vec<PolicyBundle>>;

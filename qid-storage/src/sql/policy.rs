@@ -33,13 +33,19 @@ impl PolicyRepository for SqlRepository {
         &self,
         realm_id: &RealmId,
     ) -> QidResult<Option<PolicyBundle>> {
-        let row: Option<PolicyBundleRow> =
-            sqlx::query_as("SELECT * FROM policy_bundles WHERE realm_id = ? AND active = 1")
-                .bind(realm_id.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
+        let rows: Vec<PolicyBundleRow> = sqlx::query_as(
+            "SELECT * FROM policy_bundles WHERE realm_id = ? AND active = 1 LIMIT 2",
+        )
+        .bind(realm_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage_to_qid_error)?;
+        if rows.len() > 1 {
+            return Err(QidError::Conflict {
+                message: "multiple active policy bundles; repair externally".into(),
+            });
+        }
+        Ok(rows.into_iter().next().map(Into::into))
     }
 
     async fn list_policy_bundles(&self, realm_id: &RealmId) -> QidResult<Vec<PolicyBundle>> {

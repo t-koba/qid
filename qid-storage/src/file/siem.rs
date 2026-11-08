@@ -12,11 +12,8 @@ impl SiemDeliveryRepository for FileRepository {
             &delivery.realm_id,
             || "SIEM delivery ID belongs to a different realm scope".to_string(),
         )?;
-        let incumbent_created_at = incumbent.map(|existing| existing.created_at);
         let mut stored = delivery.clone();
-        if let Some(created_at) = incumbent_created_at {
-            stored.created_at = created_at;
-        }
+        stored.created_at = incumbent.map_or(delivery.created_at, |existing| existing.created_at);
         store.siem_deliveries.insert(delivery.id.clone(), stored);
         drop(store);
         self.save().await
@@ -37,15 +34,8 @@ impl SiemDeliveryRepository for FileRepository {
             .siem_deliveries
             .values()
             .filter(|delivery| {
-                realm_id
-                    .map(|realm| delivery.realm_id.as_deref() == Some(realm))
-                    .unwrap_or(true)
-            })
-            .filter(|delivery| {
-                status
-                    .as_ref()
-                    .map(|status| delivery.status == *status)
-                    .unwrap_or(true)
+                realm_id.is_none_or(|realm| delivery.realm_id.as_deref() == Some(realm))
+                    && status.as_ref().is_none_or(|s| delivery.status == *s)
             })
             .cloned()
             .collect::<Vec<_>>();

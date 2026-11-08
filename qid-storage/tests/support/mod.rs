@@ -3413,6 +3413,12 @@ where
     .await
     .expect("create other policy bundle realm failed");
 
+    assert!(
+        repo.get_active_policy_bundle(&realm)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let bundle = PolicyBundle {
         id: "policy-bundle-a".to_string(),
         realm_id: realm.0.clone(),
@@ -3425,6 +3431,11 @@ where
     repo.create_policy_bundle(&bundle)
         .await
         .expect("create policy bundle failed");
+    assert_eq!(
+        serde_json::to_value(repo.get_active_policy_bundle(&realm).await.unwrap()).unwrap(),
+        serde_json::json!(bundle),
+        "one active bundle must be returned intact"
+    );
 
     let replay = repo
         .create_policy_bundle(&bundle)
@@ -3516,6 +3527,16 @@ where
     repo.create_policy_bundle(&distinct)
         .await
         .expect("a distinct bundle name in the same realm must be allowed");
+    let err = repo
+        .get_active_policy_bundle(&realm)
+        .await
+        .expect_err("multiple active bundles must fail closed");
+    assert!(matches!(err, qid_core::error::QidError::Conflict { .. }));
+    assert_eq!(
+        serde_json::to_value(repo.get_active_policy_bundle(&other_realm).await.unwrap()).unwrap(),
+        serde_json::json!(elsewhere),
+        "ambiguity must be scoped to the requested realm"
+    );
     let listed = repo
         .list_policy_bundles(&realm)
         .await

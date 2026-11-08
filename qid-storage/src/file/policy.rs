@@ -14,11 +14,14 @@ impl PolicyRepository for FileRepository {
         realm_id: &RealmId,
     ) -> QidResult<Option<PolicyBundle>> {
         let store = self.store.read().await;
-        Ok(store
-            .policy_bundles
-            .values()
-            .find(|b| b.realm_id == realm_id.0 && b.active)
-            .cloned())
+        Ok(unique_match(
+            store
+                .policy_bundles
+                .values()
+                .filter(|b| b.realm_id == realm_id.0 && b.active),
+            "multiple active policy bundles; repair externally",
+        )?
+        .cloned())
     }
 
     async fn list_policy_bundles(&self, realm_id: &RealmId) -> QidResult<Vec<PolicyBundle>> {

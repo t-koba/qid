@@ -11,12 +11,15 @@ use qid_core::{
     throttle::FailureBudget,
 };
 use qid_crypto::{
-    ARGON2ID_ALGORITHM, Argon2idParams, PBKDF2_SHA256_ALGORITHM, encode_pbkdf2_sha256_hash,
-    hash_password_with_params,
+    ARGON2ID_ALGORITHM, Argon2idParams, PBKDF2_SHA256_ALGORITHM, hash_password_with_params,
 };
 use qid_session::auth::{Authenticator, PasswordPolicy};
 use qid_storage::{FileRepository, prelude::*};
 use std::sync::Arc;
+
+// Precomputed at the PBKDF2 security floor; qid-crypto separately tests encoding.
+const LEGACY_PBKDF2_HASH: &str =
+    "$pbkdf2-sha256$i=100000$MDEyMzQ1Njc4OWFiY2RlZg$_bKsKi_wFA24XIiE-KOTkqq5ERYTKnuJZY-UGk-cgPg";
 
 fn policy(max_failed_attempts: u32, argon2id: Argon2idCostConfig) -> PasswordPolicy {
     policy_with_realm_budget(max_failed_attempts, 100, argon2id)
@@ -89,12 +92,8 @@ async fn repository_with_user(
 async fn the_realm_lockout_limit_locks_the_account() -> anyhow::Result<()> {
     // The realm states two failed attempts, so the second failure locks
     // the account - the built-in five does not apply.
-    let repo = repository_with_user(
-        encode_pbkdf2_sha256_hash("correct-password-123!", b"0123456789abcdef", 100_000)
-            .context("legacy hash")?,
-        PBKDF2_SHA256_ALGORITHM,
-    )
-    .await?;
+    let repo =
+        repository_with_user(LEGACY_PBKDF2_HASH.to_string(), PBKDF2_SHA256_ALGORITHM).await?;
     let authenticator = Authenticator::new(
         repo.clone(),
         policy(2, Argon2idCostConfig::default()),
@@ -198,12 +197,8 @@ async fn the_realm_argon2id_cost_applies_when_the_product_creates_a_credential()
 -> anyhow::Result<()> {
     // An imported PBKDF2 credential is rehashed when the product creates
     // the Argon2id credential, and the realm's own cost applies.
-    let repo = repository_with_user(
-        encode_pbkdf2_sha256_hash("correct-password-123!", b"0123456789abcdef", 100_000)
-            .context("legacy hash")?,
-        PBKDF2_SHA256_ALGORITHM,
-    )
-    .await?;
+    let repo =
+        repository_with_user(LEGACY_PBKDF2_HASH.to_string(), PBKDF2_SHA256_ALGORITHM).await?;
     let authenticator = Authenticator::new(
         repo.clone(),
         policy(

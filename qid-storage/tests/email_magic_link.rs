@@ -6,6 +6,33 @@ use qid_core::{
 use qid_storage::{FileFlushMode, FileRepository, SqlRepository, prelude::*};
 use std::time::Duration;
 
+static EMAIL_MAGIC_LINK_SCHEMA: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
+
+async fn migrated_sql_schema() -> &'static [u8] {
+    EMAIL_MAGIC_LINK_SCHEMA
+        .get_or_init(|| async {
+            let path = std::env::temp_dir().join(format!("qid-magic-schema-{}", ulid::Ulid::new()));
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .unwrap();
+            let migration = repo.migrate().await;
+            repo.close().await;
+            migration.unwrap();
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                assert!(
+                    !std::path::Path::new(&sidecar).try_exists().unwrap(),
+                    "closed SQLite schema template retained sidecar {suffix}"
+                );
+            }
+            let schema = std::fs::read(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            schema
+        })
+        .await
+}
+
 fn proof(binding: &str, token: &str) -> String {
     format!("ml2:{}:{}", binding.repeat(64), token.repeat(64))
 }
@@ -534,9 +561,9 @@ async fn file_email_magic_link_contract_and_reopen() {
 async fn sql_email_magic_link_contract_and_reopen() {
     let dir = std::env::temp_dir().join(format!("qid-magic-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("store.db"), migrated_sql_schema().await).unwrap();
     let url = format!("sqlite:{}", dir.join("store.db").display());
     let repo = SqlRepository::connect(&url).await.unwrap();
-    repo.migrate().await.unwrap();
     contract(&repo).await;
     let before = row(&repo, "success").await;
     repo.close().await;
@@ -612,9 +639,9 @@ fn file_magic_link_interval_mode_persists_and_rolls_back_errors() {
 async fn sql_magic_link_storage_errors_roll_back_admission_and_redemption() {
     let dir = std::env::temp_dir().join(format!("qid-magic-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("store.db"), migrated_sql_schema().await).unwrap();
     let url = format!("sqlite:{}", dir.join("store.db").display());
     let repo = SqlRepository::connect(&url).await.unwrap();
-    repo.migrate().await.unwrap();
     let c = seed(&repo).await;
     let pool = sqlx::AnyPool::connect(&url).await.unwrap();
     sqlx::query("CREATE TRIGGER fail_issuance BEFORE INSERT ON ciam_verification_challenges BEGIN SELECT RAISE(ABORT, 'injected storage error'); END")

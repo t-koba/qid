@@ -7,6 +7,34 @@ use qid_core::{
 use qid_storage::{FileFlushMode, FileRepository, SqlRepository, prelude::*};
 use std::{sync::Arc, time::Duration};
 
+static EMAIL_VERIFICATION_SCHEMA: tokio::sync::OnceCell<Vec<u8>> =
+    tokio::sync::OnceCell::const_new();
+
+async fn migrated_sql_schema() -> &'static [u8] {
+    EMAIL_VERIFICATION_SCHEMA
+        .get_or_init(|| async {
+            let path = std::env::temp_dir().join(format!("qid-email-schema-{}", ulid::Ulid::new()));
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .unwrap();
+            let migration = repo.migrate().await;
+            repo.close().await;
+            migration.unwrap();
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                assert!(
+                    !std::path::Path::new(&sidecar).try_exists().unwrap(),
+                    "closed SQLite schema template retained sidecar {suffix}"
+                );
+            }
+            let schema = std::fs::read(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            schema
+        })
+        .await
+}
+
 async fn seed(repo: &impl Repository) -> CiamVerificationChallengeRecord {
     repo.create_realm(
         &"tenant".into(),
@@ -214,9 +242,10 @@ async fn file_email_verification_contract_and_durability() {
 async fn sql_email_verification_contract_and_durability() {
     let dir = std::env::temp_dir().join(format!("qid-email-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
-    let url = format!("sqlite:{}", dir.join("store.db").display());
+    let db_path = dir.join("store.db");
+    std::fs::write(&db_path, migrated_sql_schema().await).unwrap();
+    let url = format!("sqlite:{}", db_path.display());
     let repo = SqlRepository::connect(&url).await.unwrap();
-    repo.migrate().await.unwrap();
     contract(&repo).await;
     let before = row(&repo, "stale").await;
     repo.close().await;
@@ -642,9 +671,10 @@ async fn file_email_verification_issuance_budget() {
 async fn sql_email_verification_issuance_budget() {
     let dir = std::env::temp_dir().join(format!("qid-email-issuance-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
-    let url = format!("sqlite:{}", dir.join("store.db").display());
+    let db_path = dir.join("store.db");
+    std::fs::write(&db_path, migrated_sql_schema().await).unwrap();
+    let url = format!("sqlite:{}", db_path.display());
     let repo = SqlRepository::connect(&url).await.unwrap();
-    repo.migrate().await.unwrap();
     issuance_contract(&repo).await;
     let before = row(&repo, "larger-budget").await;
     repo.close().await;

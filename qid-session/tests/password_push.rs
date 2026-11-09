@@ -20,37 +20,36 @@ use ring::{
     signature::{self, KeyPair},
 };
 use serde_json::{Value as JsonValue, json};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 const BASE: &str = "/api/v1/corp/auth/password";
-static SCHEMA_TEMPLATE: tokio::sync::OnceCell<(tempfile::TempDir, PathBuf)> =
-    tokio::sync::OnceCell::const_new();
+static SCHEMA_TEMPLATE: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
 
-async fn schema_template_path() -> &'static PathBuf {
-    let (_, path) = SCHEMA_TEMPLATE
+async fn schema_template() -> &'static [u8] {
+    SCHEMA_TEMPLATE
         .get_or_init(|| async {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("schema.db");
             let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
                 .await
                 .unwrap();
-            repo.migrate().await.unwrap();
+            let migration = repo.migrate().await;
             repo.close().await;
+            migration.unwrap();
             for suffix in ["-wal", "-shm", "-journal"] {
                 let mut sidecar = path.as_os_str().to_os_string();
                 sidecar.push(suffix);
                 assert!(
-                    !PathBuf::from(sidecar).exists(),
-                    "schema template has a sidecar after closing the pool: {}",
-                    path.display()
+                    !std::path::Path::new(&sidecar).try_exists().unwrap(),
+                    "closed SQLite schema template retained sidecar {suffix}"
                 );
             }
-            (dir, path)
+            let schema = std::fs::read(path).unwrap();
+            dir.close().unwrap();
+            schema
         })
-        .await;
-    path
+        .await
 }
 const PASSWORD: &str = "correct-password-123!";
 #[derive(Default)]
@@ -100,9 +99,9 @@ async fn fixture_policy(
 ) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
-    // Storage tests cover fresh migrations; copying keeps each push case isolated
-    // without rerunning the full migration set for every fixture.
-    std::fs::copy(schema_template_path().await, &db_path).unwrap();
+    // Storage tests cover fresh migrations; writing the migrated schema bytes keeps
+    // each push case isolated without rerunning every migration for each fixture.
+    std::fs::write(&db_path, schema_template().await).unwrap();
     let url = format!("sqlite:{}", db_path.display());
     let repo = Arc::new(SqlRepository::connect(&url).await.unwrap());
     repo.create_realm(

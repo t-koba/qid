@@ -281,7 +281,11 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
                 .env("TMPDIR", &root.0)
                 .env("TMP", &root.0)
                 .env("TEMP", &root.0)
+                // Keep nested libtest output out of Cargo's parent capture;
+                // child success is checked from its exit status and fixture files.
                 .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .expect("launch OIDC fixture isolation child"),
         );

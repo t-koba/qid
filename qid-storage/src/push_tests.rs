@@ -1,5 +1,9 @@
 //! Storage tests deliberately supply verification outcomes, not signatures. The
 //! service must perform cryptographic verification before requesting transitions.
+#[cfg(windows)]
+#[path = "../tests/support/windows_sqlite_cleanup_diagnostic.rs"]
+mod windows_sqlite_cleanup_diagnostic;
+
 use crate::sql::iga_tests::test_support::IsolatedDb;
 use crate::{FileRepository, SqlRepository, prelude::*};
 use qid_core::{QidError, models::*, tenant::RealmId};
@@ -1052,7 +1056,8 @@ fn file_push_immediate_durability_and_failure_rollback_in_interval_mode() {
 async fn sql_push_activation_failure_rolls_back_and_state_survives_reopen() {
     let dir = std::env::temp_dir().join(format!("qid-push-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
-    let url = format!("sqlite:{}", dir.join("store.db").display());
+    let path = dir.join("store.db");
+    let url = format!("sqlite:{}", path.display());
     let repo = SqlRepository::connect(&url).await.unwrap();
     repo.migrate().await.unwrap();
     seed(&repo).await;
@@ -1106,7 +1111,11 @@ async fn sql_push_activation_failure_rolls_back_and_state_survives_reopen() {
     let reopened = SqlRepository::connect(&url).await.unwrap();
     check_durable(&reopened).await;
     reopened.close().await;
+    #[cfg(windows)]
+    let diagnostic_ok = windows_sqlite_cleanup_diagnostic::capture(&path);
     std::fs::remove_dir_all(dir).unwrap();
+    #[cfg(windows)]
+    assert!(diagnostic_ok, "Windows cleanup diagnostic failed");
 }
 
 #[tokio::test]

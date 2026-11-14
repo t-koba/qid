@@ -20,6 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "../../tests/support/sqlite_cleanup.rs"]
 mod sqlite_cleanup;
+#[cfg(windows)]
+#[path = "../../tests/support/windows_sqlite_cleanup_diagnostic.rs"]
+mod windows_sqlite_cleanup_diagnostic;
 use sqlite_cleanup::{remove_sqlite_database_files, remove_sqlite_database_files_once};
 
 static TEMPLATE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
@@ -122,9 +125,13 @@ impl IsolatedDb {
         if let Some(repo) = self.repo.take() {
             repo.close().await;
         }
+        #[cfg(windows)]
+        let diagnostic_ok = windows_sqlite_cleanup_diagnostic::capture(&self.path);
         remove_sqlite_database_files(&self.path).unwrap_or_else(|error| {
             panic!("remove unit-test database {}: {error}", self.path.display())
         });
+        #[cfg(windows)]
+        assert!(diagnostic_ok, "Windows cleanup diagnostic failed");
     }
 }
 

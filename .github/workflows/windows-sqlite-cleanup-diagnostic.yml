@@ -2,6 +2,11 @@ name: Windows SQLite Cleanup Diagnostic
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Published source commit to inspect.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +20,24 @@ jobs:
       QID_SQLITE_CLEANUP_SUFFIX: trace-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.expected_sha }}
+      - name: Verify the exact requested source
+        shell: pwsh
+        env:
+          QID_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:QID_EXPECTED_SHA -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
+            Write-Host 'ERROR: Expected source must be a full commit ID.'
+            exit 1
+          }
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:QID_EXPECTED_SHA) {
+            Write-Host 'ERROR: Checked-out source does not match the requested commit.'
+            exit 1
+          }
+          Write-Host "Verified diagnostic source $actual."
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "1.96"
@@ -77,7 +100,7 @@ jobs:
           }
           if ($failed) { exit 1 }
           Write-Host 'Headless helper preflight passed (no diagnostic output retained).'
-      - name: Query exact-path owners immediately before the first deletion
+      - name: Query exact-path owners before selected cleanup deletions
         timeout-minutes: 24
         shell: pwsh
         env:
@@ -96,12 +119,20 @@ jobs:
             Write-Host 'ERROR: Diagnostic path preflight failed (raw exception suppressed).'
             exit 1
           }
-          # The opt-in test invokes the headless Restart Manager helper after
-          # repo.close(), before the unchanged first remove_file assertion.
-          # This is an owner snapshot, not an exhaustive file-I/O/handle trace;
-          # an empty result does not prove that no kernel/external lock exists.
-          & cargo test --locked -p qid-storage --test user_deletion sql_user_deletion_cleans_only_owned_authentication_state -- --exact --nocapture
-          exit $LASTEXITCODE
+          # These exact tests invoke the opt-in headless Restart Manager helper
+          # after pool closure and immediately before their unchanged deletion.
+          # An owner snapshot is not an exhaustive handle trace; an empty result
+          # does not prove that no kernel/external lock exists.
+          $failed = $false
+          & cargo test --locked -p qid-storage --test user_deletion 'sql_user_deletion_cleans_only_owned_authentication_state' -- --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          & cargo test --locked -p qid-storage --lib 'sql::iga_tests::sql_iga_entitlement_store_upserts_tenant_scoped_row' -- --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          & cargo test --locked -p qid-storage --lib 'sql::realm_tests::realm_creation_sql_clears_orphans_only_after_claiming_absent_id' -- --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          & cargo test --locked -p qid-storage --lib 'push_tests::sql_push_activation_failure_rolls_back_and_state_survives_reopen' -- --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          if ($failed) { exit 1 }
       - name: Erase the exact diagnostic database and sidecars
         timeout-minutes: 2
         if: always()

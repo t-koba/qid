@@ -162,6 +162,79 @@ fn db_url() -> String {
 
 #[test]
 fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const CHILD_ROOT: &str = "QID_TEST_OIDC_CHILD_ROOT";
+    const CHILD_ID: &str = "QID_TEST_OIDC_CHILD_ID";
+    let timeout = Duration::from_millis(
+        std::env::var("QID_TEST_OIDC_PROCESS_TIMEOUT_MS")
+            .unwrap_or_else(|_| "30000".into())
+            .parse()
+            .expect("OIDC process timeout must be milliseconds"),
+    );
+    let deadline = Instant::now() + timeout;
+    let wait_until = |description: &str, ready: &mut dyn FnMut() -> bool| loop {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {description}"
+        );
+        if ready() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let id = std::env::var(CHILD_ID).unwrap();
+        // Exercise the real fixture allocator, not a parallel test-only allocator.
+        let url = db_url();
+        let path = PathBuf::from(url.strip_prefix("sqlite:").unwrap());
+        let report = root.join(format!("{id}.path"));
+        std::fs::write(&report, serde_json::to_vec(&path).unwrap()).unwrap();
+        std::fs::write(root.join(format!("{id}.allocated")), b"").unwrap();
+        // Neither child may create its database before both paths are reported.
+        wait_until("both fixture allocations", &mut || {
+            root.join("create").exists()
+        });
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("exclusively create child fixture database");
+        file.write_all(id.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        std::fs::write(root.join(format!("{id}.written")), b"").unwrap();
+        // Keep both fixture directories alive until the parent checks their files.
+        wait_until("both exclusive writes", &mut || {
+            root.join("release").exists()
+        });
+        // libtest thread exit drops DATABASES and removes this owned directory.
+        return;
+    }
+
+    struct Children {
+        processes: Vec<Child>,
+        root: PathBuf,
+    }
+
+    impl Drop for Children {
+        fn drop(&mut self) {
+            // Also runs on spawn, assertion and timeout failures. Unblock any
+            // rendezvous, then stop and reap every child before root cleanup.
+            let _ = std::fs::write(self.root.join("create"), b"");
+            let _ = std::fs::write(self.root.join("release"), b"");
+            for child in &mut self.processes {
+                let _ = child.kill();
+            }
+            for child in &mut self.processes {
+                let _ = child.wait();
+            }
+        }
+    }
+
     let directory = TestDirectory::new();
     let dir = &directory.0;
     let test_database = dir.join("test_123.db");
@@ -188,6 +261,80 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
         assert!(PathBuf::from(template_file).exists());
     }
     remove_sqlite_database_files(&template).unwrap();
+
+    let root = TestDirectory::new();
+    let mut children = Children {
+        processes: Vec::new(),
+        root: root.0.clone(),
+    };
+    for id in ["first", "second"] {
+        children.processes.push(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sqlite_database_cleanup_removes_stale_sidecars_without_matching_template",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_ROOT, &root.0)
+                .env(CHILD_ID, id)
+                // Unix and Windows must resolve the same fresh temporary root.
+                .env("TMPDIR", &root.0)
+                .env("TMP", &root.0)
+                .env("TEMP", &root.0)
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("launch OIDC fixture isolation child"),
+        );
+    }
+    wait_until("child path reports", &mut || {
+        ["first", "second"]
+            .iter()
+            .all(|id| root.0.join(format!("{id}.allocated")).exists())
+    });
+    let paths: Vec<PathBuf> = ["first", "second"]
+        .iter()
+        .map(|id| {
+            serde_json::from_slice(&std::fs::read(root.0.join(format!("{id}.path"))).unwrap())
+                .unwrap()
+        })
+        .collect();
+    assert_ne!(
+        paths[0], paths[1],
+        "processes must not share a database path"
+    );
+    let directories: Vec<_> = paths.iter().map(|path| path.parent().unwrap()).collect();
+    assert_ne!(
+        directories[0], directories[1],
+        "fixture directories are owned"
+    );
+    for directory in &directories {
+        assert!(directory.starts_with(&root.0) && *directory != root.0);
+        assert!(directory.is_dir());
+    }
+    std::fs::write(root.0.join("create"), b"").unwrap();
+    wait_until("child writes", &mut || {
+        ["first", "second"]
+            .iter()
+            .all(|id| root.0.join(format!("{id}.written")).exists())
+    });
+    for (path, id) in paths.iter().zip(["first", "second"]) {
+        assert_eq!(std::fs::read(path).unwrap(), id.as_bytes());
+    }
+    std::fs::write(root.0.join("release"), b"").unwrap();
+    wait_until("successful child exits", &mut || {
+        children.processes.iter_mut().all(|child| {
+            child.try_wait().unwrap().is_some_and(|status| {
+                assert!(status.success(), "fixture child failed: {status}");
+                true
+            })
+        })
+    });
+    for directory in directories {
+        assert!(
+            !directory.exists(),
+            "child fixture directory was not removed"
+        );
+    }
 }
 
 // Each isolated fixture uses the same test password, so hash it once per process.

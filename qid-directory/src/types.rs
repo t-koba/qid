@@ -101,7 +101,7 @@ pub async fn import_hr_records<R: Repository>(
     for (record, current) in planned {
         let result = match (record.event.clone(), current) {
             (LifecycleEvent::Joiner | LifecycleEvent::Mover, Some(mut user)) => {
-                apply_hr_record(&mut user, &record);
+                apply_hr_record(&mut user, &record)?;
                 state.repo.update_scim_user(&user).await?;
                 HrImportResult {
                     external_id: record.external_id,
@@ -110,7 +110,7 @@ pub async fn import_hr_records<R: Repository>(
                 }
             }
             (LifecycleEvent::Joiner | LifecycleEvent::Mover, None) => {
-                let user = scim_user_from_hr_record(realm_id, &record);
+                let user = scim_user_from_hr_record(realm_id, &record)?;
                 state.repo.create_scim_user(&user).await?;
                 HrImportResult {
                     external_id: record.external_id,
@@ -120,8 +120,8 @@ pub async fn import_hr_records<R: Repository>(
             }
             (LifecycleEvent::Leaver, Some(mut user)) => {
                 user.active = false;
-                mark_hr_source(&mut user, &record);
-                mark_deprovisioned(&mut user, now_seconds());
+                mark_hr_source(&mut user, &record)?;
+                mark_deprovisioned(&mut user, now_seconds())?;
                 state.repo.update_scim_user(&user).await?;
                 HrImportResult {
                     external_id: record.external_id,

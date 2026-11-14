@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::{
     error::QidError,
     models::{OIDC_CONTINUATION_CONTEXT_MAX_BYTES, OidcAuthorizationContinuation},

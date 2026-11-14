@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::{models::*, tenant::RealmId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
 use serde_json::json;

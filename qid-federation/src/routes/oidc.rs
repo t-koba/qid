@@ -25,7 +25,9 @@ pub async fn exchange_code_for_tokens(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .expect("reqwest client build");
+        .map_err(|error| QidError::Internal {
+            message: format!("OIDC HTTP client initialization failed: {error}"),
+        })?;
     let params = [
         ("grant_type", "authorization_code"),
         ("code", code),
@@ -66,7 +68,9 @@ pub async fn fetch_userinfo(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .expect("reqwest client build");
+        .map_err(|error| QidError::Internal {
+            message: format!("OIDC HTTP client initialization failed: {error}"),
+        })?;
     let resp = client
         .get(userinfo_url)
         .bearer_auth(access_token)

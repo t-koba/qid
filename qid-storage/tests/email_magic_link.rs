@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The same durable magic-link contract against file and SQL stores.
 use qid_core::{
     QidError,

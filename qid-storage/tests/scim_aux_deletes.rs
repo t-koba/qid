@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Cross-backend contract for realm-bound SCIM auxiliary deletes.
 //!
 //! Device and EventSubscription deletion carries an optional expected realm.

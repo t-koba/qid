@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Route contract for realm-bound SCIM auxiliary deletes.
 //!
 //! The handlers pass the authenticated `ScimRequestContext` realm into

@@ -98,7 +98,7 @@ pub fn handle_radius_access_request_bytes_with_authorizer(
     authorizer: &(dyn Fn(&str, &RadiusPacket<'_>) -> RadiusAccessDecision + Send + Sync),
 ) -> QidResult<Vec<u8>> {
     let request = parse_radius_packet(request_bytes)?;
-    if !crate::verify_radius_request_authenticator(shared_secret, &request, request_bytes) {
+    if !crate::verify_radius_request_authenticator(shared_secret, &request, request_bytes)? {
         return Err(QidError::Unauthorized {
             message: "RADIUS request authenticator mismatch".to_string(),
         });
@@ -122,13 +122,13 @@ pub fn handle_radius_access_request_bytes_with_authorizer(
         .unwrap_or("")
         .to_string();
     let (code, attributes) = decide_radius_response(&user_name, &request, authorizer);
-    Ok(encode_radius_response(
+    encode_radius_response(
         request.identifier,
         &request.authenticator,
         code,
         attributes,
         shared_secret,
-    ))
+    )
 }
 
 /// Handle a single RADIUS Accounting-Request packet (code 4).
@@ -146,7 +146,7 @@ pub async fn handle_radius_accounting_request(
             message: "not an Accounting-Request packet".to_string(),
         });
     }
-    if !crate::verify_radius_request_authenticator(shared_secret, &request, &request_bytes) {
+    if !crate::verify_radius_request_authenticator(shared_secret, &request, &request_bytes)? {
         return Err(QidError::Unauthorized {
             message: "RADIUS accounting request authenticator mismatch".to_string(),
         });
@@ -169,7 +169,7 @@ pub async fn handle_radius_accounting_request(
         RadiusCode::AccountingResponse,
         Vec::new(),
         shared_secret,
-    );
+    )?;
     socket
         .send_to(&encoded, peer)
         .await
@@ -194,7 +194,7 @@ pub async fn handle_radius_coa_request(
             message: "not a CoA/Disconnect-Request packet".to_string(),
         });
     }
-    if !crate::verify_radius_request_authenticator(shared_secret, &request, &request_bytes) {
+    if !crate::verify_radius_request_authenticator(shared_secret, &request, &request_bytes)? {
         return Err(QidError::Unauthorized {
             message: "RADIUS CoA request authenticator mismatch".to_string(),
         });
@@ -209,7 +209,7 @@ pub async fn handle_radius_coa_request(
         response_code,
         Vec::new(),
         shared_secret,
-    );
+    )?;
     socket
         .send_to(&encoded, peer)
         .await
@@ -279,16 +279,14 @@ fn encode_radius_packet_with_code(
     buf
 }
 
-/// Encode a Radius response packet with computed authenticator. The
-/// caller supplies the request authenticator so the response
-/// authenticator can be derived with `radius_response_authenticator`.
+/// Encode a RADIUS response with its authenticator; return an internal error if MAC initialization fails.
 pub fn encode_radius_response(
     identifier: u8,
     request_authenticator: &[u8; 16],
     code: RadiusCode,
     attributes: Vec<(u8, Vec<u8>)>,
     shared_secret: &[u8],
-) -> Vec<u8> {
+) -> QidResult<Vec<u8>> {
     let mut buf = encode_radius_packet_with_code(
         &RadiusPacket {
             code,
@@ -300,9 +298,9 @@ pub fn encode_radius_response(
         attributes,
     );
     let authenticator =
-        radius_response_authenticator(shared_secret, request_authenticator, &buf[4..]);
+        radius_response_authenticator(shared_secret, request_authenticator, &buf[4..])?;
     buf[4..20].copy_from_slice(&authenticator);
-    buf
+    Ok(buf)
 }
 
 /// Find the byte offset of the Message-Authenticator attribute value

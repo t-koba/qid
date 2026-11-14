@@ -744,9 +744,9 @@ fn cmd_structure() -> anyhow::Result<()> {
     let mut all_pass = true;
 
     for (name, manifest_path) in &packages {
-        let crate_dir = manifest_path
-            .parent()
-            .expect("manifest_path should have a parent");
+        let crate_dir = manifest_path.parent().ok_or_else(|| {
+            anyhow::anyhow!("manifest path has no parent: {}", manifest_path.display())
+        })?;
 
         // Check 1: directory exists
         if !crate_dir.exists() {
@@ -925,9 +925,9 @@ fn cmd_budget() -> anyhow::Result<()> {
     println!("{:-<88}", "");
 
     for (name, manifest_path) in &packages {
-        let crate_dir = manifest_path
-            .parent()
-            .expect("manifest_path should have a parent");
+        let crate_dir = manifest_path.parent().ok_or_else(|| {
+            anyhow::anyhow!("manifest path has no parent: {}", manifest_path.display())
+        })?;
         match count_rs_lines(crate_dir, name) {
             Ok(counts) => {
                 product_total += counts.product;

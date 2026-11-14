@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::error::{QidError, QidResult};
 use qid_core::{
     models::{ScimGroup, ScimUser},

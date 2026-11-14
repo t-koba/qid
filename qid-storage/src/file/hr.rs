@@ -43,12 +43,12 @@ impl FileRepository {
             self.sync_hr_directory().await?;
             return Ok(result);
         }
-        validate_hr_changes(
+        let changes = validate_hr_changes(
             batch,
             &store.scim_users.values().cloned().collect::<Vec<_>>(),
         )?;
         let mut candidate = store.clone();
-        for change in batch.changes.as_ref().unwrap() {
+        for change in changes {
             candidate
                 .scim_users
                 .insert(change.user.id.clone(), change.user.clone());

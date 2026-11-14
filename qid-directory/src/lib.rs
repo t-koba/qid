@@ -346,7 +346,7 @@ pub async fn sync_ldap_entries<R: Repository>(
         match previous {
             Some(mut user) => {
                 let before = user.clone();
-                apply_ldap_entry(&mut user, provider_id, entry, options.synced_at);
+                apply_ldap_entry(&mut user, provider_id, entry, options.synced_at)?;
                 if scim_user_semantic_eq(&before, &user) {
                     result.unchanged_user_ids.push(user.id);
                 } else {
@@ -356,7 +356,7 @@ pub async fn sync_ldap_entries<R: Repository>(
             }
             None => {
                 let user =
-                    scim_user_from_ldap_entry(realm_id, provider_id, entry, options.synced_at);
+                    scim_user_from_ldap_entry(realm_id, provider_id, entry, options.synced_at)?;
                 state.repo.create_scim_user(&user).await?;
                 result.created_user_ids.push(user.id);
             }
@@ -370,7 +370,7 @@ pub async fn sync_ldap_entries<R: Repository>(
                     continue;
                 }
                 user.active = false;
-                mark_deprovisioned(&mut user, options.synced_at);
+                mark_deprovisioned(&mut user, options.synced_at)?;
                 state.repo.update_scim_user(&user).await?;
                 result.deactivated_user_ids.push(user.id);
             }
@@ -637,7 +637,7 @@ fn scim_user_from_ldap_entry(
     provider_id: &str,
     entry: &LdapDirectoryEntry,
     synced_at: u64,
-) -> ScimUser {
+) -> QidResult<ScimUser> {
     let mut user = ScimUser {
         id: ulid::Ulid::new().to_string(),
         realm_id: realm_id.to_string(),
@@ -650,8 +650,8 @@ fn scim_user_from_ldap_entry(
         deprovisioned_at: None,
         active: entry.enabled,
     };
-    apply_ldap_entry(&mut user, provider_id, entry, synced_at);
-    user
+    apply_ldap_entry(&mut user, provider_id, entry, synced_at)?;
+    Ok(user)
 }
 
 fn apply_ldap_entry(
@@ -659,7 +659,7 @@ fn apply_ldap_entry(
     provider_id: &str,
     entry: &LdapDirectoryEntry,
     synced_at: u64,
-) {
+) -> QidResult<()> {
     user.directory_provider_id = Some(provider_id.to_string());
     user.external_id = Some(entry.dn.clone());
     user.user_name = entry.uid.clone();
@@ -674,7 +674,7 @@ fn apply_ldap_entry(
         .as_ref()
         .map(|mail| serde_json::json!([{ "value": mail, "primary": true }]))
         .unwrap_or_else(|| serde_json::json!([]));
-    mark_ldap_source(user, entry, synced_at);
+    mark_ldap_source(user, entry, synced_at)?;
     if entry.enabled {
         // Reactivation clears the authoritative timestamp and any stale
         // enterprise marker so a later disable gets a fresh timestamp.
@@ -682,11 +682,16 @@ fn apply_ldap_entry(
     } else {
         // Disabled snapshots stamp the first transition only and preserve it
         // across repeated disabled snapshots.
-        ensure_deprovisioned(user, synced_at);
+        ensure_deprovisioned(user, synced_at)?;
     }
+    Ok(())
 }
 
-fn mark_ldap_source(user: &mut ScimUser, entry: &LdapDirectoryEntry, synced_at: u64) {
+fn mark_ldap_source(
+    user: &mut ScimUser,
+    entry: &LdapDirectoryEntry,
+    synced_at: u64,
+) -> QidResult<()> {
     let mut enterprise = user
         .enterprise_json
         .as_object()
@@ -730,8 +735,9 @@ fn mark_ldap_source(user: &mut ScimUser, entry: &LdapDirectoryEntry, synced_at: 
         } else {
             EmploymentState::Inactive
         },
-    );
+    )?;
     user.enterprise_json = serde_json::Value::Object(enterprise);
+    Ok(())
 }
 
 // Ownership helpers deliberately read only the server-owned
@@ -750,7 +756,7 @@ fn scim_user_semantic_eq(left: &ScimUser, right: &ScimUser) -> bool {
         && left.active == right.active
 }
 
-fn scim_user_from_hr_record(realm_id: &str, record: &HrRecord) -> ScimUser {
+fn scim_user_from_hr_record(realm_id: &str, record: &HrRecord) -> QidResult<ScimUser> {
     let mut user = ScimUser {
         id: ulid::Ulid::new().to_string(),
         realm_id: realm_id.to_string(),
@@ -763,11 +769,11 @@ fn scim_user_from_hr_record(realm_id: &str, record: &HrRecord) -> ScimUser {
         deprovisioned_at: None,
         active: true,
     };
-    apply_hr_record(&mut user, record);
-    user
+    apply_hr_record(&mut user, record)?;
+    Ok(user)
 }
 
-fn apply_hr_record(user: &mut ScimUser, record: &HrRecord) {
+fn apply_hr_record(user: &mut ScimUser, record: &HrRecord) -> QidResult<()> {
     user.external_id = Some(record.external_id.clone());
     user.user_name = record.user_name.clone();
     user.active = true;
@@ -786,7 +792,8 @@ fn apply_hr_record(user: &mut ScimUser, record: &HrRecord) {
         .as_ref()
         .map(|email| serde_json::json!([{ "value": email, "primary": true }]))
         .unwrap_or_else(|| serde_json::json!([]));
-    mark_hr_source(user, record);
+    mark_hr_source(user, record)?;
+    Ok(())
 }
 
 /// Project HR organizational fields into stored enterprise attributes.
@@ -796,7 +803,7 @@ fn apply_hr_record(user: &mut ScimUser, record: &HrRecord) {
 /// attributes do not linger. `Joiner`/`Leaver` records with `None` preserve
 /// the stored value. `Some` always sets. Unrelated enterprise attributes are
 /// preserved.
-fn mark_hr_source(user: &mut ScimUser, record: &HrRecord) {
+fn mark_hr_source(user: &mut ScimUser, record: &HrRecord) -> QidResult<()> {
     let mut enterprise = user
         .enterprise_json
         .as_object()
@@ -834,8 +841,9 @@ fn mark_hr_source(user: &mut ScimUser, record: &HrRecord) {
     set_employment_state_value(
         &mut enterprise,
         employment_state_for_lifecycle(&record.event),
-    );
+    )?;
     user.enterprise_json = serde_json::Value::Object(enterprise);
+    Ok(())
 }
 
 fn employment_state_for_lifecycle(event: &LifecycleEvent) -> EmploymentState {
@@ -848,12 +856,15 @@ fn employment_state_for_lifecycle(event: &LifecycleEvent) -> EmploymentState {
 fn set_employment_state_value(
     enterprise: &mut serde_json::Map<String, serde_json::Value>,
     state: EmploymentState,
-) {
-    let value = serde_json::to_value(state).expect("employment state serializes");
+) -> QidResult<()> {
+    let value = serde_json::to_value(state).map_err(|error| QidError::Internal {
+        message: format!("employment state serialization failed: {error}"),
+    })?;
     enterprise.insert("employment_state".to_string(), value);
+    Ok(())
 }
 
-fn mark_deprovisioned(user: &mut ScimUser, deprovisioned_at: u64) {
+fn mark_deprovisioned(user: &mut ScimUser, deprovisioned_at: u64) -> QidResult<()> {
     // Unconditional transition stamp (missing-user deactivation, HR leaver):
     // overwrites the authoritative timestamp and projects it.
     user.deprovisioned_at = Some(deprovisioned_at);
@@ -870,19 +881,17 @@ fn mark_deprovisioned(user: &mut ScimUser, deprovisioned_at: u64) {
         "deprovisioned_at".to_string(),
         serde_json::Value::Number(deprovisioned_at.into()),
     );
-    set_employment_state_value(&mut enterprise, EmploymentState::Inactive);
+    set_employment_state_value(&mut enterprise, EmploymentState::Inactive)?;
     user.enterprise_json = serde_json::Value::Object(enterprise);
+    Ok(())
 }
 
 /// Preserve-first disabled-snapshot stamp: set the authoritative timestamp
 /// only when absent, then project the trusted value into `enterprise_json`
 /// and mark employment inactive. Repeated disabled snapshots keep the first
 /// timestamp.
-fn ensure_deprovisioned(user: &mut ScimUser, synced_at: u64) {
-    if user.deprovisioned_at.is_none() {
-        user.deprovisioned_at = Some(synced_at);
-    }
-    let trusted = user.deprovisioned_at.expect("just ensured");
+fn ensure_deprovisioned(user: &mut ScimUser, synced_at: u64) -> QidResult<()> {
+    let trusted = *user.deprovisioned_at.get_or_insert(synced_at);
     let mut enterprise = user
         .enterprise_json
         .as_object()
@@ -896,8 +905,9 @@ fn ensure_deprovisioned(user: &mut ScimUser, synced_at: u64) {
         "deprovisioned_at".to_string(),
         serde_json::Value::Number(trusted.into()),
     );
-    set_employment_state_value(&mut enterprise, EmploymentState::Inactive);
+    set_employment_state_value(&mut enterprise, EmploymentState::Inactive)?;
     user.enterprise_json = serde_json::Value::Object(enterprise);
+    Ok(())
 }
 
 /// Reactivation: clear the authoritative timestamp and any stale or forged

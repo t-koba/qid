@@ -40,3 +40,6 @@ qid-core = { workspace = true, features = ["test-utils"] }
 qid-storage = { workspace = true }
 tower = { workspace = true }
 urlencoding = { workspace = true }
+
+[lints]
+workspace = true

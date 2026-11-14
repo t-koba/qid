@@ -14,19 +14,16 @@ pub struct ReqwestOutboundScimTransport {
 }
 
 impl ReqwestOutboundScimTransport {
-    pub fn new() -> Self {
-        Self {
+    /// Build the HTTP client, returning an internal error if initialization fails.
+    pub fn new() -> QidResult<Self> {
+        Ok(Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .expect("reqwest client build"),
-        }
-    }
-}
-
-impl Default for ReqwestOutboundScimTransport {
-    fn default() -> Self {
-        Self::new()
+                .map_err(|error| qid_core::error::QidError::Internal {
+                    message: format!("SCIM outbound HTTP client initialization failed: {error}"),
+                })?,
+        })
     }
 }
 

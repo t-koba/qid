@@ -205,11 +205,14 @@ impl Default for LdapSearchOptions {
     }
 }
 
-fn shared_runtime() -> &'static tokio::runtime::Runtime {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Runtime::new().expect("failed to create Tokio runtime for LDAP")
-    })
+fn shared_runtime() -> QidResult<&'static tokio::runtime::Runtime> {
+    static RT: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+    RT.get_or_init(tokio::runtime::Runtime::new)
+        .as_ref()
+        .map_err(|error| QidError::Internal {
+            message: format!("failed to create Tokio runtime for LDAP: {error}"),
+        })
 }
 
 /// Run operations with an owned driver. JoinSet aborts the driver on cancellation;
@@ -486,7 +489,7 @@ pub fn run_ldap_search_with_options(
     }
     let (settings, url) = ldap_search_settings(url, options.tls_insecure)?;
 
-    shared_runtime().block_on(async {
+    shared_runtime()?.block_on(async {
         with_ldap_session(settings, &url, options.timeout_secs, async |ldap| {
             let operation_timeout = std::time::Duration::from_secs(options.timeout_secs);
             if let Some((dn, pw)) = bind_credentials(bind_dn.as_deref(), bind_pw.as_deref())? {

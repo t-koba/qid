@@ -76,7 +76,10 @@ pub fn hr_order(
     Ok(None)
 }
 
-pub(crate) fn validate_hr_changes(batch: &HrBatch, users: &[ScimUser]) -> QidResult<()> {
+pub(crate) fn validate_hr_changes<'a>(
+    batch: &'a HrBatch,
+    users: &[ScimUser],
+) -> QidResult<&'a [HrUserChange]> {
     use std::collections::{BTreeMap, BTreeSet};
     let changes = batch.changes.as_ref().ok_or_else(conflict)?;
     let by_id: BTreeMap<_, _> = users.iter().map(|u| (&u.id, u)).collect();
@@ -102,8 +105,7 @@ pub(crate) fn validate_hr_changes(batch: &HrBatch, users: &[ScimUser]) -> QidRes
             .unwrap_or_default();
         let expected = change.expected.as_ref();
         if targets.len() != usize::from(expected.is_some())
-            || targets.first().map(|u| serde_json::to_value(u).unwrap())
-                != expected.map(|u| serde_json::to_value(u).unwrap())
+            || targets.first().copied() != expected
             || expected.is_some_and(|u| {
                 u.id != user.id || u.directory_provider_id != user.directory_provider_id
             })
@@ -115,5 +117,5 @@ pub(crate) fn validate_hr_changes(batch: &HrBatch, users: &[ScimUser]) -> QidRes
             return Err(conflict());
         }
     }
-    Ok(())
+    Ok(changes)
 }

@@ -75,7 +75,10 @@ impl<'de> Deserialize<'de> for MdocDataElementValue {
                 "an mdoc value must name exactly one of text, integer, boolean, bytes or date",
             ));
         }
-        let (key, value) = object.iter().next().expect("the object has one entry");
+        let (key, value) = object
+            .iter()
+            .next()
+            .ok_or_else(|| D::Error::custom("an mdoc value must name exactly one type"))?;
         match key.as_str() {
             "text" => text_value(value, key)
                 .map(MdocDataElementValue::Text)

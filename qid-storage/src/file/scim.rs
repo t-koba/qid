@@ -266,7 +266,9 @@ impl FileRepository {
                 resources.insert(id.to_string(), replacement.clone());
                 replacement
             }
-            ScimMutation::Delete => resources.remove(id).expect("locked row exists"),
+            ScimMutation::Delete => resources.remove(id).ok_or_else(|| QidError::Internal {
+                message: "SCIM row disappeared".into(),
+            })?,
         };
         drop(store);
         self.save().await?;

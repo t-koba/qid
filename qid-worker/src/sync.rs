@@ -32,7 +32,7 @@ pub async fn run_scim_outbound_sync_job<R: Repository>(
     repo: &R,
     config: ScimOutboundSyncConfig,
 ) -> QidResult<ScimOutboundSyncReport> {
-    let transport = ReqwestOutboundScimTransport::new();
+    let transport = ReqwestOutboundScimTransport::new()?;
     let scim_config = OutboundScimClientConfig {
         base_url: config.scim_base_url,
         bearer_token: config.scim_bearer_token,

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 mod support;
 
 use qid_core::models::{Session, User};

@@ -34,3 +34,6 @@ qid-core = { workspace = true, features = ["test-utils"] }
 qid-crypto = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true }
+
+[lints]
+workspace = true

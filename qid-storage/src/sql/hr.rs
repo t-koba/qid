@@ -71,8 +71,8 @@ impl SqlRepository {
                 .await
                 .map_err(storage_to_qid_error)?;
         let users: Vec<ScimUser> = users.into_iter().map(Into::into).collect();
-        validate_hr_changes(batch, &users)?;
-        for change in batch.changes.as_ref().unwrap() {
+        let changes = validate_hr_changes(batch, &users)?;
+        for change in changes {
             let u = &change.user;
             let deprovisioned_at = u
                 .deprovisioned_at
@@ -87,7 +87,7 @@ impl SqlRepository {
             }
         }
         let advanced = sqlx::query("UPDATE hr_receipts SET sequence = $1, digest = $2, summary_json = $3 WHERE realm_id = $4 AND provider_id = $5 AND sequence = $6")
-            .bind(batch.receipt.sequence as i64).bind(&batch.receipt.digest).bind(serde_json::to_string(&batch.receipt.summary).unwrap()).bind(&batch.realm_id).bind(&batch.provider_id).bind(previous)
+            .bind(batch.receipt.sequence as i64).bind(&batch.receipt.digest).bind(serde_json::to_string(&batch.receipt.summary).map_err(|_| QidError::Internal { message: "HR summary serialization failed".into() })?).bind(&batch.realm_id).bind(&batch.provider_id).bind(previous)
             .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
         if advanced.rows_affected() != 1 {
             return Err(crate::hr::conflict());

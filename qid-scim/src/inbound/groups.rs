@@ -141,7 +141,10 @@ pub(crate) async fn replace_group<R: Repository>(
         Err(response) => return *response,
     };
     req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
-    let expected = Condition::from_headers(existing.realm_id.clone(), &headers);
+    let expected = match Condition::from_headers(existing.realm_id.clone(), &headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     match replace_group_record(&state, &id, req, expected, Some(&existing.realm_id)).await {
         Ok(group) => crate::response::scim_group_response(StatusCode::OK, group),
         Err(e) => e.into_response(),
@@ -198,7 +201,10 @@ pub(crate) async fn patch_group<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(group.realm_id.clone(), &headers);
+    let expected = match Condition::from_headers(group.realm_id.clone(), &headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     match patch_group_record(&state, &id, req, expected, Some(&group.realm_id)).await {
         Ok(group) => crate::response::scim_group_response(StatusCode::OK, group),
         Err(e) => e.into_response(),
@@ -275,7 +281,10 @@ pub(crate) async fn delete_group<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(group.realm_id.clone(), &headers);
+    let expected = match Condition::from_headers(group.realm_id.clone(), &headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     match delete_group_record(&state, &id, expected, Some(&group.realm_id)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_response(),

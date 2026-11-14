@@ -22,7 +22,7 @@ pub(crate) fn build_explain_json(
     result: &DecisionDetails,
     active_bundle_name: Option<&str>,
     risk_evaluation: Option<&RiskEvaluation>,
-) -> serde_json::Value {
+) -> qid_core::error::QidResult<serde_json::Value> {
     let assertion_audience = realm_config.and_then(|realm| {
         let adapter_name = ctx.effective_pep_registration()?;
         realm
@@ -132,6 +132,12 @@ pub(crate) fn build_explain_json(
         risk_evaluation,
         cache_config.ttl_ms(result.decision.cache_class()),
     );
+    let risk_outcome = risk_evaluation
+        .map(|risk| serde_json::to_value(&risk.outcome))
+        .transpose()
+        .map_err(|error| qid_core::error::QidError::Internal {
+            message: format!("risk outcome serialization failed: {error}"),
+        })?;
     let audit_fields = serde_json::json!({
         "realm": realm_config.map(|realm| realm.id.as_str()),
         "subject": ctx.subject_id,
@@ -144,12 +150,12 @@ pub(crate) fn build_explain_json(
         "matched_rules": result.matched_rules,
         "policy_tags": result.policy_tags,
         "risk_score": risk_evaluation.map(|risk| risk.score),
-        "risk_outcome": risk_evaluation.map(|risk| serde_json::to_value(&risk.outcome).expect("risk outcome serialization")),
+        "risk_outcome": risk_outcome,
         "risk_labels": risk_evaluation.map(|risk| risk.labels.clone()),
         "audit_level": risk_evaluation.and_then(|risk| risk.audit_level.clone()),
     });
 
-    serde_json::json!({
+    Ok(serde_json::json!({
         "decision": result,
         "risk_evaluation": risk_evaluation,
         "deployment_profile": deployment_profile,
@@ -162,7 +168,7 @@ pub(crate) fn build_explain_json(
         "assertion_audience": assertion_audience,
         "policy_decision_trace": result.trace,
         "audit_fields": audit_fields,
-    })
+    }))
 }
 
 fn explain_deployment_profile(

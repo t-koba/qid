@@ -44,7 +44,12 @@ impl BitstringStatusListCredential {
 
 /// Encode a list of booleans (true = revoked) as a Bitstring Status
 /// List credential payload per W3C vc-bitstring-status-list §4.1.
-pub fn encode_bitstring_status_list(entries: &[bool], issuer: &str, valid_from: u64) -> String {
+/// Returns an internal error if compression or serialization fails.
+pub fn encode_bitstring_status_list(
+    entries: &[bool],
+    issuer: &str,
+    valid_from: u64,
+) -> QidResult<String> {
     let bytes: Vec<u8> = entries
         .chunks(8)
         .map(|chunk| {
@@ -62,7 +67,9 @@ pub fn encode_bitstring_status_list(entries: &[bool], issuer: &str, valid_from: 
     let mut compressed = Vec::new();
     encoder
         .read_to_end(&mut compressed)
-        .expect("GZIP compression succeeds");
+        .map_err(|error| QidError::Internal {
+            message: format!("Bitstring Status List GZIP compression failed: {error}"),
+        })?;
     let credential = BitstringStatusListCredential {
         id: format!("urn:uuid:{}", ulid::Ulid::new()),
         issuer: issuer.to_string(),
@@ -72,7 +79,9 @@ pub fn encode_bitstring_status_list(entries: &[bool], issuer: &str, valid_from: 
         encoded_list: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed),
         ttl: Some(86_400),
     };
-    serde_json::to_string(&credential).expect("Bitstring Status List serializes")
+    serde_json::to_string(&credential).map_err(|error| QidError::Internal {
+        message: format!("Bitstring Status List serialization failed: {error}"),
+    })
 }
 /// Decode a Bitstring Status List entry at `index`. Returns `true`
 /// when the bit is set (e.g. the credential is revoked), `false`
@@ -151,7 +160,8 @@ mod tests {
     #[test]
     fn encodes_and_decodes_round_trip() {
         let entries = vec![false, true, true, false, true, false, false, true, true];
-        let json = encode_bitstring_status_list(&entries, "https://issuer.example", 1_700_000_000);
+        let json = encode_bitstring_status_list(&entries, "https://issuer.example", 1_700_000_000)
+            .unwrap();
         let credential: BitstringStatusListCredential = serde_json::from_str(&json).unwrap();
         assert!(credential.revocation_purpose());
         for (idx, expected) in entries.iter().enumerate() {
@@ -165,7 +175,7 @@ mod tests {
     #[test]
     fn set_entry_updates_bit() {
         let entries = vec![false; 16];
-        let json = encode_bitstring_status_list(&entries, "https://issuer.example", 1);
+        let json = encode_bitstring_status_list(&entries, "https://issuer.example", 1).unwrap();
         let mut credential: BitstringStatusListCredential = serde_json::from_str(&json).unwrap();
         credential.encoded_list =
             set_bitstring_status_entry(&credential.encoded_list, 3, true).unwrap();

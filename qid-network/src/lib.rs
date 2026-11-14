@@ -165,37 +165,41 @@ pub fn encode_radius_packet(packet: &RadiusPacket<'_>) -> Vec<u8> {
     buf
 }
 
-/// Compute the RADIUS response authenticator using the first 16 bytes of
-/// HMAC-SHA256(secret, request_authenticator || body). SHA-256 replaces
-/// the original RFC 2865 MD5 construction for improved security while
-/// staying within the 16-byte authenticator field.
+fn hmac_init_error(_: hmac::digest::InvalidLength) -> QidError {
+    QidError::Internal {
+        message: "HMAC initialization failed".into(),
+    }
+}
+
+/// Compute the first 16 bytes of HMAC-SHA256(secret, request_authenticator || body) as a response authenticator.
+/// Initialization errors are returned; SHA-256 replaces the RFC 2865 MD5 construction.
 pub fn radius_response_authenticator(
     secret: &[u8],
     request_authenticator: &[u8; 16],
     body: &[u8],
-) -> [u8; 16] {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC-SHA256 accepts arbitrary keys");
+) -> QidResult<[u8; 16]> {
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(hmac_init_error)?;
     mac.update(request_authenticator);
     mac.update(body);
     let result = mac.finalize().into_bytes();
     let mut out = [0u8; 16];
     out.copy_from_slice(&result[..16]);
-    out
+    Ok(out)
 }
 
-/// Verify the RADIUS request authenticator using HMAC-SHA256 truncated to
-/// 16 bytes (HMAC-SHA256(secret, body)[..16]).
+/// Verify a RADIUS request authenticator with HMAC-SHA256; mismatches return false and initialization errors are returned.
 pub fn verify_radius_request_authenticator(
     secret: &[u8],
     packet: &RadiusPacket<'_>,
     body: &[u8],
-) -> bool {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC-SHA256 accepts arbitrary keys");
+) -> QidResult<bool> {
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(hmac_init_error)?;
     mac.update(body);
     let result = mac.finalize().into_bytes();
     let mut expected = [0u8; 16];
     expected.copy_from_slice(&result[..16]);
-    qid_core::util::constant_time_eq(expected, packet.authenticator)
+    let matches = qid_core::util::constant_time_eq(expected, packet.authenticator);
+    Ok(matches)
 }
 
 /// RADIUS attribute numbers used by qid-network.
@@ -572,9 +576,7 @@ pub fn tacacs_deobfuscate_body(
 /// Compute the RADIUS Message-Authenticator (RFC 3579 §3.2, RADIUS/1.1)
 /// using HMAC-SHA256 keyed by the shared secret.
 pub fn radius_message_authenticator(secret: &[u8], packet: &[u8]) -> QidResult<[u8; 32]> {
-    let mut mac = HmacSha256::new_from_slice(secret).map_err(|e| QidError::Internal {
-        message: format!("HMAC-SHA256 init failed: {e}"),
-    })?;
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(hmac_init_error)?;
     mac.update(packet);
     let result = mac.finalize().into_bytes();
     let mut out = [0u8; 32];

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A SCIM user.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUser {
     pub id: String,
     pub realm_id: String,

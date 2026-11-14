@@ -70,17 +70,17 @@ pub async fn import_hr_webhook<R: Repository>(
                 break;
             }
             (_, Some(user)) => user.clone(),
-            (_, None) => scim_user_from_hr_record(realm_id, &record),
+            (_, None) => scim_user_from_hr_record(realm_id, &record)?,
         };
         match record.event {
             LifecycleEvent::Leaver => {
                 user.active = false;
-                mark_hr_source(&mut user, &record);
-                mark_deprovisioned(&mut user, now_seconds());
+                mark_hr_source(&mut user, &record)?;
+                mark_deprovisioned(&mut user, now_seconds())?;
                 batch.receipt.summary.deprovisioned += 1;
             }
             _ => {
-                apply_hr_record(&mut user, &record);
+                apply_hr_record(&mut user, &record)?;
                 if expected.is_some() {
                     batch.receipt.summary.updated += 1;
                 } else {
@@ -91,7 +91,9 @@ pub async fn import_hr_webhook<R: Repository>(
         batch
             .changes
             .as_mut()
-            .unwrap()
+            .ok_or_else(|| QidError::Internal {
+                message: "HR preflight changes unexpectedly missing".into(),
+            })?
             .push(HrUserChange { expected, user });
     }
     // A rejected preflight still checks the receipt at serialization. A

@@ -232,7 +232,7 @@ async fn exercise_current_conditions(
                     &crate::response::scim_user_version(user),
                 )
                 .unwrap();
-                let uc = Condition::from_headers(user.realm_id.clone(), &headers);
+                let uc = Condition::from_headers(user.realm_id.clone(), &headers).unwrap();
                 let gc = check_group_preconditions(state, &group.id, Some("corp"), Some(&gv))
                     .await
                     .unwrap();
@@ -472,7 +472,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             } else {
                 let mut headers = HeaderMap::new();
                 headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
-                Condition::from_headers("other".to_string(), &headers)
+                Condition::from_headers("other".to_string(), &headers).unwrap()
             };
             let explicit = super::super::parse_create_user(
                 serde_json::json!({"realm": "corp", "userName": "moved"}),
@@ -496,7 +496,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             } else {
                 let mut headers = HeaderMap::new();
                 headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
-                Condition::from_headers("other".to_string(), &headers)
+                Condition::from_headers("other".to_string(), &headers).unwrap()
             };
             let omitted =
                 super::super::parse_create_user(serde_json::json!({"userName": "kept"})).unwrap();
@@ -515,7 +515,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             } else {
                 let mut headers = HeaderMap::new();
                 headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
-                Condition::from_headers("other".to_string(), &headers)
+                Condition::from_headers("other".to_string(), &headers).unwrap()
             };
             let explicit = serde_json::from_value::<super::super::CreateGroup>(
                 serde_json::json!({"realm": "corp", "displayName": "moved"}),
@@ -539,7 +539,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             } else {
                 let mut headers = HeaderMap::new();
                 headers.insert(IF_MATCH, HeaderValue::from_str(&version).unwrap());
-                Condition::from_headers("other".to_string(), &headers)
+                Condition::from_headers("other".to_string(), &headers).unwrap()
             };
             let omitted = serde_json::from_value::<super::super::CreateGroup>(
                 serde_json::json!({"displayName": "kept"}),
@@ -637,8 +637,8 @@ async fn exercise_unconditional_realms(
                 crate::response::scim_group_version,
             )
             .unwrap();
-            let uc = Condition::from_headers(checked_user.realm_id.clone(), &headers);
-            let gc = Condition::from_headers(checked_group.realm_id.clone(), &headers);
+            let uc = Condition::from_headers(checked_user.realm_id.clone(), &headers).unwrap();
+            let gc = Condition::from_headers(checked_group.realm_id.clone(), &headers).unwrap();
             assert!(uc.is_none() && gc.is_none());
             repo.delete_scim_user(&user.id, None).await.unwrap();
             repo.delete_scim_group(&group.id, None).await.unwrap();
@@ -749,4 +749,21 @@ async fn exercise_unconditional_realms(
             repo.create_scim_group(group).await.unwrap();
         }
     }
+}
+
+#[test]
+fn condition_rejects_non_text_if_match_instead_of_dropping_it() {
+    use crate::inbound::write::Condition;
+    use axum::http::{HeaderMap, HeaderValue, header::IF_MATCH};
+    let mut headers = HeaderMap::new();
+    assert!(
+        Condition::from_headers("corp".into(), &headers)
+            .unwrap()
+            .is_none()
+    );
+    headers.insert(IF_MATCH, HeaderValue::from_bytes(b"\xff").unwrap());
+    assert!(matches!(
+        Condition::from_headers("corp".into(), &headers),
+        Err(WriteError::PreconditionFailed)
+    ));
 }

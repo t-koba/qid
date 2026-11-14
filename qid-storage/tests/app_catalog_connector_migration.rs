@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use sqlx::SqlitePool;
 use std::{
     borrow::Cow,

@@ -213,7 +213,10 @@ pub(crate) async fn replace_user<R: Repository>(
     };
     let mut req = parse_body!(raw, super::parse_create_user);
     req.realm = super::realm_opt(context.as_ref().map(|ext| &ext.0), req.realm);
-    let expected = Condition::from_headers(existing.realm_id.clone(), &headers);
+    let expected = match Condition::from_headers(existing.realm_id.clone(), &headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     match replace_user_record(&state, &id, req, expected, Some(&existing.realm_id)).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
         Err(e) => e.into_response(),
@@ -295,7 +298,10 @@ pub(crate) async fn patch_user<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(user.realm_id.clone(), &headers);
+    let expected = match Condition::from_headers(user.realm_id.clone(), &headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     match patch_user_record(&state, &id, req, expected, Some(&user.realm_id)).await {
         Ok(user) => crate::response::scim_user_response(StatusCode::OK, user),
         Err(e) => e.into_response(),
@@ -471,7 +477,10 @@ pub(crate) async fn delete_user<R: Repository>(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let expected = Condition::from_headers(user.realm_id.clone(), &headers);
+    let expected = match Condition::from_headers(user.realm_id.clone(), &headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     let hard = query.hard_delete;
     match delete_user_record(&state, &id, hard, expected, Some(&user.realm_id)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),

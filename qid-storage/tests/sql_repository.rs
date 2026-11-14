@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::models::TotpCredential;
 use qid_core::models::{
     AccessToken, AppCatalogEntry, AuditEvent, AuditRetentionConfig, AuthorizationCode,

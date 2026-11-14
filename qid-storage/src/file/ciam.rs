@@ -516,11 +516,11 @@ impl CiamRepository for FileRepository {
                     message: "password reset token already consumed".to_string(),
                 });
             }
+            let previous = token.clone();
             token.consumed_at_epoch_seconds = Some(consumed_at);
             let result = repo.persist_reset_store(save_guard.as_ref(), &store).await;
             if result.is_err() {
-                let token = store.password_reset_tokens.get_mut(&id).unwrap();
-                token.consumed_at_epoch_seconds = None;
+                store.password_reset_tokens.insert(id, previous);
             }
             result
         };
@@ -760,7 +760,7 @@ impl FileRepository {
         let mut store = self.store.write().await;
         let token = store
             .password_reset_tokens
-            .get(id)
+            .get_mut(id)
             .ok_or_else(|| QidError::NotFound {
                 resource: "password reset token".into(),
             })?;
@@ -772,14 +772,11 @@ impl FileRepository {
             credential,
             consumed_at,
         )?;
+        let previous_token = token.clone();
+        token.consumed_at_epoch_seconds = Some(consumed_at);
         let previous = store
             .credentials_password
             .insert(credential.user_id.clone(), credential.clone());
-        store
-            .password_reset_tokens
-            .get_mut(id)
-            .unwrap()
-            .consumed_at_epoch_seconds = Some(consumed_at);
         let result = self.persist_reset_store(save_guard.as_ref(), &store).await;
         if result.is_err() {
             match previous {
@@ -794,9 +791,7 @@ impl FileRepository {
             }
             store
                 .password_reset_tokens
-                .get_mut(id)
-                .unwrap()
-                .consumed_at_epoch_seconds = None;
+                .insert(id.to_owned(), previous_token);
         }
         result
     }

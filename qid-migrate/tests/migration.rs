@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_storage::SqlRepository;
 use tempfile::NamedTempFile;
 

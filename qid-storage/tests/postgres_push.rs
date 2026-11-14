@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Server-backed push storage evidence. CI supplies a disposable database; local
 //! runs skip unless QID_TEST_POSTGRES_URL is set. Never use a production database.
 //! Verification booleans stand in for signatures already checked by qid-mfa.

@@ -520,15 +520,14 @@ impl FileRepository {
         if missing.is_empty() {
             return Ok(missing);
         }
-        // Stage and validate before mutation. Hold both locks through the one
-        // persistence attempt and rollback so no tentative state is visible.
-        let previous = save_guard.as_ref().map(|_| store.clone());
+        // Stage grants under both locks so persistence and rollback remain atomic.
+        let rollback = save_guard.map(|guard| (guard, store.clone()));
         for grant in &missing {
             store
                 .iga_access_grants
                 .insert(grant.id.clone(), grant.clone());
         }
-        if let Some(guard) = save_guard {
+        if let Some((guard, previous)) = rollback {
             let result = async {
                 #[cfg(test)]
                 self.before_flush().await?;
@@ -540,7 +539,7 @@ impl FileRepository {
             }
             .await;
             if let Err(error) = result {
-                *store = previous.unwrap();
+                *store = previous;
                 return Err(error);
             }
         } else {

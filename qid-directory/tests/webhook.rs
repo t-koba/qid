@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use axum::{
     Router,
     body::Body,

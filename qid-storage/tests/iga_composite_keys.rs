@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::{
     error::QidError,
     models::{IgaAccessPackageRecord, IgaEntitlementRecord},

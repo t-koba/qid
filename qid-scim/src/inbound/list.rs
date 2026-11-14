@@ -60,7 +60,11 @@ impl Pagination {
             && let Some(next) = next
             && next < total
         {
-            let cursor = encode_cursor(self.secret.as_bytes(), next, self.count, &self.fingerprint);
+            let cursor =
+                match encode_cursor(self.secret.as_bytes(), next, self.count, &self.fingerprint) {
+                    Ok(cursor) => cursor,
+                    Err(error) => return qid_http::error_response(error),
+                };
             body["nextCursor"] = serde_json::Value::String(cursor);
         }
         Json(body).into_response()

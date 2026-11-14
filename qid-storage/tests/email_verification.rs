@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! One confirmation contract, exercised against both supported stores.
 use qid_core::{
     QidError,

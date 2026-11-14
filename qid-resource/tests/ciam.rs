@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 mod common;
 use common::sql_repo;
 

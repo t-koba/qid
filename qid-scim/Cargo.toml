@@ -33,3 +33,6 @@ qid-crypto = { workspace = true }
 qid-directory = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
+
+[lints]
+workspace = true

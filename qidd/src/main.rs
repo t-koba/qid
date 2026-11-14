@@ -258,6 +258,7 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
     }
     let state: AppState = Arc::new(shared_state);
 
+    let signal = shutdown_signal().context("failed to install shutdown signal handler")?;
     let network_aaa_shutdown = start_network_aaa_listeners(&config, repo.clone())
         .await
         .context("failed to start network-aaa listeners")?;
@@ -385,7 +386,7 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
         .context("failed to start QUIC listener")?;
 
     let shutdown = async move {
-        shutdown_signal().await;
+        signal.await;
         for sender in network_aaa_shutdown {
             let _ = sender.send(());
         }
@@ -489,39 +490,25 @@ fn file_storage_uses_distributed_cache(config: &QidConfig, storage_url: &str) ->
         || (!storage_url.starts_with("sqlite:") && !storage_url.starts_with("postgres:"))
 }
 
-async fn shutdown_signal() {
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = ()>> {
     #[cfg(unix)]
-    {
-        shutdown_signal_unix().await;
-    }
-
-    #[cfg(not(unix))]
-    {
-        shutdown_signal_portable().await;
-    }
-}
-
-#[cfg(unix)]
-async fn shutdown_signal_unix() {
-    let ctrl_c = tokio::signal::ctrl_c();
     let mut sigterm_stream =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
-    tokio::select! {
-        _ = ctrl_c => {
-            info!("received SIGINT (Ctrl+C), shutting down");
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    Ok(async move {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("received SIGINT (Ctrl+C), shutting down");
+            }
+            _ = sigterm_stream.recv() => {
+                info!("received SIGTERM, shutting down");
+            }
         }
-        _ = sigterm_stream.recv() => {
-            info!("received SIGTERM, shutting down");
+        #[cfg(not(unix))]
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!("received interrupt signal, shutting down");
         }
-    }
-}
-
-#[cfg(not(unix))]
-async fn shutdown_signal_portable() {
-    if tokio::signal::ctrl_c().await.is_ok() {
-        info!("received interrupt signal, shutting down");
-    }
+    })
 }
 
 /// Shutdown handle for the opt-in QUIC listener.

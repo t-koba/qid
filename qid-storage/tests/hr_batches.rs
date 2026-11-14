@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::{error::QidError, models::ScimUser};
 use qid_storage::{
     AnyRepository, HrBatch, HrReceipt, HrSummary, HrUserChange, RealmRepository, ScimRepository,

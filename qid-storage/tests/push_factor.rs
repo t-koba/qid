@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Public issuance uses the real server clock. Deterministic lifecycle and
 //! cleanup parity fixtures live in the private push_tests unit module.
 use qid_core::{models::*, util::now_seconds};

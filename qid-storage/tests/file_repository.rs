@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::models::{
     AuditEvent, AuthorizationCode, CiamVerificationChallengeRecord, Client, ClientType, Session,
     TokenFamily, User, default_client_jwks,

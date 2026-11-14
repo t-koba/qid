@@ -60,8 +60,8 @@ pub fn render_outbound_user(
             message: "outbound SCIM userName must be a string".to_string(),
         })?
         .to_string();
+    let mut schemas = vec!["urn:ietf:params:scim:schemas:core:2.0:User"];
     let mut desired = serde_json::json!({
-        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
         "userName": user_name
     });
     set_optional_field(
@@ -88,14 +88,10 @@ pub fn render_outbound_user(
         }
     }
     if !enterprise.is_empty() {
-        desired["schemas"]
-            .as_array_mut()
-            .expect("schemas must be an array")
-            .push(serde_json::Value::String(
-                ENTERPRISE_USER_SCHEMA.to_string(),
-            ));
+        schemas.push(ENTERPRISE_USER_SCHEMA);
         desired[ENTERPRISE_USER_SCHEMA] = serde_json::Value::Object(enterprise);
     }
+    desired["schemas"] = serde_json::json!(schemas);
     Ok(desired)
 }
 

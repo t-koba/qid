@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use qid_core::{QidError, models::*, tenant::RealmId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
 use tokio::sync::Barrier;

@@ -232,7 +232,8 @@ fn explain_json_includes_client_token_pep_claim_and_audit_fields() {
         &result,
         Some("authenticated-read"),
         None,
-    );
+    )
+    .unwrap();
 
     assert_eq!(
         explanation["deployment_profile"]["name"],
@@ -319,7 +320,8 @@ fn explain_json_maps_step_up_to_pep_challenge() {
         ..DecisionDetails::default()
     };
 
-    let explanation = build_explain_json(DeploymentProfile::Oidc, None, &ctx, &result, None, None);
+    let explanation =
+        build_explain_json(DeploymentProfile::Oidc, None, &ctx, &result, None, None).unwrap();
 
     assert_eq!(explanation["pep_actions"]["decision"], "challenge");
     assert_eq!(explanation["pep_actions"]["status"], 302);
@@ -343,7 +345,8 @@ fn explain_json_maps_deny_to_local_response() {
         ..DecisionDetails::default()
     };
 
-    let explanation = build_explain_json(DeploymentProfile::Oidc, None, &ctx, &result, None, None);
+    let explanation =
+        build_explain_json(DeploymentProfile::Oidc, None, &ctx, &result, None, None).unwrap();
 
     assert_eq!(explanation["pep_actions"]["decision"], "deny");
     assert_eq!(explanation["pep_actions"]["status"], 403);
@@ -385,7 +388,8 @@ fn explain_json_reports_fapi_profile_obligations_and_realm_status() {
         &result,
         None,
         None,
-    );
+    )
+    .unwrap();
 
     assert_eq!(explanation["deployment_profile"]["name"], "fapi");
     assert_eq!(
@@ -428,7 +432,8 @@ fn explain_json_reports_vc_profile_as_fapi_with_issuer_key() {
         &DecisionDetails::default(),
         None,
         None,
-    );
+    )
+    .unwrap();
 
     let obligations = &explanation["deployment_profile"]["obligations"];
     assert_eq!(obligations["requires_http_message_signatures"], true);
@@ -457,7 +462,8 @@ fn explain_json_reports_edge_pep_profile_obligations_from_core_validation() {
         &DecisionDetails::default(),
         None,
         None,
-    );
+    )
+    .unwrap();
 
     let obligations = &explanation["deployment_profile"]["obligations"];
     assert_eq!(obligations["requires_http_message_signatures"], true);
@@ -483,7 +489,8 @@ fn explain_json_reports_ciam_profile_obligations_separately_from_enterprise() {
         &DecisionDetails::default(),
         None,
         None,
-    );
+    )
+    .unwrap();
 
     let obligations = &explanation["deployment_profile"]["obligations"];
     assert_eq!(obligations["requires_scim"], false);
@@ -513,7 +520,8 @@ fn explain_json_reports_high_assurance_specific_obligations() {
         &DecisionDetails::default(),
         None,
         None,
-    );
+    )
+    .unwrap();
 
     let obligations = &explanation["deployment_profile"]["obligations"];
     assert_eq!(obligations["requires_http_message_signatures"], true);
@@ -550,7 +558,8 @@ fn explain_json_reports_network_aaa_obligations_from_core_validation() {
         &DecisionDetails::default(),
         None,
         None,
-    );
+    )
+    .unwrap();
 
     let obligations = &explanation["deployment_profile"]["obligations"];
     assert_eq!(obligations["requires_radius"], true);
@@ -620,7 +629,8 @@ fn explain_json_merges_risk_evaluation_into_required_auth_pep_and_audit() {
         &result,
         None,
         Some(&risk),
-    );
+    )
+    .unwrap();
 
     assert_eq!(explanation["risk_evaluation"]["outcome"], "force_inspect");
     assert_eq!(explanation["pep_actions"]["force_inspect"], true);
@@ -648,7 +658,8 @@ fn explain_json_merges_risk_evaluation_into_required_auth_pep_and_audit() {
         &result,
         None,
         Some(&step_up_risk),
-    );
+    )
+    .unwrap();
     assert_eq!(explanation["required_auth"]["step_up_required"], true);
     assert_eq!(explanation["required_auth"]["acr"], "phr");
     assert_eq!(explanation["required_auth"]["amr"][0], "webauthn");
@@ -703,7 +714,8 @@ fn explain_reports_the_registrations_the_realm_serves() {
         &result,
         None,
         None,
-    );
+    )
+    .unwrap();
     assert_eq!(
         explanation["deployment_profile"]["realm_status"]["pep_registrations"], 0,
         "a realm that disables its registrations serves none of them"
@@ -717,7 +729,8 @@ fn explain_reports_the_registrations_the_realm_serves() {
         &result,
         None,
         None,
-    );
+    )
+    .unwrap();
     assert_eq!(
         explanation["deployment_profile"]["realm_status"]["pep_registrations"],
         1
@@ -760,7 +773,8 @@ fn explain_reports_the_registration_decision_cache_lifetime() {
         &result,
         None,
         None,
-    );
+    )
+    .unwrap();
     assert_eq!(explanation["pep_actions"]["ttl_ms"], 2000);
     assert_eq!(explanation["cacheability"]["negative_ttl_seconds"], 2);
     assert_eq!(explanation["cacheability"]["positive_ttl_seconds"], 7);
@@ -776,7 +790,8 @@ fn explain_reports_the_registration_decision_cache_lifetime() {
         &result,
         None,
         None,
-    );
+    )
+    .unwrap();
     assert_eq!(explanation["pep_actions"]["ttl_ms"], 7000);
 }
 

@@ -173,15 +173,15 @@ impl DevSpec {
 
     fn write(&self, force: bool) -> anyhow::Result<()> {
         ensure_dev_dir(&self.output, force)?;
-        write_new_file(&self.output.join("qid.yaml"), self.qid_yaml().as_bytes())?;
+        write_new_file(&self.output.join("qid.yaml"), self.qid_yaml()?.as_bytes())?;
         write_new_file(
             &self.output.join("policy.json"),
-            self.policy_json().as_bytes(),
+            self.policy_json()?.as_bytes(),
         )?;
-        write_new_file(&self.output.join("qpx.yaml"), self.qpx_yaml().as_bytes())?;
+        write_new_file(&self.output.join("qpx.yaml"), self.qpx_yaml()?.as_bytes())?;
         write_new_file(
             &self.output.join("users.seed.json"),
-            self.users_seed_json().as_bytes(),
+            self.users_seed_json()?.as_bytes(),
         )?;
         write_new_file(&self.output.join("README.md"), self.readme().as_bytes())?;
         QidConfig::from_file(
@@ -194,8 +194,8 @@ impl DevSpec {
         Ok(())
     }
 
-    fn qid_yaml(&self) -> String {
-        format!(
+    fn qid_yaml(&self) -> anyhow::Result<String> {
+        Ok(format!(
             r#"server:
   listen: {listen}
   public_base_url: {public_base_url}
@@ -307,16 +307,16 @@ observability:
   metrics:
     listen: "127.0.0.1:9464"
 "#,
-            listen = yaml_string(&self.listen),
-            public_base_url = yaml_string(&self.public_base_url),
-            storage_url = yaml_string(&self.output.join("qid-dev-store.json").to_string_lossy()),
-            realm = yaml_string(&self.realm),
-            issuer = yaml_string(&self.issuer),
-            client_secret = yaml_string(&self.client_secret),
-        )
+            listen = yaml_string(&self.listen)?,
+            public_base_url = yaml_string(&self.public_base_url)?,
+            storage_url = yaml_string(&self.output.join("qid-dev-store.json").to_string_lossy())?,
+            realm = yaml_string(&self.realm)?,
+            issuer = yaml_string(&self.issuer)?,
+            client_secret = yaml_string(&self.client_secret)?,
+        ))
     }
 
-    fn policy_json(&self) -> String {
+    fn policy_json(&self) -> anyhow::Result<String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "version": "1",
             "default_decision": "deny",
@@ -336,11 +336,11 @@ observability:
                 }
             ]
         }))
-        .expect("policy JSON")
+        .context("failed to serialize policy JSON")
     }
 
-    fn qpx_yaml(&self) -> String {
-        format!(
+    fn qpx_yaml(&self) -> anyhow::Result<String> {
+        Ok(format!(
             r#"state_dir: "${{QPX_STATE_DIR:-./qpx-state}}"
 identity:
   proxy_name: qpx-dev
@@ -392,11 +392,11 @@ edges:
     - qid-signed-assertion
     decision: qid-central-policy
 "#,
-            issuer = yaml_string(&self.issuer)
-        )
+            issuer = yaml_string(&self.issuer)?
+        ))
     }
 
-    fn users_seed_json(&self) -> String {
+    fn users_seed_json(&self) -> anyhow::Result<String> {
         serde_json::to_string_pretty(&serde_json::json!([
             {
                 "email": "alice@example.com",
@@ -411,7 +411,7 @@ edges:
                 "email_verified": true
             }
         ]))
-        .expect("users seed JSON")
+        .context("failed to serialize users seed JSON")
     }
 
     fn readme(&self) -> String {
@@ -609,8 +609,8 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<T> {
     serde_json::from_str(&raw).with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
-fn yaml_string(value: &str) -> String {
-    serde_json::to_string(value).expect("JSON string")
+fn yaml_string(value: &str) -> anyhow::Result<String> {
+    serde_json::to_string(value).context("failed to serialize YAML string")
 }
 
 #[cfg(test)]

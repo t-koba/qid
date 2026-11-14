@@ -30,3 +30,6 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 urlencoding = { workspace = true }
+
+[lints]
+workspace = true

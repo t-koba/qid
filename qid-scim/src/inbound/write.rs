@@ -57,11 +57,17 @@ impl Condition {
         }
     }
 
-    pub(super) fn from_headers(realm_id: String, headers: &axum::http::HeaderMap) -> Option<Self> {
-        // The route has already rejected invalid header text.
+    pub(super) fn from_headers(
+        realm_id: String,
+        headers: &axum::http::HeaderMap,
+    ) -> WriteResult<Option<Self>> {
         headers
             .get(axum::http::header::IF_MATCH)
-            .map(|value| Self::new(realm_id, value.to_str().expect("validated If-Match")))
+            .map(|value| {
+                let version = value.to_str().map_err(|_| WriteError::PreconditionFailed)?;
+                Ok(Self::new(realm_id, version))
+            })
+            .transpose()
     }
 
     pub(super) fn matches_user(&self, user: &qid_core::models::ScimUser) -> bool {

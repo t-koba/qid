@@ -387,8 +387,7 @@ impl PushRepository for FileRepository {
         tokio::spawn(async move {
             let save_guard = repo.save_lock.lock().await;
             let mut store = repo.store.write().await;
-            // Validate before deleting anything; rollback then needs only the
-            // removed rows, never a clone of the full backlog.
+            // Validate first; rollback stores only removed rows, not the backlog.
             for (id, row) in &store.push.authenticators {
                 state::authenticator_record(row, id)?;
                 registration_issued(&store, id, row)?;
@@ -428,24 +427,23 @@ impl PushRepository for FileRepository {
             if deleted == 0 {
                 return Ok(0);
             }
+            let push = &mut store.push;
             let mut removed_regs = Vec::with_capacity(regs.len());
-            let mut removed_logins = Vec::with_capacity(logins.len());
             for id in regs {
-                let row = store.push.authenticators.remove(&id).expect("selected row");
-                let issued = store
-                    .push
+                let row = push.authenticators.remove(&id).ok_or_else(state::corrupt)?;
+                let issued = push
                     .registration_issued_at
                     .remove(&id)
-                    .expect("validated metadata");
+                    .ok_or_else(state::corrupt)?;
                 removed_regs.push((id, row, issued));
             }
+            let mut removed_logins = Vec::with_capacity(logins.len());
             for id in logins {
-                let row = store.push.logins.remove(&id).expect("selected row");
-                let issued = store
-                    .push
+                let row = push.logins.remove(&id).ok_or_else(state::corrupt)?;
+                let issued = push
                     .login_issued_at
                     .remove(&id)
-                    .expect("validated metadata");
+                    .ok_or_else(state::corrupt)?;
                 removed_logins.push((id, row, issued));
             }
             let result = async {
@@ -584,7 +582,11 @@ impl FileRepository {
                 return Ok((false, None));
             };
             let issued = login_issued(s, &expected.id, c)?;
-            let c = s.push.logins.get_mut(&expected.id).expect("checked row");
+            let c = s
+                .push
+                .logins
+                .get_mut(&expected.id)
+                .ok_or_else(state::corrupt)?;
             if !state::resend(c, &expected, &binding, &nonce, issued, cooldown, now) {
                 return Ok((false, None));
             }

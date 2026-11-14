@@ -9,7 +9,10 @@ use axum::{
     response::IntoResponse,
 };
 use base64::Engine;
-use qid_core::models::{ScimGroup, ScimUser};
+use qid_core::{
+    error::{QidError, QidResult},
+    models::{ScimGroup, ScimUser},
+};
 
 use crate::ENTERPRISE_USER_SCHEMA;
 
@@ -17,12 +20,13 @@ use crate::ENTERPRISE_USER_SCHEMA;
 /// index of the next page to return and a fingerprint of the filter so
 /// that cursors issued for one filter cannot be replayed against a
 /// different one. The cursor is HMAC-signed to prevent tampering.
+/// Returns an internal error if the cursor MAC cannot be initialized.
 pub fn encode_cursor(
     secret: &[u8],
     start_index: usize,
     count: usize,
     filter_fingerprint: &str,
-) -> String {
+) -> QidResult<String> {
     let payload = serde_json::json!({
         "s": start_index,
         "c": count,
@@ -31,8 +35,8 @@ pub fn encode_cursor(
     });
     let body =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-    let tag = compute_cursor_tag(secret, &body);
-    format!("{SCIM_CURSOR_PREFIX}{body}.{tag}")
+    let tag = compute_cursor_tag(secret, &body)?;
+    Ok(format!("{SCIM_CURSOR_PREFIX}{body}.{tag}"))
 }
 
 pub fn decode_cursor(
@@ -43,7 +47,7 @@ pub fn decode_cursor(
     let body_and_tag = cursor.strip_prefix(SCIM_CURSOR_PREFIX)?;
     let (body, tag) = body_and_tag.split_once('.')?;
     if !qid_core::util::constant_time_eq(
-        compute_cursor_tag(secret, body).as_bytes(),
+        compute_cursor_tag(secret, body).ok()?.as_bytes(),
         tag.as_bytes(),
     ) {
         return None;
@@ -73,13 +77,15 @@ pub struct CursorState {
 const SCIM_CURSOR_PREFIX: &str = "scim-cursor-v1-";
 const SCIM_CURSOR_VERSION: u64 = 1;
 
-fn compute_cursor_tag(secret: &[u8], body: &str) -> String {
+fn compute_cursor_tag(secret: &[u8], body: &str) -> QidResult<String> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|error| QidError::Internal {
+        message: format!("SCIM cursor HMAC initialization failed: {error}"),
+    })?;
     mac.update(body.as_bytes());
     let result = mac.finalize().into_bytes();
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(result)
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(result))
 }
 
 /// Produce a stable, collision-resistant fingerprint of the SCIM filter
@@ -184,8 +190,8 @@ pub(crate) fn strip_stored_enterprise_marker(enterprise_json: &mut serde_json::V
 pub(crate) fn scim_user(user: ScimUser) -> serde_json::Value {
     let version = scim_user_version(&user);
     let enterprise = projected_enterprise_json(&user);
+    let mut schemas = vec!["urn:ietf:params:scim:schemas:core:2.0:User"];
     let mut value = serde_json::json!({
-        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
         "id": user.id,
         "userName": user.user_name,
         "active": user.active,
@@ -197,14 +203,10 @@ pub(crate) fn scim_user(user: ScimUser) -> serde_json::Value {
         value["externalId"] = serde_json::Value::String(external_id);
     }
     if enterprise.as_object().is_some_and(|obj| !obj.is_empty()) {
-        value["schemas"]
-            .as_array_mut()
-            .expect("schemas must be an array")
-            .push(serde_json::Value::String(
-                ENTERPRISE_USER_SCHEMA.to_string(),
-            ));
+        schemas.push(ENTERPRISE_USER_SCHEMA);
         value[ENTERPRISE_USER_SCHEMA] = enterprise;
     }
+    value["schemas"] = serde_json::json!(schemas);
     value
 }
 

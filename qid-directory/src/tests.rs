@@ -143,7 +143,7 @@ async fn deprovision_sla_audit_reports_met_pending_violated_and_missing() {
         deprovisioned_at: None,
         active: false,
     };
-    mark_deprovisioned(&mut met_user, 1_050);
+    mark_deprovisioned(&mut met_user, 1_050).unwrap();
     state.repo.create_scim_user(&met_user).await.unwrap();
     state
         .repo
@@ -1353,7 +1353,7 @@ async fn audit_deprovision_sla_disambiguates_shared_dn_by_provider_id() {
         deprovisioned_at: None,
         active: false,
     };
-    mark_deprovisioned(&mut user_a, 1_050);
+    mark_deprovisioned(&mut user_a, 1_050).unwrap();
     state.repo.create_scim_user(&user_a).await.unwrap();
     state
         .repo

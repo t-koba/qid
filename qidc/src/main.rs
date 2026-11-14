@@ -869,7 +869,7 @@ async fn main() -> anyhow::Result<()> {
                         &result,
                         bundle.as_ref().map(|b| b.name.as_str()),
                         Some(&risk_evaluation),
-                    );
+                    )?;
                     println!("{}", serde_json::to_string_pretty(&explanation)?)
                 }
                 _ => println!("{:#?}", result),

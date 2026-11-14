@@ -1,5 +1,8 @@
 use sqlx::SqlitePool;
-use std::{borrow::Cow, path::PathBuf};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+};
 
 const CONNECTOR_TENANT_FK_VERSION: i64 = 20261101000003;
 
@@ -15,19 +18,43 @@ fn migrator_before_connector_tenant_fk() -> sqlx::migrate::Migrator {
     migrator
 }
 
-async fn legacy_database() -> (PathBuf, SqlitePool) {
-    let dir = std::env::temp_dir().join(format!("qid-app-catalog-migration-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).expect("create AppCatalog migration fixture directory");
-    let database = dir.join("legacy.db");
-    std::fs::File::create(&database).expect("create AppCatalog migration fixture database");
+async fn legacy_template() -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "qid-app-catalog-migration-template-{}",
+        ulid::Ulid::new()
+    ));
+    std::fs::create_dir_all(&dir).expect("create AppCatalog migration template directory");
+    let database = dir.join("legacy-template.db");
+    std::fs::File::create(&database).expect("create AppCatalog migration template database");
     let url = format!("sqlite:{}", database.display());
     let pool = SqlitePool::connect(&url)
         .await
-        .expect("connect AppCatalog migration fixture");
+        .expect("connect AppCatalog migration template");
     migrator_before_connector_tenant_fk()
         .run(&pool)
         .await
         .expect("apply migrations before AppCatalog connector tenant FK");
+    pool.close().await;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = database.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        assert!(
+            !PathBuf::from(sidecar).exists(),
+            "legacy migration template retained a SQLite sidecar"
+        );
+    }
+    (dir, database)
+}
+
+async fn legacy_database(template: &Path) -> (PathBuf, SqlitePool) {
+    let dir = std::env::temp_dir().join(format!("qid-app-catalog-migration-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).expect("create AppCatalog migration fixture directory");
+    let database = dir.join("legacy.db");
+    std::fs::copy(template, &database).expect("copy AppCatalog legacy migration template");
+    let url = format!("sqlite:{}", database.display());
+    let pool = SqlitePool::connect(&url)
+        .await
+        .expect("connect AppCatalog migration fixture");
     (dir, pool)
 }
 
@@ -54,8 +81,12 @@ async fn insert_entry(pool: &SqlitePool, id: &str, tenant_id: &str, connector_id
     .expect("insert migration fixture app catalog entry");
 }
 
-async fn invalid_legacy_reference_fails_closed(connector_id: &str, connector_owner: Option<&str>) {
-    let (dir, pool) = legacy_database().await;
+async fn invalid_legacy_reference_fails_closed(
+    template: &Path,
+    connector_id: &str,
+    connector_owner: Option<&str>,
+) {
+    let (dir, pool) = legacy_database(template).await;
     if let Some(owner) = connector_owner {
         insert_connector(&pool, connector_id, owner).await;
     }
@@ -141,7 +172,8 @@ async fn invalid_legacy_reference_fails_closed(connector_id: &str, connector_own
 
 #[tokio::test]
 async fn connector_tenant_migration_preserves_valid_rows_and_blocks_rebinding() {
-    let (dir, pool) = legacy_database().await;
+    let (template_dir, template_database) = legacy_template().await;
+    let (dir, pool) = legacy_database(&template_database).await;
     insert_connector(&pool, "c1", "tenant-a").await;
     insert_entry(&pool, "existing", "tenant-a", "c1").await;
     sqlx::migrate!("./migrations")
@@ -230,6 +262,7 @@ async fn connector_tenant_migration_preserves_valid_rows_and_blocks_rebinding() 
     pool.close().await;
     std::fs::remove_dir_all(dir).expect("remove AppCatalog migration fixture directory");
 
-    invalid_legacy_reference_fails_closed("shared", Some("tenant-b")).await;
-    invalid_legacy_reference_fails_closed("missing", None).await;
+    invalid_legacy_reference_fails_closed(&template_database, "shared", Some("tenant-b")).await;
+    invalid_legacy_reference_fails_closed(&template_database, "missing", None).await;
+    std::fs::remove_dir_all(template_dir).expect("remove AppCatalog migration template directory");
 }

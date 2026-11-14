@@ -4,6 +4,16 @@ use qid_core::{models::*, util::now_seconds};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
 #[path = "support/sqlite_cleanup.rs"]
 mod sqlite_cleanup;
+#[path = "support/sqlite_schema.rs"]
+mod sqlite_schema;
+
+async fn sql_repo_in(dir: &std::path::Path) -> SqlRepository {
+    let path = dir.join("store.db");
+    sqlite_schema::copy_schema_template(&path).await;
+    SqlRepository::connect(&format!("sqlite:{}", path.display()))
+        .await
+        .expect("connect test repository failed")
+}
 
 async fn admission(repo: &impl Repository) {
     repo.create_realm(
@@ -116,10 +126,7 @@ async fn file_uses_server_admission_time() {
 async fn sql_uses_server_admission_time() {
     let dir = std::env::temp_dir().join(format!("qid-push-clock-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
+    let repo = sql_repo_in(&dir).await;
     admission(&repo).await;
     repo.close().await;
     sqlite_cleanup::remove_dir_all(&dir).unwrap();
@@ -238,10 +245,7 @@ async fn file_persists_device_metadata() {
 async fn sql_persists_device_metadata() {
     let dir = std::env::temp_dir().join(format!("qid-push-meta-{}", ulid::Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
-    let repo = SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-        .await
-        .unwrap();
-    repo.migrate().await.unwrap();
+    let repo = sql_repo_in(&dir).await;
     device_metadata_roundtrip(&repo).await;
     repo.close().await;
     sqlite_cleanup::remove_dir_all(&dir).unwrap();

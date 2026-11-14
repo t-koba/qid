@@ -19,7 +19,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 static DB_SEQ: AtomicU16 = AtomicU16::new(0);
-static SCHEMA_TEMPLATE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
+#[path = "sqlite_schema.rs"]
+mod sqlite_schema;
+pub use sqlite_schema::{copy_schema_template, remove_sqlite_database_files};
 
 pub fn sqlite_main_path(path: &Path) -> PathBuf {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -29,19 +31,6 @@ pub fn sqlite_main_path(path: &Path) -> PathBuf {
         .iter()
         .find_map(|suffix| name.strip_suffix(suffix))
         .map_or_else(|| path.to_path_buf(), |name| path.with_file_name(name))
-}
-
-pub fn remove_sqlite_database_files(path: &Path) -> std::io::Result<()> {
-    for suffix in ["-wal", "-shm", "-journal", ""] {
-        let mut candidate = path.as_os_str().to_os_string();
-        candidate.push(suffix);
-        match std::fs::remove_file(PathBuf::from(candidate)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
 }
 
 pub fn clean_storage_test_databases(dir: &Path) -> std::io::Result<()> {
@@ -58,34 +47,8 @@ pub fn clean_storage_test_databases(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Build and close one migrated schema for independent per-test database copies.
 pub async fn schema_template_path() -> &'static PathBuf {
-    SCHEMA_TEMPLATE
-        .get_or_init(|| async {
-            let path = std::env::temp_dir()
-                .join("qid_test")
-                .join("schema_template.db");
-            remove_sqlite_database_files(&path).expect("remove stale storage schema template");
-            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
-                .await
-                .expect("connect storage schema template failed");
-            repo.migrate()
-                .await
-                .expect("migrate storage schema template failed");
-            repo.close().await;
-            for suffix in ["-wal", "-shm", "-journal"] {
-                let mut sidecar = path.as_os_str().to_os_string();
-                sidecar.push(suffix);
-                let sidecar = PathBuf::from(sidecar);
-                assert!(
-                    !sidecar.exists(),
-                    "schema template has a sidecar after closing the pool: {}",
-                    sidecar.display()
-                );
-            }
-            path
-        })
-        .await
+    sqlite_schema::schema_template_path().await
 }
 
 pub fn db_url() -> String {
@@ -110,7 +73,7 @@ pub async fn sql_repo() -> SqlRepository {
     // Migrations run once in the schema template and fresh-database coverage stays
     // in test_connect_and_migrate; copying keeps every test database isolated
     // without repeating the migration set.
-    std::fs::copy(schema_template_path().await, path).expect("copy storage schema template");
+    copy_schema_template(path).await;
     SqlRepository::connect(&url).await.expect("connect failed")
 }
 

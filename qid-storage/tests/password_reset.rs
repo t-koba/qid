@@ -4,32 +4,8 @@ use qid_core::{QidError, models::*, tenant::RealmId};
 use qid_storage::{FileRepository, SqlRepository, prelude::*};
 use tokio::sync::Barrier;
 
-static PASSWORD_RESET_SCHEMA: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
-
-async fn migrated_sql_schema() -> &'static [u8] {
-    PASSWORD_RESET_SCHEMA
-        .get_or_init(|| async {
-            let path = std::env::temp_dir().join(format!("qid-reset-schema-{}", ulid::Ulid::new()));
-            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
-                .await
-                .unwrap();
-            let migration = repo.migrate().await;
-            repo.close().await;
-            migration.unwrap();
-            for suffix in ["-wal", "-shm", "-journal"] {
-                let mut sidecar = path.as_os_str().to_os_string();
-                sidecar.push(suffix);
-                assert!(
-                    !std::path::Path::new(&sidecar).try_exists().unwrap(),
-                    "closed SQLite schema template retained sidecar {suffix}"
-                );
-            }
-            let schema = std::fs::read(&path).unwrap();
-            std::fs::remove_file(path).unwrap();
-            schema
-        })
-        .await
-}
+#[path = "support/sqlite_schema.rs"]
+mod sqlite_schema;
 
 fn credential(user: &str, hash: &str) -> PasswordCredential {
     PasswordCredential {
@@ -320,7 +296,7 @@ async fn file_password_reset_is_atomic_and_owner_bound() {
 #[tokio::test]
 async fn sql_password_reset_is_atomic_and_owner_bound() {
     let path = std::env::temp_dir().join(format!("qid-reset-{}.db", ulid::Ulid::new()));
-    std::fs::write(&path, migrated_sql_schema().await).unwrap();
+    sqlite_schema::copy_schema_template(&path).await;
     let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
         .await
         .unwrap();
@@ -332,7 +308,7 @@ async fn sql_password_reset_is_atomic_and_owner_bound() {
 #[tokio::test]
 async fn sql_password_reset_credential_failure_rolls_back_both_writes() {
     let path = std::env::temp_dir().join(format!("qid-reset-rollback-{}.db", ulid::Ulid::new()));
-    std::fs::write(&path, migrated_sql_schema().await).unwrap();
+    sqlite_schema::copy_schema_template(&path).await;
     let url = format!("sqlite:{}", path.display());
     let repo = SqlRepository::connect(&url).await.unwrap();
     seed(&repo).await;
@@ -585,7 +561,7 @@ async fn file_password_reset_issuance_budget_boundaries_and_concurrency() {
 #[tokio::test]
 async fn sql_password_reset_issuance_budget_boundaries_and_concurrency() {
     let path = std::env::temp_dir().join(format!("qid-reset-budget-{}.db", ulid::Ulid::new()));
-    std::fs::write(&path, migrated_sql_schema().await).unwrap();
+    sqlite_schema::copy_schema_template(&path).await;
     let repo = std::sync::Arc::new(
         SqlRepository::connect(&format!("sqlite:{}", path.display()))
             .await

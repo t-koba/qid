@@ -14,11 +14,9 @@ use qid_core::models::{
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, Ordering};
 
-static DB_SEQ: AtomicU16 = AtomicU16::new(0);
 #[path = "sqlite_schema.rs"]
 mod sqlite_schema;
 pub use sqlite_schema::{copy_schema_template, remove_sqlite_database_files};
@@ -47,17 +45,74 @@ pub fn clean_storage_test_databases(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn db_url() -> String {
-    let dir = std::env::temp_dir().join("qid_test");
-    std::fs::create_dir_all(&dir).ok();
-    // Clean old test databases once per process
-    static CLEANED: OnceLock<()> = OnceLock::new();
-    CLEANED.get_or_init(|| {
-        clean_storage_test_databases(&dir).expect("remove stale storage test database files");
+struct TestDirectory(PathBuf);
+
+impl TestDirectory {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!("qid_storage_{}", ulid::Ulid::new()));
+        // Exclusive creation: never reuse or sweep a different process's files.
+        std::fs::create_dir(&path).expect("create isolated storage test directory");
+        Self(path)
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        clean_storage_test_databases(&self.0).expect("remove isolated storage test database files");
+        std::fs::remove_dir(&self.0).expect("remove isolated storage test directory");
+    }
+}
+
+struct TestDatabases {
+    directory: TestDirectory,
+    repositories: Vec<SqlRepository>,
+}
+
+impl Drop for TestDatabases {
+    fn drop(&mut self) {
+        if !self.repositories.is_empty() {
+            // libtest drops this guard after the test future and its runtime.
+            // Close SQLite workers before deleting files, including on Windows.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("create storage database cleanup runtime");
+            runtime.block_on(async {
+                for repo in self.repositories.drain(..) {
+                    repo.close().await;
+                }
+            });
+        }
+        // TestDirectory removes only this thread's databases and sidecars next.
+    }
+}
+
+thread_local! {
+    // Each libtest thread owns an exclusive namespace, even across binaries.
+    // RAII cleans up on normal exit and unwinding; abort/kill may leave files,
+    // but no later process will reuse or sweep that abandoned namespace.
+    static DATABASES: RefCell<TestDatabases> = RefCell::new(TestDatabases {
+        directory: TestDirectory::new(),
+        repositories: Vec::new(),
     });
-    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("test_{n}.db"));
-    format!("sqlite:{}", path.display())
+}
+
+pub fn db_url() -> String {
+    DATABASES.with(|databases| {
+        let path = databases
+            .borrow()
+            .directory
+            .0
+            .join(format!("test_{}.db", ulid::Ulid::new()));
+        // Reserve this empty database exclusively; fresh-migration callers still
+        // start without a schema, and template copies overwrite only our file.
+        std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("reserve isolated storage test database");
+        format!("sqlite:{}", path.display())
+    })
 }
 
 pub async fn sql_repo() -> SqlRepository {
@@ -70,7 +125,9 @@ pub async fn sql_repo() -> SqlRepository {
     // in test_connect_and_migrate; copying keeps every test database isolated
     // without repeating the migration set.
     copy_schema_template(path).await;
-    SqlRepository::connect(&url).await.expect("connect failed")
+    let repo = SqlRepository::connect(&url).await.expect("connect failed");
+    DATABASES.with(|databases| databases.borrow_mut().repositories.push(repo.clone()));
+    repo
 }
 
 pub async fn file_repo(prefix: &str) -> FileRepository {

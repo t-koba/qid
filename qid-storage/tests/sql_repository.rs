@@ -25,13 +25,15 @@ use support::*;
 
 #[test]
 fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
-    let dir = std::env::temp_dir().join(format!("qid_storage_cleanup_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create storage cleanup fixture dir");
+    let fixture = tempfile::Builder::new()
+        .prefix("qid_storage_cleanup_")
+        .tempdir()
+        .expect("create storage cleanup fixture dir");
+    let dir = fixture.path();
     let test_database = dir.join("test_123.db");
     let template = dir.join("schema_template.db");
     // Unit-test binaries keep live databases below a process directory.
-    // The integration sweep must not recurse into it, even for test_*.db.
+    // Namespace cleanup must not recurse into it, even for test_*.db.
     let unit_dir = dir.join(format!("sql_unit_{}", std::process::id()));
     std::fs::create_dir(&unit_dir).expect("create unit-test cleanup fixture dir");
     let unit_database = unit_dir.join("test_0.db");
@@ -48,7 +50,7 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
         }
     }
 
-    support::clean_storage_test_databases(&dir).expect("clean storage test databases");
+    support::clean_storage_test_databases(dir).expect("clean storage test databases");
 
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let mut test_file = test_database.as_os_str().to_os_string();
@@ -71,7 +73,36 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
         );
     }
     support::remove_sqlite_database_files(&template).expect("remove storage cleanup template");
-    std::fs::remove_dir_all(&dir).expect("remove storage cleanup fixture dir");
+    fixture.close().expect("remove storage cleanup fixture dir");
+
+    // A second test thread owns a different namespace and cleans only its own
+    // files at thread exit, while this thread's database remains active.
+    let live_url = db_url();
+    let live = PathBuf::from(live_url.strip_prefix("sqlite:").unwrap());
+    std::fs::write(&live, b"active database").unwrap();
+    let retired = std::thread::spawn(|| {
+        let first_url = db_url();
+        let first = PathBuf::from(first_url.strip_prefix("sqlite:").unwrap());
+        std::fs::write(&first, b"first database").unwrap();
+        let second_url = db_url();
+        let second = PathBuf::from(second_url.strip_prefix("sqlite:").unwrap());
+        assert_ne!(first, second, "each database must have its own file");
+        assert_eq!(std::fs::read(&first).unwrap(), b"first database");
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut sidecar = first.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            std::fs::write(PathBuf::from(sidecar), b"owned sidecar").unwrap();
+        }
+        first
+    })
+    .join()
+    .expect("isolated database owner must clean up successfully");
+    assert_ne!(live.parent(), retired.parent());
+    assert!(
+        !retired.parent().unwrap().exists(),
+        "thread exit must remove the database namespace and all sidecars"
+    );
+    assert_eq!(std::fs::read(&live).unwrap(), b"active database");
 }
 fn vc_status_record(credential_id: &str) -> VcCredentialStatusRecord {
     VcCredentialStatusRecord {

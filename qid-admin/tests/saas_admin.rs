@@ -1980,7 +1980,7 @@ async fn a_json_array_body_is_rejected_and_no_user_is_created() {
 
 #[tokio::test]
 async fn a_json_array_body_is_rejected_on_a_non_identity_admin_route() {
-    let (app, _state, db) = setup().await;
+    let (app, state, db) = setup().await;
     let response = app
         .oneshot(json_request(
             Method::POST,
@@ -1998,6 +1998,7 @@ async fn a_json_array_body_is_rejected_on_a_non_identity_admin_route() {
             .contains("must be a JSON object"),
         "unexpected body: {body}"
     );
+    drop(state);
     db.close().await;
 }
 

@@ -11,10 +11,38 @@ use qid_core::{
     test_helpers,
     util::now_seconds,
 };
-use qid_storage::{AnyRepository, prelude::*};
+use qid_storage::{AnyRepository, SqlRepository, prelude::*};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 use tower::ServiceExt;
+
+static SQLITE_SCHEMA: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
+
+async fn sqlite_schema_bytes() -> &'static [u8] {
+    SQLITE_SCHEMA
+        .get_or_init(|| async {
+            let dir = std::env::temp_dir().join(format!("qid-hr-schema-{}", ulid::Ulid::new()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("schema.db");
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .unwrap();
+            repo.migrate().await.unwrap();
+            repo.close().await;
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let sidecar = PathBuf::from(format!("{}{}", path.display(), suffix));
+                assert!(
+                    !sidecar.exists(),
+                    "schema template sidecar remains: {sidecar:?}"
+                );
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            remove_fixture_dir(dir, true).await;
+            bytes
+        })
+        .await
+}
 
 async fn seed_source_session(repo: &AnyRepository, realm: &str, subject: &str, id: &str) {
     let now = qid_core::util::now_seconds();
@@ -63,7 +91,12 @@ impl Fixture {
         } else {
             path.to_str().unwrap().into()
         };
-        let repo = Arc::new(AnyRepository::connect(&url).await.unwrap());
+        let repo = Arc::new(if sql {
+            std::fs::write(&path, sqlite_schema_bytes().await).unwrap();
+            AnyRepository::Sql(SqlRepository::connect(&url).await.unwrap())
+        } else {
+            AnyRepository::connect(&url).await.unwrap()
+        });
         repo.create_realm(
             &"tenant".into(),
             &"test".into(),

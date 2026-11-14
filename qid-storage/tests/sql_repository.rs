@@ -532,6 +532,7 @@ async fn test_migration_plan_reports_pending_and_applied_migrations() {
     assert!(applied.divergent.is_empty());
     assert!(applied.unknown_applied.is_empty());
     assert!(!applied.applied.is_empty());
+    repo.close().await;
 }
 
 #[tokio::test]

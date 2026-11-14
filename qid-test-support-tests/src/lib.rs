@@ -49,10 +49,26 @@ mod tests {
         use qid_storage::prelude::*;
         let first_fixture = SqliteTestFixture::new("fixture_concurrent");
         let second_fixture = SqliteTestFixture::new("fixture_concurrent");
-        let (first, second) = tokio::join!(first_fixture.repository(), second_fixture.repository());
+        let other_fixture = SqliteTestFixture::new("fixture_concurrent_other");
+        let (first, second, other) = tokio::join!(
+            first_fixture.repository(),
+            second_fixture.repository(),
+            other_fixture.repository()
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            first_fixture.template.get().unwrap(),
+            second_fixture.template.get().unwrap()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            first_fixture.template.get().unwrap(),
+            other_fixture.template.get().unwrap()
+        ));
         assert_ne!(first.dir(), second.dir());
+        assert_ne!(first.dir(), other.dir());
+        assert_ne!(second.dir(), other.dir());
         assert!(!first_fixture.template.get().unwrap().is_empty());
         assert!(!second_fixture.template.get().unwrap().is_empty());
+        assert!(!other_fixture.template.get().unwrap().is_empty());
         first
             .repo()
             .create_realm(
@@ -65,12 +81,16 @@ mod tests {
             .unwrap();
         assert_eq!(first.repo().list_realms().await.unwrap().len(), 1);
         assert!(second.repo().list_realms().await.unwrap().is_empty());
+        assert!(other.repo().list_realms().await.unwrap().is_empty());
         let first_dir = first.dir().to_path_buf();
         let second_dir = second.dir().to_path_buf();
+        let other_dir = other.dir().to_path_buf();
         first.close().await;
         second.close().await;
+        other.close().await;
         assert!(!first_dir.exists());
         assert!(!second_dir.exists());
+        assert!(!other_dir.exists());
     }
     #[tokio::test]
     async fn close_removes_database_and_sidecars_after_pool_close() {

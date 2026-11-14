@@ -5,11 +5,13 @@ use std::{
     fs::{self, File},
     io::{Error, ErrorKind},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 /// One migrated schema per test process, kept only as bytes in memory.
+static PROCESS_TEMPLATE: tokio::sync::OnceCell<Arc<Vec<u8>>> = tokio::sync::OnceCell::const_new();
 pub struct SqliteTestFixture {
     namespace: &'static str,
-    pub(super) template: tokio::sync::OnceCell<Vec<u8>>,
+    pub(super) template: tokio::sync::OnceCell<Arc<Vec<u8>>>,
 }
 impl SqliteTestFixture {
     pub const fn new(namespace: &'static str) -> Self {
@@ -37,18 +39,39 @@ impl SqliteTestFixture {
             }
             init_lock.unlock().expect("release SQLite fixture init lock");
             drop(init_lock);
-            let template_dir = tempfile::TempDir::new().expect("create SQLite schema template directory");
-            let template_path = template_dir.path().join("schema_template.db");
-            let repo = SqlRepository::connect(&format!("sqlite:{}", template_path.display())).await.expect("connect SQLite schema template");
-            repo.migrate().await.expect("migrate SQLite schema template");
-            repo.close().await;
-            for suffix in ["-wal", "-shm", "-journal"] {
-                assert!(!sidecar(&template_path, suffix).try_exists().unwrap(), "SQLite schema template has a sidecar after closing: {suffix}");
-            }
-            let bytes = fs::read(&template_path).expect("read SQLite schema template");
-            assert!(!bytes.is_empty(), "SQLite schema template image must not be empty");
-            template_dir.close().expect("remove SQLite schema template directory");
-            bytes
+            Arc::clone(
+                PROCESS_TEMPLATE
+                    .get_or_init(|| async {
+                        let template_dir = tempfile::TempDir::new()
+                            .expect("create SQLite schema template directory");
+                        let template_path = template_dir.path().join("schema_template.db");
+                        let repo = SqlRepository::connect(&format!(
+                            "sqlite:{}",
+                            template_path.display()
+                        ))
+                        .await
+                        .expect("connect SQLite schema template");
+                        repo.migrate().await.expect("migrate SQLite schema template");
+                        repo.close().await;
+                        for suffix in ["-wal", "-shm", "-journal"] {
+                            assert!(
+                                !sidecar(&template_path, suffix).try_exists().unwrap(),
+                                "SQLite schema template has a sidecar after closing: {suffix}"
+                            );
+                        }
+                        let bytes = fs::read(&template_path)
+                            .expect("read SQLite schema template");
+                        assert!(
+                            !bytes.is_empty(),
+                            "SQLite schema template image must not be empty"
+                        );
+                        template_dir
+                            .close()
+                            .expect("remove SQLite schema template directory");
+                        Arc::new(bytes)
+                    })
+                    .await,
+            )
         }).await.as_slice()
     }
     /// Copy the in-memory schema image into a unique per-test directory.

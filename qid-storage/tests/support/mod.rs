@@ -531,6 +531,7 @@ where
 
     let mut updated = grant.clone();
     updated.granted_claims = vec!["email".to_string(), "profile".to_string()];
+    updated.granted_at_epoch_seconds = 1_800_000_050;
     repo.store_ciam_consent_grant(&updated)
         .await
         .expect("same-owner consent update failed");

@@ -1,7 +1,8 @@
 # Temporary, opt-in helper for windows-sqlite-cleanup-diagnostic.yml only.
 # The parent test bounds this entire process, suppresses stderr, and still makes
 # its original first deletion assertion even if this snapshot fails or times out.
-param([string]$Database)
+# -Preflight validates setup only; it never enumerates owners.
+param([string]$Database, [switch]$Preflight)
 $ErrorActionPreference = 'Stop'
 try {
     Add-Type -WarningAction SilentlyContinue -TypeDefinition @'
@@ -44,7 +45,7 @@ public static class QidCleanupOwners {
     static void Check(bool valid) {
         if (!valid) throw new InvalidOperationException();
     }
-    static string[] Query(string path, string suffix) {
+    static string[] Query(string path, string suffix, bool preflight = false) {
         uint session;
         Check(RmStartSession(out session, 0, new StringBuilder(33)) == 0);
         try {
@@ -52,6 +53,8 @@ public static class QidCleanupOwners {
             // never register a directory, prefix, wildcard, process or service.
             Check(RmRegisterResources(session, 1, new[] { path }, 0,
                 IntPtr.Zero, 0, IntPtr.Zero) == 0);
+            // Setup-only mode still checks session shutdown in finally.
+            if (preflight) return Array.Empty<string>();
             uint needed, count = 0, reboot = 0;
             int result = RmGetList(session, out needed, ref count, null, ref reboot);
             if (result == 0) {
@@ -86,6 +89,11 @@ public static class QidCleanupOwners {
             Check(RmEndSession(session) == 0);
         }
     }
+    public static void Preflight(string database) {
+        Check(Path.IsPathFullyQualified(database));
+        foreach (string suffix in new[] { "", "-wal", "-shm", "-journal" })
+            Query(database + suffix, null, true);
+    }
     public static string[] Capture(string database) {
         Check(Path.IsPathFullyQualified(database));
         var rows = new List<string>();
@@ -95,6 +103,10 @@ public static class QidCleanupOwners {
     }
 }
 '@
+    if ($Preflight) {
+        [QidCleanupOwners]::Preflight($Database)
+        exit 0
+    }
     # Emit only after every exact-resource query and session shutdown succeeded.
     # No full paths, command lines, app/service labels or raw exceptions escape.
     $rows = [QidCleanupOwners]::Capture($Database)

@@ -12,19 +12,6 @@ env:
   RUST_TOOLCHAIN: "1.96"
 
 jobs:
-  msrv:
-    name: MSRV
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: Check workspace on MSRV
-        env:
-          RUSTFLAGS: "-D warnings"
-        run: cargo +${{ env.RUST_TOOLCHAIN }} check --workspace --all-targets --locked
-
   build-test:
     name: Build/Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}

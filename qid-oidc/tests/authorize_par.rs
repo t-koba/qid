@@ -21,15 +21,67 @@ use qid_crypto::{
     jwt::sign_es256_jwt_with_jwk_header,
 };
 use qid_storage::{SqlRepository, prelude::*};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, Ordering};
 use tower::ServiceExt;
 
-static DB_SEQ: AtomicU16 = AtomicU16::new(0);
-static SCHEMA_TEMPLATE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
+static SCHEMA_TEMPLATE: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
+
+struct TestDirectory(PathBuf);
+
+impl TestDirectory {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!("qid_test_oidc_{}", ulid::Ulid::new()));
+        // Exclusive creation fails closed even if a name is already occupied.
+        std::fs::create_dir(&path).expect("create isolated OIDC test directory");
+        Self(path)
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        clean_oidc_test_databases(&self.0).expect("remove isolated OIDC test database files");
+        std::fs::remove_dir_all(&self.0).expect("remove isolated OIDC test directory");
+    }
+}
+
+struct TestDatabases {
+    directory: TestDirectory,
+    repositories: Vec<SqlRepository>,
+}
+
+impl Drop for TestDatabases {
+    fn drop(&mut self) {
+        if !self.repositories.is_empty() {
+            // The test's Tokio runtime has already exited. Explicitly close every
+            // pool (including SQLite workers) before removing its files on Windows.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("create OIDC database cleanup runtime");
+            runtime.block_on(async {
+                for repo in self.repositories.drain(..) {
+                    repo.close().await;
+                }
+            });
+        }
+        // TestDirectory then removes this thread's databases and any sidecars.
+    }
+}
+
+thread_local! {
+    // libtest owns each test thread; its directory outlives the test future and
+    // runtime, including on unwinding. No process scans or deletes another's
+    // files. As with other RAII fixtures, abort/kill can leave this directory.
+    static DATABASES: RefCell<TestDatabases> = RefCell::new(TestDatabases {
+        directory: TestDirectory::new(),
+        repositories: Vec::new(),
+    });
+}
 
 fn sqlite_main_path(path: &Path) -> PathBuf {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -68,14 +120,13 @@ fn clean_oidc_test_databases(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Build and close one migrated schema for independent per-test database copies.
-async fn schema_template_path() -> &'static PathBuf {
+/// Share only bytes: the initializing test thread may exit before other tests.
+/// Fresh migration coverage remains in qid-storage.
+async fn schema_template() -> &'static [u8] {
     SCHEMA_TEMPLATE
         .get_or_init(|| async {
-            let path = std::env::temp_dir()
-                .join("qid_test_oidc")
-                .join("schema_template.db");
-            remove_sqlite_database_files(&path).expect("remove stale OIDC schema template");
+            let path = DATABASES
+                .with(|databases| databases.borrow().directory.0.join("schema_template.db"));
             let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
                 .await
                 .unwrap();
@@ -91,28 +142,28 @@ async fn schema_template_path() -> &'static PathBuf {
                     sidecar.display()
                 );
             }
-            path
+            let bytes = std::fs::read(&path).expect("read closed OIDC schema template");
+            remove_sqlite_database_files(&path).expect("remove closed OIDC schema template");
+            bytes
         })
         .await
 }
 
 fn db_url() -> String {
-    let dir = std::env::temp_dir().join("qid_test_oidc");
-    std::fs::create_dir_all(&dir).ok();
-    static CLEANED: OnceLock<()> = OnceLock::new();
-    CLEANED.get_or_init(|| {
-        clean_oidc_test_databases(&dir).expect("remove stale OIDC test database files");
-    });
-    let n = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("test_{n}.db"));
-    format!("sqlite:{}", path.display())
+    DATABASES.with(|databases| {
+        let path = databases
+            .borrow()
+            .directory
+            .0
+            .join(format!("test_{}.db", ulid::Ulid::new()));
+        format!("sqlite:{}", path.display())
+    })
 }
 
 #[test]
 fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
-    let dir = std::env::temp_dir().join(format!("qid_oidc_cleanup_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = TestDirectory::new();
+    let dir = &directory.0;
     let test_database = dir.join("test_123.db");
     let template = dir.join("schema_template.db");
     for (path, suffixes) in [
@@ -126,7 +177,7 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
         }
     }
 
-    clean_oidc_test_databases(&dir).unwrap();
+    clean_oidc_test_databases(dir).unwrap();
 
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let mut test_file = test_database.as_os_str().to_os_string();
@@ -137,7 +188,6 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
         assert!(PathBuf::from(template_file).exists());
     }
     remove_sqlite_database_files(&template).unwrap();
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // Each isolated fixture uses the same test password, so hash it once per process.
@@ -202,8 +252,16 @@ async fn setup_with_config(mut config: QidConfig) -> (Router, Arc<SharedState<Sq
     let path = std::path::Path::new(url.strip_prefix("sqlite:").unwrap());
     // Migrations are run once here and covered on fresh databases by qid-storage;
     // copying keeps every OIDC case isolated without repeating the migration set.
-    std::fs::copy(schema_template_path().await, path).unwrap();
+    let schema = schema_template().await;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .unwrap()
+        .write_all(schema)
+        .unwrap();
     let repo = Arc::new(SqlRepository::connect(&url).await.unwrap());
+    DATABASES.with(|databases| databases.borrow_mut().repositories.push((*repo).clone()));
     repo.create_realm(
         &"tenant-1".into(),
         &"test".into(),

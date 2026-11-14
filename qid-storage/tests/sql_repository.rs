@@ -2172,7 +2172,7 @@ async fn test_file_ciam_consent_grant_owner_conflict() {
 async fn test_sql_workload_certificate_round_trip() {
     let url = db_url();
     let path = std::path::Path::new(url.strip_prefix("sqlite:").unwrap());
-    std::fs::copy(support::schema_template_path().await, path).unwrap();
+    support::copy_schema_template(path).await;
     let repo = SqlRepository::connect(&url).await.unwrap();
     assert_workload_certificate_round_trip(&repo).await;
     let realm = RealmId::from("realm-workload");

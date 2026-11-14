@@ -47,10 +47,6 @@ pub fn clean_storage_test_databases(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub async fn schema_template_path() -> &'static PathBuf {
-    sqlite_schema::schema_template_path().await
-}
-
 pub fn db_url() -> String {
     let dir = std::env::temp_dir().join("qid_test");
     std::fs::create_dir_all(&dir).ok();

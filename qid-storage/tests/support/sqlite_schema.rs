@@ -1,7 +1,7 @@
 use qid_storage::SqlRepository;
 use std::path::{Path, PathBuf};
 
-static SCHEMA_TEMPLATE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
+static SCHEMA_TEMPLATE: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
 
 pub fn remove_sqlite_database_files(path: &Path) -> std::io::Result<()> {
     for suffix in ["-wal", "-shm", "-journal", ""] {
@@ -16,16 +16,12 @@ pub fn remove_sqlite_database_files(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Build and close one migrated schema for independent per-test database copies.
-pub async fn schema_template_path() -> &'static PathBuf {
+/// Build one migrated schema in an owned temporary directory, then cache only its bytes.
+async fn schema_template_bytes() -> &'static [u8] {
     SCHEMA_TEMPLATE
         .get_or_init(|| async {
-            let path = std::env::temp_dir()
-                .join("qid_test")
-                .join("schema_template.db");
-            std::fs::create_dir_all(path.parent().expect("schema template has a parent"))
-                .expect("create storage schema template directory");
-            remove_sqlite_database_files(&path).expect("remove stale storage schema template");
+            let directory = tempfile::tempdir().expect("create storage schema template directory");
+            let path = directory.path().join("schema_template.db");
             let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
                 .await
                 .expect("connect storage schema template failed");
@@ -43,11 +39,17 @@ pub async fn schema_template_path() -> &'static PathBuf {
                     sidecar.display()
                 );
             }
-            path
+            let bytes = std::fs::read(&path).expect("read storage schema template");
+            remove_sqlite_database_files(&path).expect("remove storage schema template files");
+            directory
+                .close()
+                .expect("remove storage schema template directory");
+            bytes
         })
         .await
 }
 
 pub async fn copy_schema_template(destination: &Path) {
-    std::fs::copy(schema_template_path().await, destination).expect("copy storage schema template");
+    std::fs::write(destination, schema_template_bytes().await)
+        .expect("copy storage schema template");
 }

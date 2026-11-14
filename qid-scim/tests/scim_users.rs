@@ -12,7 +12,7 @@ use qid_core::{state::SharedState, test_helpers};
 use qid_crypto::LocalSigner;
 use qid_storage::prelude::*;
 use qid_storage::{FileRepository, SqlRepository};
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tower::ServiceExt;
 
 const ENTERPRISE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
@@ -20,6 +20,65 @@ const CORE_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
 const CORE_DEVICE_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:Device";
 const DEVICE_EXTENSION_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:device:2.0:Device";
 const EVENT_SUBSCRIPTION_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:EventSubscription";
+
+static SQL_SCHEMA_TEMPLATE: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
+
+async fn sql_schema_template() -> &'static [u8] {
+    SQL_SCHEMA_TEMPLATE
+        .get_or_init(|| async {
+            let dir = std::env::temp_dir().join(format!("qid-scim-schema-{}", ulid::Ulid::new()));
+            std::fs::create_dir_all(&dir).expect("create SCIM SQL schema template directory");
+            let path = dir.join("schema.db");
+            let repo = SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .expect("connect SCIM SQL schema template");
+            repo.migrate()
+                .await
+                .expect("migrate SCIM SQL schema template");
+            repo.close().await;
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                assert!(
+                    !PathBuf::from(sidecar).exists(),
+                    "SCIM schema template retained a SQLite sidecar"
+                );
+            }
+            let bytes = std::fs::read(&path).expect("read migrated SCIM SQL schema template");
+            std::fs::remove_dir_all(&dir).expect("remove SCIM SQL schema template directory");
+            bytes
+        })
+        .await
+        .as_slice()
+}
+
+struct SqliteTestDb {
+    repo: Arc<SqlRepository>,
+    dir: PathBuf,
+}
+
+impl SqliteTestDb {
+    async fn setup() -> Self {
+        let dir = std::env::temp_dir().join(format!("qid-scim-sql-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).expect("create SCIM SQL test directory");
+        let path = dir.join("store.db");
+        std::fs::write(&path, sql_schema_template().await)
+            .expect("copy migrated SCIM SQL schema into isolated test database");
+        let repo = Arc::new(
+            SqlRepository::connect(&format!("sqlite:{}", path.display()))
+                .await
+                .expect("connect isolated SCIM SQL test database"),
+        );
+        Self { repo, dir }
+    }
+
+    async fn cleanup(self) {
+        let Self { repo, dir } = self;
+        let repo = Arc::try_unwrap(repo).expect("SCIM SQL test repository still has live owners");
+        repo.close().await;
+        std::fs::remove_dir_all(&dir).expect("remove SCIM SQL test database directory");
+    }
+}
 
 async fn setup() -> Router {
     setup_with_store().await.0
@@ -802,14 +861,9 @@ async fn file_scim_upserts_preserve_realm_ownership() {
 
 #[tokio::test]
 async fn sql_scim_upserts_preserve_realm_ownership() {
-    let path = std::env::temp_dir().join(format!("qid-scim-{}.db", ulid::Ulid::new()));
-    let repo = Arc::new(
-        SqlRepository::connect(&format!("sqlite:{}", path.display()))
-            .await
-            .unwrap(),
-    );
-    repo.migrate().await.unwrap();
-    assert_realm_upsert_contract(repo).await;
+    let fixture = SqliteTestDb::setup().await;
+    assert_realm_upsert_contract(fixture.repo.clone()).await;
+    fixture.cleanup().await;
 }
 
 async fn get_json(app: &Router, uri: &str, realm: Option<&str>) -> serde_json::Value {
@@ -1770,14 +1824,8 @@ async fn scim_bulk_checks_user_and_group_versions_before_mutating() {
 
 #[tokio::test]
 async fn sql_scim_checks_user_and_group_versions_before_mutating() {
-    let dir = std::env::temp_dir().join(format!("qid-scim-versions-{}", ulid::Ulid::new()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = Arc::new(
-        SqlRepository::connect(&format!("sqlite:{}", dir.join("store.db").display()))
-            .await
-            .unwrap(),
-    );
-    repo.migrate().await.unwrap();
+    let fixture = SqliteTestDb::setup().await;
+    let repo = fixture.repo.clone();
     repo.create_realm(
         &"tenant".into(),
         &"corp".into(),
@@ -1787,8 +1835,8 @@ async fn sql_scim_checks_user_and_group_versions_before_mutating() {
     .await
     .unwrap();
     assert_conditional_user_and_group_routes(test_app(repo.clone())).await;
-    Arc::try_unwrap(repo).ok().unwrap().close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    drop(repo);
+    fixture.cleanup().await;
 }
 
 async fn assert_conditional_user_and_group_routes(app: Router) {

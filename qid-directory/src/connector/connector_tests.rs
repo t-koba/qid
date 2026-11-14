@@ -141,3 +141,70 @@ fn the_page_bound_follows_the_requested_page_size() {
     );
     assert_eq!(small.max_entries, large.max_entries);
 }
+
+#[test]
+fn runtime_initialization_retries_after_failure() -> std::io::Result<()> {
+    let value = std::sync::OnceLock::new();
+    let lock = std::sync::Mutex::new(());
+    let attempts = std::cell::Cell::new(0);
+    let initialize = || {
+        attempts.set(attempts.get() + 1);
+        if attempts.get() == 1 {
+            Err(std::io::Error::other("transient initialization failure"))
+        } else {
+            Ok(42)
+        }
+    };
+
+    let Err(error) = retry_init(&value, &lock, initialize) else {
+        panic!("first attempt must fail");
+    };
+    assert_eq!(error.to_string(), "transient initialization failure");
+    assert!(value.get().is_none());
+    let initialized = retry_init(&value, &lock, initialize)?;
+    assert_eq!(*initialized, 42);
+    let cached = retry_init(&value, &lock, initialize)?;
+    assert!(std::ptr::eq(initialized, cached));
+    assert_eq!(attempts.get(), 2);
+    Ok(())
+}
+
+#[test]
+fn runtime_initialization_is_shared_across_concurrent_callers() -> std::io::Result<()> {
+    use std::sync::{
+        Barrier, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let value = OnceLock::new();
+    let lock = Mutex::new(());
+    let attempts = AtomicUsize::new(0);
+    let start = Barrier::new(8);
+    std::thread::scope(|scope| -> std::io::Result<()> {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    retry_init(&value, &lock, || {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        Ok(42)
+                    })
+                })
+            })
+            .collect();
+        for handle in handles {
+            let initialized = handle
+                .join()
+                .map_err(|_| std::io::Error::other("initialization thread panicked"))??;
+            assert_eq!(*initialized, 42);
+            assert!(
+                value
+                    .get()
+                    .is_some_and(|cached| std::ptr::eq(initialized, cached))
+            );
+        }
+        Ok(())
+    })?;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    Ok(())
+}

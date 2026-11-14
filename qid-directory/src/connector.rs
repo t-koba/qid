@@ -205,14 +205,33 @@ impl Default for LdapSearchOptions {
     }
 }
 
+/// Cache only successful initialization, serializing attempts so callers never
+/// create competing runtimes. Errors leave the cell empty for the next caller.
+fn retry_init<'a, T>(
+    value: &'a std::sync::OnceLock<T>,
+    lock: &std::sync::Mutex<()>,
+    initialize: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<&'a T> {
+    if let Some(value) = value.get() {
+        return Ok(value);
+    }
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Another caller may have initialized the value while we waited.
+    if let Some(value) = value.get() {
+        return Ok(value);
+    }
+    let initialized = initialize()?;
+    Ok(value.get_or_init(|| initialized))
+}
+
 fn shared_runtime() -> QidResult<&'static tokio::runtime::Runtime> {
-    static RT: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
-        std::sync::OnceLock::new();
-    RT.get_or_init(tokio::runtime::Runtime::new)
-        .as_ref()
-        .map_err(|error| QidError::Internal {
-            message: format!("failed to create Tokio runtime for LDAP: {error}"),
-        })
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    retry_init(&RT, &INIT, tokio::runtime::Runtime::new).map_err(|error| QidError::Internal {
+        message: format!("failed to create Tokio runtime for LDAP: {error}"),
+    })
 }
 
 /// Run operations with an owned driver. JoinSet aborts the driver on cancellation;

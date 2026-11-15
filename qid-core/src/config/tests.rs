@@ -3432,3 +3432,27 @@ fn workload_lifetime_invalid_bounds_rejected_at_config_validation() {
     config.realms[0].protocols.workload.jwt_svid_max_ttl_seconds = 3600;
     config.validate().unwrap();
 }
+
+#[test]
+fn workload_est_is_opt_in_and_requires_existing_capabilities() {
+    let defaults: WorkloadProtocolConfig = serde_json::from_str("{}").unwrap();
+    assert!(!defaults.est);
+    assert!(!ProtocolConfig::default().workload.est);
+    let enabled: WorkloadProtocolConfig = serde_json::from_value(serde_json::json!({
+        "est": true, "jwt_svid": true, "x509_svid": true, "workload_ca_key_ref": "ca"
+    }))
+    .unwrap();
+    assert!(enabled.est);
+    enabled.validate("test").unwrap();
+    for missing in ["jwt", "x509", "ca", "blank"] {
+        let mut invalid = enabled.clone();
+        match missing {
+            "jwt" => invalid.jwt_svid = false,
+            "x509" => invalid.x509_svid = false,
+            "ca" => invalid.workload_ca_key_ref = None,
+            _ => invalid.workload_ca_key_ref = Some(" ".into()),
+        }
+        assert!(invalid.validate("test").is_err());
+    }
+    assert!(serde_json::from_str::<WorkloadProtocolConfig>(r#"{"est":"true"}"#).is_err());
+}

@@ -166,7 +166,7 @@ be `local`, with no remote URI/public JWK, and `crypto.default_alg` must be
 signs JWTs. CA keys are never published in the deployment JWT JWKS or used as
 its primary JWT signer. Sanitized/case-insensitive filename aliases fail startup.
 Each realm's `protocols.workload.max_csr_bytes` bounds the exact UTF-8 byte
-length of the decoded `csr_pem` JSON string for authenticated PKCS#10 issuance
+length of the decoded `csr_pem` JSON string for authenticated JSON PKCS#10 issuance
 (including any accepted outer ASCII whitespace). It defaults to **16,384** bytes;
 **0** disables acceptance of all CSR requests, without changing server-generated
 key issuance. This allows ample room over a measured 473-byte P-256 SPIFFE CSR
@@ -176,6 +176,30 @@ PEM block with a valid signature and no trailing DER is accepted. See the
 [CSR API](http-api.md#device-workload-spiffe) for the registered-identity policy.
 This is PKCS#10 only; EST, CMS, CRMF, PKCS#12 and delegated credentials are not
 supported by this endpoint.
+
+### Workload-JWT EST subset
+
+`protocols.workload.est` defaults to **false**. Set it to `true` only in a
+workload deployment with `jwt_svid: true`, `x509_svid: true`, and the realm's
+configured `workload_ca_key_ref`. The existing CA custody requirements still
+apply. Missing realm, disabled feature gates, absent resolved CA, or an issuer
+shared with another configured realm fail closed (404). Use distinct realm
+issuers: JWT-SVID issuer authentication must bind exactly one path realm.
+
+This is a **qid workload-JWT EST subset**, not full RFC 7030. It implements
+`GET /.well-known/est/:realm/cacerts`, `POST .../simpleenroll`, and
+`POST .../simplereenroll`. All three require an existing registered workload's
+`qid-workload-api` JWT-SVID, **including cacerts**. **HTTPS with server certificate
+verification is required at the deployment boundary**; do not expose the HTTP
+backend publicly. qid's generic HTTP routing does not infer TLS from headers.
+
+For EST, `max_csr_bytes` bounds the entire encoded request body, including base64
+padding and CRLF folds, **before collection/decoding/parsing**. Its default is
+16,384 bytes; zero rejects enrollments. JSON CSR limits and behavior are unchanged.
+See the [wire profile](http-api.md#workload-jwt-est-subset) for MIME and lifecycle
+rules. Bootstrap authentication, client-certificate authentication, old-key proof,
+TLS channel binding, csrattrs, serverkeygen/server-generated keys, and deferred
+enrollment are omitted. No CRMF, PKCS#12 or delegated credentials are introduced.
 
 ### Workload lifetimes
 
@@ -270,8 +294,8 @@ introducing those trust anchors requires an explicit deployment trust rollout.
 If material is missing or unverifiable, restore it or plan an explicit trust
 rotation outside qidd; do not delete files to bypass startup errors.
 
-This is local CA custody for the existing HTTP/JSON SVID API, not an enrollment
-protocol. It adds no EST, CSR/CMS/CRMF, PKCS#12 or delegated-credential support.
+CA custody serves both the HTTP/JSON SVID API and the opt-in workload-JWT EST
+subset above; custody itself is not an enrollment or trust-bootstrap protocol.
 
 ## Server and Paths
 

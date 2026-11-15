@@ -1340,3 +1340,6 @@ async fn unrepresentable_jwt_expiry_fails_without_storing_certificates() {
             .is_empty()
     );
 }
+
+#[path = "workload/est.rs"]
+mod est;

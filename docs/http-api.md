@@ -494,8 +494,67 @@ digests, while new records distinguish both fields. SQL migration adds a separat
 nullable CSR digest. A successful store is followed by an audit event attributed
 to the authenticated workload, containing the certificate ID and identity/digests,
 not CSR content. Listing and revocation use the existing authenticated lifecycle.
-This is PKCS#10 over HTTP/JSON only, not EST, CMS, CRMF, PKCS#12 or delegated
-credentials support.
+This JSON endpoint remains separate from the opt-in EST resources below; it does
+not accept CMS, CRMF, PKCS#12 or delegated credentials.
+
+### Workload-JWT EST subset
+
+This opt-in **qid workload-JWT EST subset is not full RFC 7030**. Enable
+`protocols.workload.est` as described in
+[configuration](configuration.md#workload-jwt-est-subset), retain JWT/X.509 gates
+and CA custody, and require **HTTPS with verified server certificates at the
+deployment boundary**. The realm is always the explicit path label, never chosen
+from the CSR. Every operation, including CA discovery, requires
+`Authorization: Bearer <JWT-SVID>` with audience `qid-workload-api`, that realm's
+unambiguous issuer and an exactly registered workload SPIFFE subject. There is
+no anonymous bootstrap or provisioning-token alternative.
+
+| Method | Realm-labeled resource | Result |
+| --- | --- | --- |
+| GET | `/.well-known/est/:realm/cacerts` | Only that realm's configured public CA certificate set (currently its configured CA PEM); no key material. |
+| POST | `/.well-known/est/:realm/simpleenroll` | Certificate for the verified CSR key and authenticated workload. |
+| POST | `/.well-known/est/:realm/simplereenroll` | Same issuance, requiring an eligible stored predecessor. |
+
+POSTs require exactly one `Content-Type: application/pkcs10` and one
+`Content-Transfer-Encoding: base64`, without MIME parameters. Media-type and
+transfer-encoding tokens are case-insensitive. The body is standard padded
+base64 of one complete DER PKCS#10 request. CRLF folding is limited to 76
+characters per line; bare line endings, spaces, invalid alphabet/padding, PEM,
+concatenated requests, trailing DER and invalid proof-of-possession signatures
+are rejected (400). Unsupported/missing/duplicate MIME headers return 415.
+Collection is bounded by `max_csr_bytes` before base64/ASN.1 parsing; oversized or
+zero-limit requests return 413. All requested subject/SAN/usages/lifetime claims are ignored, just as
+in the JSON CSR API. The authenticated SPIFFE identity and realm policy select
+everything except the verified CSR public key.
+
+All successes return **200**, `Content-Type: application/pkcs7-mime;
+smime-type=certs-only` and `Content-Transfer-Encoding: base64`. Bodies are MIME
+base64 DER with CRLF folds of at most 76 characters and a final CRLF: CMS
+degenerate certs-only SignedData with no signerInfos or encapsulated content.
+Enrollment returns **only the issued leaf**, not the CA chain, JSON, PEM, raw DER
+or a server-generated key. Use authenticated `cacerts` for the CA.
+
+Reenrollment requires at least one stored certificate matching the exact realm,
+workload ID and SPIFFE ID, unrevoked, with `not_before <= now < not_after`.
+Absent, foreign, revoked, expired or not-yet-valid predecessors are rejected
+(401). A new CSR key is permitted (rekey). JWT authentication is **not proof of
+possession of the old certificate key**; only the new CSR key's POP is verified.
+Reenrollment does not revoke or otherwise change the predecessor or existing
+revocation semantics.
+
+Before a successful response qid persists the certificate and appends the workload
+attributed audit event (`workload.certificate.est.simpleenroll` or
+`workload.certificate.est.simplereenroll`). `csr_sha256` is the SHA-256 of the exact
+accepted **DER**, independent of base64 folding, and is separate from the SPKI
+and leaf digests. The JSON action still hashes the exact accepted UTF-8 PEM
+string. Storage/audit failures return errors, never partial-success payloads;
+as with JSON issuance, an audit failure can leave a stored certificate but
+cannot return enrollment success.
+
+Omitted operations are bootstrap and client-cert authentication, old-key proof,
+TLS channel binding, csrattrs, serverkeygen/server-key delivery and deferred
+(enrollment pending/Retry-After) responses. Use the existing JSON APIs unchanged
+where their distinct behavior is needed.
 
 One SPIFFE ID names one workload identity in a realm. Registering that SPIFFE
 ID again updates the identity that carries it: the identity keeps its ID, and

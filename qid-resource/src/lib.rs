@@ -218,6 +218,15 @@ where
     R: Repository,
 {
     Router::new()
+        .route("/.well-known/est/:realm/cacerts", get(est::cacerts::<R>))
+        .route(
+            "/.well-known/est/:realm/simpleenroll",
+            post(est::simpleenroll::<R>),
+        )
+        .route(
+            "/.well-known/est/:realm/simplereenroll",
+            post(est::simplereenroll::<R>),
+        )
         .route(
             "/api/v1/:realm/workload-identities",
             post(create_workload_identity::<R>),
@@ -324,6 +333,7 @@ pub(crate) fn not_found_response(msg: &str) -> Response {
 pub mod ciam;
 mod device;
 pub mod eat;
+mod est;
 mod fedcm;
 mod par;
 mod spiffe;

@@ -46,6 +46,7 @@ realms:
           - urn:ietf:params:oauth:grant-type:token-exchange
     protocols:
       workload:
+        est: false # Opt-in workload-JWT EST subset; HTTPS required at deployment boundary.
         spiffe_workload_api: true
         x509_svid: true
         jwt_svid: true

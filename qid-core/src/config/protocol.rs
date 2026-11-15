@@ -656,6 +656,8 @@ fn default_vc_max_credential_lifetime() -> u64 {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkloadProtocolConfig {
+    /// Opt-in qid workload-JWT EST subset; requires JWT-SVID, X.509-SVID and a CA.
+    pub est: bool,
     pub max_csr_bytes: usize,
     pub jwt_svid_default_ttl_seconds: u64,
     pub jwt_svid_min_ttl_seconds: u64,
@@ -675,6 +677,7 @@ pub struct WorkloadProtocolConfig {
 impl Default for WorkloadProtocolConfig {
     fn default() -> Self {
         Self {
+            est: false,
             max_csr_bytes: 16_384,
             jwt_svid_default_ttl_seconds: 3600,
             jwt_svid_min_ttl_seconds: 0,
@@ -695,6 +698,20 @@ impl Default for WorkloadProtocolConfig {
 
 impl WorkloadProtocolConfig {
     pub(crate) fn validate(&self, realm: &str) -> QidResult<()> {
+        if self.est
+            && (!self.jwt_svid
+                || !self.x509_svid
+                || self
+                    .workload_ca_key_ref
+                    .as_deref()
+                    .is_none_or(|s| s.trim().is_empty()))
+        {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm} EST requires jwt_svid, x509_svid and workload_ca_key_ref"
+                ),
+            });
+        }
         for (kind, default, min, max) in [
             (
                 "jwt_svid",

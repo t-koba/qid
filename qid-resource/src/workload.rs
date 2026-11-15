@@ -159,21 +159,43 @@ pub async fn issue_workload_certificate_from_csr<R: Repository>(
         Ok(csr) => csr,
         Err(e) => return qid_http::error_response(e),
     };
+    let certificate = match issue_verified_csr(
+        &state,
+        &realm,
+        &workload,
+        csr,
+        qid_core::util::sha256_hex(req.csr_pem.as_bytes()),
+        "workload.certificate.issue_csr",
+    )
+    .await
+    {
+        Ok(certificate) => certificate,
+        Err(e) => return qid_http::error_response(e),
+    };
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({"certificate": certificate})),
+    )
+        .into_response()
+}
+
+pub(super) async fn issue_verified_csr(
+    state: &SharedState<impl Repository>,
+    realm: &str,
+    workload: &WorkloadIdentity,
+    csr: rcgen::CertificateSigningRequestParams,
+    digest: String,
+    action: &str,
+) -> qid_core::error::QidResult<WorkloadCertificate> {
     // Only the verified public key is used; all requested certificate claims are discarded.
-    let mut certificate =
-        match sign_workload_certificate(&state, &realm, &workload, &csr.public_key, None) {
-            Ok(certificate) => certificate,
-            Err(e) => return qid_http::error_response(e),
-        };
-    certificate.csr_sha256 = Some(qid_core::util::sha256_hex(req.csr_pem.as_bytes()));
-    if let Err(e) = state.repo.store_workload_certificate(&certificate).await {
-        return qid_http::error_response(e);
-    }
+    let mut certificate = sign_workload_certificate(state, realm, workload, &csr.public_key, None)?;
+    certificate.csr_sha256 = Some(digest);
+    state.repo.store_workload_certificate(&certificate).await?;
     let event = qid_core::models::AuditEvent {
         id: format!("audit_{}", ulid::Ulid::new()),
         realm_id: Some(workload.realm_id.clone()),
         actor: workload.id.clone(),
-        action: "workload.certificate.issue_csr".into(),
+        action: action.into(),
         target_type: "workload_certificate".into(),
         target_id: certificate.id.clone(),
         reason: "Authenticated workload PKCS#10 issuance".into(),
@@ -187,21 +209,14 @@ pub async fn issue_workload_certificate_from_csr<R: Repository>(
         previous_hash: None,
         event_hash: None,
     };
-    if let Err(e) = state.repo.append_audit_event(&event).await {
-        return qid_http::error_response(e);
-    }
-    (
-        StatusCode::CREATED,
-        Json(serde_json::json!({"certificate": certificate})),
-    )
-        .into_response()
+    state.repo.append_audit_event(&event).await?;
+    Ok(certificate)
 }
 
 fn parse_workload_csr(
     pem: &str,
     max_bytes: usize,
 ) -> qid_core::error::QidResult<rcgen::CertificateSigningRequestParams> {
-    use x509_parser::prelude::FromDer;
     let invalid = || qid_core::error::QidError::BadRequest {
         message: "invalid workload CSR".into(),
     };
@@ -226,12 +241,23 @@ fn parse_workload_csr(
     if !rest.iter().all(u8::is_ascii_whitespace) {
         return Err(invalid());
     }
-    let (rest, _) = x509_parser::certification_request::X509CertificationRequest::from_der(&der)
+    parse_workload_csr_der(&der)
+}
+
+pub(super) fn parse_workload_csr_der(
+    der: &[u8],
+) -> qid_core::error::QidResult<rcgen::CertificateSigningRequestParams> {
+    use x509_parser::prelude::FromDer;
+    let invalid = || qid_core::error::QidError::BadRequest {
+        message: "invalid workload CSR".into(),
+    };
+    let (rest, _) = x509_parser::certification_request::X509CertificationRequest::from_der(der)
         .map_err(|_| invalid())?;
     if !rest.is_empty() {
         return Err(invalid());
     }
-    rcgen::CertificateSigningRequestParams::from_der(&der).map_err(|_| invalid())
+    // rcgen verifies the PKCS#10 proof-of-possession signature.
+    rcgen::CertificateSigningRequestParams::from_der(&der.into()).map_err(|_| invalid())
 }
 
 pub async fn issue_workload_certificate<R: Repository>(

@@ -1,0 +1,2 @@
+# Test-only independent PKCS#10 producer and CMS/X.509 consumer.
+cryptography==46.0.3

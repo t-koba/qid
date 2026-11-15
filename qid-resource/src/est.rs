@@ -12,7 +12,6 @@ use qid_core::{
     error::{QidError, QidResult},
     models::WorkloadIdentity,
     state::SharedState,
-    tenant::RealmId,
 };
 use qid_storage::prelude::*;
 use std::sync::Arc;
@@ -190,18 +189,7 @@ async fn enroll<R: Repository>(
         let csr = crate::workload::parse_workload_csr_der(&der)?;
         if renew {
             let now = qid_core::util::now_seconds();
-            let prior = state
-                .repo
-                .list_workload_certificates(&RealmId(realm.into()), Some(&workload.id))
-                .await?;
-            if !prior.iter().any(|c| {
-                c.realm_id == realm
-                    && c.workload_id == workload.id
-                    && c.spiffe_id == workload.spiffe_id
-                    && c.revoked_at.is_none()
-                    && c.not_before <= now
-                    && now < c.not_after
-            }) {
+            if !state.repo.has_eligible_cert(&workload, now).await? {
                 return Err(QidError::Unauthorized {
                     message: "EST reenrollment requires a currently valid owned certificate".into(),
                 });

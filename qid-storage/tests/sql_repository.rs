@@ -291,6 +291,13 @@ where
     repo.create_workload_identity(&workload)
         .await
         .expect("create workload identity failed");
+    assert!(
+        !repo
+            .has_eligible_cert(&workload, 1_800_000_000)
+            .await
+            .unwrap(),
+        "workload without a certificate is not eligible"
+    );
 
     let certificate = WorkloadCertificate {
         id: "cert-api-1".to_string(),
@@ -313,6 +320,47 @@ where
     repo.store_workload_certificate(&certificate)
         .await
         .expect("store workload certificate failed");
+    assert!(
+        repo.has_eligible_cert(&workload, certificate.not_before)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !repo
+            .has_eligible_cert(&workload, certificate.not_before - 1)
+            .await
+            .unwrap(),
+        "future-dated certificate must not be eligible"
+    );
+    assert!(
+        !repo
+            .has_eligible_cert(&workload, certificate.not_after)
+            .await
+            .unwrap(),
+        "certificate is expired at not_after"
+    );
+    for other in [
+        WorkloadIdentity {
+            id: "other-workload".into(),
+            ..workload.clone()
+        },
+        WorkloadIdentity {
+            realm_id: "other-realm".into(),
+            ..workload.clone()
+        },
+        WorkloadIdentity {
+            spiffe_id: "spiffe://other.example/workload".into(),
+            ..workload.clone()
+        },
+    ] {
+        assert!(
+            !repo
+                .has_eligible_cert(&other, certificate.not_before)
+                .await
+                .unwrap(),
+            "certificate must be bound to the exact workload identity"
+        );
+    }
 
     let listed = repo
         .list_workload_certificates(&realm, Some(&workload.id))
@@ -519,6 +567,13 @@ where
             vec![expected]
         );
     }
+    assert!(
+        !repo
+            .has_eligible_cert(&workload, 1_800_000_200)
+            .await
+            .unwrap(),
+        "revoked certificate must not be eligible"
+    );
     let mut previously_revoked = certificate.clone();
     previously_revoked.revoked_at = Some(u64::MAX);
     let err = repo

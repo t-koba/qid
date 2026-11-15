@@ -82,16 +82,11 @@ impl WorkloadRepository for SqlRepository {
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(storage_to_qid_error)?;
-        let Some((workload_realm, workload_spiffe)) = workload else {
-            return Err(QidError::BadRequest {
-                message: "workload certificate workload does not exist".to_string(),
-            });
-        };
-        if workload_realm != certificate.realm_id || workload_spiffe != certificate.spiffe_id {
-            return Err(QidError::BadRequest {
-                message: "workload certificate identity does not match workload".to_string(),
-            });
-        }
+        certificate.validate_workload_identity_binding(
+            workload
+                .as_ref()
+                .map(|(realm, spiffe)| (realm.as_str(), spiffe.as_str())),
+        )?;
         let result = sqlx::query(
             "INSERT INTO workload_certificates (id, realm_id, workload_id, spiffe_id, serial_number, x5t_s256, public_key_sha256, csr_sha256, certificate_pem, issuer_key_ref, issued_at, not_before, not_after, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET serial_number = excluded.serial_number, x5t_s256 = excluded.x5t_s256, public_key_sha256 = excluded.public_key_sha256, csr_sha256 = excluded.csr_sha256, certificate_pem = excluded.certificate_pem, issuer_key_ref = excluded.issuer_key_ref, issued_at = excluded.issued_at, not_before = excluded.not_before, not_after = excluded.not_after, revoked_at = excluded.revoked_at \
@@ -128,25 +123,30 @@ impl WorkloadRepository for SqlRepository {
         realm_id: &RealmId,
         workload_id: Option<&str>,
     ) -> QidResult<Vec<WorkloadCertificate>> {
-        let rows: Vec<WorkloadCertificateRow> = if let Some(workload_id) = workload_id {
-            sqlx::query_as(
-                "SELECT * FROM workload_certificates WHERE realm_id = ? AND workload_id = ? ORDER BY not_after DESC, id ASC",
-            )
-            .bind(realm_id.as_str())
-            .bind(workload_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?
-        } else {
-            sqlx::query_as(
-                "SELECT * FROM workload_certificates WHERE realm_id = ? ORDER BY not_after DESC, id ASC",
-            )
-            .bind(realm_id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?
-        };
+        let mut query = sqlx::query_as::<_, WorkloadCertificateRow>(match workload_id {
+            Some(_) => "SELECT * FROM workload_certificates WHERE realm_id = ? AND workload_id = ? ORDER BY not_after DESC, id ASC",
+            None => "SELECT * FROM workload_certificates WHERE realm_id = ? ORDER BY not_after DESC, id ASC",
+        })
+        .bind(realm_id.as_str());
+        if let Some(workload_id) = workload_id {
+            query = query.bind(workload_id);
+        }
+        let rows = query.fetch_all(&self.pool).await;
+        let rows = rows.map_err(storage_to_qid_error)?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn has_eligible_cert(&self, workload: &WorkloadIdentity, now: u64) -> QidResult<bool> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT CAST(EXISTS(SELECT 1 FROM workload_certificates WHERE realm_id = ? AND workload_id = ? AND spiffe_id = ? AND revoked_at IS NULL AND not_before <= ? AND not_after > ?) AS BIGINT)",
+        )
+        .bind(&workload.realm_id)
+        .bind(&workload.id)
+        .bind(&workload.spiffe_id)
+        .bind(now as i64)
+        .bind(now as i64)
+        .fetch_one(&self.pool)
+        .await.map_err(storage_to_qid_error).map(|exists| exists != 0)
     }
 
     async fn revoke_workload_certificate(

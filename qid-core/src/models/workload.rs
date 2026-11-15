@@ -95,6 +95,32 @@ impl TryFrom<WorkloadCertificateWire> for WorkloadCertificate {
 impl WorkloadCertificate {
     pub(crate) const MAX_LIFETIME_SECONDS: u64 = 86_400;
 
+    pub fn validate_workload_identity_binding(
+        &self,
+        workload: Option<(&str, &str)>,
+    ) -> QidResult<()> {
+        let Some((realm_id, spiffe_id)) = workload else {
+            return Err(QidError::BadRequest {
+                message: "workload certificate workload does not exist".into(),
+            });
+        };
+        if self.realm_id != realm_id || self.spiffe_id != spiffe_id {
+            return Err(QidError::BadRequest {
+                message: "workload certificate identity does not match workload".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn is_eligible_for(&self, workload: &WorkloadIdentity, now: u64) -> bool {
+        self.realm_id == workload.realm_id
+            && self.workload_id == workload.id
+            && self.spiffe_id == workload.spiffe_id
+            && self.revoked_at.is_none()
+            && self.not_before <= now
+            && now < self.not_after
+    }
+
     pub fn validate(&self) -> QidResult<()> {
         require_non_empty("workload certificate id", &self.id)?;
         require_non_empty("workload certificate realm_id", &self.realm_id)?;

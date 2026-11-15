@@ -78,17 +78,10 @@ impl WorkloadRepository for FileRepository {
     async fn store_workload_certificate(&self, certificate: &WorkloadCertificate) -> QidResult<()> {
         certificate.validate()?;
         let mut store = self.store.write().await;
-        let Some(workload) = store.workload_identities.get(&certificate.workload_id) else {
-            return Err(QidError::BadRequest {
-                message: "workload certificate workload does not exist".to_string(),
-            });
-        };
-        if workload.realm_id != certificate.realm_id || workload.spiffe_id != certificate.spiffe_id
-        {
-            return Err(QidError::BadRequest {
-                message: "workload certificate identity does not match workload".to_string(),
-            });
-        }
+        let workload = store.workload_identities.get(&certificate.workload_id);
+        certificate.validate_workload_identity_binding(
+            workload.map(|workload| (workload.realm_id.as_str(), workload.spiffe_id.as_str())),
+        )?;
         if store
             .workload_certificates
             .get(&certificate.id)
@@ -136,14 +129,22 @@ impl WorkloadRepository for FileRepository {
         let mut certificates = store
             .workload_certificates
             .values()
-            .filter(|certificate| certificate.realm_id == realm_id.0)
             .filter(|certificate| {
-                workload_id.is_none_or(|workload_id| certificate.workload_id == workload_id)
+                certificate.realm_id == realm_id.0
+                    && workload_id.is_none_or(|id| certificate.workload_id == id)
             })
             .cloned()
             .collect::<Vec<_>>();
         certificates.sort_by(|a, b| b.not_after.cmp(&a.not_after).then_with(|| a.id.cmp(&b.id)));
         Ok(certificates)
+    }
+
+    async fn has_eligible_cert(&self, workload: &WorkloadIdentity, now: u64) -> QidResult<bool> {
+        let store = self.store.read().await;
+        Ok(store
+            .workload_certificates
+            .values()
+            .any(|cert| cert.is_eligible_for(workload, now)))
     }
 
     async fn revoke_workload_certificate(

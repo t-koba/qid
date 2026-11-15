@@ -175,18 +175,7 @@ pub(crate) use webauthn::{
     webauthn_discoverable_auth_start, webauthn_register_finish, webauthn_register_start,
 };
 
-pub(crate) fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once('=')
-            && key.trim() == name
-        {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
+pub(crate) use qid_http::extract_cookie;
 
 pub(crate) struct BrowserSessionContext<'a, R: Repository> {
     pub(crate) realm_config: &'a RuntimeRealm,

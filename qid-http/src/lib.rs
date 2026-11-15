@@ -157,3 +157,17 @@ pub fn redirect_error(
     }
     Redirect::temporary(&url).into_response()
 }
+
+/// Read the first named cookie from the Cookie header without decoding its value.
+pub fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    for pair in cookie_header.split(';') {
+        let pair = pair.trim();
+        if let Some((key, value)) = pair.split_once('=')
+            && key.trim() == name
+        {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}

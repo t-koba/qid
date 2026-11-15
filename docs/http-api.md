@@ -126,8 +126,51 @@ without a live ceremony is refused without reading the realm.
 
 Admin mutations require admin authorization checks and, depending on config, reason, step-up, approval, or break-glass controls.
 
+### Browser-session elevation
+
+`POST /admin/api/v1/:realm/elevation` exchanges the configured realm's browser-session
+cookie (`realms[].sessions.browser.cookie_name`, default `__Host-qid`) for a bounded
+admin elevation. No request body or identity, role, ACR, AMR, auth-time or session-proof
+headers are needed or trusted. Supply `x-qid-admin-reason` when
+`admin.security.require_reason` is enabled (the default).
+
+The source must be an active, non-revoked stored session for the path realm and a
+stored user of that same realm. Its user must already have an `Admin` membership
+whose tenant exactly matches the stored realm-to-tenant binding; configuration alone
+does not supply that binding. This endpoint never creates membership or promotes a
+user. With `admin.security.require_step_up` enabled, the **stored session** must have
+exactly `required_acr` and at least one of `required_amr` (defaults: `phr` and
+`webauthn`). Authentication time also comes only from the stored session; no separate
+authentication-age rule is applied.
+
+A successful response is `200 OK` with `Cache-Control: no-store`:
+
+```json
+{"admin_session_id":"<server-generated elevation ID>","expires_at":1800000000}
+```
+
+`expires_at` is Unix time in seconds, no later than issuance time plus
+`admin.security.max_elevation_seconds` (default 900), the source session's idle
+expiry, or its absolute expiry. An elevation with no usable lifetime is refused.
+Send the returned `admin_session_id` as `x-qid-admin-session-id` on protected admin
+requests; the browser cookie itself is not that header's value. Treat both values
+as bearer credentials: do not log them or persist them in caches. Exchange responses,
+including denials, are marked `no-store`.
+
+The exchange records an `admin.elevation.issue.intent` audit event before
+storing the elevation; neither bearer value is included. When `admin.audit_fail_closed` is enabled, audit failure
+prevents issuance. The elevation remains bound to its exact source session;
+protected routes recheck source validity and current stored roles.
+**Approval policy remains in force:** the exchange neither requires nor consumes
+an approval and does not bypass mutation authorization. Protected mutations still
+require their configured reason and, when enabled, a valid
+`x-qid-admin-approval-id`; their existing approval-consumption rules are unchanged.
+
+### Routes
+
 | Method | Path | Notes |
 | --- | --- | --- |
+| `POST` | `/admin/api/v1/:realm/elevation` | Exchange a stored browser session for a bounded admin elevation. |
 | `GET` | `/admin/ui` | Basic admin UI. |
 | `GET` | `/admin/api/v1/ui/dashboard` | Dashboard data. |
 | `POST` | `/admin/api/v1/breakglass/sessions/:session_id/revoke` | Revoke break-glass session. |

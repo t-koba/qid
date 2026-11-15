@@ -22,6 +22,10 @@ where
 {
     Router::new()
         .route("/admin/ui", get(admin_ui))
+        .route(
+            "/admin/api/v1/:realm/elevation",
+            post(crate::elevation::exchange::<R>),
+        )
         .route("/admin/api/v1/ui/dashboard", get(admin_dashboard::<R>))
         .route(
             "/admin/api/v1/breakglass/sessions/:session_id/revoke",
@@ -265,21 +269,32 @@ fn admin_amr(headers: &HeaderMap) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) fn admin_has_step_up(headers: &HeaderMap, security: &AdminSecurityConfig) -> bool {
-    if !security.require_step_up {
-        return true;
-    }
     let acr = headers
         .get(ADMIN_ACR_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim);
-    let amr = admin_amr(headers);
-    acr == Some(security.required_acr.as_str())
-        && amr.iter().any(|method| {
-            security
-                .required_amr
+    enforce_admin_assurance(acr, &admin_amr(headers), security).is_ok()
+}
+
+pub(crate) fn enforce_admin_assurance(
+    acr: Option<&str>,
+    amr: &[String],
+    security: &AdminSecurityConfig,
+) -> QidResult<()> {
+    if security.require_step_up
+        && (acr != Some(security.required_acr.as_str())
+            || !amr
                 .iter()
-                .any(|required| required == method)
-        })
+                .any(|method| security.required_amr.contains(method)))
+    {
+        return Err(QidError::Unauthorized {
+            message: format!(
+                "admin step-up is required: ACR must be {} and AMR must include one of {:?}",
+                security.required_acr, security.required_amr
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn role_allows(
@@ -466,21 +481,7 @@ pub(crate) async fn authorize_admin<R: Repository>(
     let (admin, elevation) = resolve_authenticated_admin(state, headers).await?;
     enforce_admin_tenant_binding(state, realm, &admin, &elevation, None).await?;
 
-    if security.require_step_up {
-        let acr_ok = elevation.acr.as_deref() == Some(security.required_acr.as_str());
-        let amr_ok = elevation
-            .amr
-            .iter()
-            .any(|method| security.required_amr.contains(method));
-        if !acr_ok || !amr_ok {
-            return Err(QidError::Unauthorized {
-                message: format!(
-                    "admin step-up is required: ACR must be {} and AMR must include one of {:?}",
-                    security.required_acr, security.required_amr
-                ),
-            });
-        }
-    }
+    enforce_admin_assurance(elevation.acr.as_deref(), &elevation.amr, security)?;
     let now = qid_core::util::now_seconds();
     if elevation.elevation_expires_at <= now {
         return Err(QidError::Unauthorized {

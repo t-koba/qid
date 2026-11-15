@@ -27,6 +27,7 @@ tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
+sqlx.workspace = true
 tempfile.workspace = true
 http-body-util = { workspace = true }
 qid-core = { workspace = true, features = ["test-utils"] }

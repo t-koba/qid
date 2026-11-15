@@ -105,6 +105,7 @@ mod saas;
 use saas::*;
 
 mod authz;
+mod elevation;
 
 use authz::*;
 pub use authz::{PepDecisionRecord, admin_routes, record_pep_decision};

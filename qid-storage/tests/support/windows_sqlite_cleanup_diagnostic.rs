@@ -126,7 +126,7 @@ pub(crate) fn capture(path: &Path) -> bool {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::{terminate_process_tree, terminate_tree_and_reap};
+    use super::{terminate_tree_and_reap, wait_for_child};
     use std::{
         fs,
         fs::OpenOptions,
@@ -138,24 +138,49 @@ mod tests {
 
     struct ProcessTree {
         parent: Option<Child>,
-        child_pid_path: PathBuf,
+        running_path: PathBuf,
+        ready_path: PathBuf,
+        lock_path: PathBuf,
     }
 
     impl ProcessTree {
-        fn spawn(
-            parent_script: &Path,
-            child_script: &Path,
-            lock_path: &Path,
-            ready_path: &Path,
-            child_pid_path: &Path,
-        ) -> Self {
+        fn spawn(directory: &Path) -> Self {
+            let child_script = directory.join("child.ps1");
+            let parent_script = directory.join("parent.ps1");
+            let running_path = directory.join("running");
+            let ready_path = directory.join("child-ready");
+            let lock_path = directory.join("locked.db");
+            fs::write(&running_path, "running").unwrap();
+            fs::write(
+                &child_script,
+                r#"$lock = [System.IO.File]::Open($env:QID_TEST_LOCK_PATH, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+try {
+    [System.IO.File]::WriteAllText($env:QID_TEST_READY_PATH, 'ready')
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([System.IO.File]::Exists($env:QID_TEST_RUNNING_PATH) -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 10
+    }
+} finally {
+    $lock.Dispose()
+}
+"#,
+            )
+            .unwrap();
+            fs::write(
+                &parent_script,
+                r#"$arguments = "-NoLogo -NoProfile -NonInteractive -File `"$env:QID_TEST_CHILD_SCRIPT`""
+$child = Start-Process -FilePath 'pwsh' -ArgumentList $arguments -WindowStyle Hidden -PassThru
+Start-Sleep -Seconds 30
+"#,
+            )
+            .unwrap();
             let child = Command::new("pwsh")
                 .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
                 .arg(parent_script)
                 .env("QID_TEST_CHILD_SCRIPT", child_script)
-                .env("QID_TEST_LOCK_PATH", lock_path)
-                .env("QID_TEST_READY_PATH", ready_path)
-                .env("QID_TEST_CHILD_PID_PATH", child_pid_path)
+                .env("QID_TEST_LOCK_PATH", &lock_path)
+                .env("QID_TEST_READY_PATH", &ready_path)
+                .env("QID_TEST_RUNNING_PATH", &running_path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -163,12 +188,32 @@ mod tests {
                 .expect("PowerShell test parent starts");
             Self {
                 parent: Some(child),
-                child_pid_path: child_pid_path.to_path_buf(),
+                running_path,
+                ready_path,
+                lock_path,
             }
         }
 
         fn child(&mut self) -> &mut Child {
             self.parent.as_mut().expect("test process tree is active")
+        }
+
+        fn wait_until_locked(&mut self) {
+            let ready_deadline = Instant::now() + Duration::from_secs(10);
+            while !self.ready_path.exists() && Instant::now() < ready_deadline {
+                if self.child().try_wait().unwrap().is_some() {
+                    panic!("PowerShell test parent exited before its descendant locked the file");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                self.ready_path.exists(),
+                "descendant did not acquire the file lock"
+            );
+            assert!(
+                fs::remove_file(&self.lock_path).is_err(),
+                "test descendant must hold the file against deletion"
+            );
         }
 
         fn terminate_and_reap(&mut self) -> bool {
@@ -182,74 +227,66 @@ mod tests {
 
     impl Drop for ProcessTree {
         fn drop(&mut self) {
-            if let Some(pid) = fs::read_to_string(&self.child_pid_path)
-                .ok()
-                .and_then(|value| value.trim().parse::<u32>().ok())
-            {
-                let _ = terminate_process_tree(pid);
-            }
-            if let Some(mut parent) = self.parent.take() {
-                let _ = terminate_tree_and_reap(&mut parent);
-            }
+            let Some(mut parent) = self.parent.take() else {
+                return;
+            };
+            // Only this fixture's descendant observes this lifetime file. Even
+            // after the parent exits, never signal a recorded (possibly reused)
+            // descendant PID. A late-starting descendant also sees its removal.
+            let _ = fs::remove_file(&self.running_path);
+            // Child::kill uses the retained Windows process handle, not a PID.
+            let _ = parent.kill();
+            let _ = wait_for_child(&mut parent, Duration::from_secs(1));
         }
     }
 
     #[test]
     fn timeout_termination_stops_descendant_before_file_cleanup() {
         let directory = tempfile::tempdir().unwrap();
-        let child_script = directory.path().join("child.ps1");
-        let parent_script = directory.path().join("parent.ps1");
-        let lock_path = directory.path().join("locked.db");
-        let ready_path = directory.path().join("child-ready");
-        let child_pid_path = directory.path().join("child.pid");
-        fs::write(
-            &child_script,
-            r#"$lock = [System.IO.File]::Open($env:QID_TEST_LOCK_PATH, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-[System.IO.File]::WriteAllText($env:QID_TEST_READY_PATH, 'ready')
-Start-Sleep -Seconds 30
-"#,
-        )
-        .unwrap();
-        fs::write(
-            &parent_script,
-            r#"$arguments = "-NoLogo -NoProfile -NonInteractive -File `"$env:QID_TEST_CHILD_SCRIPT`""
-$child = Start-Process -FilePath 'pwsh' -ArgumentList $arguments -WindowStyle Hidden -PassThru
-[System.IO.File]::WriteAllText($env:QID_TEST_CHILD_PID_PATH, [string]$child.Id)
-Start-Sleep -Seconds 30
-"#,
-        )
-        .unwrap();
-
-        let mut tree = ProcessTree::spawn(
-            &parent_script,
-            &child_script,
-            &lock_path,
-            &ready_path,
-            &child_pid_path,
-        );
-        let ready_deadline = Instant::now() + Duration::from_secs(10);
-        while !ready_path.exists() && Instant::now() < ready_deadline {
-            if tree.child().try_wait().unwrap().is_some() {
-                panic!("PowerShell test parent exited before its descendant locked the file");
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            ready_path.exists(),
-            "descendant did not acquire the file lock"
-        );
-        assert!(
-            fs::remove_file(&lock_path).is_err(),
-            "test descendant must hold the file against deletion"
-        );
+        let mut tree = ProcessTree::spawn(directory.path());
+        tree.wait_until_locked();
 
         assert!(tree.terminate_and_reap(), "process-tree termination failed");
         let lock = OpenOptions::new()
             .write(true)
-            .open(&lock_path)
+            .open(&tree.lock_path)
             .expect("descendant must release the file before tree termination returns");
         drop(lock);
-        fs::remove_file(&lock_path).unwrap();
+        fs::remove_file(&tree.lock_path).unwrap();
         tree.disarm();
+        drop(tree);
+        assert!(
+            directory.path().join("running").exists(),
+            "disarming must suppress descendant cleanup as well as parent cleanup"
+        );
+    }
+
+    #[test]
+    fn guard_cleanup_releases_descendant_after_parent_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut tree = ProcessTree::spawn(directory.path());
+        tree.wait_until_locked();
+        tree.child().kill().unwrap();
+        assert!(wait_for_child(tree.child(), Duration::from_secs(1)).is_some());
+        let lock_path = tree.lock_path.clone();
+        drop(tree);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match OpenOptions::new().write(true).open(&lock_path) {
+                Ok(lock) => {
+                    drop(lock);
+                    break;
+                }
+                Err(error) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "descendant kept its lock: {error}"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+        fs::remove_file(&lock_path).unwrap();
     }
 }

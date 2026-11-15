@@ -366,6 +366,57 @@ async fn client_update_missing_id_preserves_unique_identity() {
 }
 
 #[tokio::test]
+async fn concurrent_file_client_updates_preserve_identical_retry_semantics() {
+    use qid_core::tenant::{RealmId, TenantId};
+    use qid_storage::{ClientRepository, RealmRepository};
+    use std::sync::Arc;
+
+    let repo = Arc::new(support::file_repo("ownership-contract-client-update-concurrent").await);
+    let realm = RealmId("realm-client-update-concurrent".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-update-concurrent".to_string()),
+        &realm,
+        "https://client-update-concurrent.example.com",
+        Some("Client Update Concurrent Realm"),
+    )
+    .await
+    .expect("create concurrent-update realm failed");
+    let client = support::sample_cross_realm_client(
+        "client-update-concurrent",
+        &realm.0,
+        "concurrent-update-app",
+    );
+    let barrier = Arc::new(tokio::sync::Barrier::new(16));
+    let updates = (0..16)
+        .map(|_| {
+            let repo = Arc::clone(&repo);
+            let client = client.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                repo.update_client(&client).await
+            })
+        })
+        .collect::<Vec<_>>();
+    for update in updates {
+        update
+            .await
+            .expect("join concurrent client update")
+            .expect("identical missing-ID updates must all succeed");
+    }
+    let stored = repo
+        .find_clients_by_client_id(std::slice::from_ref(&realm), &client.client_id)
+        .await
+        .expect("find concurrently updated client failed");
+    assert_eq!(
+        stored.len(),
+        1,
+        "identical updates must insert exactly one client"
+    );
+    assert_eq!(stored[0].id, client.id);
+}
+
+#[tokio::test]
 async fn client_update_identity_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_client_update_identity(&sql).await;

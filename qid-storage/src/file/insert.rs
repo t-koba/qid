@@ -75,26 +75,35 @@ impl FileRepository {
         select: fn(&mut Store) -> &mut HashMap<String, T>,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
-        let map = select(&mut store);
-        reject_duplicate_id(map.contains_key(record.id()), || {
-            format!("{} record ID {} already exists", T::RECORD, record.id())
-        })?;
-        if let Some((owner, identity)) = record.identity()
-            && map
-                .values()
-                .any(|stored| stored.identity() == Some((owner, identity)))
-        {
-            let message = if T::GLOBAL_IDENTITY {
-                format!("{} {identity} already exists globally", T::IDENTITY)
-            } else {
-                format!("{} {identity} already exists in realm {owner}", T::IDENTITY)
-            };
-            return Err(QidError::Conflict { message });
-        }
-        map.insert(record.id().to_owned(), record.clone());
+        insert_new_in_store(&mut store, record, select)?;
         drop(store);
         self.save().await
     }
+}
+
+pub(super) fn insert_new_in_store<T: InsertIdentity>(
+    store: &mut Store,
+    record: &T,
+    select: fn(&mut Store) -> &mut HashMap<String, T>,
+) -> QidResult<()> {
+    let map = select(store);
+    reject_duplicate_id(map.contains_key(record.id()), || {
+        format!("{} record ID {} already exists", T::RECORD, record.id())
+    })?;
+    if let Some((owner, identity)) = record.identity()
+        && map
+            .values()
+            .any(|stored| stored.identity() == Some((owner, identity)))
+    {
+        let message = if T::GLOBAL_IDENTITY {
+            format!("{} {identity} already exists globally", T::IDENTITY)
+        } else {
+            format!("{} {identity} already exists in realm {owner}", T::IDENTITY)
+        };
+        return Err(QidError::Conflict { message });
+    }
+    map.insert(record.id().to_owned(), record.clone());
+    Ok(())
 }
 
 impl InsertIdentity for ParRequest {

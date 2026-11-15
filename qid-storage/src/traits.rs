@@ -960,6 +960,8 @@ pub trait AdminRepository: Send + Sync + 'static {
     async fn get_admin_by_id(&self, id: &str) -> QidResult<Option<Admin>>;
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()>;
     async fn get_admin_elevation(&self, id: &str) -> QidResult<Option<AdminElevation>>;
+    /// Create-only insert; reclaim other records expiring at or before the
+    /// server-created `elevation.created_at`, preserving all active records.
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()>;
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>>;
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()>;

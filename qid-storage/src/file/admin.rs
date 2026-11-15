@@ -44,13 +44,15 @@ impl AdminRepository for FileRepository {
     }
 
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()> {
-        self.insert_id_if_absent(
-            |store| &mut store.admin_elevations,
-            elevation.id.clone(),
-            elevation.clone(),
-            || format!("Admin elevation ID {} already exists", elevation.id),
-        )
-        .await
+        let mut store = self.store.write().await;
+        let elevations = &mut store.admin_elevations;
+        reject_duplicate_id(elevations.contains_key(&elevation.id), || {
+            format!("Admin elevation ID {} already exists", elevation.id)
+        })?;
+        elevations.retain(|_, old| old.elevation_expires_at > elevation.created_at);
+        elevations.insert(elevation.id.clone(), elevation.clone());
+        drop(store);
+        self.save().await
     }
 
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {

@@ -2,28 +2,33 @@ use async_trait::async_trait;
 
 use super::*;
 
-#[async_trait]
-impl AdminRepository for SqlRepository {
-    async fn get_admin(&self, tenant_id: &str, subject: &str) -> QidResult<Option<Admin>> {
-        let row: Option<AdminRow> =
-            sqlx::query_as("SELECT * FROM admins WHERE tenant_id = ? AND subject = ?")
-                .bind(tenant_id)
-                .bind(subject)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
-    }
+macro_rules! admin_repository {
+    ([$($method:ident($($arg:ident),+): $row:ty => $model:ty = $sql:literal;)+] $($write:item)*) => {
+        #[async_trait]
+        impl AdminRepository for SqlRepository {
+            $(async fn $method(&self, $($arg: &str),+) -> QidResult<Option<$model>> {
+                sqlx::query_as::<_, $row>($sql)
+                    $(.bind($arg))+
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map(|row| row.map(Into::into))
+                    .map_err(storage_to_qid_error)
+            })+
+            $($write)*
+        }
+    };
+}
 
-    async fn get_admin_by_id(&self, id: &str) -> QidResult<Option<Admin>> {
-        let row: Option<AdminRow> = sqlx::query_as("SELECT * FROM admins WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
-    }
+const EXPIRED_LOW: &str = "DELETE FROM admin_elevations WHERE elevation_expires_at >= 0 AND elevation_expires_at <= ? AND id <> ?";
+const EXPIRED_HIGH: &str = "DELETE FROM admin_elevations WHERE (elevation_expires_at >= 0 OR elevation_expires_at <= ?) AND id <> ?";
 
+admin_repository! {
+    [
+    get_admin(tenant_id, subject): AdminRow => Admin = "SELECT * FROM admins WHERE tenant_id = ? AND subject = ?";
+    get_admin_by_id(id): AdminRow => Admin = "SELECT * FROM admins WHERE id = ?";
+    get_admin_elevation(id): AdminElevationRow => AdminElevation = "SELECT * FROM admin_elevations WHERE id = ?";
+    get_admin_approval(id): AdminApprovalRow => AdminApproval = "SELECT * FROM admin_approvals WHERE id = ?";
+    ]
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()> {
         let conflict = || format!("Admin ID {} belongs to another identity", admin.id);
         let result = sqlx::query(
@@ -45,17 +50,16 @@ impl AdminRepository for SqlRepository {
         crate::ownership::ensure_upsert_applied(result.rows_affected(), conflict)
     }
 
-    async fn get_admin_elevation(&self, id: &str) -> QidResult<Option<AdminElevation>> {
-        let row: Option<AdminElevationRow> =
-            sqlx::query_as("SELECT * FROM admin_elevations WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
-    }
-
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()> {
+        // Signed storage must preserve the unsigned timestamp ordering.
+        let cutoff = elevation.created_at as i64;
+        let delete = if cutoff < 0 { EXPIRED_HIGH } else { EXPIRED_LOW };
+        sqlx::query(delete)
+            .bind(cutoff)
+            .bind(&elevation.id)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
         let result = sqlx::query(
             "INSERT INTO admin_elevations (id, tenant_id, admin_id, source_session_id, acr, amr_json, elevation_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
@@ -73,16 +77,6 @@ impl AdminRepository for SqlRepository {
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("Admin elevation ID {} already exists", elevation.id)
         })
-    }
-
-    async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {
-        let row: Option<AdminApprovalRow> =
-            sqlx::query_as("SELECT * FROM admin_approvals WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?;
-        Ok(row.map(Into::into))
     }
 
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()> {
@@ -115,3 +109,5 @@ impl AdminRepository for SqlRepository {
         Ok(result.rows_affected() == 1)
     }
 }
+#[cfg(test)]
+mod tests;

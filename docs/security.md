@@ -95,6 +95,12 @@ The TOTP admin sample explicitly selects this lower, TOTP-only assurance; it
 is not password-plus-TOTP. These settings do not grant admin membership or
 provision an elevation.
 
+Admin elevation storage reclaims other records whose expiry is at or before
+its next elevation's server-created timestamp. Active elevations are retained;
+IDs remain create-only even when the incumbent is expired. Cleanup is driven
+by elevation writes, not a background timer, and does not remove approvals
+or browser sessions.
+
 For sensitive deployments, enable approval and keep elevation TTL short.
 
 `admin.security` is the single owner of the administrator authentication requirement: an administrator elevation must carry the required ACR and one of the required AMR methods, and `require_step_up` is on by default. A realm's `authentication.mfa.totp.enabled` states whether the realm offers the TOTP factor and does not restate that requirement.

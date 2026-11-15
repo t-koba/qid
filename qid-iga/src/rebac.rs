@@ -99,6 +99,7 @@ pub async fn check<R: RebacRepository>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpandError {
     Repository(QidError),
+    TooManyTuples { limit_tuples: usize },
     ResponseTooLarge { limit_bytes: usize },
 }
 
@@ -106,6 +107,10 @@ impl std::fmt::Display for ExpandError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Repository(error) => std::fmt::Display::fmt(error, formatter),
+            Self::TooManyTuples { limit_tuples } => write!(
+                formatter,
+                "ReBAC Expand raw tuple reads exceed the configured {limit_tuples}-tuple limit"
+            ),
             Self::ResponseTooLarge { limit_bytes } => write!(
                 formatter,
                 "ReBAC Expand response exceeds the configured {limit_bytes}-byte limit"
@@ -118,7 +123,7 @@ impl std::error::Error for ExpandError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Repository(error) => Some(error),
-            Self::ResponseTooLarge { .. } => None,
+            Self::ResponseTooLarge { .. } | Self::TooManyTuples { .. } => None,
         }
     }
 }
@@ -254,7 +259,7 @@ impl std::io::Write for ByteBudget {
 ///
 /// Preflight the complete compact JSON response before materializing the tree.
 /// Uses two traversal phases:
-///   1. BFS to read each reachable tuple group once, up to MAX_DEPTH.
+///   1. BFS to read each reachable tuple group once, up to MAX_DEPTH and max_tuples.
 ///   2. Render each path separately, preserving cyclic and depth-limited edges as leaves.
 pub async fn expand<R: RebacRepository>(
     repo: &R,
@@ -262,6 +267,7 @@ pub async fn expand<R: RebacRepository>(
     object_id: &str,
     relation: &str,
     max_response_bytes: usize,
+    max_tuples: usize,
 ) -> Result<ExpandNode, ExpandError> {
     let root_key = (
         namespace.to_string(),
@@ -272,12 +278,24 @@ pub async fn expand<R: RebacRepository>(
     let mut seen = HashSet::from([root_key.clone()]);
     let mut queue = std::collections::VecDeque::from([(root_key.clone(), 0usize)]);
 
+    let mut remaining = max_tuples;
     // BFS discovers each group at its shortest depth. Mark it seen on enqueue
     // so shared and cyclic edges cannot duplicate either queue entries or reads.
     while let Some((key, depth)) = queue.pop_front() {
         let tuples = repo
-            .list_relationship_tuples(&key.0, &key.1, Some(&key.2))
+            .list_relationship_tuples_bounded(
+                &key.0,
+                &key.1,
+                Some(&key.2),
+                remaining.saturating_add(1),
+            )
             .await?;
+        if tuples.len() > remaining {
+            return Err(ExpandError::TooManyTuples {
+                limit_tuples: max_tuples,
+            });
+        }
+        remaining -= tuples.len();
         if depth < MAX_DEPTH {
             for t in &tuples {
                 if !t.subject_relation.is_empty() {

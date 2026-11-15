@@ -3006,7 +3006,7 @@ fn push_policy_is_disabled_bounded_and_strict() {
 }
 
 #[test]
-fn rebac_response_budget_config_defaults_and_rejects_zero() {
+fn rebac_budgets_config_defaults_and_validation() {
     let base = r#"
 server:
   listen: "127.0.0.1:8443"
@@ -3020,34 +3020,49 @@ realms:
             .extract()
             .unwrap();
         assert_eq!(config.iga.rebac.expand_max_response_bytes.get(), 2_097_152);
+        assert_eq!(config.iga.rebac.expand_max_tuples.get(), 10_000);
     }
-    for (value, valid) in [("1", true), ("12345", true), ("0", false), ("-1", false)] {
-        let result = Figment::from(Yaml::string(&format!(
-            "{base}\niga:\n  rebac:\n    expand_max_response_bytes: {value}\n"
-        )))
-        .extract::<QidConfig>();
-        assert_eq!(result.is_ok(), valid);
-        if let Ok(config) = result {
-            assert_eq!(
-                config.iga.rebac.expand_max_response_bytes.get(),
-                value.parse::<usize>().unwrap()
-            );
+    for key in ["expand_max_response_bytes", "expand_max_tuples"] {
+        for (value, valid) in [
+            ("1", true),
+            ("12345", true),
+            ("0", false),
+            ("-1", false),
+            ("1.5", false),
+            ("18446744073709551616", false),
+        ] {
+            let result = Figment::from(Yaml::string(&format!(
+                "{base}\niga:\n  rebac:\n    {key}: {value}\n"
+            )))
+            .extract::<QidConfig>();
+            assert_eq!(result.is_ok(), valid);
+            if let Ok(config) = result {
+                assert_eq!(
+                    if key == "expand_max_tuples" {
+                        config.iga.rebac.expand_max_tuples.get()
+                    } else {
+                        config.iga.rebac.expand_max_response_bytes.get()
+                    },
+                    value.parse::<usize>().unwrap()
+                );
+            }
         }
     }
 }
 
 #[test]
-fn rebac_response_budget_environment_override() {
+fn rebac_budgets_environment_override() {
     // Re-execute in a child rather than mutate the parallel test process's env.
     // Keep its libtest output out of the parent Cargo timing stream.
     if std::env::var_os("REBAC_BUDGET_ENV_CHILD").is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "config::tests::rebac_response_budget_environment_override",
+                "config::tests::rebac_budgets_environment_override",
             ])
             .env("REBAC_BUDGET_ENV_CHILD", "1")
             .env("QID_IGA__REBAC__EXPAND_MAX_RESPONSE_BYTES", "37")
+            .env("QID_IGA__REBAC__EXPAND_MAX_TUPLES", "19")
             .output()
             .unwrap();
         assert!(
@@ -3076,6 +3091,7 @@ iga:
     let config = QidConfig::from_file(path.to_str().unwrap()).unwrap();
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     assert_eq!(config.iga.rebac.expand_max_response_bytes.get(), 37);
+    assert_eq!(config.iga.rebac.expand_max_tuples.get(), 19);
 }
 
 #[test]

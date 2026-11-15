@@ -34,14 +34,14 @@ cargo run --bin qidc -- --config base.yaml --config prod.yaml plan
 | `profile` | no | Deployment profile. Defaults to `oidc`. |
 | `server` | yes | Listen address, public URL, TLS, paths, CORS, HTTP Message Signatures. |
 | `admin` | no | Admin operation security policy. |
-| `iga` | no | Identity governance and ReBAC response budgets. |
+| `iga` | no | Identity governance and ReBAC resource budgets. |
 | `storage` | no | Primary repository and cache settings. |
 | `crypto` | no | Default signing algorithm and keyrings. |
 | `realms` | yes | Realm definitions. At least one realm is required. |
 | `observability` | no | Log format and metrics listener. |
 | `ops` | no | Ops cache, cluster, declared backup target/version, and restore/orchestration interlock. |
 
-## ReBAC Expand response budget
+## ReBAC Expand resource budgets
 
 `iga.rebac.expand_max_response_bytes` is a nonzero integer, default **2,097,152
 bytes (2 MiB)**. Set it in YAML/TOML or override it with
@@ -51,6 +51,7 @@ bytes (2 MiB)**. Set it in YAML/TOML or override it with
 iga:
   rebac:
     expand_max_response_bytes: 2097152
+    expand_max_tuples: 10000
 ```
 
 The limit covers the complete compact UTF-8 JSON `ExpandResponse`, including
@@ -60,9 +61,21 @@ tree materialization with HTTP **413** and JSON
 `{"error":"expand_response_too_large","limit_bytes":2097152}` (the configured
 limit is reported). There is no partial tree, silent truncation, or shared-node
 reference format. Path-expanded trees, cycle leaves and `MAX_DEPTH=10` remain
-unchanged. The preflight uses the already-fetched tuple groups; this is an
-output budget, not a bound on repository reads or raw tuple storage. Raising it
-permits larger response allocations and serialization work.
+unchanged. This output budget is separate from the raw tuple-read budget below;
+raising it permits larger response allocations and serialization work.
+
+`iga.rebac.expand_max_tuples` is a nonzero integer, default **10,000**; its
+environment override is `QID_IGA__REBAC__EXPAND_MAX_TUPLES=10000`. It bounds the
+cumulative raw tuples read across distinct reachable groups (shared and cyclic
+groups are read once, through the existing depth limit), not the number of
+path-expanded output nodes. Exactly the limit succeeds if the response-byte
+budget also fits. Each backend read requests at most the remaining allowance
+plus one sentinel tuple; overflow returns HTTP **413** with
+`{"error":"expand_too_many_tuples","limit_tuples":10000}` and no partial tree.
+File clones at most that bounded subset but still scans its stored vector;
+SQL applies `LIMIT` in the query. Tuple strings have no size constraint, so this
+count bound is **not a hard byte-memory ceiling**, nor does it bound the File
+backend's resident store. Neither budget changes Check or tuple-listing APIs.
 
 ## IGA self-service bearer permission
 

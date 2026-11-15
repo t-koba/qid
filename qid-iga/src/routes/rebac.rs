@@ -77,11 +77,19 @@ async fn expand_handler<R: Repository>(
         &req.object_id,
         &req.relation,
         state.config.iga.rebac.expand_max_response_bytes.get(),
+        state.config.iga.rebac.expand_max_tuples.get(),
     )
     .await
     {
         Ok(tree) => tree,
         Err(rebac::ExpandError::Repository(error)) => return rebac_error_response(error),
+        Err(rebac::ExpandError::TooManyTuples { limit_tuples }) => {
+            let body = serde_json::json!({
+                "error": "expand_too_many_tuples",
+                "limit_tuples": limit_tuples,
+            });
+            return (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response();
+        }
         Err(rebac::ExpandError::ResponseTooLarge { limit_bytes }) => {
             let body = serde_json::json!({
                 "error": "expand_response_too_large",
@@ -375,11 +383,12 @@ mod read_and_check_tests {
             Ok(())
         }
 
-        async fn list_relationship_tuples(
+        async fn list_relationship_tuples_bounded(
             &self,
             _namespace: &str,
             _object_id: &str,
             _relation: Option<&str>,
+            _limit: usize,
         ) -> QidResult<Vec<RelationshipTuple>> {
             match self.mode {
                 ReadMode::Empty => Ok(Vec::new()),

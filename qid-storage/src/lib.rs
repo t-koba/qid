@@ -382,7 +382,7 @@ delegate!(SiemDeliveryRepository {
 delegate!(RebacRepository {
     create_relationship_tuple(&self, tuple: &qid_core::models::RelationshipTuple) -> QidResult<()>;
     delete_relationship_tuple(&self, tuple: &qid_core::models::RelationshipTuple) -> QidResult<()>;
-    list_relationship_tuples(&self, namespace: &str, object_id: &str, relation: Option<&str>) -> QidResult<Vec<qid_core::models::RelationshipTuple>>;
+    list_relationship_tuples_bounded(&self, namespace: &str, object_id: &str, relation: Option<&str>, limit: usize) -> QidResult<Vec<qid_core::models::RelationshipTuple>>;
     list_relationship_tuples_by_subject(&self, namespace: &str, object_id: &str, relation: &str, subject_namespace: &str, subject_id: &str, subject_relation: Option<&str>) -> QidResult<Vec<qid_core::models::RelationshipTuple>>;
 });
 

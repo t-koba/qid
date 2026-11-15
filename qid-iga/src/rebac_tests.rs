@@ -330,7 +330,7 @@ async fn test_expand_flat_members() {
     insert(&repo, direct("group", "eng", "member", "user", "alice")).await;
     insert(&repo, direct("group", "eng", "member", "user", "bob")).await;
 
-    let tree = expand(&repo, "group", "eng", "member", 2_097_152)
+    let tree = expand(&repo, "group", "eng", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     let ExpandNode::Branch { children, .. } = &tree else {
@@ -349,7 +349,7 @@ async fn test_expand_nested_group() {
     )
     .await;
 
-    let tree = expand(&repo, "group", "eng", "member", 2_097_152)
+    let tree = expand(&repo, "group", "eng", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     let ExpandNode::Branch { children, .. } = &tree else {
@@ -410,7 +410,7 @@ async fn test_expand_shared_child_appears_under_every_parent() {
     .await;
     insert(&repo, direct("group", "shared", "member", "user", "alice")).await;
 
-    let tree = expand(&repo, "group", "root", "member", 2_097_152)
+    let tree = expand(&repo, "group", "root", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     let ExpandNode::Branch { children, .. } = &tree else {
@@ -433,6 +433,7 @@ struct ReadCountingRepository {
     tuples: Vec<RelationshipTuple>,
     reads: std::sync::atomic::AtomicUsize,
     max_reads: usize,
+    limits: std::sync::Mutex<Vec<usize>>,
 }
 
 impl ReadCountingRepository {
@@ -441,6 +442,7 @@ impl ReadCountingRepository {
             tuples,
             reads: std::sync::atomic::AtomicUsize::new(0),
             max_reads,
+            limits: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -455,12 +457,14 @@ impl RebacRepository for ReadCountingRepository {
         unreachable!("read-only expansion fixture")
     }
 
-    async fn list_relationship_tuples(
+    async fn list_relationship_tuples_bounded(
         &self,
         namespace: &str,
         object_id: &str,
         relation: Option<&str>,
+        limit: usize,
     ) -> QidResult<Vec<RelationshipTuple>> {
+        self.limits.lock().unwrap().push(limit);
         let reads = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         // Fail before a regression can allocate an exponentially large tree.
         assert!(
@@ -475,6 +479,7 @@ impl RebacRepository for ReadCountingRepository {
                     && t.object_id == object_id
                     && relation.is_none_or(|r| t.relation == r)
             })
+            .take(limit)
             .cloned()
             .collect())
     }
@@ -541,7 +546,7 @@ async fn test_expand_complete_three_group_cycle_reads_each_group_once() {
         }
     }
     let repo = ReadCountingRepository::new(tuples, 3);
-    let tree = expand(&repo, "group", "a", "member", 2_097_152)
+    let tree = expand(&repo, "group", "a", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     assert_eq!(repo.reads.load(std::sync::atomic::Ordering::SeqCst), 3);
@@ -620,7 +625,7 @@ async fn test_expand_max_depth_is_path_local_even_for_cached_groups() {
     ));
     // 'shared' is cached at depth 1 but must not be expanded at depth 11.
     let repo = ReadCountingRepository::new(tuples, MAX_DEPTH + 2);
-    let tree = expand(&repo, "group", "g0", "member", 2_097_152)
+    let tree = expand(&repo, "group", "g0", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     assert_eq!(count_alice_leaves(&tree), 1);
@@ -664,7 +669,7 @@ async fn test_expand_empty_groups_keep_userset_leaves_and_root_branch() {
         )],
         3,
     );
-    let tree = expand(&repo, "group", "root", "member", 2_097_152)
+    let tree = expand(&repo, "group", "root", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     let ExpandNode::Branch { children, .. } = tree else {
@@ -674,7 +679,7 @@ async fn test_expand_empty_groups_keep_userset_leaves_and_root_branch() {
     assert!(matches!(&children[0], ExpandNode::Leaf {
             namespace, subject_id, subject_relation: Some(relation),
         } if namespace == "group" && subject_id == "missing" && relation == "member"));
-    let empty = expand(&repo, "group", "missing", "member", 2_097_152)
+    let empty = expand(&repo, "group", "missing", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     assert!(matches!(empty, ExpandNode::Branch {
@@ -698,7 +703,7 @@ async fn test_expand_cyclic_membership_terminates() {
     )
     .await;
 
-    let tree = expand(&repo, "group", "cycle-a", "member", 2_097_152)
+    let tree = expand(&repo, "group", "cycle-a", "member", 2_097_152, usize::MAX)
         .await
         .unwrap();
     assert!(count_alice_leaves(&tree) >= 1);
@@ -765,11 +770,12 @@ impl qid_storage::traits::RebacRepository for FailingRebacRepo {
         })
     }
 
-    async fn list_relationship_tuples(
+    async fn list_relationship_tuples_bounded(
         &self,
         _namespace: &str,
         _object_id: &str,
         _relation: Option<&str>,
+        _limit: usize,
     ) -> QidResult<Vec<RelationshipTuple>> {
         Err(qid_core::error::QidError::Storage {
             message: "failing repo".to_string(),
@@ -845,19 +851,19 @@ async fn expand_byte_budget_matches_serialized_response_with_escaped_text() {
         namespace, root, relation, namespace, "g2", relation,
     ));
     let repo = ReadCountingRepository::new(tuples, 100);
-    let tree = expand(&repo, namespace, root, relation, usize::MAX)
+    let tree = expand(&repo, namespace, root, relation, usize::MAX, usize::MAX)
         .await
         .unwrap();
     let expected = ExpandResponse { tree };
     let size = serde_json::to_vec(&expected).unwrap().len();
     for limit in [size, size + 1] {
-        let tree = expand(&repo, namespace, root, relation, limit)
+        let tree = expand(&repo, namespace, root, relation, limit, usize::MAX)
             .await
             .unwrap();
         assert_eq!(ExpandResponse { tree }, expected);
     }
     assert!(matches!(
-        expand(&repo, namespace, root, relation, size - 1).await,
+        expand(&repo, namespace, root, relation, size - 1, usize::MAX).await,
         Err(ExpandError::ResponseTooLarge { limit_bytes }) if limit_bytes == size - 1
     ));
 }
@@ -882,8 +888,118 @@ async fn expand_rejects_dense_graph_at_default_budget() {
         .expand_max_response_bytes
         .get();
     assert!(
-        matches!(expand(&repo, "group", "g0", "member", limit).await,
+        matches!(expand(&repo, "group", "g0", "member", limit, usize::MAX).await,
         Err(ExpandError::ResponseTooLarge { limit_bytes }) if limit_bytes == limit)
     );
     assert_eq!(repo.reads.load(std::sync::atomic::Ordering::SeqCst), 8);
+}
+
+async fn assert_tuple_budget<R: RebacRepository>(repo: &R) {
+    // Deliberately insert out of timestamp order; below-limit output must be exact.
+    for (i, timestamp) in [30, 10, 20].into_iter().enumerate() {
+        let mut t = direct("group", "wide", "member", "user", &format!("u{i}"));
+        t.created_at_epoch_seconds = timestamp;
+        repo.create_relationship_tuple(&t).await.unwrap();
+    }
+    repo.create_relationship_tuple(&direct("group", "wide", "other", "user", "ignored"))
+        .await
+        .unwrap();
+    let expected = expand(repo, "group", "wide", "member", usize::MAX, usize::MAX)
+        .await
+        .unwrap();
+    for limit in [3, 4] {
+        assert_eq!(
+            expand(repo, "group", "wide", "member", usize::MAX, limit)
+                .await
+                .unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        expand(repo, "group", "wide", "member", usize::MAX, 2).await,
+        Err(ExpandError::TooManyTuples { limit_tuples: 2 })
+    );
+    // Exercise the backend bound itself, including zero and an unfiltered read.
+    for relation in [Some("member"), None] {
+        for limit in [0, 1, 2] {
+            let rows = repo
+                .list_relationship_tuples_bounded("group", "wide", relation, limit)
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), limit);
+            assert!(
+                rows.iter()
+                    .all(|t| t.object_id == "wide" && relation.is_none_or(|r| r == t.relation))
+            );
+        }
+    }
+
+    // Eight raw tuples across four nonempty groups; shared, cyclic and empty
+    // usersets must not charge repeated groups or path-expanded output nodes.
+    for t in tuple_budget_graph() {
+        repo.create_relationship_tuple(&t).await.unwrap();
+    }
+    let expected = expand(repo, "group", "root", "member", usize::MAX, usize::MAX)
+        .await
+        .unwrap();
+    for limit in [8, 9] {
+        assert_eq!(
+            expand(repo, "group", "root", "member", usize::MAX, limit)
+                .await
+                .unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        expand(repo, "group", "root", "member", usize::MAX, 7).await,
+        Err(ExpandError::TooManyTuples { limit_tuples: 7 })
+    );
+}
+
+fn tuple_budget_graph() -> Vec<RelationshipTuple> {
+    [
+        ("root", "a", "member"),
+        ("root", "b", "member"),
+        ("a", "c", "member"),
+        ("a", "alice", ""),
+        ("b", "c", "member"),
+        ("b", "missing", "member"),
+        ("c", "root", "member"),
+        ("c", "bob", ""),
+    ]
+    .into_iter()
+    .map(|(object, subject, relation)| {
+        userset("group", object, "member", "group", subject, relation)
+    })
+    .collect()
+}
+
+#[tokio::test]
+async fn expand_file_tuple_budget_boundaries_and_cumulative_overflow() {
+    let (repo, _dir) = make_repo().await;
+    assert_tuple_budget(&repo).await;
+}
+
+#[tokio::test]
+async fn expand_sqlite_tuple_budget_boundaries_and_cumulative_overflow() {
+    let dir = TempDir::new().unwrap();
+    let repo = qid_storage::SqlRepository::connect(&format!(
+        "sqlite://{}",
+        dir.path().join("rebac.db").display()
+    ))
+    .await
+    .unwrap();
+    repo.migrate().await.unwrap();
+    assert_tuple_budget(&repo).await;
+    repo.close().await;
+}
+
+#[tokio::test]
+async fn expand_requests_only_remaining_plus_one_and_stops_on_overflow() {
+    for (limit, requests) in [(8, vec![9, 7, 5, 3, 1]), (7, vec![8, 6, 4, 2])] {
+        let repo = ReadCountingRepository::new(tuple_budget_graph(), requests.len());
+        let result = expand(&repo, "group", "root", "member", usize::MAX, limit).await;
+        assert_eq!(result.is_ok(), limit == 8);
+        assert_eq!(*repo.limits.lock().unwrap(), requests);
+    }
 }

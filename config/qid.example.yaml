@@ -1,6 +1,7 @@
-# Complete ReBAC Expand JSON response budget; nonzero, overflow returns HTTP 413.
+# ReBAC Expand budgets; nonzero, overflow returns HTTP 413.
 iga:
   rebac:
+    expand_max_tuples: 10000 # Raw tuple count; QID_IGA__REBAC__EXPAND_MAX_TUPLES
     expand_max_response_bytes: 2097152 # 2 MiB; QID_IGA__REBAC__EXPAND_MAX_RESPONSE_BYTES
 
 server:

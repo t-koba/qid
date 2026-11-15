@@ -130,18 +130,23 @@ async fn delete_removes_tuple_and_check_denies() {
 }
 
 #[tokio::test]
-async fn expand_uses_configured_response_budget_and_returns_explicit_413() {
+async fn expand_uses_configured_budgets_and_returns_distinct_explicit_413() {
     use qid_core::{state::SharedState, test_helpers};
     use qid_crypto::LocalSigner;
     use std::sync::Arc;
 
     let (_dir, app, repo, session) = setup_app("qid-rebac-budget", None, "test-admin").await;
-    let body = serde_json::json!({"namespace": "group", "object_id": "empty\"\\\n雪", "relation": "member"});
+    common::post_json(app.clone(), "/iga/v1/rebac/tuples", serde_json::json!({"tuples": [
+        {"namespace":"group", "object_id":"root", "relation":"member", "subject_namespace":"group", "subject_id":"child", "subject_relation":"member"},
+        {"namespace":"group", "object_id":"child", "relation":"member", "subject_namespace":"user", "subject_id":"alice", "subject_relation":""}
+    ]}), &session).await;
+    let body = serde_json::json!({"namespace": "group", "object_id": "root", "relation": "member"});
     let expected = common::post_json(app, "/iga/v1/rebac/expand", body.clone(), &session).await;
     let size = serde_json::to_vec(&expected).unwrap().len();
-    for limit in [size + 1, size, size - 1] {
+    for (limit_bytes, limit_tuples) in [(size + 1, 2), (size, 2), (size - 1, 2), (size, 1)] {
         let mut config = test_helpers::test_config();
-        config.iga.rebac.expand_max_response_bytes = limit.try_into().unwrap();
+        config.iga.rebac.expand_max_response_bytes = limit_bytes.try_into().unwrap();
+        config.iga.rebac.expand_max_tuples = limit_tuples.try_into().unwrap();
         let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
         let state = Arc::new(
             SharedState::new(config, repo.clone(), signer, serde_json::json!({})).unwrap(),
@@ -156,14 +161,18 @@ async fn expand_uses_configured_response_budget_and_returns_explicit_413() {
             ))
             .await
             .unwrap();
-        if limit >= size {
+        if limit_bytes >= size && limit_tuples >= 2 {
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(common::json(response).await, expected);
         } else {
             assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
             assert_eq!(
                 common::json(response).await,
-                serde_json::json!({"error": "expand_response_too_large", "limit_bytes": limit})
+                if limit_tuples < 2 {
+                    serde_json::json!({"error": "expand_too_many_tuples", "limit_tuples": limit_tuples})
+                } else {
+                    serde_json::json!({"error": "expand_response_too_large", "limit_bytes": limit_bytes})
+                }
             );
         }
     }

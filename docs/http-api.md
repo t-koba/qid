@@ -535,11 +535,16 @@ or no trust domain is refused wherever it is named.
 | `POST` | `/iga/v1/rebac/tuples/read` | Read tuples. |
 
 ReBAC Expand returns the complete path-expanded `tree`, never a truncated tree
-or shared-node references. Its compact JSON response is limited by
-`iga.rebac.expand_max_response_bytes` (default 2 MiB). A response above the
-configured limit returns HTTP 413 with
-`{"error":"expand_response_too_large","limit_bytes":2097152}`; `limit_bytes`
-reports the configured value. See [configuration](configuration.md#rebac-expand-response-budget).
+or shared-node references. It has separate raw-tuple and response-byte budgets:
+`iga.rebac.expand_max_tuples` defaults to 10,000 tuples across distinct reachable
+groups, while `iga.rebac.expand_max_response_bytes` defaults to 2 MiB for the
+complete compact JSON response. Exceeding the tuple budget returns HTTP 413 with
+`{"error":"expand_too_many_tuples","limit_tuples":10000}`; exceeding the
+response-byte budget returns HTTP 413 with
+`{"error":"expand_response_too_large","limit_bytes":2097152}`. Each error
+reports the configured limit and returns no partial tree. The tuple count is not
+a hard byte-memory ceiling because tuple fields are not size-limited. See
+[configuration](configuration.md#rebac-expand-resource-budgets).
 
 ## Directory, risk, SSF, VC
 

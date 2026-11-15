@@ -38,11 +38,12 @@ impl RebacRepository for FileRepository {
         self.save().await
     }
 
-    async fn list_relationship_tuples(
+    async fn list_relationship_tuples_bounded(
         &self,
         namespace: &str,
         object_id: &str,
         relation: Option<&str>,
+        limit: usize,
     ) -> QidResult<Vec<RelationshipTuple>> {
         let store = self.store.read().await;
         let mut tuples: Vec<_> = store
@@ -50,6 +51,7 @@ impl RebacRepository for FileRepository {
             .iter()
             .filter(|t| t.namespace == namespace && t.object_id == object_id)
             .filter(|t| relation.is_none_or(|rel| t.relation == rel))
+            .take(limit)
             .cloned()
             .collect();
         tuples.sort_by_key(|tuple| tuple.created_at_epoch_seconds);

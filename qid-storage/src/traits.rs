@@ -929,6 +929,18 @@ pub trait RebacRepository: Send + Sync + 'static {
         namespace: &str,
         object_id: &str,
         relation: Option<&str>,
+    ) -> QidResult<Vec<RelationshipTuple>> {
+        self.list_relationship_tuples_bounded(namespace, object_id, relation, usize::MAX)
+            .await
+    }
+    /// Clone/fetch at most `limit` matching tuples, ordered by creation time.
+    /// A bounded subset need not be the earliest tuples; use only if it fits.
+    async fn list_relationship_tuples_bounded(
+        &self,
+        namespace: &str,
+        object_id: &str,
+        relation: Option<&str>,
+        limit: usize,
     ) -> QidResult<Vec<RelationshipTuple>>;
     async fn list_relationship_tuples_by_subject(
         &self,

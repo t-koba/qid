@@ -63,10 +63,12 @@ pub struct IgaConfig {
     pub rebac: RebacConfig,
 }
 
-/// ReBAC response resource policy.
+/// ReBAC expansion resource policy.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RebacConfig {
+    /// Cumulative raw tuples read across distinct reachable Expand groups.
+    pub expand_max_tuples: std::num::NonZeroUsize,
     /// Maximum complete compact JSON Expand response size, including its envelope.
     pub expand_max_response_bytes: std::num::NonZeroUsize,
 }
@@ -74,6 +76,8 @@ pub struct RebacConfig {
 impl Default for RebacConfig {
     fn default() -> Self {
         Self {
+            expand_max_tuples: std::num::NonZeroUsize::new(10_000)
+                .unwrap_or(std::num::NonZeroUsize::MIN),
             expand_max_response_bytes: std::num::NonZeroUsize::new(2_097_152)
                 .unwrap_or(std::num::NonZeroUsize::MIN),
         }

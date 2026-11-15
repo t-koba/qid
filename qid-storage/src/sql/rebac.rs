@@ -39,35 +39,32 @@ impl RebacRepository for SqlRepository {
         Ok(())
     }
 
-    async fn list_relationship_tuples(
+    async fn list_relationship_tuples_bounded(
         &self,
         namespace: &str,
         object_id: &str,
         relation: Option<&str>,
+        limit: usize,
     ) -> QidResult<Vec<RelationshipTuple>> {
-        let rows = match relation {
-            Some(rel) => {
-                sqlx::query_as::<_, RelationshipTupleRow>(
-                    "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? AND relation = ? ORDER BY created_at_epoch_seconds ASC",
-                )
-                .bind(namespace)
-                .bind(object_id)
-                .bind(rel)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
+        let sql = match relation {
+            Some(_) => {
+                "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? AND relation = ? ORDER BY created_at_epoch_seconds ASC LIMIT ?"
             }
             None => {
-                sqlx::query_as::<_, RelationshipTupleRow>(
-                    "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? ORDER BY created_at_epoch_seconds ASC",
-                )
-                .bind(namespace)
-                .bind(object_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
+                "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? ORDER BY created_at_epoch_seconds ASC LIMIT ?"
             }
         };
+        let mut query = sqlx::query_as::<_, RelationshipTupleRow>(sql)
+            .bind(namespace)
+            .bind(object_id);
+        if let Some(relation) = relation {
+            query = query.bind(relation);
+        }
+        let rows = query
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -80,35 +77,27 @@ impl RebacRepository for SqlRepository {
         subject_id: &str,
         subject_relation: Option<&str>,
     ) -> QidResult<Vec<RelationshipTuple>> {
-        let rows = match subject_relation {
-            Some(sub_rel) => {
-                sqlx::query_as::<_, RelationshipTupleRow>(
-                    "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? AND relation = ? AND subject_namespace = ? AND subject_id = ? AND subject_relation = ? ORDER BY created_at_epoch_seconds ASC",
-                )
-                .bind(namespace)
-                .bind(object_id)
-                .bind(relation)
-                .bind(subject_namespace)
-                .bind(subject_id)
-                .bind(sub_rel)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
+        let sql = match subject_relation {
+            Some(_) => {
+                "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? AND relation = ? AND subject_namespace = ? AND subject_id = ? AND subject_relation = ? ORDER BY created_at_epoch_seconds ASC"
             }
             None => {
-                sqlx::query_as::<_, RelationshipTupleRow>(
-                    "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? AND relation = ? AND subject_namespace = ? AND subject_id = ? ORDER BY created_at_epoch_seconds ASC",
-                )
-                .bind(namespace)
-                .bind(object_id)
-                .bind(relation)
-                .bind(subject_namespace)
-                .bind(subject_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
+                "SELECT * FROM relationship_tuples WHERE namespace = ? AND object_id = ? AND relation = ? AND subject_namespace = ? AND subject_id = ? ORDER BY created_at_epoch_seconds ASC"
             }
         };
+        let mut query = sqlx::query_as::<_, RelationshipTupleRow>(sql)
+            .bind(namespace)
+            .bind(object_id)
+            .bind(relation)
+            .bind(subject_namespace)
+            .bind(subject_id);
+        if let Some(subject_relation) = subject_relation {
+            query = query.bind(subject_relation);
+        }
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 }

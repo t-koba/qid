@@ -1295,6 +1295,56 @@ async fn webauthn_legacy_file_raw_id_ambiguity_fails_closed_without_changes() {
 }
 
 #[tokio::test]
+async fn webauthn_duplicate_record_id_counter_update_fails_without_changes() {
+    use qid_core::{error::QidError, models::WebAuthnCredential};
+    use qid_storage::{CredentialRepository, FileRepository};
+
+    let dir = std::env::temp_dir().join(format!("qid-webauthn-record-id-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("store.json");
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    let first = WebAuthnCredential {
+        id: "shared-record".into(),
+        user_id: "alice".into(),
+        credential_id: vec![1],
+        public_key: vec![2],
+        counter: 7,
+        aaguid: vec![3; 16],
+        device_name: Some("first key".into()),
+        created_at: 1,
+    };
+    repo.store_webauthn_credential(&first).await.unwrap();
+    drop(repo);
+
+    let second = WebAuthnCredential {
+        credential_id: vec![4],
+        public_key: vec![5],
+        counter: 9,
+        device_name: Some("second key".into()),
+        created_at: 2,
+        ..first.clone()
+    };
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    fixture["webauthn_credentials"]["alice"] = serde_json::json!([first, second]);
+    let before = serde_json::to_vec_pretty(&fixture).unwrap();
+    std::fs::write(&path, &before).unwrap();
+
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    assert!(matches!(
+        repo.update_webauthn_credential_counter("alice", "shared-record", 11)
+            .await,
+        Err(QidError::Conflict { .. })
+    ));
+    let stored = repo.get_webauthn_credentials("alice").await.unwrap();
+    assert_eq!(stored.iter().map(|c| c.counter).collect::<Vec<_>>(), [7, 9]);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(repo);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn webauthn_raw_id_migration_preserves_duplicates_and_retries_after_external_repair() {
     use qid_core::tenant::{RealmId, TenantId};
     use qid_storage::{RealmRepository, SqlRepository};

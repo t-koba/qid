@@ -41,6 +41,16 @@ impl CredentialRepository for FileRepository {
         counter: u64,
     ) -> QidResult<()> {
         let mut store = self.store.write().await;
+        reject_duplicate_id(
+            store
+                .webauthn_credentials
+                .get(user_id)
+                .is_some_and(|creds| {
+                    let mut matches = creds.iter().filter(|c| c.id == id);
+                    matches.next().is_some() && matches.next().is_some()
+                }),
+            || format!("ambiguous WebAuthn credential record ID {id}"),
+        )?;
         if let Some(cred) = store
             .webauthn_credentials
             .get_mut(user_id)

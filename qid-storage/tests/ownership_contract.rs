@@ -358,6 +358,14 @@ async fn client_update_missing_id_preserves_backend_specific_semantics() {
 }
 
 #[tokio::test]
+async fn client_update_missing_id_preserves_unique_identity() {
+    let sql = support::sql_repo().await;
+    support::assert_client_missing_update_rejects_duplicate_identity(&sql, false).await;
+    let file = support::file_repo("ownership-contract-client-update-duplicate").await;
+    support::assert_client_missing_update_rejects_duplicate_identity(&file, true).await;
+}
+
+#[tokio::test]
 async fn client_update_identity_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_client_update_identity(&sql).await;

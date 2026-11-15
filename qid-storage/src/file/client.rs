@@ -10,6 +10,10 @@ impl ClientRepository for FileRepository {
 
     async fn update_client(&self, client: &Client) -> QidResult<()> {
         let mut store = self.store.write().await;
+        if !store.clients.contains_key(&client.id) {
+            drop(store);
+            return self.insert_new(client, |store| &mut store.clients).await;
+        }
         crate::ownership::ensure_same_binding(
             store
                 .clients

@@ -138,14 +138,9 @@ pub trait ClientRepository: Send + Sync + 'static {
     /// is taken, or whose client id the realm already holds, is refused and
     /// the incumbent stays as it is.
     async fn create_client(&self, client: &Client) -> QidResult<()>;
-    /// Update a client's mutable metadata.
-    ///
-    /// The update is permitted only when `(realm_id, client_id)` also match
-    /// the incumbent record ID; a mismatched realm or client ID is refused
-    /// with `Conflict` and changes no field. Same-identity metadata updates,
-    /// including an identical retry, succeed. A missing record ID is a legacy
-    /// difference the slice preserves: the file backend inserts, the SQL
-    /// backend is a silent no-op.
+    /// Update mutable metadata only when record ID, realm and client ID match;
+    /// mismatches conflict without mutation. Identical retries succeed. For
+    /// legacy compatibility, missing IDs insert in File and are SQL no-ops.
     async fn update_client(&self, client: &Client) -> QidResult<()>;
     async fn get_client_by_client_id(
         &self,

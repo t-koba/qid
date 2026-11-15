@@ -3680,6 +3680,61 @@ where
     }
 }
 
+/// A missing-ID File update keeps the create-only client identity unique.
+pub async fn assert_client_missing_update_rejects_duplicate_identity<R>(
+    repo: &R,
+    inserts_missing: bool,
+) where
+    R: RealmRepository + ClientRepository,
+{
+    let realm = RealmId("realm-client-update-duplicate".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-update-duplicate".to_string()),
+        &realm,
+        "https://client-update-duplicate.example.com",
+        Some("Client Update Duplicate Realm"),
+    )
+    .await
+    .expect("create duplicate-update realm failed");
+    let incumbent = sample_cross_realm_client(
+        "client-update-duplicate-incumbent",
+        &realm.0,
+        "duplicate-update-app",
+    );
+    repo.create_client(&incumbent)
+        .await
+        .expect("create duplicate-update incumbent failed");
+    let duplicate = sample_cross_realm_client(
+        "client-update-duplicate-missing",
+        &realm.0,
+        &incumbent.client_id,
+    );
+    let result = repo.update_client(&duplicate).await;
+    if inserts_missing {
+        let error = result.expect_err("File update must not duplicate a realm client ID");
+        assert!(
+            matches!(error, QidError::Conflict { .. }),
+            "duplicate client identity must be a conflict, got: {}",
+            error.message()
+        );
+    } else {
+        result.expect("SQL's missing-ID update remains a no-op");
+    }
+    let clients = repo
+        .find_clients_by_client_id(std::slice::from_ref(&realm), &incumbent.client_id)
+        .await
+        .expect("read duplicate-update identity failed");
+    assert_eq!(
+        clients.len(),
+        1,
+        "a missing-ID update must leave exactly one client"
+    );
+    assert_eq!(
+        clients[0].id, incumbent.id,
+        "a missing-ID update must leave the incumbent client intact"
+    );
+}
+
 /// The stable update identity of a client: an existing record ID accepts only
 /// the same `(realm_id, client_id)` binding, and a mismatched binding is a
 /// conflict that changes no field.

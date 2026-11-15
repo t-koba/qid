@@ -369,13 +369,8 @@ impl PushRepository for SqlRepository {
     async fn cleanup_expired_push_records(&self, now: u64, limit: u32) -> QidResult<u64> {
         let cutoff = state::cleanup_cutoff(now, limit)?;
         let mut tx = self
-            .pool
-            .begin_with(match self.database_kind {
-                SqlDatabaseKind::Sqlite => "BEGIN IMMEDIATE",
-                SqlDatabaseKind::Postgres => "BEGIN ISOLATION LEVEL READ COMMITTED",
-            })
-            .await
-            .map_err(storage_to_qid_error)?;
+            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind("push-cleanup".to_string())
@@ -452,13 +447,8 @@ impl SqlRepository {
         state::validate_registration(challenge)?;
         let a = &challenge.authenticator;
         let mut tx = self
-            .pool
-            .begin_with(match self.database_kind {
-                SqlDatabaseKind::Sqlite => "BEGIN IMMEDIATE",
-                SqlDatabaseKind::Postgres => "BEGIN ISOLATION LEVEL READ COMMITTED",
-            })
-            .await
-            .map_err(storage_to_qid_error)?;
+            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(
@@ -519,13 +509,8 @@ impl SqlRepository {
     ) -> QidResult<Option<PushLoginChallenge>> {
         state::validate_login_record(expected)?;
         let mut tx = self
-            .pool
-            .begin_with(match self.database_kind {
-                SqlDatabaseKind::Sqlite => "BEGIN IMMEDIATE",
-                SqlDatabaseKind::Postgres => "BEGIN ISOLATION LEVEL READ COMMITTED",
-            })
-            .await
-            .map_err(storage_to_qid_error)?;
+            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(
@@ -602,13 +587,8 @@ impl SqlRepository {
         state::validate_login(challenge)?;
         let purpose = state::login_purpose_str(challenge.purpose);
         let mut tx = self
-            .pool
-            .begin_with(match self.database_kind {
-                SqlDatabaseKind::Sqlite => "BEGIN IMMEDIATE",
-                SqlDatabaseKind::Postgres => "BEGIN ISOLATION LEVEL READ COMMITTED",
-            })
-            .await
-            .map_err(storage_to_qid_error)?;
+            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(

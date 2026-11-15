@@ -94,11 +94,14 @@ impl SqlRepository {
         migration_plan_for_pool(&self.pool, self.database_kind).await
     }
 
-    async fn begin_write(&self) -> QidResult<sqlx::Transaction<'_, sqlx::Any>> {
+    async fn begin_write(
+        &self,
+        postgres_begin: &'static str,
+    ) -> QidResult<sqlx::Transaction<'_, sqlx::Any>> {
         self.pool
             .begin_with(match self.database_kind {
                 SqlDatabaseKind::Sqlite => "BEGIN IMMEDIATE",
-                SqlDatabaseKind::Postgres => "BEGIN",
+                SqlDatabaseKind::Postgres => postgres_begin,
             })
             .await
             .map_err(storage_to_qid_error)

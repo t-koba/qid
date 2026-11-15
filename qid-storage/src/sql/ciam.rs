@@ -214,7 +214,7 @@ impl CiamRepository for SqlRepository {
         let start =
             crate::domain::email_challenge_window_start(challenge, max_issuances, window_seconds)?;
         // Serialize admission before checking the budget, as for password resets.
-        let mut tx = self.begin_write().await?;
+        let mut tx = self.begin_write("BEGIN").await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(
@@ -483,7 +483,7 @@ impl CiamRepository for SqlRepository {
     ) -> QidResult<bool> {
         let start =
             crate::domain::password_reset_window_start(token, max_issuances, window_seconds)?;
-        let mut tx = self.begin_write().await?;
+        let mut tx = self.begin_write("BEGIN").await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             // Transaction-scoped per-account serialization across connections/processes.
             // Hash collisions only serialize unrelated accounts; they cannot bypass a budget.

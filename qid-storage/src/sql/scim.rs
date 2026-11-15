@@ -441,7 +441,7 @@ impl SqlRepository {
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> + Send + Unpin,
     {
-        let mut tx = self.begin_write().await?;
+        let mut tx = self.begin_write("BEGIN").await?;
         // Table names are internal constants, never request data.
         let lock = match self.database_kind {
             SqlDatabaseKind::Sqlite => "",

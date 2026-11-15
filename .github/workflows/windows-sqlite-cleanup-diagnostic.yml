@@ -94,7 +94,7 @@ jobs:
           }
           if ($failed) { exit 1 }
           Write-Host 'Headless helper preflight passed (no diagnostic output retained).'
-      - name: Run the exact IGA cleanup test five times with bounded owner capture
+      - name: Run the exact failed IGA cleanup tests with bounded owner capture
         timeout-minutes: 24
         shell: pwsh
         env:
@@ -113,13 +113,19 @@ jobs:
             Write-Host 'ERROR: Diagnostic test-root preflight failed (raw exception suppressed).'
             exit 1
           }
-          # This one exact test captures owners after repository closure and
-          # immediately before the unchanged database deletion. An empty
-          # Restart Manager result does not rule out an unregistered/kernel lock.
-          foreach ($iteration in 1..5) {
-            Write-Host "IGA cleanup diagnostic iteration $iteration/5"
-            & cargo test --locked -p qid-storage --lib 'sql::iga_tests::grant_batch_rejects_invalid_sets_without_effects' -- --exact --nocapture --test-threads=1
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Target both exact IGA tests named by the historical Windows failures.
+          # Capture runs after repository closure and immediately before the
+          # unchanged deletion. An empty Restart Manager result is not exhaustive.
+          $targets = @(
+            'sql::iga_tests::sql_iga_entitlement_store_upserts_tenant_scoped_row',
+            'sql::realm_tests::realm_creation_sql_clears_orphans_only_after_claiming_absent_id'
+          )
+          foreach ($target in $targets) {
+            foreach ($iteration in 1..5) {
+              Write-Host "IGA cleanup diagnostic $target iteration $iteration/5"
+              & cargo test --locked -p qid-storage --lib $target -- --exact --nocapture --test-threads=1
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
           }
       - name: Erase the diagnostic test root
         timeout-minutes: 2

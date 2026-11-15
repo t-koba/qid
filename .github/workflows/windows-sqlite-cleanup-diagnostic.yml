@@ -94,7 +94,7 @@ jobs:
           }
           if ($failed) { exit 1 }
           Write-Host 'Headless helper preflight passed (no diagnostic output retained).'
-      - name: Run exact cleanup tests with bounded owner capture
+      - name: Run cleanup suites with bounded owner capture
         timeout-minutes: 24
         shell: pwsh
         env:
@@ -112,30 +112,26 @@ jobs:
               exit 1
             }
           }
-          # The test reads this exact random suffix. Cleanup later removes only
-          # this previously absent database and its SQLite sidecars.
+          # The user-deletion test reads this exact random suffix. Cleanup later
+          # removes only this previously absent database and its sidecars.
           "QID_SQLITE_CLEANUP_SUFFIX=$suffix" >> $env:GITHUB_ENV
           "QID_DIAGNOSTIC_OWNED=true" >> $env:GITHUB_ENV
           $env:QID_SQLITE_CLEANUP_SUFFIX = $suffix
-          # The test captures this exact DB and sidecars after repository
-          # closure and immediately before its unchanged first deletion. An
-          # empty Restart Manager result is not an exhaustive handle trace.
-          Write-Host 'Running focused Windows user-deletion cleanup test (1/3)'
-          $arguments = @(
+          # Both test invocations capture resources immediately before their
+          # unchanged cleanup. Empty Restart Manager results are not exhaustive.
+          Write-Host 'Running focused Windows user-deletion cleanup test (1/2)'
+          $userDeletionArguments = @(
             'test', '--locked', '-p', 'qid-storage', '--test', 'user_deletion',
             'sql_user_deletion_cleans_only_owned_authentication_state',
             '--', '--exact', '--nocapture', '--test-threads=1'
           )
-          & cargo @arguments
+          & cargo @userDeletionArguments
           $failed = $LASTEXITCODE -ne 0
-          foreach ($test in @(
-            'sql::iga_tests::sql_iga_entitlement_store_upserts_tenant_scoped_row',
-            'sql::realm_tests::realm_creation_sql_clears_orphans_only_after_claiming_absent_id'
-          )) {
-            Write-Host "Running focused Windows cleanup test: $test"
-            & cargo test --locked -p qid-storage --lib $test -- --exact --nocapture --test-threads=1
-            if ($LASTEXITCODE -ne 0) { $failed = $true }
-          }
+          # Match the normal Windows suite's single-threaded qid-storage test
+          # order so the IGA cases exercise their original per-test DB sequence.
+          Write-Host 'Running single-threaded qid-storage library cleanup suite (2/2)'
+          & cargo test --locked -p qid-storage --lib -- --nocapture --test-threads=1
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
           if ($failed) { exit 1 }
       - name: Erase the diagnostic SQLite files
         timeout-minutes: 2

@@ -262,6 +262,7 @@ SIEM and notification delivery send HTTPS requests by default. Add `--dry-run` t
 | `notification-deliver` | Send email or push notification to an HTTPS endpoint, or send email via SMTP when `--provider` is `smtp(s)://`; `--dry-run` records without sending. |
 | `push-cleanup` | Delete a bounded batch of expired push records and OIDC authorization continuations; schedule repeated invocations externally. |
 | `directory-sync` | Synchronize a configured directory provider. |
+| `scim-outbound-sync` | Reconcile realm SCIM users and groups to HTTPS; dry-run by default, `--apply` enables writes. |
 | `key-rotation-plan` | Plan key rotation and optionally record an audit event. |
 | `key-rotation-execute` | Execute supported key rotation actions from a plan JSON file. |
 
@@ -296,6 +297,39 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml push-cleanup --limit 10
 repeatedly; qid does not schedule cleanup itself. `--limit` bounds each of the
 push-record and OIDC-continuation cleanup batches independently (default `100`,
 allowed `1..=1000`).
+
+### SCIM outbound
+
+```sh
+qid-worker --config /etc/qid/qid.yaml scim-outbound-sync \
+  --realm corp --endpoint https://app.example.com/scim/v2 \
+  --token-file /etc/qid/scim.token
+```
+
+The endpoint must be HTTPS without URL credentials, query or fragment. The
+protected token file contains one bearer token (surrounding whitespace is
+trimmed); there is no command-line token argument. A dry-run still queries the
+remote endpoint and records a local audit event, but never sends remote writes.
+Add `--apply` to reconcile. `--orphan-action none` is the default, even on apply;
+`deactivate` or `delete` explicitly selects cleanup of remote-only **users with
+externalId**. This assumes the entire endpoint user inventory belongs to this
+realm; do not enable cleanup on a shared endpoint. Unmanaged users without
+externalId and remote-only groups are left untouched.
+
+Inventory policy is `--page-size 100 --max-resources 10000` by default (both
+positive). HTTP responses are bounded to 1 MiB and requests time out after 30
+seconds; redirects are not followed. Library callers can select response bytes
+with `ReqwestOutboundScimTransport::with_response_limit` and inject that transport.
+JSON reports and `scim.outbound_sync` audit events contain `planned`, `synced`,
+`skipped`, `failed`, `errors`, and `dry_run`, never bearer values, request headers,
+or raw remote errors. `planned` counts non-noop user/group/orphan operations;
+`skipped` includes dry-run plans and unchanged records. A nonzero `failed` count
+exits nonzero; earlier writes may already have occurred. Jobs stop on the first
+remote reconciliation failure. Audit persistence failure is also reported as a
+failure, without pretending that remote writes were rolled back.
+
+See [SCIM outbound operations](operations.md#scim-outbound-provisioning) for
+source authority, identity matching and scheduling requirements.
 
 ## qid-sync
 

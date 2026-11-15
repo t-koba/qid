@@ -381,6 +381,46 @@ cargo run --bin qid-sync -- --config /etc/qid/qid.yaml hr-import --realm corp --
 cargo run --bin qid-sync -- --config /etc/qid/qid.yaml ldap-sync --realm corp --provider-id ad-main --input ldap.json --deactivate-missing
 ```
 
+## SCIM Outbound Provisioning
+
+`qid-worker scim-outbound-sync` sources only the selected realm's stored
+`ScimUser` and `ScimGroup` registry. Populate that registry through SCIM or
+configured directory/HR provisioning first. Login `User` rows are not sources:
+email equality is not a trusted link, and login `locked_until` never changes
+outbound lifecycle state. Users render `active = active && deprovisioned_at is
+None` from server-owned lifecycle state. Inactive/deprovisioned users are retained
+as inactive remotely and excluded from group membership.
+
+The identity key is the source user's existing `external_id`, otherwise its
+SCIM record ID. Groups use their SCIM record ID as externalId. Renaming a login
+or group does not change the key. Duplicate or empty source identity keys are
+refused. Do not change these keys during a sync. Each lookup uses an escaped,
+URL-encoded `externalId eq <JSON string>` filter and checks complete list metadata,
+exact identity, a unique resource and a nonempty remote ID. Only a complete zero
+result permits POST. Drift permits PUT only at that remote resource's encoded ID
+path; no drift sends no write. A created user's ID is resolved by another lookup
+before it can be used in group membership. Membership references must identify
+realm SCIM users; unresolved/foreign references and duplicate members fail closed.
+Member order and server-added display labels do not create membership drift.
+Nested group references are not resolved by the worker; the group planning API
+remains available for callers supplying their own remote member references.
+
+Orphan cleanup is disabled by default and must be explicitly selected with
+`--orphan-action`; `--apply` alone does not enable it. Before cleanup or any other
+remote writes in such a run, every inventory page must have consistent totals,
+indices, lengths, unique IDs/externalIds and bounded progress within the configured
+inventory budget. A partial, ambiguous, malformed or changing inventory aborts
+rather than becoming deletion authority. Review a dry-run against the dedicated
+realm endpoint before opting into cleanup. See [CLI policy and defaults](cli.md#scim-outbound).
+
+Schedule this one-shot job externally and enforce single-flight per realm and
+endpoint, including across scheduler instances. Remote SCIM has no cross-request
+transaction: a lookup/write race cannot be eliminated without provider-side
+externalId uniqueness and concurrent runs are not safe. Transient failures do not
+trigger blind POST retries; rerunning reconciles again. Existing mapping, drift,
+retry-planning, execution, group and orphan library APIs remain available. No
+local storage schema or durable sync cursor is added.
+
 ## Network AAA
 
 `network-aaa` profile starts UDP/TCP listeners in addition to HTTP:

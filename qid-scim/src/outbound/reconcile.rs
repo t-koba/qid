@@ -3,11 +3,10 @@ use qid_core::{
     models::ScimGroup,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 use super::{
     OutboundDrift, OutboundOperation, OutboundScimClientConfig, OutboundScimHttpRequest,
-    collect_drift, join_scim_url,
+    collect_drift,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -28,18 +27,24 @@ pub fn plan_outbound_group_entitlement_reconciliation(
     dry_run: bool,
 ) -> QidResult<OutboundGroupReconciliationPlan> {
     let desired = render_outbound_group(group);
+    member_ids(&desired)?;
     let drift = remote
         .map(|remote| outbound_group_drift(&desired, remote))
+        .transpose()?
         .unwrap_or_default();
     let operation = match remote {
         None => OutboundOperation::Create,
         Some(_) if drift.is_empty() => OutboundOperation::Noop,
         Some(_) => OutboundOperation::Replace,
     };
-    let path = remote
-        .and_then(|remote| remote.get("id").and_then(|value| value.as_str()))
-        .map(|id| format!("/Groups/{id}"))
-        .unwrap_or_else(|| format!("/Groups?filter=displayName eq \"{}\"", group.display_name));
+    let path = if operation == OutboundOperation::Replace {
+        super::remote::remote_path(
+            "Groups",
+            remote.ok_or_else(|| super::remote::invalid("missing remote"))?,
+        )?
+    } else {
+        "/Groups".into()
+    };
     let request = if dry_run || operation == OutboundOperation::Noop {
         None
     } else {
@@ -61,6 +66,7 @@ pub fn plan_outbound_group_entitlement_reconciliation(
 fn render_outbound_group(group: &ScimGroup) -> serde_json::Value {
     serde_json::json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+        "externalId": group.id,
         "displayName": group.display_name,
         "members": group.members_json
     })
@@ -69,11 +75,33 @@ fn render_outbound_group(group: &ScimGroup) -> serde_json::Value {
 fn outbound_group_drift(
     desired: &serde_json::Value,
     remote: &serde_json::Value,
-) -> Vec<OutboundDrift> {
+) -> QidResult<Vec<OutboundDrift>> {
     let mut drift = Vec::new();
+    collect_drift("externalId", &["externalId"], desired, remote, &mut drift);
     collect_drift("displayName", &["displayName"], desired, remote, &mut drift);
-    collect_drift("members", &["members"], desired, remote, &mut drift);
-    drift
+    if member_ids(desired)? != member_ids(remote)? {
+        collect_drift("members", &["members"], desired, remote, &mut drift);
+    }
+    Ok(drift)
+}
+
+fn member_ids(resource: &serde_json::Value) -> QidResult<std::collections::BTreeSet<&str>> {
+    let mut ids = std::collections::BTreeSet::new();
+    for member in resource
+        .get("members")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| super::remote::invalid("invalid group members"))?
+    {
+        let id = member
+            .get("value")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| super::remote::invalid("invalid group member"))?;
+        if !ids.insert(id) {
+            return Err(super::remote::invalid("duplicate group member"));
+        }
+    }
+    Ok(ids)
 }
 
 fn build_outbound_group_reconciliation_request(
@@ -91,20 +119,5 @@ fn build_outbound_group_reconciliation_request(
             });
         }
     };
-    let mut headers = BTreeMap::from([
-        ("Accept".to_string(), "application/scim+json".to_string()),
-        (
-            "Content-Type".to_string(),
-            "application/scim+json".to_string(),
-        ),
-    ]);
-    if let Some(token) = &config.bearer_token {
-        headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-    }
-    Ok(OutboundScimHttpRequest {
-        method: method.to_string(),
-        url: join_scim_url(&config.base_url, path)?,
-        headers,
-        body: Some(desired.clone()),
-    })
+    super::remote::request(config, method, path, Some(desired.clone()))
 }

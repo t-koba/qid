@@ -5,6 +5,7 @@ pub mod audit;
 pub mod delivery;
 pub mod key_rotation;
 pub mod notification;
+pub mod outbound;
 pub mod smtp;
 pub mod sync;
 #[cfg(test)]

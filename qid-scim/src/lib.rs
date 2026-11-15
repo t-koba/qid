@@ -9,14 +9,15 @@ mod outbound;
 mod response;
 
 pub use outbound::{
-    OutboundAttributeSource, OutboundDrift, OutboundGroupReconciliationPlan, OutboundOperation,
-    OutboundOrphanAction, OutboundOrphanCleanupPlan, OutboundOrphanCleanupPolicy,
-    OutboundProvisioningExecutionPlan, OutboundProvisioningPlan, OutboundProvisioningResult,
-    OutboundRetryDecision, OutboundRetryPolicy, OutboundScimClientConfig, OutboundScimHttpRequest,
-    OutboundScimHttpResponse, OutboundScimTransport, OutboundUserMapping,
-    ReqwestOutboundScimTransport, build_outbound_scim_request,
-    default_outbound_orphan_cleanup_policy, default_outbound_retry_policy,
-    default_outbound_user_mapping, execute_outbound_user_provisioning,
+    OutboundAttributeSource, OutboundDrift, OutboundGroupReconciliationPlan,
+    OutboundInventoryLimits, OutboundOperation, OutboundOrphanAction, OutboundOrphanCleanupPlan,
+    OutboundOrphanCleanupPolicy, OutboundProvisioningExecutionPlan, OutboundProvisioningPlan,
+    OutboundProvisioningResult, OutboundRetryDecision, OutboundRetryPolicy,
+    OutboundScimClientConfig, OutboundScimHttpRequest, OutboundScimHttpResponse,
+    OutboundScimTransport, OutboundUserMapping, ReqwestOutboundScimTransport,
+    build_outbound_scim_request, default_outbound_orphan_cleanup_policy,
+    default_outbound_retry_policy, default_outbound_user_mapping,
+    execute_outbound_user_provisioning, list_outbound_resources, lookup_outbound_resource,
     plan_outbound_group_entitlement_reconciliation, plan_outbound_orphan_cleanup,
     plan_outbound_retry, plan_outbound_user_execution, plan_outbound_user_provisioning,
     render_outbound_user,

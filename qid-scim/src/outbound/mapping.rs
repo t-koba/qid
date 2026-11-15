@@ -102,11 +102,6 @@ pub fn plan_outbound_user_provisioning(
     dry_run: bool,
 ) -> QidResult<OutboundProvisioningPlan> {
     let desired = render_outbound_user(user, mapping)?;
-    let path = user
-        .external_id
-        .as_ref()
-        .map(|external_id| format!("/Users?filter=externalId eq \"{external_id}\""))
-        .unwrap_or_else(|| format!("/Users/{}", user.id));
     let drift = remote
         .map(|remote| outbound_user_drift(&desired, remote))
         .unwrap_or_default();
@@ -114,6 +109,14 @@ pub fn plan_outbound_user_provisioning(
         None => OutboundOperation::Create,
         Some(_) if drift.is_empty() => OutboundOperation::Noop,
         Some(_) => OutboundOperation::Replace,
+    };
+    let path = if operation == OutboundOperation::Replace {
+        super::remote::remote_path(
+            "Users",
+            remote.ok_or_else(|| super::remote::invalid("missing remote"))?,
+        )?
+    } else {
+        "/Users".into()
     };
     Ok(OutboundProvisioningPlan {
         dry_run,
@@ -143,11 +146,12 @@ fn outbound_value(user: &ScimUser, source: &OutboundAttributeSource) -> Option<s
         OutboundAttributeSource::UserName => {
             Some(serde_json::Value::String(user.user_name.clone()))
         }
-        OutboundAttributeSource::ExternalId => user
-            .external_id
-            .as_ref()
-            .map(|value| serde_json::Value::String(value.clone())),
-        OutboundAttributeSource::Active => Some(serde_json::Value::Bool(user.active)),
+        OutboundAttributeSource::ExternalId => Some(serde_json::Value::String(
+            user.external_id.as_ref().unwrap_or(&user.id).clone(),
+        )),
+        OutboundAttributeSource::Active => Some(serde_json::Value::Bool(
+            user.active && user.deprovisioned_at.is_none(),
+        )),
         OutboundAttributeSource::NameFormatted => user
             .name_json
             .get("formatted")

@@ -3,9 +3,9 @@ use qid_core::{
     models::ScimUser,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use super::{OutboundScimClientConfig, OutboundScimHttpRequest, join_scim_url};
+use super::{OutboundScimClientConfig, OutboundScimHttpRequest};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -45,7 +45,7 @@ pub fn plan_outbound_orphan_cleanup(
 ) -> QidResult<Vec<OutboundOrphanCleanupPlan>> {
     let local_external_ids: BTreeSet<&str> = local_users
         .iter()
-        .filter_map(|user| user.external_id.as_deref())
+        .map(|user| user.external_id.as_deref().unwrap_or(&user.id))
         .collect();
     let mut plans = Vec::new();
     for remote in remote_resources {
@@ -61,7 +61,7 @@ pub fn plan_outbound_orphan_cleanup(
             .ok_or_else(|| QidError::BadRequest {
                 message: "remote orphan SCIM user is missing id".to_string(),
             })?;
-        let path = format!("/Users/{remote_id}");
+        let path = super::remote::resource_path("Users", remote_id)?;
         let request = if policy.dry_run {
             None
         } else {
@@ -100,20 +100,5 @@ fn build_outbound_orphan_cleanup_request(
         ),
         OutboundOrphanAction::Delete => ("DELETE", None),
     };
-    let mut headers = BTreeMap::from([
-        ("Accept".to_string(), "application/scim+json".to_string()),
-        (
-            "Content-Type".to_string(),
-            "application/scim+json".to_string(),
-        ),
-    ]);
-    if let Some(token) = &config.bearer_token {
-        headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-    }
-    Ok(OutboundScimHttpRequest {
-        method: method.to_string(),
-        url: join_scim_url(&config.base_url, path)?,
-        headers,
-        body,
-    })
+    super::remote::request(config, method, path, body)
 }

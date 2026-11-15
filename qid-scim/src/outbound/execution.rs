@@ -1,11 +1,10 @@
 use qid_core::{error::QidResult, models::ScimUser};
-use std::collections::BTreeMap;
 
 use super::mapping::plan_outbound_user_provisioning;
 use super::{
     OutboundOperation, OutboundProvisioningPlan, OutboundProvisioningResult, OutboundRetryDecision,
     OutboundRetryPolicy, OutboundScimClientConfig, OutboundScimHttpRequest, OutboundScimTransport,
-    OutboundUserMapping, join_scim_url, scim_operation_name, scim_success_status,
+    OutboundUserMapping, scim_operation_name, scim_success_status,
 };
 
 pub struct OutboundProvisioningExecutionPlan {
@@ -65,6 +64,16 @@ pub fn build_outbound_scim_request(
     if plan.dry_run || plan.operation == OutboundOperation::Noop {
         return Ok(None);
     }
+    if plan.operation == OutboundOperation::Replace
+        && (!plan.path.starts_with("/Users/")
+            || plan.path[7..].is_empty()
+            || plan.path[7..].contains(['/', '?', '#'])
+            || matches!(&plan.path[7..], "." | ".."))
+    {
+        return Err(super::remote::invalid(
+            "replacement requires a remote resource path",
+        ));
+    }
     let (method, path, body) = match plan.operation {
         OutboundOperation::Create => ("POST", "/Users", Some(plan.desired.clone())),
         OutboundOperation::Replace => ("PUT", plan.path.as_str(), Some(plan.desired.clone())),
@@ -74,22 +83,7 @@ pub fn build_outbound_scim_request(
             });
         }
     };
-    let mut headers = BTreeMap::from([
-        ("Accept".to_string(), "application/scim+json".to_string()),
-        (
-            "Content-Type".to_string(),
-            "application/scim+json".to_string(),
-        ),
-    ]);
-    if let Some(token) = &config.bearer_token {
-        headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-    }
-    Ok(Some(OutboundScimHttpRequest {
-        method: method.to_string(),
-        url: join_scim_url(&config.base_url, path)?,
-        headers,
-        body,
-    }))
+    Ok(Some(super::remote::request(config, method, path, body)?))
 }
 
 pub async fn execute_outbound_user_provisioning<T: OutboundScimTransport>(

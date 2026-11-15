@@ -488,6 +488,37 @@ fn outbound_group_omitted_members_are_empty_for_reconciliation() {
 }
 
 #[test]
+fn outbound_group_null_members_are_empty_for_reconciliation() {
+    let mut group = ScimGroup {
+        external_id: None,
+        id: "group-1".into(),
+        realm_id: "corp".into(),
+        display_name: "app:erp:admin".into(),
+        members_json: serde_json::json!([]),
+    };
+    let remote = serde_json::json!({
+        "id": "remote-group",
+        "externalId": group.id,
+        "displayName": group.display_name,
+        "members": null,
+    });
+    let config = remote_config();
+    let noop =
+        plan_outbound_group_entitlement_reconciliation(&group, Some(&remote), &config, false)
+            .unwrap();
+    assert_eq!(noop.operation, OutboundOperation::Noop);
+    assert!(noop.drift.is_empty());
+
+    group.members_json = serde_json::json!([{ "value": "user-1" }]);
+    let replace =
+        plan_outbound_group_entitlement_reconciliation(&group, Some(&remote), &config, false)
+            .unwrap();
+    assert_eq!(replace.operation, OutboundOperation::Replace);
+    assert_eq!(replace.drift.len(), 1);
+    assert_eq!(replace.drift[0].path, "members");
+}
+
+#[test]
 fn outbound_group_reconciliation_rejects_malformed_members() {
     let mut group = ScimGroup {
         external_id: None,
@@ -502,7 +533,6 @@ fn outbound_group_reconciliation_rejects_malformed_members() {
         "displayName": group.display_name,
     });
     for members in [
-        serde_json::json!(null),
         serde_json::json!(false),
         serde_json::json!(1),
         serde_json::json!("user-1"),

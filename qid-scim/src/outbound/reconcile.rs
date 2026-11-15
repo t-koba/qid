@@ -87,8 +87,8 @@ fn outbound_group_drift(
 
 fn member_ids(resource: &serde_json::Value) -> QidResult<std::collections::BTreeSet<&str>> {
     let mut ids = std::collections::BTreeSet::new();
-    // RFC 7643 §2.5: an omitted multi-valued attribute is an empty array.
-    let Some(members) = resource.get("members") else {
+    // RFC 7643 §2.5: unassigned, null, and empty multi-valued attributes are equivalent.
+    let Some(members) = resource.get("members").filter(|value| !value.is_null()) else {
         return Ok(ids);
     };
     for member in members

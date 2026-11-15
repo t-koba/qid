@@ -1027,6 +1027,10 @@ policy:
 
 `qidd` supports local policy bundle files at startup. Remote `http://` and `https://` bundle sources are rejected during daemon startup.
 
+A realm may configure at most one bundle with `mode: enforce`; config validation
+rejects more than one because qid resolves one active policy bundle per realm.
+Combine multiple rule sets that must apply together into one native JSON bundle.
+
 When no rule matches, the bundle's own `default_decision` applies; a realm
 without a configured bundle falls back to the realm `policy.default_decision`
 (`deny` unless configured). Unknown decision names are rejected at startup,

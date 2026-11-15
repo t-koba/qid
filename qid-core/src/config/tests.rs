@@ -3305,3 +3305,30 @@ fn workload_csr_limit_defaults_and_overrides() {
     }
     assert!(serde_json::from_str::<WorkloadProtocolConfig>(r#"{"max_csr_bytes":-1}"#).is_err());
 }
+
+#[test]
+fn config_rejects_multiple_enforcing_policy_bundles() {
+    let mut config = minimal_config();
+    config.realms[0].policy.bundles = vec![
+        PolicyBundleConfig {
+            name: "enforced".into(),
+            source: "file://policies/enforced.json".into(),
+            mode: "enforce".into(),
+        },
+        PolicyBundleConfig {
+            name: "observed".into(),
+            source: "file://policies/observed.json".into(),
+            mode: "monitor".into(),
+        },
+    ];
+    config
+        .validate()
+        .expect("one enforcing bundle and a non-enforcing bundle are unambiguous");
+
+    config.realms[0].policy.bundles[1].mode = "enforce".into();
+    assert!(matches!(
+        config.validate(),
+        Err(QidError::Config { message })
+            if message.contains("corp") && message.contains("multiple enforcing policy bundles")
+    ));
+}

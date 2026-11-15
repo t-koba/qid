@@ -1318,6 +1318,21 @@ impl RealmConfig {
                 message: format!("realm {} issuer is not a valid URL: {e}", self.id),
             });
         }
+        if self
+            .policy
+            .bundles
+            .iter()
+            .filter(|bundle| bundle.mode == "enforce")
+            .count()
+            > 1
+        {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {} configures multiple enforcing policy bundles",
+                    self.id
+                ),
+            });
+        }
         if self.protocols.oidc.implicit.enabled {
             return Err(QidError::Config {
                 message: format!("realm {} enables forbidden implicit flow", self.id),

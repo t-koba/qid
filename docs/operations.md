@@ -39,6 +39,9 @@ Behavior:
 - Missing configured policy bundle: created.
 - Existing policy bundle with matching JSON/hash: accepted.
 - Existing policy bundle differing from config: startup fails.
+- Multiple configured enforcing bundles in one realm: config validation fails.
+- Multiple stored active bundles in one realm: policy lookup fails closed with a
+  conflict; explicitly repair stored state before relying on policy decisions.
 
 This is deliberate. qid will not silently overwrite persisted identity objects from config drift.
 

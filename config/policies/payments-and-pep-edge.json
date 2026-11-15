@@ -1,0 +1,54 @@
+{
+  "version": "1",
+  "default_decision": "deny",
+  "rules": [
+    {
+      "name": "allow-sender-constrained-payments-payments.read",
+      "type": "allow",
+      "action": "payments.read",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
+    },
+    {
+      "name": "allow-sender-constrained-payments-payments.write",
+      "type": "allow",
+      "action": "payments.write",
+      "expression": {
+        "not": {
+          "field": "subject_id",
+          "op": "equals",
+          "value": ""
+        }
+      }
+    },
+    {
+      "name": "allow-managed-device-egress-connect",
+      "type": "allow",
+      "action": "connect",
+      "conditions": [
+        {
+          "field": "posture",
+          "op": "contains",
+          "value": "managed"
+        }
+      ]
+    },
+    {
+      "name": "allow-managed-device-egress-http.forward",
+      "type": "allow",
+      "action": "http.forward",
+      "conditions": [
+        {
+          "field": "posture",
+          "op": "contains",
+          "value": "managed"
+        }
+      ]
+    }
+  ]
+}

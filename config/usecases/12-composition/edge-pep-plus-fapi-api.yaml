@@ -112,9 +112,6 @@ realms:
     policy:
       default_decision: deny
       bundles:
-        - name: payments
-          source: "file://../../policies/payments.json"
-          mode: enforce
-        - name: pep-edge
-          source: "file://../../policies/pep-edge.json"
+        - name: payments-and-pep-edge
+          source: "file://../../policies/payments-and-pep-edge.json"
           mode: enforce

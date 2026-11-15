@@ -140,6 +140,7 @@ mod tests {
         parent: Option<Child>,
         running_path: PathBuf,
         ready_path: PathBuf,
+        released_path: PathBuf,
         lock_path: PathBuf,
     }
 
@@ -149,19 +150,24 @@ mod tests {
             let parent_script = directory.join("parent.ps1");
             let running_path = directory.join("running");
             let ready_path = directory.join("child-ready");
+            let released_path = directory.join("child-lock-released");
             let lock_path = directory.join("locked.db");
             fs::write(&running_path, "running").unwrap();
             fs::write(
                 &child_script,
-                r#"$lock = [System.IO.File]::Open($env:QID_TEST_LOCK_PATH, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+                r#"$lock = $null
 try {
+    $lock = [System.IO.File]::Open($env:QID_TEST_LOCK_PATH, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     [System.IO.File]::WriteAllText($env:QID_TEST_READY_PATH, 'ready')
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while ([System.IO.File]::Exists($env:QID_TEST_RUNNING_PATH) -and [DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 10
     }
 } finally {
-    $lock.Dispose()
+    if ($null -ne $lock) { $lock.Dispose() }
+    $releaseTempPath = $env:QID_TEST_RELEASE_PATH + '.tmp'
+    [System.IO.File]::WriteAllText($releaseTempPath, 'released')
+    [System.IO.File]::Move($releaseTempPath, $env:QID_TEST_RELEASE_PATH)
 }
 "#,
             )
@@ -180,6 +186,7 @@ Start-Sleep -Seconds 30
                 .env("QID_TEST_CHILD_SCRIPT", child_script)
                 .env("QID_TEST_LOCK_PATH", &lock_path)
                 .env("QID_TEST_READY_PATH", &ready_path)
+                .env("QID_TEST_RELEASE_PATH", &released_path)
                 .env("QID_TEST_RUNNING_PATH", &running_path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -190,6 +197,7 @@ Start-Sleep -Seconds 30
                 parent: Some(child),
                 running_path,
                 ready_path,
+                released_path,
                 lock_path,
             }
         }
@@ -225,6 +233,16 @@ Start-Sleep -Seconds 30
         }
     }
 
+    fn wait_for_lock_release(path: &Path, timeout: Duration) -> bool {
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            return false;
+        };
+        while !path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        path.exists()
+    }
+
     impl Drop for ProcessTree {
         fn drop(&mut self) {
             let Some(mut parent) = self.parent.take() else {
@@ -237,6 +255,11 @@ Start-Sleep -Seconds 30
             // Child::kill uses the retained Windows process handle, not a PID.
             let _ = parent.kill();
             let _ = wait_for_child(&mut parent, Duration::from_secs(1));
+            if !wait_for_lock_release(&self.released_path, Duration::from_secs(2)) {
+                eprintln!(
+                    "ERROR: fixture descendant did not release its lock before cleanup deadline"
+                );
+            }
         }
     }
 
@@ -262,7 +285,7 @@ Start-Sleep -Seconds 30
     }
 
     #[test]
-    fn guard_cleanup_releases_descendant_after_parent_exit() {
+    fn guard_cleanup_waits_for_descendant_lock_release() {
         let directory = tempfile::tempdir().unwrap();
         let mut tree = ProcessTree::spawn(directory.path());
         tree.wait_until_locked();
@@ -271,22 +294,11 @@ Start-Sleep -Seconds 30
         let lock_path = tree.lock_path.clone();
         drop(tree);
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match OpenOptions::new().write(true).open(&lock_path) {
-                Ok(lock) => {
-                    drop(lock);
-                    break;
-                }
-                Err(error) => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "descendant kept its lock: {error}"
-                    );
-                    thread::sleep(Duration::from_millis(10));
-                }
-            }
-        }
+        let lock = OpenOptions::new()
+            .write(true)
+            .open(&lock_path)
+            .expect("fixture guard must wait until its descendant releases the lock");
+        drop(lock);
         fs::remove_file(&lock_path).unwrap();
     }
 }

@@ -85,8 +85,8 @@ async fn load_broker_links<R: Repository>(
     }
 }
 
-/// Execute a broker login plan: create local user if JIT provisioning
-/// is requested, persist CIAM identity link, and return the local user ID.
+/// Execute a broker login plan: create a local user and persist its CIAM identity
+/// link on first login, or reuse the already verified link on returning login.
 async fn exec_broker_login_plan<R: Repository>(
     repo: &R,
     realm_id: &str,
@@ -175,34 +175,35 @@ async fn exec_broker_login_plan<R: Repository>(
         repo.append_audit_event(&audit_event).await?;
     }
 
-    // Persist CIAM identity link
-    let link = CiamIdentityLink {
-        id: format!("cil_{}", ulid::Ulid::new()),
-        realm_id: realm_id.to_string(),
-        user_id: local_user_id.clone(),
-        provider: provider_id.to_string(),
-        external_subject: claims.subject.clone(),
-        external_email: claims
-            .claims
-            .get("email")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        profile_json: serde_json::Value::Object(claims.claims.clone().into_iter().collect()),
-        linked_at_epoch_seconds: now,
-        verified: true,
-    };
-    repo.store_ciam_identity_link(&link).await?;
+    if plan.linked_subject.is_none() {
+        let link = CiamIdentityLink {
+            id: format!("cil_{}", ulid::Ulid::new()),
+            realm_id: realm_id.to_string(),
+            user_id: local_user_id.clone(),
+            provider: provider_id.to_string(),
+            external_subject: claims.subject.clone(),
+            external_email: claims
+                .claims
+                .get("email")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            profile_json: serde_json::Value::Object(claims.claims.clone().into_iter().collect()),
+            linked_at_epoch_seconds: now,
+            verified: true,
+        };
+        repo.store_ciam_identity_link(&link).await?;
 
-    // §8.3: Audit CIAM identity link storage (always recorded)
-    let link_audit = jit_audit_event(
-        &local_user_id,
-        realm_id,
-        provider_id,
-        "ciam_identity_link_stored",
-        plan,
-        now,
-    );
-    repo.append_audit_event(&link_audit).await?;
+        // §8.3: Audit CIAM identity link storage on first login.
+        let link_audit = jit_audit_event(
+            &local_user_id,
+            realm_id,
+            provider_id,
+            "ciam_identity_link_stored",
+            plan,
+            now,
+        );
+        repo.append_audit_event(&link_audit).await?;
+    }
 
     Ok(local_user_id)
 }
@@ -275,4 +276,178 @@ pub(crate) struct OidcCallbackQuery {
 pub(crate) struct SamlAcsForm {
     #[serde(default, rename = "SAMLResponse")]
     saml_response: Option<String>,
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use crate::{
+        ClaimMapping, ExternalIdentityClaims, HomeRealmDiscoveryRequest, plan_inbound_login,
+    };
+    use qid_core::tenant::TenantId;
+    use qid_storage::AnyRepository;
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "qid-federation-returning-login-{}",
+                ulid::Ulid::new()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn provider() -> InboundIdentityProvider {
+        InboundIdentityProvider {
+            id: "corp-oidc".to_string(),
+            kind: InboundProviderKind::Oidc,
+            issuer: "https://login.corp.example".to_string(),
+            enabled: true,
+            domains: vec!["corp.example".to_string()],
+            social_provider: None,
+            jit_provisioning: true,
+            account_linking: true,
+            client_id: None,
+            client_secret: None,
+            token_url: None,
+            userinfo_url: None,
+            jwks_uri: None,
+            jwks: None,
+            saml_signing_certificates: Vec::new(),
+            trusted_audiences: Vec::new(),
+            claim_mappings: vec![
+                ClaimMapping {
+                    source: "email".to_string(),
+                    target: "email".to_string(),
+                    required: true,
+                },
+                ClaimMapping {
+                    source: "email_verified".to_string(),
+                    target: "email_verified".to_string(),
+                    required: true,
+                },
+            ],
+        }
+    }
+
+    async fn assert_returning_login_reuses_link(repo: &impl Repository) {
+        let realm = RealmId::from("federation-returning-login");
+        repo.create_realm(
+            &TenantId::from("test-tenant"),
+            &realm,
+            "https://qid.example",
+            Some("test realm"),
+        )
+        .await
+        .unwrap();
+
+        let providers = vec![provider()];
+        let request = HomeRealmDiscoveryRequest {
+            idp_hint: Some("corp-oidc".to_string()),
+            ..Default::default()
+        };
+        let claims = ExternalIdentityClaims {
+            issuer: "https://login.corp.example".to_string(),
+            subject: "external-alice".to_string(),
+            claims: BTreeMap::from([
+                (
+                    "email".to_string(),
+                    serde_json::Value::String("alice@corp.example".to_string()),
+                ),
+                ("email_verified".to_string(), serde_json::Value::Bool(true)),
+            ]),
+        };
+
+        let first_plan = plan_inbound_login(&providers, &request, &claims, &[]).unwrap();
+        assert!(first_plan.create_subject);
+        assert!(first_plan.linked_subject.is_none());
+        let first_user =
+            exec_broker_login_plan(repo, realm.as_str(), "corp-oidc", &claims, &first_plan)
+                .await
+                .unwrap();
+
+        let link_before = repo
+            .get_ciam_identity_link_by_external_subject(&realm, "corp-oidc", &claims.subject)
+            .await
+            .unwrap()
+            .expect("first login stores the verified identity link");
+        assert_eq!(link_before.user_id, first_user);
+
+        let links = load_broker_links(repo, realm.as_str(), "corp-oidc", &claims).await;
+        assert_eq!(links.len(), 1);
+        let returning_plan = plan_inbound_login(&providers, &request, &claims, &links).unwrap();
+        assert!(!returning_plan.create_subject);
+        assert_eq!(
+            returning_plan.linked_subject.as_deref(),
+            Some(first_user.as_str())
+        );
+        let returning_user =
+            exec_broker_login_plan(repo, realm.as_str(), "corp-oidc", &claims, &returning_plan)
+                .await
+                .expect("returning login must reuse the existing verified link");
+
+        assert_eq!(returning_user, first_user);
+        let link_after = repo
+            .get_ciam_identity_link_by_external_subject(&realm, "corp-oidc", &claims.subject)
+            .await
+            .unwrap()
+            .expect("verified identity link remains available");
+        assert_eq!(link_after, link_before);
+        assert_eq!(
+            repo.list_ciam_identity_links(&realm, &first_user)
+                .await
+                .unwrap(),
+            vec![link_before],
+            "returning login must not add a duplicate link"
+        );
+
+        let audit = repo.list_audit_events(Some(&realm), 10).await.unwrap();
+        for (action, count) in [
+            ("federation.jit_account_created", 1),
+            ("federation.jit_account_linked", 1),
+            ("federation.ciam_identity_link_stored", 1),
+        ] {
+            assert_eq!(
+                audit.iter().filter(|event| event.action == action).count(),
+                count,
+                "unexpected {action} audit count"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn returning_login_reuses_verified_link_in_file_and_sqlite() {
+        let directory = TestDirectory::new();
+        let file_path = directory.0.join("file.json");
+        let sqlite_path = directory.0.join("sqlite.db");
+
+        let file_repo = AnyRepository::connect(file_path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_returning_login_reuses_link(&file_repo).await;
+        match file_repo {
+            AnyRepository::File(repo) => repo.flush().await.unwrap(),
+            AnyRepository::Sql(_) => unreachable!(),
+        }
+
+        let sqlite_url = format!("sqlite:{}", sqlite_path.display());
+        let sqlite_repo = AnyRepository::connect(&sqlite_url).await.unwrap();
+        assert_returning_login_reuses_link(&sqlite_repo).await;
+        match sqlite_repo {
+            AnyRepository::Sql(repo) => repo.close().await,
+            AnyRepository::File(_) => unreachable!(),
+        }
+
+        std::fs::remove_dir_all(&directory.0).unwrap();
+    }
 }

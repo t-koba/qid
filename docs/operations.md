@@ -66,6 +66,17 @@ One SPIFFE ID names one workload identity in a realm. A database that already ho
 
 A workload identity belongs to its realm: registration binds it to that realm, and listing and deletion are scoped to that realm, so one realm's identity cannot be read or removed by another realm's request. The SPIFFE ID names the identity inside its realm, so registering that SPIFFE ID again updates the identity rather than adding a second one.
 
+The TOTP migration `20261115000001_totp_credential_user_unique` enforces one credential per user. If legacy rows contain multiple credentials for a user, SQL migration fails without choosing, merging, deleting, or rewriting credential rows; File storage likewise returns a conflict for an ambiguous lookup. Locate affected users without reading secrets:
+
+```sql
+SELECT user_id, COUNT(*) AS credential_count
+FROM credentials_totp
+GROUP BY user_id
+HAVING COUNT(*) > 1;
+```
+
+Treat the resulting user IDs as sensitive operational data. Use a reviewed recovery process with the account owner to resolve each ambiguity before retrying migrations; do not choose a credential by row order or timestamps, and do not export or log secret values.
+
 ## Shared Cache
 
 Set `ops.cache.kind` to `redis` or `valkey` for every multi-instance deployment. The shared cache backs DPoP and JWT assertion replay guards, PEP decision cache entries, and browser session cache entries. `kind: disabled` is only appropriate for single-process deployments.

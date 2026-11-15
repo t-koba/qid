@@ -95,7 +95,7 @@ impl WorkloadRepository for SqlRepository {
         let result = sqlx::query(
             "INSERT INTO workload_certificates (id, realm_id, workload_id, spiffe_id, serial_number, x5t_s256, public_key_sha256, csr_sha256, certificate_pem, issuer_key_ref, issued_at, not_before, not_after, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET serial_number = excluded.serial_number, x5t_s256 = excluded.x5t_s256, public_key_sha256 = excluded.public_key_sha256, csr_sha256 = excluded.csr_sha256, certificate_pem = excluded.certificate_pem, issuer_key_ref = excluded.issuer_key_ref, issued_at = excluded.issued_at, not_before = excluded.not_before, not_after = excluded.not_after, revoked_at = excluded.revoked_at \
-             WHERE workload_certificates.realm_id = excluded.realm_id AND workload_certificates.workload_id = excluded.workload_id AND workload_certificates.spiffe_id = excluded.spiffe_id",
+             WHERE workload_certificates.realm_id = excluded.realm_id AND workload_certificates.workload_id = excluded.workload_id AND workload_certificates.spiffe_id = excluded.spiffe_id AND workload_certificates.revoked_at IS NULL",
         )
         .bind(&certificate.id)
         .bind(&certificate.realm_id)
@@ -119,7 +119,7 @@ impl WorkloadRepository for SqlRepository {
             })
         })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
-            "workload certificate ID belongs to another identity".to_string()
+            "workload certificate ID is revoked or belongs to another identity".to_string()
         })
     }
 

@@ -89,6 +89,16 @@ impl WorkloadRepository for FileRepository {
                 message: "workload certificate identity does not match workload".to_string(),
             });
         }
+        if store
+            .workload_certificates
+            .get(&certificate.id)
+            .is_some_and(|stored| stored.revoked_at.is_some())
+        {
+            return Err(QidError::Conflict {
+                message: "workload certificate ID is revoked or belongs to another identity"
+                    .to_string(),
+            });
+        }
         crate::ownership::ensure_same_binding(
             store
                 .workload_certificates
@@ -99,7 +109,7 @@ impl WorkloadRepository for FileRepository {
                 &certificate.workload_id,
                 &certificate.spiffe_id,
             ),
-            || "workload certificate ID belongs to another identity".to_string(),
+            || "workload certificate ID is revoked or belongs to another identity".to_string(),
         )?;
         if store.workload_certificates.values().any(|stored| {
             stored.id != certificate.id

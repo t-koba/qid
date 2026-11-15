@@ -534,8 +534,42 @@ where
         repo.list_workload_certificates(&realm, Some(&workload.id))
             .await
             .expect("list certificate after invalid replacement failed"),
-        vec![previously_revoked],
+        vec![previously_revoked.clone()],
         "invalid replacement changed the incumbent revocation"
+    );
+
+    let error = repo
+        .store_workload_certificate(&certificate)
+        .await
+        .expect_err("same-ID storage must not clear a terminal revocation");
+    assert!(
+        matches!(error, qid_core::error::QidError::Conflict { .. }),
+        "same-ID post-revocation storage must conflict, got: {}",
+        error.message()
+    );
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&workload.id))
+            .await
+            .expect("list certificate after refused reactivation failed"),
+        vec![previously_revoked.clone()],
+        "refused same-ID storage changed the revoked certificate"
+    );
+
+    let reissued = WorkloadCertificate {
+        id: "cert-api-reissued".to_string(),
+        serial_number: "01:02:05".to_string(),
+        x5t_s256: "c".repeat(64),
+        ..certificate.clone()
+    };
+    repo.store_workload_certificate(&reissued)
+        .await
+        .expect("fresh-ID certificate reissue failed");
+    assert_eq!(
+        repo.list_workload_certificates(&realm, Some(&workload.id))
+            .await
+            .expect("list certificates after fresh-ID reissue failed"),
+        vec![previously_revoked, reissued],
+        "fresh-ID reissue must preserve the revoked certificate history"
     );
 
     let upper_half_certificate = WorkloadCertificate {

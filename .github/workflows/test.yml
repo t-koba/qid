@@ -43,7 +43,13 @@ jobs:
         run: |
           set +e
           trap 'rm -f "$RUNNER_TEMP/workspace-tests.log"' EXIT
-          cargo test --workspace --locked -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/workspace-tests.log"
+          # Keep Windows serial while SQLite cleanup failures remain under investigation.
+          test_args=()
+          case "${RUNNER_OS:-}" in
+            Linux|macOS) ;;
+            *) test_args=(-- --test-threads=1) ;;
+          esac
+          cargo test --workspace --locked "${test_args[@]}" 2>&1 | tee "$RUNNER_TEMP/workspace-tests.log"
           status=("${PIPESTATUS[@]}")
           if command -v python3 >/dev/null 2>&1; then
             python3 scripts/report-test-binary-timings.py --input "$RUNNER_TEMP/workspace-tests.log" --output "$RUNNER_TEMP/test-binary-timings.csv"
@@ -103,7 +109,7 @@ jobs:
       - name: Test all features
         env:
           RUSTFLAGS: "-D warnings"
-        run: cargo test --workspace --all-targets --all-features --locked -- --test-threads=1
+        run: cargo test --workspace --all-targets --all-features --locked
 
   config-samples:
     name: Config Samples

@@ -171,7 +171,12 @@ class BinaryTimingsTests(unittest.TestCase):
         script = "\n".join(line[10:] for line in block.split("        run: |\n", 1)[1].splitlines())
         # Exercise the actual workflow shell without invoking Cargo or running tests.
         fake_cargo = '''cargo() {
-          [[ "$*" == 'test --workspace --locked -- --test-threads=1' ]] || return 99
+          expected='test --workspace --locked'
+          case "${RUNNER_OS:-}" in
+            Linux|macOS) ;;
+            *) expected+=' -- --test-threads=1' ;;
+          esac
+          [[ "$*" == "$expected" ]] || return 99
           echo '     Running unittests src/lib.rs (target/debug/deps/qid_worker-ab12)'
           if [[ "$FAKE_STATUS" -eq 0 ]]; then
             echo 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s'
@@ -184,11 +189,19 @@ class BinaryTimingsTests(unittest.TestCase):
         }
 '''
         with tempfile.TemporaryDirectory() as directory:
-            for status, expected_result in ((0, "ok"), (17, "FAILED")):
+            for runner_os, status, expected_result in (
+                ("Linux", 0, "ok"), ("macOS", 0, "ok"),
+                ("Windows", 17, "FAILED"), ("Other", 0, "ok")
+            ):
                 result = subprocess.run(
                     ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", fake_cargo + script],
                     cwd=root,
-                    env=dict(os.environ, RUNNER_TEMP=directory, FAKE_STATUS=str(status)),
+                    env=dict(
+                        os.environ,
+                        RUNNER_TEMP=directory,
+                        RUNNER_OS=runner_os,
+                        FAKE_STATUS=str(status),
+                    ),
                     capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode, status, result.stderr)

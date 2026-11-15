@@ -131,15 +131,29 @@ async fn issue_jwt_svid<R: Repository>(
         });
     }
     let now = qid_core::util::now_seconds();
-    let ttl = query.ttl_seconds.unwrap_or(3600).min(24 * 3600);
-    let issuer = state.require_realm(&realm)?.issuer.clone();
+    let realm_config = state.require_realm(&realm)?;
+    let policy = &realm_config.workload;
+    let ttl = query
+        .ttl_seconds
+        .unwrap_or(policy.jwt_svid_default_ttl_seconds)
+        .clamp(
+            policy.jwt_svid_min_ttl_seconds,
+            policy.jwt_svid_max_ttl_seconds,
+        );
+    let invalid_timestamp = || qid_core::error::QidError::BadRequest {
+        message: "JWT-SVID lifetime cannot be represented as a timestamp".into(),
+    };
+    let expires = now.checked_add(ttl).ok_or_else(invalid_timestamp)?;
+    let expires = usize::try_from(expires).map_err(|_| invalid_timestamp())?;
+    let issued_at = usize::try_from(now).map_err(|_| invalid_timestamp())?;
+    let issuer = realm_config.issuer.clone();
     let claims = qid_core::jwt::JwtClaims {
         iss: Some(issuer),
         sub: Some(query.spiffe_id.clone()),
         aud: Some(qid_core::jwt::Audience::single(query.audience.clone())),
-        exp: Some((now + ttl) as usize),
-        nbf: Some(now as usize),
-        iat: Some(now as usize),
+        exp: Some(expires),
+        nbf: Some(issued_at),
+        iat: Some(issued_at),
         jti: Some(format!("svid_{}", ulid::Ulid::new())),
         extra: std::iter::once((
             "spiffe_id".to_string(),

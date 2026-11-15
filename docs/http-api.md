@@ -449,6 +449,21 @@ original CA certificate; only certificate metadata/chain, not that client privat
 key, is stored. The SPIFFE bundle groups each configured realm's public CA by
 the trust domain derived from its issuer; realms sharing a trust domain contribute
 all their public CAs. Authentication, expiry and revocation APIs are unchanged.
+
+Lifetime policy comes from the target realm's `protocols.workload` settings;
+see [workload lifetimes](configuration.md#workload-lifetimes). JWT-SVID fetch
+accepts optional `ttl_seconds`: omission uses `jwt_svid_default_ttl_seconds`,
+and requests are clamped to `jwt_svid_min_ttl_seconds` through
+`jwt_svid_max_ttl_seconds` (defaults 3600, 0 and 86400 respectively).
+Server-generated-key workload certificate requests likewise accept optional
+`ttl_seconds`, using `x509_default_ttl_seconds`, `x509_min_ttl_seconds` and
+`x509_max_ttl_seconds` (defaults 3600, 60 and 3600). The configured X.509
+maximum cannot exceed the existing 86400-second certificate validation ceiling.
+X.509-SVID fetch and CSR issuance accept no TTL and use the configured X.509
+default. Unrepresentable expiry timestamps fail issuance rather than wrapping.
+No migration is needed; old configurations preserve these defaults and existing
+explicit-zero JWT behavior.
+
 `POST /api/v1/:realm/workload-certificates/csr` accepts only
 `{"csr_pem":"-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----\n"}`.
 It requires a registered workload's `qid-workload-api` JWT-SVID for that realm
@@ -456,8 +471,9 @@ in `Authorization: Bearer ...`; a provisioning token is not sufficient. qid
 verifies PKCS#10 proof of possession and uses only the verified public key.
 Subject, SAN, usages and extensions in the request never select identity or
 policy. The leaf has the authenticated registered SPIFFE ID as CN and sole URI
-SAN, is not a CA, and has digitalSignature and clientAuth usages with a one-hour
-lifetime. The target realm's protected CA signs it. IDs are server-generated;
+SAN, is not a CA, and has digitalSignature and clientAuth usages with the
+realm's configured default X.509 lifetime (one hour when omitted). The target
+realm's protected CA signs it. IDs are server-generated;
 no target, ID or TTL fields are accepted. Success returns `201 Created` with
 `{"certificate": ...}` only, including the leaf and original CA chain, never a
 private key. The existing server-generated-key endpoint and response are unchanged.

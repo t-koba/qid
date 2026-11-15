@@ -9,6 +9,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use qid_core::{
+    config::WorkloadProtocolConfig,
     jwt::{Audience, JwtClaims, Signer},
     models::{WorkloadCertificate, WorkloadIdentity},
     state::SharedState,
@@ -75,12 +76,22 @@ async fn setup_with_workload_ca() -> (axum::Router, Arc<SharedState<SqlRepositor
 async fn setup_with_workload_ca_limit(
     max_csr_bytes: usize,
 ) -> (axum::Router, Arc<SharedState<SqlRepository>>, String) {
+    setup_with_workload_policy(WorkloadProtocolConfig {
+        max_csr_bytes,
+        ..Default::default()
+    })
+    .await
+}
+
+async fn setup_with_workload_policy(
+    policy: WorkloadProtocolConfig,
+) -> (axum::Router, Arc<SharedState<SqlRepository>>, String) {
     let mut config = test_helpers::test_config();
-    config.realms[0].protocols.workload.max_csr_bytes = max_csr_bytes;
     let mut other = config.realms[0].clone();
     other.id = "second".into();
     other.issuer = "https://second.example".into();
     config.realms.push(other);
+    config.realms[0].protocols.workload = policy;
     let repo = Arc::new(sql_repo("qid_test_resource_workload").await);
     repo.create_realm(
         &"tenant-1".into(),
@@ -652,7 +663,7 @@ async fn workload_certificate_access_does_not_follow_reused_record_id() {
 
 #[tokio::test]
 async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca() {
-    let (app, state, token) = setup_with_workload_ca().await;
+    let (app, state, token) = setup_with_workload_policy(custom_lifetimes()).await;
 
     let response = app
         .clone()
@@ -674,6 +685,7 @@ async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca()
     let body = json(response).await;
     let svid = &body["svids"][0];
     assert_eq!(svid["spiffe_id"], WORKLOAD_SPIFFE_ID);
+    assert_certificate_lifetime(svid["certificate_chain"][0].as_str().unwrap(), 120);
     assert!(
         svid["private_key"]
             .as_str()
@@ -722,6 +734,12 @@ async fn fetch_x509_svid_issues_private_key_certificate_and_bundle_from_qid_ca()
         .unwrap();
     assert_eq!(second_response.status(), StatusCode::OK);
     let second_body = json(second_response).await;
+    assert_certificate_lifetime(
+        second_body["svids"][0]["certificate_chain"][0]
+            .as_str()
+            .unwrap(),
+        3600,
+    );
     assert_svid_chain(
         &second_body["svids"][0],
         &state.workload_cas["second"].certificate_pem,
@@ -1137,4 +1155,188 @@ async fn csr_route_enforces_exact_byte_limit_and_zero_disables() {
         assert_eq!(response.status(), expected, "limit {limit}");
         state.repo.as_ref().clone().close().await;
     }
+}
+
+fn custom_lifetimes() -> WorkloadProtocolConfig {
+    WorkloadProtocolConfig {
+        jwt_svid_default_ttl_seconds: 7200,
+        jwt_svid_min_ttl_seconds: 90,
+        jwt_svid_max_ttl_seconds: 172_800,
+        x509_default_ttl_seconds: 120,
+        x509_min_ttl_seconds: 10,
+        x509_max_ttl_seconds: 7200,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn jwt_svid_lifetimes_follow_realm_policy() {
+    for policy in [WorkloadProtocolConfig::default(), custom_lifetimes()] {
+        let (app, state, token) = setup_with_workload_policy(policy.clone()).await;
+        for (requested, expected) in [
+            (None, policy.jwt_svid_default_ttl_seconds),
+            (Some(0), policy.jwt_svid_min_ttl_seconds),
+            (Some(1800), 1800),
+            (Some(u64::MAX), policy.jwt_svid_max_ttl_seconds),
+        ] {
+            let ttl = requested
+                .map(|ttl| format!("&ttl_seconds={ttl}"))
+                .unwrap_or_default();
+            let response = app
+                .clone()
+                .oneshot(json_request(
+                    Method::GET,
+                    &format!(
+                        "/api/v1/test/spiffe/workload-api/jwt-svid?spiffe_id={}&audience=peer{ttl}",
+                        urlencoding::encode(WORKLOAD_SPIFFE_ID)
+                    ),
+                    String::new(),
+                    &token,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json(response).await;
+            assert_eq!(body["ttl_seconds"], expected);
+            let claims = state
+                .signer
+                .decode_signature_only(body["token"].as_str().unwrap())
+                .unwrap()
+                .claims;
+            assert_eq!(claims.exp.unwrap() - claims.iat.unwrap(), expected as usize);
+            assert_eq!(
+                claims.iat.unwrap() as u64,
+                body["issued_at"].as_u64().unwrap()
+            );
+        }
+        let mut claims = state
+            .signer
+            .decode_signature_only(token.strip_prefix("Bearer ").unwrap())
+            .unwrap()
+            .claims;
+        claims.iss = Some("https://second.example".into());
+        let second_token = format!("Bearer {}", state.signer.sign(&claims).unwrap());
+        let response = app
+            .oneshot(json_request(
+                Method::GET,
+                &format!(
+                    "/api/v1/second/spiffe/workload-api/jwt-svid?spiffe_id={}&audience=peer",
+                    urlencoding::encode(WORKLOAD_SPIFFE_ID)
+                ),
+                String::new(),
+                &second_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json(response).await["ttl_seconds"], 3600);
+    }
+}
+
+fn assert_certificate_lifetime(pem: &str, expected: u64) {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
+    let (_, leaf) = x509_parser::parse_x509_certificate(&pem.contents).unwrap();
+    assert_eq!(
+        leaf.validity().not_after.timestamp() - leaf.validity().not_before.timestamp(),
+        expected as i64
+    );
+}
+
+#[tokio::test]
+async fn x509_lifetimes_follow_realm_policy_for_all_issuance_paths() {
+    for policy in [WorkloadProtocolConfig::default(), custom_lifetimes()] {
+        let (app, state, token) = setup_with_workload_policy(policy.clone()).await;
+        for (requested, expected) in [
+            (None, policy.x509_default_ttl_seconds),
+            (Some(0), policy.x509_min_ttl_seconds),
+            (Some(1800), 1800),
+            (Some(u64::MAX), policy.x509_max_ttl_seconds),
+        ] {
+            let mut request =
+                serde_json::json!({"workload_id": "workload-api", "spiffe_id": WORKLOAD_SPIFFE_ID});
+            if let Some(ttl) = requested {
+                request["ttl_seconds"] = ttl.into();
+            }
+            let response = app
+                .clone()
+                .oneshot(json_request(
+                    Method::POST,
+                    "/api/v1/test/workload-certificates",
+                    request.to_string(),
+                    &token,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let body = json(response).await;
+            let cert = &body["certificate"];
+            assert_eq!(
+                cert["not_after"].as_u64().unwrap() - cert["not_before"].as_u64().unwrap(),
+                expected
+            );
+            assert_certificate_lifetime(cert["certificate_pem"].as_str().unwrap(), expected);
+        }
+        let (_, csr) = spoofed_csr();
+        let response = post_csr(&app, &token, &csr.pem().unwrap()).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = json(response).await;
+        assert_certificate_lifetime(
+            body["certificate"]["certificate_pem"].as_str().unwrap(),
+            policy.x509_default_ttl_seconds,
+        );
+        let response = app
+            .oneshot(json_request(
+                Method::GET,
+                "/api/v1/test/spiffe/workload-api/x509-svid",
+                String::new(),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json(response).await;
+        assert_certificate_lifetime(
+            body["svids"][0]["certificate_chain"][0].as_str().unwrap(),
+            policy.x509_default_ttl_seconds,
+        );
+        let stored = state
+            .repo
+            .list_workload_certificates(&"test".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 6);
+    }
+}
+
+#[tokio::test]
+async fn unrepresentable_jwt_expiry_fails_without_storing_certificates() {
+    let (app, state, token) = setup_with_workload_policy(WorkloadProtocolConfig {
+        jwt_svid_default_ttl_seconds: u64::MAX,
+        jwt_svid_max_ttl_seconds: u64::MAX,
+        ..Default::default()
+    })
+    .await;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!(
+                "/api/v1/test/spiffe/workload-api/jwt-svid?spiffe_id={}&audience=peer",
+                urlencoding::encode(WORKLOAD_SPIFFE_ID)
+            ),
+            String::new(),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(json(response).await.to_string().contains("timestamp"));
+    assert!(
+        state
+            .repo
+            .list_workload_certificates(&"test".into(), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

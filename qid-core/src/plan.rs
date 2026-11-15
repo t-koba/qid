@@ -54,6 +54,7 @@ pub struct RuntimeRealm {
     pub display_name: String,
     pub tenant_id: Option<String>,
     pub token_ttl: TokenTtlConfig,
+    pub workload: crate::config::WorkloadProtocolConfig,
     pub oauth_default_scope: String,
     pub oidc_default_scope: String,
     pub pkce_required: bool,
@@ -92,6 +93,7 @@ impl RuntimeRealm {
 
     fn from_config(config: &crate::config::RealmConfig) -> QidResult<Self> {
         config.validate_iga_access_request()?;
+        config.protocols.workload.validate(&config.id)?;
         Ok(Self {
             id: config.id.clone(),
             issuer: config.issuer.clone(),
@@ -101,6 +103,7 @@ impl RuntimeRealm {
                 .unwrap_or_else(|| config.id.clone()),
             tenant_id: config.tenant_id.clone(),
             token_ttl: config.protocols.oauth.tokens.clone(),
+            workload: config.protocols.workload.clone(),
             oauth_default_scope: config.protocols.oauth.default_scope.clone(),
             oidc_default_scope: config.protocols.oidc.default_scope.clone(),
             pkce_required: config.protocols.oidc.authorization_code.pkce_required,

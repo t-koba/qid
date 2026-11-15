@@ -654,34 +654,34 @@ fn default_vc_max_credential_lifetime() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct WorkloadProtocolConfig {
-    #[serde(default = "default_max_csr_bytes")]
     pub max_csr_bytes: usize,
-    #[serde(default)]
+    pub jwt_svid_default_ttl_seconds: u64,
+    pub jwt_svid_min_ttl_seconds: u64,
+    pub jwt_svid_max_ttl_seconds: u64,
+    pub x509_default_ttl_seconds: u64,
+    pub x509_min_ttl_seconds: u64,
+    pub x509_max_ttl_seconds: u64,
     pub spiffe_workload_api: bool,
-    #[serde(default)]
     pub x509_svid: bool,
-    #[serde(default)]
     pub jwt_svid: bool,
-    #[serde(default)]
     pub short_lived_credentials: bool,
-    #[serde(default)]
     pub rats_eat: bool,
-    #[serde(default)]
     pub token_exchange: bool,
-    #[serde(default)]
     pub workload_ca_key_ref: Option<String>,
-}
-
-fn default_max_csr_bytes() -> usize {
-    16_384
 }
 
 impl Default for WorkloadProtocolConfig {
     fn default() -> Self {
         Self {
-            max_csr_bytes: default_max_csr_bytes(),
+            max_csr_bytes: 16_384,
+            jwt_svid_default_ttl_seconds: 3600,
+            jwt_svid_min_ttl_seconds: 0,
+            jwt_svid_max_ttl_seconds: 86_400,
+            x509_default_ttl_seconds: 3600,
+            x509_min_ttl_seconds: 60,
+            x509_max_ttl_seconds: 3600,
             spiffe_workload_api: false,
             x509_svid: false,
             jwt_svid: false,
@@ -690,6 +690,44 @@ impl Default for WorkloadProtocolConfig {
             token_exchange: false,
             workload_ca_key_ref: None,
         }
+    }
+}
+
+impl WorkloadProtocolConfig {
+    pub(crate) fn validate(&self, realm: &str) -> QidResult<()> {
+        for (kind, default, min, max) in [
+            (
+                "jwt_svid",
+                self.jwt_svid_default_ttl_seconds,
+                self.jwt_svid_min_ttl_seconds,
+                self.jwt_svid_max_ttl_seconds,
+            ),
+            (
+                "x509",
+                self.x509_default_ttl_seconds,
+                self.x509_min_ttl_seconds,
+                self.x509_max_ttl_seconds,
+            ),
+        ] {
+            let x509_invalid = kind == "x509"
+                && (min == 0 || max > crate::models::WorkloadCertificate::MAX_LIFETIME_SECONDS);
+            if default == 0 || min > default || default > max || x509_invalid {
+                let x509_bounds = if kind == "x509" {
+                    format!(
+                        "; X.509 minimum must be positive and maximum must not exceed {} seconds",
+                        crate::models::WorkloadCertificate::MAX_LIFETIME_SECONDS
+                    )
+                } else {
+                    String::new()
+                };
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {realm} protocols.workload.{kind} TTL policy requires a positive default and min <= default <= max{x509_bounds}"
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 }
 

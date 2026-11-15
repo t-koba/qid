@@ -1295,6 +1295,7 @@ impl RealmConfig {
     }
 
     fn validate(&self) -> QidResult<()> {
+        self.protocols.workload.validate(&self.id)?;
         if self.id.trim().is_empty() {
             return Err(QidError::Config {
                 message: "realm id must not be empty".to_string(),

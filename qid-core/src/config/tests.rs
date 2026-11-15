@@ -3332,3 +3332,87 @@ fn config_rejects_multiple_enforcing_policy_bundles() {
             if message.contains("corp") && message.contains("multiple enforcing policy bundles")
     ));
 }
+
+#[test]
+fn workload_lifetime_defaults_and_partial_overrides() {
+    let defaults = WorkloadProtocolConfig::default();
+    assert_eq!(
+        serde_json::from_str::<WorkloadProtocolConfig>("{}").unwrap(),
+        defaults
+    );
+    assert_eq!(
+        (
+            defaults.jwt_svid_default_ttl_seconds,
+            defaults.jwt_svid_min_ttl_seconds,
+            defaults.jwt_svid_max_ttl_seconds
+        ),
+        (3600, 0, 86_400)
+    );
+    assert_eq!(
+        (
+            defaults.x509_default_ttl_seconds,
+            defaults.x509_min_ttl_seconds,
+            defaults.x509_max_ttl_seconds
+        ),
+        (3600, 60, 3600)
+    );
+    for (field, value) in [
+        ("jwt_svid_default_ttl_seconds", 7200),
+        ("jwt_svid_min_ttl_seconds", 1),
+        ("jwt_svid_max_ttl_seconds", u64::MAX),
+        ("x509_default_ttl_seconds", 120),
+        ("x509_min_ttl_seconds", 1),
+        (
+            "x509_max_ttl_seconds",
+            crate::models::WorkloadCertificate::MAX_LIFETIME_SECONDS,
+        ),
+    ] {
+        let mut config = minimal_config();
+        let policy: WorkloadProtocolConfig =
+            serde_json::from_value(serde_json::json!({field: value})).unwrap();
+        let mut expected = defaults.clone();
+        match field {
+            "jwt_svid_default_ttl_seconds" => expected.jwt_svid_default_ttl_seconds = value,
+            "jwt_svid_min_ttl_seconds" => expected.jwt_svid_min_ttl_seconds = value,
+            "jwt_svid_max_ttl_seconds" => expected.jwt_svid_max_ttl_seconds = value,
+            "x509_default_ttl_seconds" => expected.x509_default_ttl_seconds = value,
+            "x509_min_ttl_seconds" => expected.x509_min_ttl_seconds = value,
+            _ => expected.x509_max_ttl_seconds = value,
+        }
+        assert_eq!(policy, expected);
+        config.realms[0].protocols.workload = policy;
+        config.validate().unwrap();
+    }
+}
+
+#[test]
+fn workload_lifetime_invalid_bounds_rejected_at_config_validation() {
+    for kind in ["jwt_svid", "x509"] {
+        for (default, min, max) in [(0, 0, 1), (10, 11, 20), (10, 1, 9), (10, 20, 1), (1, 0, 0)] {
+            let mut config = minimal_config();
+            config.realms[0].protocols.workload = serde_json::from_value(serde_json::json!({
+                format!("{kind}_default_ttl_seconds"): default,
+                format!("{kind}_min_ttl_seconds"): min,
+                format!("{kind}_max_ttl_seconds"): max,
+            }))
+            .unwrap();
+            assert!(
+                matches!(config.validate(), Err(QidError::Config { message }) if message.contains(kind) && message.contains("corp"))
+            );
+        }
+    }
+    let mut config = minimal_config();
+    config.realms[0].protocols.workload.x509_min_ttl_seconds = 0;
+    assert!(config.validate().is_err());
+    config.realms[0].protocols.workload.x509_min_ttl_seconds = 60;
+    config.realms[0].protocols.workload.x509_max_ttl_seconds =
+        crate::models::WorkloadCertificate::MAX_LIFETIME_SECONDS + 1;
+    assert!(config.validate().is_err());
+    config.realms[0].protocols.workload.x509_max_ttl_seconds =
+        crate::models::WorkloadCertificate::MAX_LIFETIME_SECONDS;
+    config.validate().unwrap();
+    config.realms[0].protocols.workload.x509_min_ttl_seconds = 3600;
+    config.realms[0].protocols.workload.jwt_svid_min_ttl_seconds = 3600;
+    config.realms[0].protocols.workload.jwt_svid_max_ttl_seconds = 3600;
+    config.validate().unwrap();
+}

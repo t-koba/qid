@@ -310,8 +310,15 @@ fn sign_workload_certificate(
 ) -> qid_core::error::QidResult<WorkloadCertificate> {
     crate::validate_spiffe_id(&workload.spiffe_id)?;
     let now = qid_core::util::now_seconds();
-    let ttl = ttl_seconds.unwrap_or(3600).clamp(60, 3600);
-    let not_after = now + ttl;
+    let policy = &state.require_realm(realm)?.workload;
+    let ttl = ttl_seconds
+        .unwrap_or(policy.x509_default_ttl_seconds)
+        .clamp(policy.x509_min_ttl_seconds, policy.x509_max_ttl_seconds);
+    let not_after = now
+        .checked_add(ttl)
+        .ok_or_else(|| qid_core::error::QidError::BadRequest {
+            message: "workload certificate lifetime cannot be represented as a timestamp".into(),
+        })?;
     let ca = state
         .workload_cas
         .get(realm)
@@ -394,7 +401,11 @@ fn sign_workload_certificate(
 }
 
 fn epoch_to_offset(epoch_seconds: u64) -> qid_core::error::QidResult<time::OffsetDateTime> {
-    time::OffsetDateTime::from_unix_timestamp(epoch_seconds as i64).map_err(|error| {
+    let timestamp =
+        i64::try_from(epoch_seconds).map_err(|_| qid_core::error::QidError::BadRequest {
+            message: "certificate timestamp exceeds signed timestamp range".into(),
+        })?;
+    time::OffsetDateTime::from_unix_timestamp(timestamp).map_err(|error| {
         qid_core::error::QidError::BadRequest {
             message: format!("certificate timestamp is invalid: {error}"),
         }

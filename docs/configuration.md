@@ -160,9 +160,38 @@ key issuance. This allows ample room over a measured 473-byte P-256 SPIFFE CSR
 while bounding parser input. Configure a different nonnegative byte count when
 needed; other HTTP request-body limits still apply. Only one `CERTIFICATE REQUEST`
 PEM block with a valid signature and no trailing DER is accepted. See the
-[CSR API](http-api.md#device-workload-spiffe) for the fixed one-hour,
-registered-identity policy. This is PKCS#10 only; EST, CMS, CRMF, PKCS#12 and
-delegated credentials are not supported by this endpoint.
+[CSR API](http-api.md#device-workload-spiffe) for the registered-identity policy.
+This is PKCS#10 only; EST, CMS, CRMF, PKCS#12 and delegated credentials are not
+supported by this endpoint.
+
+### Workload lifetimes
+
+Each realm's `protocols.workload` sets issuance policy independently for JWT-SVIDs
+and X.509 workload certificates. All values are unsigned seconds:
+
+| Setting | Default |
+| --- | ---: |
+| `jwt_svid_default_ttl_seconds` | 3600 |
+| `jwt_svid_min_ttl_seconds` | 0 |
+| `jwt_svid_max_ttl_seconds` | 86400 |
+| `x509_default_ttl_seconds` | 3600 |
+| `x509_min_ttl_seconds` | 60 |
+| `x509_max_ttl_seconds` | 3600 |
+
+Omitted request TTLs use the configured default; requested TTLs are clamped to
+that kind's minimum and maximum. X.509 policy covers X.509-SVID fetches,
+server-generated-key certificates and CSR issuance (which accepts no TTL and
+uses the default). Config load requires a positive default and
+`min <= default <= max` for each kind. JWT minimum may be zero, preserving
+explicit-zero requests; X.509 minimum must be positive and its configured
+maximum cannot exceed the existing workload-certificate validation ceiling of
+86400 seconds. JWT settings have no additional product upper cap. Issuance fails
+closed if time addition or the target JWT/certificate timestamp representation
+cannot hold the result.
+
+No lifetime-policy migration is needed: omitted settings, including partial
+overrides, retain their defaults, so old configurations preserve existing
+lifetime behavior.
 
 See the three examples in `config/usecases/07-workload-and-device-identity/`.
 

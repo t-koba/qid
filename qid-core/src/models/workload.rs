@@ -93,6 +93,8 @@ impl TryFrom<WorkloadCertificateWire> for WorkloadCertificate {
 }
 
 impl WorkloadCertificate {
+    pub(crate) const MAX_LIFETIME_SECONDS: u64 = 86_400;
+
     pub fn validate(&self) -> QidResult<()> {
         require_non_empty("workload certificate id", &self.id)?;
         require_non_empty("workload certificate realm_id", &self.realm_id)?;
@@ -121,7 +123,7 @@ impl WorkloadCertificate {
                 message: "workload certificate validity window is invalid".to_string(),
             });
         }
-        if self.not_after.saturating_sub(self.not_before) > 86_400 {
+        if self.not_after.saturating_sub(self.not_before) > Self::MAX_LIFETIME_SECONDS {
             return Err(QidError::BadRequest {
                 message: "workload certificate lifetime must be at most 86400 seconds".to_string(),
             });

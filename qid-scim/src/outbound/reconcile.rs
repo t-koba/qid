@@ -87,9 +87,12 @@ fn outbound_group_drift(
 
 fn member_ids(resource: &serde_json::Value) -> QidResult<std::collections::BTreeSet<&str>> {
     let mut ids = std::collections::BTreeSet::new();
-    for member in resource
-        .get("members")
-        .and_then(serde_json::Value::as_array)
+    // RFC 7643 §2.5: an omitted multi-valued attribute is an empty array.
+    let Some(members) = resource.get("members") else {
+        return Ok(ids);
+    };
+    for member in members
+        .as_array()
         .ok_or_else(|| super::remote::invalid("invalid group members"))?
     {
         let id = member

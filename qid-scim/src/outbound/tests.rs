@@ -445,6 +445,101 @@ fn outbound_group_entitlement_reconciliation_plans_create_replace_and_noop() {
     assert!(dry_run.request.is_none());
 }
 
+#[test]
+fn outbound_group_omitted_members_are_empty_for_reconciliation() {
+    let mut group = ScimGroup {
+        id: "group-1".into(),
+        realm_id: "corp".into(),
+        display_name: "app:erp:admin".into(),
+        members_json: serde_json::json!([]),
+    };
+    let remote = serde_json::json!({
+        "id": "remote-group",
+        "externalId": group.id,
+        "displayName": group.display_name,
+    });
+    let config = remote_config();
+    let noop =
+        plan_outbound_group_entitlement_reconciliation(&group, Some(&remote), &config, false)
+            .unwrap();
+    assert_eq!(noop.operation, OutboundOperation::Noop);
+    assert!(noop.drift.is_empty());
+    assert!(noop.request.is_none());
+
+    group.members_json = serde_json::json!([{ "value": "user-1" }]);
+    let replace =
+        plan_outbound_group_entitlement_reconciliation(&group, Some(&remote), &config, false)
+            .unwrap();
+    assert_eq!(replace.operation, OutboundOperation::Replace);
+    assert_eq!(replace.path, "/Groups/remote-group");
+    assert_eq!(replace.drift.len(), 1);
+    assert_eq!(replace.drift[0].path, "members");
+    assert_eq!(replace.drift[0].desired, group.members_json);
+    assert_eq!(replace.drift[0].remote, None);
+    let request = replace.request.unwrap();
+    assert_eq!(request.method, "PUT");
+    assert_eq!(
+        request.url,
+        "https://scim.example/scim/v2/Groups/remote-group"
+    );
+    assert_eq!(request.body.unwrap()["members"], group.members_json);
+}
+
+#[test]
+fn outbound_group_reconciliation_rejects_malformed_members() {
+    let mut group = ScimGroup {
+        id: "group-1".into(),
+        realm_id: "corp".into(),
+        display_name: "app:erp:admin".into(),
+        members_json: serde_json::json!([]),
+    };
+    let mut remote = serde_json::json!({
+        "id": "remote-group",
+        "externalId": group.id,
+        "displayName": group.display_name,
+    });
+    for members in [
+        serde_json::json!(null),
+        serde_json::json!(false),
+        serde_json::json!(1),
+        serde_json::json!("user-1"),
+        serde_json::json!({"value": "user-1"}),
+        serde_json::json!([null]),
+        serde_json::json!([{}]),
+        serde_json::json!([{"value": ""}]),
+        serde_json::json!([{"value": 1}]),
+        serde_json::json!([{"value": "user-1"}, {"value": "user-1"}]),
+    ] {
+        group.members_json = serde_json::json!([]);
+        remote["members"] = members.clone();
+        assert!(
+            matches!(
+                plan_outbound_group_entitlement_reconciliation(
+                    &group,
+                    Some(&remote),
+                    &remote_config(),
+                    false
+                ),
+                Err(qid_core::error::QidError::BadRequest { .. })
+            ),
+            "accepted malformed remote members: {members}"
+        );
+        group.members_json = members.clone();
+        assert!(
+            matches!(
+                plan_outbound_group_entitlement_reconciliation(
+                    &group,
+                    None,
+                    &remote_config(),
+                    false
+                ),
+                Err(qid_core::error::QidError::BadRequest { .. })
+            ),
+            "accepted malformed desired members: {members}"
+        );
+    }
+}
+
 struct ScriptedTransport {
     replies: Mutex<std::collections::VecDeque<OutboundScimHttpResponse>>,
     sent: Mutex<Vec<OutboundScimHttpRequest>>,

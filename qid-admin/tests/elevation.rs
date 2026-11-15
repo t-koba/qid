@@ -39,7 +39,7 @@ impl Fixture {
             .path()
             .join(if sqlite { "repo.db" } else { "repo.json" });
         let location = if sqlite {
-            format!("sqlite://{}", path.display())
+            format!("sqlite:{}", path.display())
         } else {
             path.to_str().unwrap().into()
         };

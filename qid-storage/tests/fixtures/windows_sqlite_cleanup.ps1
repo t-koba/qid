@@ -1,8 +1,9 @@
 # Temporary, opt-in helper for windows-sqlite-cleanup-diagnostic.yml only.
 # The parent test bounds this entire process, suppresses stderr, and still makes
 # its original first deletion assertion even if this snapshot fails or times out.
-# -Preflight validates setup only; it never enumerates owners.
-param([string]$Database, [switch]$Preflight)
+# -Preflight validates Restart Manager setup only; it never enumerates owners.
+# Handle is optional, read-only and restricted to the two observed library DBs.
+param([string]$Database, [uint32]$TestProcessId, [switch]$Preflight)
 $ErrorActionPreference = 'Stop'
 try {
     Add-Type -WarningAction SilentlyContinue -TypeDefinition @'
@@ -112,6 +113,108 @@ public static class QidCleanupOwners {
     $rows = [QidCleanupOwners]::Capture($Database)
     foreach ($row in $rows) { Write-Host $row }
     Write-Host 'RM snapshot complete (not an exhaustive handle trace).'
+    # Query live handles last, immediately before returning to the original delete.
+    # Only these two observed library-test databases get a Handle query. No
+    # sidecars, integration-test paths, wildcard queries or system-wide scans.
+    $leaf = [IO.Path]::GetFileName($Database)
+    if ($leaf -ceq 'test_14.db' -or $leaf -ceq 'test_15.db') {
+        try {
+            $executable = $env:QID_SQLITE_HANDLE_EXE
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            try {
+                $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+                if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                    throw 'Not elevated'
+                }
+            } finally { $identity.Dispose() }
+            if ([string]::IsNullOrEmpty($executable)) { throw 'No verified executable' }
+            $signature = Get-AuthenticodeSignature -LiteralPath $executable
+            $subject = $signature.SignerCertificate.Subject
+            if ($signature.Status -ne 'Valid' -or
+                $subject -notmatch '(?:^|,\s*)CN=Microsoft Corporation(?:,|$)' -or
+                $subject -notmatch '(?:^|,\s*)O=Microsoft Corporation(?:,|$)') {
+                throw 'Signature rejected'
+            }
+            # Compile optional instrumentation separately: any failure here must
+            # leave the existing Restart Manager capture and delete assertion intact.
+            Add-Type -WarningAction SilentlyContinue -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+
+public static class QidCleanupHandles {
+    static async System.Threading.Tasks.Task<string> ReadBounded(StreamReader reader) {
+        var text = new StringBuilder();
+        var buffer = new char[4096];
+        int count;
+        while ((count = await reader.ReadAsync(buffer, 0, buffer.Length)) != 0) {
+            // Diagnostic-only output budget; overflow makes the snapshot unavailable.
+            if (text.Length + count > 65536) throw new InvalidOperationException();
+            text.Append(buffer, 0, count);
+        }
+        return text.ToString();
+    }
+    public static string Capture(string executable, uint pid, string database) {
+        if (pid == 0 || !Path.IsPathFullyQualified(database)) throw new InvalidOperationException();
+        using (var child = new Process()) {
+            child.StartInfo.FileName = executable;
+            child.StartInfo.UseShellExecute = false;
+            child.StartInfo.CreateNoWindow = true;
+            child.StartInfo.RedirectStandardOutput = true;
+            child.StartInfo.RedirectStandardError = true;
+            // Handle's name filter is substring-based. Restrict by PID AND the
+            // full database path. PowerShell validates CSV and exact-path rows.
+            foreach (string argument in new[] { "-accepteula", "-v", "-p",
+                    pid.ToString(System.Globalization.CultureInfo.InvariantCulture), database })
+                child.StartInfo.ArgumentList.Add(argument);
+            bool started = false;
+            try {
+                started = child.Start();
+                if (!started) throw new InvalidOperationException();
+                var stdout = ReadBounded(child.StandardOutput);
+                var stderr = ReadBounded(child.StandardError);
+                if (!child.WaitForExit(3000)) throw new TimeoutException();
+                if (!System.Threading.Tasks.Task.WaitAll(new System.Threading.Tasks.Task[] {
+                        stdout, stderr }, 1000) || child.ExitCode != 0 || stderr.Result.Length != 0)
+                    throw new InvalidOperationException();
+                return stdout.Result; // Never write raw streams to the console or disk.
+            } finally {
+                if (started && !child.HasExited) {
+                    child.Kill(true);
+                    if (!child.WaitForExit(1000)) throw new TimeoutException();
+                }
+            }
+        }
+    }
+}
+'@
+            $output = [QidCleanupHandles]::Capture($executable, $TestProcessId, $Database)
+            $count = 0
+            $lines = $output -split '\r?\n'
+            if (@($lines | Where-Object { $_ -ceq 'No matching handles found.' }).Count -eq 0) {
+                $headerIndex = -1
+                for ($i = 0; $i -lt $lines.Length; $i++) {
+                    if ($lines[$i].Replace('"', '') -ceq
+                        'Process,PID,User,Handle,Type,Share Flags,Name,Access') {
+                        $headerIndex = $i
+                        break
+                    }
+                }
+                if ($headerIndex -lt 0) { throw 'Unrecognized CSV' }
+                $csv = $lines[$headerIndex..($lines.Length - 1)] -join "`n"
+                foreach ($row in ($csv | ConvertFrom-Csv)) {
+                    if ($row.PID -cne $TestProcessId.ToString() -or $row.Type -cne 'File') {
+                        throw 'Unexpected row'
+                    }
+                    if ([string]::Equals($row.Name, $Database, [StringComparison]::OrdinalIgnoreCase)) { $count++ }
+                }
+            }
+            Write-Host "HANDLE pid=$TestProcessId db=$leaf exact_file_matches=$count (live snapshot, not exhaustive)."
+        } catch {
+            Write-Host 'HANDLE unavailable (raw output suppressed).'
+        }
+    }
     exit 0
 } catch {
     Write-Host 'ERROR: Restart Manager snapshot untrusted (raw exception suppressed).'

@@ -35,6 +35,108 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "1.96"
+      - name: Acquire optional Microsoft Handle
+        timeout-minutes: 1
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          try {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            try {
+              $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+              if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                throw 'Not elevated'
+              }
+            } finally { $identity.Dispose() }
+            $key = [Guid]::NewGuid().ToString('N')
+            $directory = Join-Path $env:RUNNER_TEMP "qid-handle-$key"
+            if (Test-Path -LiteralPath $directory) { throw 'Path collision' }
+            $null = New-Item -ItemType Directory -Path $directory
+            "QID_SQLITE_HANDLE_KEY=$key" >> $env:GITHUB_ENV
+            $archive = Join-Path $directory 'Handle.zip'
+            Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Handle.zip' -OutFile $archive -TimeoutSec 30
+            if ((Get-Item -LiteralPath $archive).Length -gt 5MB) { throw 'Archive too large' }
+            Expand-Archive -LiteralPath $archive -DestinationPath $directory
+            $executable = Join-Path $directory 'handle64.exe'
+            $signature = Get-AuthenticodeSignature -LiteralPath $executable
+            $subject = $signature.SignerCertificate.Subject
+            if ($signature.Status -ne 'Valid' -or
+                $subject -notmatch '(?:^|,\s*)CN=Microsoft Corporation(?:,|$)' -or
+                $subject -notmatch '(?:^|,\s*)O=Microsoft Corporation(?:,|$)') {
+              throw 'Signature rejected'
+            }
+            # Positive self-test: keep one exact-path file handle open in this
+            # process and require Handle to find it under this PID before use.
+            $probe = Join-Path $directory 'handle-self-test.db'
+            $stream = $null
+            $child = [Diagnostics.Process]::new()
+            $started = $false
+            try {
+              $stream = [IO.File]::Open($probe, [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+              $child.StartInfo.FileName = $executable
+              $child.StartInfo.UseShellExecute = $false
+              $child.StartInfo.CreateNoWindow = $true
+              $child.StartInfo.RedirectStandardOutput = $true
+              $child.StartInfo.RedirectStandardError = $true
+              foreach ($argument in @('-accepteula', '-v', '-p', [string]$PID, $probe)) {
+                $child.StartInfo.ArgumentList.Add($argument)
+              }
+              $started = $child.Start()
+              if (-not $started) { throw 'Handle self-test did not start' }
+              $stdout = $child.StandardOutput.ReadToEndAsync()
+              $stderr = $child.StandardError.ReadToEndAsync()
+              if (-not $child.WaitForExit(3000)) {
+                $child.Kill($true)
+                if (-not $child.WaitForExit(1000)) { throw 'Handle self-test did not stop' }
+                throw 'Handle self-test timed out'
+              }
+              if (-not [Threading.Tasks.Task]::WaitAll(
+                  [Threading.Tasks.Task[]]@($stdout, $stderr), 1000)) { throw 'Handle output timed out' }
+              $text = $stdout.Result
+              $lines = $text -split '\r?\n'
+              $headerIndex = -1
+              for ($i = 0; $i -lt $lines.Length; $i++) {
+                if ($lines[$i].Replace('"', '') -ceq
+                    'Process,PID,User,Handle,Type,Share Flags,Name,Access') {
+                  $headerIndex = $i
+                  break
+                }
+              }
+              if ($text.Length -gt 65536 -or $stderr.Result.Length -ne 0 -or
+                  $child.ExitCode -ne 0 -or $headerIndex -lt 0) {
+                throw 'Handle output untrusted'
+              }
+              $csv = $lines[$headerIndex..($lines.Length - 1)] -join "`n"
+              $matches = @($csv | ConvertFrom-Csv | Where-Object {
+                $_.PID -ceq [string]$PID -and $_.Type -ceq 'File' -and
+                [string]::Equals($_.Name, $probe, [StringComparison]::OrdinalIgnoreCase)
+              })
+              if ($matches.Count -lt 1) { throw 'Handle exact-path self-test failed' }
+            } finally {
+              try {
+                if ($started -and -not $child.HasExited) {
+                  $child.Kill($true)
+                  if (-not $child.WaitForExit(1000)) { throw 'Handle self-test did not stop' }
+                }
+              } finally {
+                $child.Dispose()
+                if ($null -ne $stream) { $stream.Dispose() }
+                if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force }
+              }
+            }
+            $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($executable).FileVersion
+            if ([string]::IsNullOrEmpty($version) -or $version -cnotmatch '\A[0-9.]+\z') {
+              throw 'Handle version unavailable'
+            }
+            "QID_SQLITE_HANDLE_EXE=$executable" >> $env:GITHUB_ENV
+            Write-Host "Microsoft-signed Handle $version passed exact-path self-test."
+          } catch {
+            # Optional tooling must never prevent the original test/delete assertion.
+            Write-Host 'HANDLE unavailable (acquisition or preflight failed; raw output suppressed).'
+          }
       - name: Preflight the headless helper without capturing diagnostic output
         shell: pwsh
         run: |
@@ -117,8 +219,9 @@ jobs:
           "QID_SQLITE_CLEANUP_SUFFIX=$suffix" >> $env:GITHUB_ENV
           "QID_DIAGNOSTIC_OWNED=true" >> $env:GITHUB_ENV
           $env:QID_SQLITE_CLEANUP_SUFFIX = $suffix
-          # Both test invocations capture resources immediately before their
-          # unchanged cleanup. Empty Restart Manager results are not exhaustive.
+          # Both invocations retain Restart Manager capture before unchanged
+          # cleanup. Handle adds a PID/full-path filtered snapshot only for
+          # test_14.db and test_15.db; neither source is an exhaustive trace.
           Write-Host 'Running focused Windows user-deletion cleanup test (1/2)'
           $userDeletionArguments = @(
             'test', '--locked', '-p', 'qid-storage', '--test', 'user_deletion',
@@ -156,3 +259,21 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+      - name: Erase the optional Handle download
+        timeout-minutes: 2
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $key = $env:QID_SQLITE_HANDLE_KEY
+          if ([string]::IsNullOrEmpty($key)) { exit 0 }
+          if ($key -cnotmatch '\A[0-9a-f]{32}\z') {
+            Write-Host 'ERROR: Handle cleanup key is invalid.'
+            exit 1
+          }
+          try {
+            Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "qid-handle-$key") -Recurse -Force
+          } catch {
+            Write-Host 'ERROR: Could not remove the owned Handle download (raw output suppressed).'
+            exit 1
+          }

@@ -984,7 +984,7 @@ async fn expand_file_tuple_budget_boundaries_and_cumulative_overflow() {
 async fn expand_sqlite_tuple_budget_boundaries_and_cumulative_overflow() {
     let dir = TempDir::new().unwrap();
     let repo = qid_storage::SqlRepository::connect(&format!(
-        "sqlite://{}",
+        "sqlite:{}",
         dir.path().join("rebac.db").display()
     ))
     .await

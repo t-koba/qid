@@ -362,6 +362,50 @@ where
         );
     }
 
+    // SQL stores u64 timestamps by signed bit pattern; eligibility must retain unsigned order.
+    let signed_boundary = i64::MAX as u64;
+    let mut boundary_certificate = certificate.clone();
+    boundary_certificate.not_before = signed_boundary - 10;
+    boundary_certificate.not_after = signed_boundary + 10;
+    repo.store_workload_certificate(&boundary_certificate)
+        .await
+        .expect("store sign-boundary workload certificate failed");
+    for (now, eligible) in [
+        (signed_boundary - 11, false),
+        (signed_boundary - 10, true),
+        (signed_boundary, true),
+        (signed_boundary + 1, true),
+        (signed_boundary + 9, true),
+        (signed_boundary + 10, false),
+    ] {
+        assert_eq!(
+            repo.has_eligible_cert(&workload, now).await.unwrap(),
+            eligible,
+            "u64 certificate eligibility mismatch at timestamp {now}"
+        );
+    }
+
+    boundary_certificate.not_before = signed_boundary + 20;
+    boundary_certificate.not_after = signed_boundary + 40;
+    repo.store_workload_certificate(&boundary_certificate)
+        .await
+        .expect("store high-half workload certificate failed");
+    for (now, eligible) in [
+        (signed_boundary + 19, false),
+        (signed_boundary + 20, true),
+        (signed_boundary + 39, true),
+        (signed_boundary + 40, false),
+    ] {
+        assert_eq!(
+            repo.has_eligible_cert(&workload, now).await.unwrap(),
+            eligible,
+            "high-half certificate eligibility mismatch at timestamp {now}"
+        );
+    }
+    repo.store_workload_certificate(&certificate)
+        .await
+        .expect("restore ordinary workload certificate failed");
+
     let listed = repo
         .list_workload_certificates(&realm, Some(&workload.id))
         .await

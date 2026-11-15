@@ -137,14 +137,17 @@ impl WorkloadRepository for SqlRepository {
     }
 
     async fn has_eligible_cert(&self, workload: &WorkloadIdentity, now: u64) -> QidResult<bool> {
+        let now = now as i64;
         sqlx::query_scalar::<_, i64>(
-            "SELECT CAST(EXISTS(SELECT 1 FROM workload_certificates WHERE realm_id = ? AND workload_id = ? AND spiffe_id = ? AND revoked_at IS NULL AND not_before <= ? AND not_after > ?) AS BIGINT)",
+            r#"SELECT CAST(EXISTS(SELECT 1 FROM workload_certificates AS cert
+                WHERE cert.realm_id = ? AND cert.workload_id = ? AND cert.spiffe_id = ? AND cert.revoked_at IS NULL
+                AND ((((? < 0) = (cert.not_before < 0)) AND ? >= cert.not_before) OR (? < 0 AND cert.not_before >= 0))
+                AND ((((? < 0) = (cert.not_after < 0)) AND cert.not_after > ?) OR (cert.not_after < 0 AND ? >= 0))) AS BIGINT)"#,
         )
         .bind(&workload.realm_id)
         .bind(&workload.id)
         .bind(&workload.spiffe_id)
-        .bind(now as i64)
-        .bind(now as i64)
+        .bind(now).bind(now).bind(now).bind(now).bind(now).bind(now)
         .fetch_one(&self.pool)
         .await.map_err(storage_to_qid_error).map(|exists| exists != 0)
     }

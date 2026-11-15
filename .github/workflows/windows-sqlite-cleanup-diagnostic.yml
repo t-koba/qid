@@ -42,7 +42,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
+          $stage = 'startup'
           try {
+            $stage = 'elevation'
             $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
             try {
               $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -50,15 +52,19 @@ jobs:
                 throw 'Not elevated'
               }
             } finally { $identity.Dispose() }
+            $stage = 'prepare'
             $key = [Guid]::NewGuid().ToString('N')
             $directory = Join-Path $env:RUNNER_TEMP "qid-handle-$key"
             if (Test-Path -LiteralPath $directory) { throw 'Path collision' }
             $null = New-Item -ItemType Directory -Path $directory
             "QID_SQLITE_HANDLE_KEY=$key" >> $env:GITHUB_ENV
+            $stage = 'download'
             $archive = Join-Path $directory 'Handle.zip'
             Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Handle.zip' -OutFile $archive -TimeoutSec 30
+            $stage = 'archive'
             if ((Get-Item -LiteralPath $archive).Length -gt 5MB) { throw 'Archive too large' }
             Expand-Archive -LiteralPath $archive -DestinationPath $directory
+            $stage = 'signature'
             $executable = Join-Path $directory 'handle64.exe'
             $signature = Get-AuthenticodeSignature -LiteralPath $executable
             $subject = $signature.SignerCertificate.Subject
@@ -67,6 +73,7 @@ jobs:
                 $subject -notmatch '(?:^|,\s*)O=Microsoft Corporation(?:,|$)') {
               throw 'Signature rejected'
             }
+            $stage = 'self-test'
             # Positive self-test: keep one exact-path file handle open in this
             # process and require Handle to find it under this PID before use.
             $probe = Join-Path $directory 'handle-self-test.db'
@@ -127,15 +134,18 @@ jobs:
                 if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force }
               }
             }
+            $stage = 'version'
             $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($executable).FileVersion
             if ([string]::IsNullOrEmpty($version) -or $version -cnotmatch '\A[0-9.]+\z') {
               throw 'Handle version unavailable'
             }
+            $stage = 'ready'
             "QID_SQLITE_HANDLE_EXE=$executable" >> $env:GITHUB_ENV
             Write-Host "Microsoft-signed Handle $version passed exact-path self-test."
           } catch {
+            # Stage labels are fixed; never log exception, path, or tool output.
             # Optional tooling must never prevent the original test/delete assertion.
-            Write-Host 'HANDLE unavailable (acquisition or preflight failed; raw output suppressed).'
+            Write-Host "HANDLE unavailable at stage=$stage (raw output suppressed)."
           }
       - name: Preflight the headless helper without capturing diagnostic output
         shell: pwsh

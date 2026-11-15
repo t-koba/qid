@@ -1140,6 +1140,7 @@ async fn seed_configured_realms_and_clients(
                     )
                 })?;
             let source_hash = stable_source_hash(&compiled_json);
+            let expected_active = bundle_config.mode == "enforce";
             let existing = repo
                 .list_policy_bundles(&RealmId::from(realm.id.clone()))
                 .await
@@ -1147,13 +1148,15 @@ async fn seed_configured_realms_and_clients(
                 .into_iter()
                 .find(|bundle| bundle.name == bundle_config.name);
             match existing {
-                // Idempotence rests on the stored document itself; the hash is
-                // only a recorded fingerprint (algorithm-rotated to SHA-256),
-                // so legacy 16-hex fingerprints still match the same bundle.
-                Some(bundle) if bundle.compiled_json == compiled_json => {}
+                // Idempotence includes runtime enforcement state; the hash is only
+                // a fingerprint (algorithm-rotated to SHA-256), so legacy 16-hex
+                // fingerprints still match the same stored document.
+                Some(bundle)
+                    if bundle.compiled_json == compiled_json
+                        && bundle.active == expected_active => {}
                 Some(bundle) => {
                     bail!(
-                        "configured policy bundle {} in realm {} differs from storage record {}",
+                        "configured policy bundle {} in realm {} has content or enforcement-mode drift from storage record {}; repair the stored record or configuration explicitly",
                         bundle_config.name,
                         realm.id,
                         bundle.id
@@ -1167,7 +1170,7 @@ async fn seed_configured_realms_and_clients(
                         source_hash,
                         compiled_json,
                         version: 1,
-                        active: bundle_config.mode == "enforce",
+                        active: expected_active,
                     })
                     .await
                     .with_context(|| {
@@ -1748,6 +1751,30 @@ mod tests {
         std::env::temp_dir().join(format!("qid-qidd-{name}-{suffix}"))
     }
 
+    fn configure_policy_bundle(config: &mut QidConfig, state_dir: &Path, mode: &str) {
+        std::fs::create_dir_all(state_dir.join("policies")).expect("policy directory");
+        std::fs::write(
+            state_dir.join("policies/authenticated-read.json"),
+            serde_json::json!({
+                "version": "1",
+                "default_decision": "deny",
+                "rules": [{
+                    "name": "allow-qpx-e2e",
+                    "type": "allow",
+                    "action": "forward.direct",
+                    "resource_host": "*"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("policy file");
+        config.realms[0].policy.bundles = vec![qid_core::config::PolicyBundleConfig {
+            name: "authenticated-read".to_string(),
+            source: "file://policies/authenticated-read.json".to_string(),
+            mode: mode.to_string(),
+        }];
+    }
+
     #[cfg(feature = "otel-otlp")]
     #[tokio::test]
     async fn https_tracing_uses_the_daemon_crypto_provider() {
@@ -2300,27 +2327,7 @@ mod tests {
     async fn configured_policy_bundles_are_seeded_from_config_sources() {
         let mut config = minimal_config();
         let state_dir = test_state_dir("policy-seed");
-        std::fs::create_dir_all(state_dir.join("policies")).expect("policy directory");
-        std::fs::write(
-            state_dir.join("policies/authenticated-read.json"),
-            serde_json::json!({
-                "version": "1",
-                "default_decision": "deny",
-                "rules": [{
-                    "name": "allow-qpx-e2e",
-                    "type": "allow",
-                    "action": "forward.direct",
-                    "resource_host": "*"
-                }]
-            })
-            .to_string(),
-        )
-        .expect("policy file");
-        config.realms[0].policy.bundles = vec![qid_core::config::PolicyBundleConfig {
-            name: "authenticated-read".to_string(),
-            source: "file://policies/authenticated-read.json".to_string(),
-            mode: "enforce".to_string(),
-        }];
+        configure_policy_bundle(&mut config, &state_dir, "enforce");
 
         let store_path = state_dir.join("store.json");
         let repo = AnyRepository::connect(store_path.to_str().expect("valid store path"))
@@ -2345,6 +2352,50 @@ mod tests {
         assert_eq!(bundle.version, 1);
         assert!(bundle.active);
         std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn configured_policy_bundle_mode_drift_is_rejected_without_mutation() {
+        for (stored_mode, configured_mode) in [("enforce", "monitor"), ("monitor", "enforce")] {
+            let mut config = minimal_config();
+            let state_dir = test_state_dir(&format!("policy-mode-{stored_mode}"));
+            configure_policy_bundle(&mut config, &state_dir, stored_mode);
+
+            let store_path = state_dir.join("store.json");
+            let repo = AnyRepository::connect(store_path.to_str().expect("valid store path"))
+                .await
+                .expect("repository should initialize");
+            let config_path = state_dir.join("qid.yaml");
+            seed_configured_realms_and_clients(&repo, &config, &config_path)
+                .await
+                .expect("initial configured seed should succeed");
+            seed_configured_realms_and_clients(&repo, &config, &config_path)
+                .await
+                .expect("same-mode seed should be idempotent");
+            let before = repo
+                .list_policy_bundles(&RealmId::from("corp"))
+                .await
+                .expect("list incumbent policy bundle");
+            assert_eq!(before.len(), 1);
+            assert_eq!(before[0].active, stored_mode == "enforce");
+
+            config.realms[0].policy.bundles[0].mode = configured_mode.to_string();
+            let err = seed_configured_realms_and_clients(&repo, &config, &config_path)
+                .await
+                .expect_err("mode drift must fail startup seeding");
+            assert!(err.to_string().contains("enforcement-mode drift"), "{err}");
+
+            let after = repo
+                .list_policy_bundles(&RealmId::from("corp"))
+                .await
+                .expect("list policy bundle after drift refusal");
+            assert_eq!(
+                serde_json::to_value(after).expect("serialize after state"),
+                serde_json::to_value(before).expect("serialize incumbent state"),
+                "mode drift refusal must leave the incumbent record unchanged"
+            );
+            std::fs::remove_dir_all(&state_dir).ok();
+        }
     }
 
     #[tokio::test]

@@ -37,8 +37,8 @@ Behavior:
 - Existing static client matching config: accepted.
 - Existing static client differing from config: startup fails.
 - Missing configured policy bundle: created.
-- Existing policy bundle with matching JSON/hash: accepted.
-- Existing policy bundle differing from config: startup fails.
+- Existing policy bundle with matching compiled JSON and enforcement mode: accepted.
+- Existing policy bundle with content or enforcement-mode drift: startup fails; explicitly repair storage or config before restart.
 - Multiple configured enforcing bundles in one realm: config validation fails.
 - Multiple stored active bundles in one realm: policy lookup fails closed with a
   conflict; explicitly repair stored state before relying on policy decisions.

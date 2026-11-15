@@ -9,63 +9,48 @@ pub(super) trait InsertIdentity: Clone {
     fn identity(&self) -> Option<(&str, &str)>;
 }
 
-impl InsertIdentity for PolicyBundle {
-    const RECORD: &'static str = "policy bundle";
-    const IDENTITY: &'static str = "policy bundle";
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        Some((&self.realm_id, &self.name))
-    }
+macro_rules! insert_identity {
+    ($type:ty, $record:literal, $identity:literal, $id:ident, |$record_var:ident| $key:expr) => {
+        insert_identity!($type, $record, $identity, $id, |$record_var| $key, false);
+    };
+    ($type:ty, $record:literal, $identity:literal, $id:ident, |$record_var:ident| $key:expr, $global:expr) => {
+        impl InsertIdentity for $type {
+            const RECORD: &'static str = $record;
+            const IDENTITY: &'static str = $identity;
+            const GLOBAL_IDENTITY: bool = $global;
+            fn id(&self) -> &str {
+                &self.$id
+            }
+            fn identity(&self) -> Option<(&str, &str)> {
+                let $record_var = self;
+                $key
+            }
+        }
+    };
 }
 
-impl InsertIdentity for User {
-    const RECORD: &'static str = "user";
-    const IDENTITY: &'static str = "user email";
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        self.email
-            .as_deref()
-            .map(|email| (self.realm_id.as_str(), email))
-    }
-}
-
-impl InsertIdentity for ScimUser {
-    const RECORD: &'static str = "SCIM user";
-    const IDENTITY: &'static str = "user name";
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        Some((&self.realm_id, &self.user_name))
-    }
-}
-
-impl InsertIdentity for ScimGroup {
-    const RECORD: &'static str = "SCIM group";
-    const IDENTITY: &'static str = "display name";
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        Some((&self.realm_id, &self.display_name))
-    }
-}
-
-impl InsertIdentity for Client {
-    const RECORD: &'static str = "client";
-    const IDENTITY: &'static str = "client id";
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        Some((&self.realm_id, &self.client_id))
-    }
-}
-
+insert_identity!(
+    PolicyBundle,
+    "policy bundle",
+    "policy bundle",
+    id,
+    |record| Some((&record.realm_id, &record.name))
+);
+insert_identity!(User, "user", "user email", id, |record| record
+    .email
+    .as_deref()
+    .map(|email| (record.realm_id.as_str(), email)));
+insert_identity!(ScimUser, "SCIM user", "user name", id, |record| Some((
+    &record.realm_id,
+    &record.user_name
+)));
+insert_identity!(ScimGroup, "SCIM group", "display name", id, |record| Some(
+    (&record.realm_id, &record.display_name)
+));
+insert_identity!(Client, "client", "client id", id, |record| Some((
+    &record.realm_id,
+    &record.client_id
+)));
 impl FileRepository {
     /// Check both keys and insert under the exclusive store lock, then persist.
     /// An absent identity is not unique, matching SQL's multiple-NULL behavior.
@@ -106,37 +91,26 @@ pub(super) fn insert_new_in_store<T: InsertIdentity>(
     Ok(())
 }
 
-impl InsertIdentity for ParRequest {
-    const RECORD: &'static str = "PAR request";
-    const IDENTITY: &'static str = "PAR request URI";
-    fn id(&self) -> &str {
-        &self.request_uri
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        None
-    }
-}
-
-impl InsertIdentity for DeviceAuthorizationGrant {
-    const RECORD: &'static str = "device authorization grant";
-    const IDENTITY: &'static str = "device user code";
-    const GLOBAL_IDENTITY: bool = true;
-    fn id(&self) -> &str {
-        &self.device_code_hash
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        // The user code is globally unique, so every grant shares one scope.
-        Some(("", &self.user_code))
-    }
-}
-
-impl InsertIdentity for BackchannelAuthenticationGrant {
-    const RECORD: &'static str = "backchannel authentication grant";
-    const IDENTITY: &'static str = "backchannel authentication grant";
-    fn id(&self) -> &str {
-        &self.auth_req_id_hash
-    }
-    fn identity(&self) -> Option<(&str, &str)> {
-        None
-    }
-}
+insert_identity!(
+    ParRequest,
+    "PAR request",
+    "PAR request URI",
+    request_uri,
+    |_record| None
+);
+// The user code is globally unique, so every grant shares one scope.
+insert_identity!(
+    DeviceAuthorizationGrant,
+    "device authorization grant",
+    "device user code",
+    device_code_hash,
+    |record| Some(("", &record.user_code)),
+    true
+);
+insert_identity!(
+    BackchannelAuthenticationGrant,
+    "backchannel authentication grant",
+    "backchannel authentication grant",
+    auth_req_id_hash,
+    |_record| None
+);

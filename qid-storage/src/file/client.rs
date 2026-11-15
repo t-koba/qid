@@ -33,11 +33,14 @@ impl ClientRepository for FileRepository {
         client_id: &str,
     ) -> QidResult<Option<Client>> {
         let store = self.store.read().await;
-        Ok(store
-            .clients
-            .values()
-            .find(|c| c.realm_id == realm_id.0 && c.client_id == client_id)
-            .cloned())
+        super::unique_match(
+            store
+                .clients
+                .values()
+                .filter(|client| client.realm_id == realm_id.0 && client.client_id == client_id)
+                .cloned(),
+            "client identity is ambiguous",
+        )
     }
 
     async fn find_clients_by_client_id(

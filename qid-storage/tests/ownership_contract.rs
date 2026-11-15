@@ -55,6 +55,67 @@ async fn client_id_ambiguity_holds_in_both_backends() {
 }
 
 #[tokio::test]
+async fn file_client_lookup_rejects_legacy_ambiguous_identity_without_changes() {
+    use qid_core::{
+        error::QidError,
+        tenant::{RealmId, TenantId},
+    };
+    use qid_storage::{ClientRepository, FileRepository, RealmRepository};
+
+    let dir = tempfile::tempdir().expect("create isolated client fixture directory");
+    let path = dir.path().join("store.json");
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("create file repository");
+    repo.migrate().await.expect("migrate file repository");
+    let realm = RealmId("realm-client-legacy-ambiguity".to_string());
+    repo.create_realm(
+        &TenantId("tenant-client-legacy-ambiguity".to_string()),
+        &realm,
+        "https://client-legacy-ambiguity.example.com",
+        Some("Legacy Client Ambiguity Realm"),
+    )
+    .await
+    .expect("create legacy-ambiguity realm");
+    let incumbent = support::sample_cross_realm_client(
+        "client-legacy-incumbent",
+        &realm.0,
+        "legacy-ambiguous-app",
+    );
+    repo.create_client(&incumbent)
+        .await
+        .expect("create legacy-ambiguity incumbent");
+    drop(repo);
+
+    let duplicate = support::sample_cross_realm_client(
+        "client-legacy-duplicate",
+        &realm.0,
+        &incumbent.client_id,
+    );
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read persisted client fixture"))
+            .expect("parse persisted client fixture");
+    fixture["clients"][&duplicate.id] =
+        serde_json::to_value(&duplicate).expect("serialize duplicate client");
+    let before = serde_json::to_vec(&fixture).expect("serialize ambiguous client fixture");
+    std::fs::write(&path, &before).expect("write ambiguous legacy fixture");
+
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("reopen ambiguous file repository");
+    assert!(matches!(
+        repo.get_client_by_client_id(&realm, &incumbent.client_id)
+            .await,
+        Err(QidError::Conflict { .. })
+    ));
+    assert_eq!(
+        std::fs::read(&path).expect("read client fixture after ambiguity check"),
+        before,
+        "ambiguous lookup must not rewrite persisted clients"
+    );
+}
+
+#[tokio::test]
 async fn workload_identity_delete_scope_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_workload_identity_delete_scope(&sql).await;

@@ -389,6 +389,10 @@ cargo run --bin qid-sync -- --config /etc/qid/qid.yaml ldap-sync --realm corp --
 
 RADIUS/DTLS is not implemented. This includes RFC 7360 and DTLS 1.3 from RFC 9147; `qid-network` does not expose a UDP DTLS transport or configuration placeholder.
 
+CAPPORT bind/unbind/lookup state is process-local and not shared across qidd
+instances. Restarts discard bindings; a lookup routed to another instance can
+report `not_bound`. Do not enable CAPPORT in a multi-instance deployment; use a
+single `qidd` instance. The RFC 8908 details endpoint is independent of this state.
 
 Required configuration includes bind addresses, TLS certificate/key/client CA paths, shared secret, and enabled directory authority. The RADIUS authorizer currently accepts subjects present in the repository user list; when EAP-TLS is required, the request must include EAP evidence.
 

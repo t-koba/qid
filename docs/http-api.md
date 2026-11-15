@@ -192,6 +192,11 @@ CAPPORT routes are mounted only when at least one realm enables
 `network_aaa.capport` (default `false`), and every CAPPORT handler rejects
 realms without the flag, so enabling one realm never enables another.
 
+CAPPORT bind/unbind/lookup state is process-local and not shared across qidd
+instances. A restart drops bindings, and a lookup routed to another instance can
+report `not_bound`; use one qidd instance while CAPPORT is enabled. The RFC 8908
+details endpoint is independent of this binding state.
+
 ## SCIM
 
 SCIM base path defaults to `/scim/v2` and can be configured per realm.

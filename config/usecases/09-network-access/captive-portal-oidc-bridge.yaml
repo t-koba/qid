@@ -60,6 +60,7 @@ realms:
         radius_tls_client_ca_path: "/etc/qid/network/client-ca.crt"
         eap: true
         eap_tls: true
+        # CAPPORT bindings are process-local and not shared across qidd instances; use one qidd instance.
         capport: true
         coa: true
         coa_bind: "0.0.0.0:3799"

@@ -121,3 +121,16 @@ async fn capport_details_rejects_disabled_realms_on_default_and_custom_paths() {
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[test]
+fn capport_deployment_docs_disclose_process_local_bindings() {
+    for document in [
+        include_str!("../../docs/operations.md"),
+        include_str!("../../docs/http-api.md"),
+        include_str!("../../config/usecases/09-network-access/captive-portal-oidc-bridge.yaml"),
+    ] {
+        let normalized = document.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized.contains("process-local"));
+        assert!(normalized.contains("not shared across qidd instances"));
+    }
+}

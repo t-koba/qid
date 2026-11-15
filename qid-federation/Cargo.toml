@@ -11,6 +11,8 @@ documentation.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+krb5 = "=1.0.0"
+sha2 = { workspace = true }
 axum = { workspace = true }
 qid-core = { workspace = true }
 qid-saml = { workspace = true }

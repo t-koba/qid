@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 mod broker;
+mod kerberos_replay;
 mod routes;
 
 pub use broker::{
@@ -14,6 +15,7 @@ pub use broker::{
     google_workspace_provider, normalize_enterprise_claims, okta_provider, plan_inbound_login,
     route_inbound_provider, verify_inbound_idp_token,
 };
+pub use kerberos_replay::KerberosReplayStore;
 pub use routes::{
     TrustChainValidationRequest, TrustChainValidationResponse, exchange_code_for_tokens,
     federation_routes, fetch_userinfo, providers_from_config,

@@ -1,0 +1,45 @@
+name: MIT Kerberos SPNEGO proof
+
+on:
+  pull_request:
+    paths:
+      - 'qid-federation/**'
+      - 'qid-core/src/cache.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/kerberos/**'
+      - '.github/workflows/kerberos-mit.yml'
+  push:
+    paths:
+      - 'qid-federation/**'
+      - 'qid-core/src/cache.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/kerberos/**'
+      - '.github/workflows/kerberos-mit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: '1.96'
+  RUSTFLAGS: '-D warnings'
+
+jobs:
+  mit-spnego:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install independent MIT KDC and GSSAPI initiator
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq
+          sudo -E apt-get install -y --no-install-recommends krb5-kdc krb5-admin-server krb5-user libkrb5-dev python3-gssapi
+      - name: Prove the candidate acceptor with the QID replay store
+        run: /usr/bin/python3 scripts/kerberos/test-mit-spnego.py

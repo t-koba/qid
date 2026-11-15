@@ -116,6 +116,67 @@ async fn file_client_lookup_rejects_legacy_ambiguous_identity_without_changes() 
 }
 
 #[tokio::test]
+async fn totp_user_uniqueness_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_totp_user_uniqueness(&sql).await;
+    let file = support::file_repo("ownership-contract-totp-user-uniqueness").await;
+    support::assert_totp_user_uniqueness(&file).await;
+}
+
+#[tokio::test]
+async fn file_totp_lookup_rejects_legacy_ambiguity_without_changes() {
+    use qid_core::{error::QidError, models::TotpCredential};
+    use qid_storage::{CredentialRepository, FileRepository};
+
+    let dir = tempfile::tempdir().expect("create isolated TOTP fixture directory");
+    let path = dir.path().join("store.json");
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("create file repository");
+    repo.migrate().await.expect("migrate file repository");
+    let incumbent = TotpCredential {
+        id: "totp-legacy-incumbent".to_string(),
+        user_id: "totp-legacy-user".to_string(),
+        secret: "JBSWY3DPEHPK3PXP".to_string(),
+        algorithm: "SHA1".to_string(),
+        digits: 6,
+        period: 30,
+        enabled: true,
+        last_used_step: None,
+        created_at: 1,
+    };
+    repo.store_totp_credential(&incumbent)
+        .await
+        .expect("create incumbent TOTP credential");
+    drop(repo);
+
+    let duplicate = TotpCredential {
+        id: "totp-legacy-duplicate".to_string(),
+        ..incumbent.clone()
+    };
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read persisted TOTP fixture"))
+            .expect("parse persisted TOTP fixture");
+    fixture["totp_credentials"][&duplicate.id] =
+        serde_json::to_value(&duplicate).expect("serialize duplicate TOTP credential");
+    let before = serde_json::to_vec(&fixture).expect("serialize ambiguous TOTP fixture");
+    std::fs::write(&path, &before).expect("write ambiguous legacy fixture");
+
+    let repo = FileRepository::new(path.to_str().expect("test path is not UTF-8"))
+        .await
+        .expect("reopen ambiguous file repository");
+    assert!(matches!(
+        repo.get_totp_credential(&incumbent.user_id).await,
+        Err(QidError::Conflict { .. })
+    ));
+    assert_eq!(
+        std::fs::read(&path).expect("read TOTP fixture after ambiguity check"),
+        before,
+        "ambiguous lookup must not rewrite persisted credentials"
+    );
+}
+
+#[tokio::test]
 async fn workload_identity_delete_scope_holds_in_both_backends() {
     let sql = support::sql_repo().await;
     support::assert_workload_identity_delete_scope(&sql).await;

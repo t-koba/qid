@@ -63,13 +63,16 @@ impl CredentialRepository for FileRepository {
 
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()> {
         let mut store = self.store.write().await;
-        crate::ownership::ensure_same_binding(
+        let incumbent = store.totp_credentials.get(&cred.id).or_else(|| {
             store
                 .totp_credentials
-                .get(&cred.id)
-                .map(|stored| stored.user_id.as_str()),
-            cred.user_id.as_str(),
-            || format!("TOTP credential ID {} belongs to another user", cred.id),
+                .values()
+                .find(|stored| stored.user_id == cred.user_id)
+        });
+        crate::ownership::ensure_same_binding(
+            incumbent.map(|stored| (stored.id.as_str(), stored.user_id.as_str())),
+            (cred.id.as_str(), cred.user_id.as_str()),
+            || "TOTP credential ID or user already exists".into(),
         )?;
         store
             .totp_credentials
@@ -81,9 +84,16 @@ impl CredentialRepository for FileRepository {
     }
 
     async fn get_totp_credential(&self, user_id: &str) -> QidResult<Option<TotpCredential>> {
-        Ok(self
-            .map_get(|s| s.totp_credentials.values().find(|c| c.user_id == user_id))
-            .await)
+        super::unique_match(
+            self.store
+                .read()
+                .await
+                .totp_credentials
+                .values()
+                .filter(|c| c.user_id == user_id)
+                .cloned(),
+            "ambiguous TOTP credential; repair externally",
+        )
     }
 
     async fn consume_totp_step(&self, cred: &TotpCredential, step: u64) -> QidResult<bool> {

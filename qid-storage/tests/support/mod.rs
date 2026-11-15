@@ -4341,6 +4341,68 @@ where
     assert_eq!(stored.created_at, incumbent.created_at);
 }
 
+pub async fn assert_totp_user_uniqueness<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + CredentialRepository,
+{
+    let realm = RealmId("realm-totp-unique-user".to_string());
+    repo.create_realm(
+        &TenantId("tenant-totp-unique-user".to_string()),
+        &realm,
+        "https://totp-unique-user.example.com",
+        None,
+    )
+    .await
+    .expect("create TOTP uniqueness realm");
+    repo.create_user(&User {
+        id: "user-totp-unique".to_string(),
+        realm_id: realm.0,
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    })
+    .await
+    .expect("create TOTP uniqueness user");
+    let credential = |id: &str| TotpCredential {
+        id: id.to_string(),
+        user_id: "user-totp-unique".to_string(),
+        secret: "JBSWY3DPEHPK3PXP".to_string(),
+        algorithm: "SHA1".to_string(),
+        digits: 6,
+        period: 30,
+        enabled: false,
+        last_used_step: None,
+        created_at: 1,
+    };
+    let first_candidate = credential("totp-unique-first");
+    let second_candidate = credential("totp-unique-second");
+    let (first, second) = tokio::join!(
+        repo.store_totp_credential(&first_candidate),
+        repo.store_totp_credential(&second_candidate),
+    );
+    assert!(
+        matches!(
+            (&first, &second),
+            (Ok(()), Err(qid_core::error::QidError::Conflict { .. }))
+                | (Err(qid_core::error::QidError::Conflict { .. }), Ok(()))
+        ),
+        "exactly one concurrent per-user TOTP insert must succeed: {first:?} / {second:?}"
+    );
+    let stored = repo
+        .get_totp_credential("user-totp-unique")
+        .await
+        .expect("read TOTP credential after concurrent insert")
+        .expect("one concurrent TOTP insert must remain");
+    assert!(
+        ["totp-unique-first", "totp-unique-second"].contains(&stored.id.as_str()),
+        "unexpected stored TOTP credential: {}",
+        stored.id
+    );
+}
+
 pub async fn assert_totp_step_owner_bound<R>(repo: &R)
 where
     R: RealmRepository + UserRepository + CredentialRepository,
@@ -4400,6 +4462,15 @@ where
     repo.store_totp_credential(&replacement)
         .await
         .expect("same-owner TOTP replacement failed");
+    let duplicate_user = TotpCredential {
+        id: "totp-owner-duplicate".to_string(),
+        secret: "GEZDGNBVGY3TQOJQ".to_string(),
+        ..replacement.clone()
+    };
+    assert!(matches!(
+        repo.store_totp_credential(&duplicate_user).await,
+        Err(qid_core::error::QidError::Conflict { .. })
+    ));
     let foreign_replacement = TotpCredential {
         user_id: "user-totp-other".to_string(),
         secret: "GEZDGNBVGY3TQOJQ".to_string(),

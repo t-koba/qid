@@ -151,6 +151,24 @@ async fn totp_enroll_confirm_then_authenticate_consumes_each_code_once() -> anyh
         .as_str()
         .context("enroll must return secret")?
         .to_string();
+    let first = repo
+        .get_totp_credential("totp-user")
+        .await?
+        .context("first enrollment credential missing")?;
+    let (status, _, _) = post(
+        app.clone(),
+        "/api/v1/test/auth/totp/enroll",
+        &cookie,
+        json!({}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let retained = repo
+        .get_totp_credential("totp-user")
+        .await?
+        .context("credential missing after duplicate enrollment")?;
+    assert_eq!(retained.id, first.id);
+    assert_eq!(retained.secret, secret);
 
     // Codes for the current and next windows stay usable across a step flip
     // between generation and verification.

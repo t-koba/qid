@@ -122,6 +122,100 @@ fn vc_status_record(credential_id: &str) -> VcCredentialStatusRecord {
 }
 
 #[tokio::test]
+async fn totp_user_unique_migration_preserves_duplicates_and_retries_after_repair() {
+    let dir = tempfile::tempdir().expect("create TOTP migration fixture directory");
+    let database = dir.path().join("legacy.db");
+    std::fs::File::create(&database).expect("create TOTP migration fixture database");
+    let url = format!("sqlite:{}", database.display());
+    let pool = sqlx::SqlitePool::connect(&url)
+        .await
+        .expect("connect TOTP migration fixture");
+    let mut legacy = sqlx::migrate!("./migrations");
+    legacy.migrations = Cow::Owned(
+        legacy
+            .iter()
+            .filter(|migration| migration.version < 20261115000001)
+            .cloned()
+            .collect(),
+    );
+    legacy.run(&pool).await.expect("apply previous migrations");
+    sqlx::query("INSERT INTO realms (id, tenant_id, issuer) VALUES ('realm', 'tenant', 'https://totp.example.com')")
+        .execute(&pool)
+        .await
+        .expect("create migration fixture realm");
+    sqlx::query("INSERT INTO users (id, realm_id) VALUES ('user', 'realm')")
+        .execute(&pool)
+        .await
+        .expect("create migration fixture user");
+    sqlx::query(
+        "INSERT INTO credentials_totp (id, user_id, secret) VALUES ('first', 'user', 'secret-1'), ('second', 'user', 'secret-2')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy duplicate TOTP credentials");
+
+    let error = sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect_err("unique index migration must reject ambiguous legacy credentials");
+    assert!(
+        error.to_string().contains("UNIQUE constraint failed"),
+        "unexpected migration failure: {error}"
+    );
+    let records: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, secret FROM credentials_totp WHERE user_id = 'user' ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read legacy TOTP credentials after failed migration");
+    assert_eq!(
+        records,
+        vec![
+            ("first".into(), "secret-1".into()),
+            ("second".into(), "secret-2".into())
+        ]
+    );
+    let index: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_credentials_totp_user_id'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("inspect TOTP unique index after failed migration");
+    assert!(
+        index.is_none(),
+        "failed migration must not leave a partial index"
+    );
+
+    sqlx::query("DELETE FROM credentials_totp WHERE id = 'second'")
+        .execute(&pool)
+        .await
+        .expect("repair ambiguous legacy credential externally");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("retry migration after explicit repair");
+    let index: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_credentials_totp_user_id'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("inspect TOTP unique index after migration retry");
+    assert!(
+        index.is_some(),
+        "repaired database must receive the unique index"
+    );
+    assert!(
+        sqlx::query("INSERT INTO credentials_totp (id, user_id, secret) VALUES ('third', 'user', 'secret-3')")
+            .execute(&pool)
+            .await
+            .is_err(),
+        "unique index must reject a second credential for the repaired user"
+    );
+
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn workload_certificate_digest_migration_preserves_legacy_spki_value() {
     for version in [20261107000001, 20261107000002] {
         let dir = std::env::temp_dir().join(format!(

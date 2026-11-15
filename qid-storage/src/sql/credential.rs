@@ -71,7 +71,11 @@ impl CredentialRepository for SqlRepository {
         .bind(cred.created_at as i64)
         .execute(&self.pool)
         .await
-        .map_err(storage_to_qid_error)?;
+        .map_err(|error| {
+            unique_violation_to_qid_error(error, || QidError::Conflict {
+                message: "TOTP credential already exists for user".into(),
+            })
+        })?;
         crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
             format!("TOTP credential ID {} belongs to another user", cred.id)
         })

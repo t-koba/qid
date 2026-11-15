@@ -115,7 +115,7 @@ fn user(id: &str) -> ScimUser {
         active: true,
     }
 }
-fn config(dry_run: bool) -> ScimOutboundSyncConfig {
+pub(super) fn config(dry_run: bool) -> ScimOutboundSyncConfig {
     ScimOutboundSyncConfig {
         realm_id: "corp".into(),
         actor: "worker".into(),
@@ -127,7 +127,7 @@ fn config(dry_run: bool) -> ScimOutboundSyncConfig {
         dry_run,
     }
 }
-async fn seed(repo: &SqlRepository) {
+pub(super) async fn seed(repo: &SqlRepository) {
     for realm in ["corp", "other"] {
         repo.create_realm(
             &"default".into(),
@@ -226,7 +226,7 @@ async fn outbound_deprovisions_and_reconciles_remote_group_member_ids() {
         let active = user("active");
         repo.create_scim_user(&inactive).await.unwrap();
         repo.create_scim_user(&active).await.unwrap();
-        repo.create_scim_group(&ScimGroup { id:"local-g".into(), realm_id:"corp".into(), display_name:"renamed".into(), members_json:json!([{"value":"inactive"},{"value":"active"}]) }).await.unwrap();
+        repo.create_scim_group(&ScimGroup { external_id: None, id:"local-g".into(), realm_id:"corp".into(), display_name:"renamed".into(), members_json:json!([{"value":"inactive"},{"value":"active"}]) }).await.unwrap();
         let mut old = render_outbound_user(&inactive, &default_outbound_user_mapping()).unwrap();
         old["active"] = json!(true);
         old["id"] = json!("remote-inactive");

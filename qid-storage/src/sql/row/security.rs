@@ -261,6 +261,7 @@ impl From<ScimUserRow> for ScimUser {
 
 #[derive(sqlx::FromRow)]
 pub(in crate::sql) struct ScimGroupRow {
+    external_id: Option<String>,
     id: String,
     realm_id: String,
     display_name: String,
@@ -270,6 +271,7 @@ pub(in crate::sql) struct ScimGroupRow {
 impl From<ScimGroupRow> for ScimGroup {
     fn from(row: ScimGroupRow) -> Self {
         Self {
+            external_id: row.external_id,
             id: row.id,
             realm_id: row.realm_id,
             display_name: row.display_name,

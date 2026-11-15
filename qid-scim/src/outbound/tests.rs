@@ -374,6 +374,7 @@ fn outbound_orphan_cleanup_rejects_remote_resource_without_id() {
 #[test]
 fn outbound_group_entitlement_reconciliation_plans_create_replace_and_noop() {
     let group = ScimGroup {
+        external_id: None,
         id: "group-1".to_string(),
         realm_id: "corp".to_string(),
         display_name: "app:erp:admin".to_string(),
@@ -448,6 +449,7 @@ fn outbound_group_entitlement_reconciliation_plans_create_replace_and_noop() {
 #[test]
 fn outbound_group_omitted_members_are_empty_for_reconciliation() {
     let mut group = ScimGroup {
+        external_id: None,
         id: "group-1".into(),
         realm_id: "corp".into(),
         display_name: "app:erp:admin".into(),
@@ -488,6 +490,7 @@ fn outbound_group_omitted_members_are_empty_for_reconciliation() {
 #[test]
 fn outbound_group_reconciliation_rejects_malformed_members() {
     let mut group = ScimGroup {
+        external_id: None,
         id: "group-1".into(),
         realm_id: "corp".into(),
         display_name: "app:erp:admin".into(),
@@ -730,6 +733,7 @@ async fn outbound_inventory_is_bounded_and_group_membership_is_order_independent
         );
     }
     let group = ScimGroup {
+        external_id: None,
         id: "g".into(),
         realm_id: "corp".into(),
         display_name: "renamed".into(),

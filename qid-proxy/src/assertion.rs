@@ -643,6 +643,7 @@ mod tests {
             ("tenant-group", "company", "wrong-realm"),
         ] {
             repo.create_scim_group(&ScimGroup {
+                external_id: None,
                 id: id.to_string(),
                 realm_id: realm_id.to_string(),
                 display_name: display_name.to_string(),
@@ -710,6 +711,7 @@ mod tests {
         };
         let groups = vec![
             ScimGroup {
+                external_id: None,
                 id: "group-1".to_string(),
                 realm_id: "corp".to_string(),
                 display_name: "finance".to_string(),
@@ -718,6 +720,7 @@ mod tests {
                 ]),
             },
             ScimGroup {
+                external_id: None,
                 id: "group-2".to_string(),
                 realm_id: "corp".to_string(),
                 display_name: "email-match".to_string(),
@@ -726,6 +729,7 @@ mod tests {
                 ]),
             },
             ScimGroup {
+                external_id: None,
                 id: "group-3".to_string(),
                 realm_id: "corp".to_string(),
                 display_name: "other".to_string(),

@@ -274,3 +274,6 @@ pub async fn run_scim_outbound_sync_with_transport<R: Repository, T: OutboundSci
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod route_tests;

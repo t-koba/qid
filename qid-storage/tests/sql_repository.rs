@@ -3271,6 +3271,7 @@ async fn sql_scim_pages_and_counts_are_stable() {
     }
     for id in ["scim-group-c", "scim-group-a", "scim-group-b"] {
         repo.create_scim_group(&ScimGroup {
+            external_id: None,
             id: id.to_string(),
             realm_id: realm_id.0.clone(),
             display_name: id.to_string(),

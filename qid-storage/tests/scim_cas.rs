@@ -224,6 +224,7 @@ async fn exercise_cas(repo: &AnyRepository) {
     assert!(repo.get_scim_user(&user.id).await.unwrap().is_none());
 
     let group = ScimGroup {
+        external_id: None,
         id: "group".into(),
         realm_id: "corp".into(),
         display_name: "Team".into(),
@@ -572,6 +573,7 @@ async fn sqlite_scim_create_user_conflict() {
 
 fn scim_group(id: &str, realm: &str, display_name: &str) -> ScimGroup {
     ScimGroup {
+        external_id: None,
         id: id.into(),
         realm_id: realm.into(),
         display_name: display_name.into(),
@@ -680,4 +682,126 @@ async fn sqlite_scim_create_group_conflict() {
         repo.close().await;
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn group_external_id_survives_create_update_mutate_and_reopen() {
+    for sql in [false, true] {
+        let dir = std::env::temp_dir().join(format!("qid-group-external-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(if sql { "store.db" } else { "store.json" });
+        let url = if sql {
+            format!("sqlite:{}", path.display())
+        } else {
+            path.to_str().unwrap().into()
+        };
+        let repo = AnyRepository::connect(&url).await.unwrap();
+        repo.create_realm(&"tenant".into(), &"corp".into(), "https://id.example", None)
+            .await
+            .unwrap();
+        let mut group = scim_group("group", "corp", "Team");
+        group.external_id = Some("source-id".into());
+        repo.create_scim_group(&group).await.unwrap();
+        assert_eq!(
+            repo.get_scim_group(&group.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .external_id,
+            group.external_id
+        );
+        // externalId is not unique, even within one realm.
+        let mut duplicate = group.clone();
+        duplicate.id = "duplicate".into();
+        duplicate.display_name = "Other team".into();
+        repo.create_scim_group(&duplicate).await.unwrap();
+        group.external_id = Some("updated-id".into());
+        repo.update_scim_group(&group).await.unwrap();
+        assert_eq!(
+            repo.get_scim_group(&group.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .external_id,
+            group.external_id
+        );
+        repo.mutate_scim_group(
+            &group.id,
+            Box::new(|current| {
+                let mut replacement = current.clone();
+                replacement.external_id = Some("mutated-id".into());
+                Ok(ScimMutation::Replace(replacement))
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        repo.create_scim_group(&scim_group("legacy", "corp", "Legacy"))
+            .await
+            .unwrap();
+        match repo {
+            AnyRepository::Sql(repo) => repo.close().await,
+            AnyRepository::File(repo) => {
+                repo.flush().await.unwrap();
+                drop(repo);
+            }
+        }
+        if !sql {
+            // Actual old File record, not just an in-memory None.
+            let mut data: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            data["scim_groups"]["legacy"]
+                .as_object_mut()
+                .unwrap()
+                .remove("external_id");
+            std::fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
+        }
+        let repo = AnyRepository::connect(&url).await.unwrap();
+        assert_eq!(
+            repo.get_scim_group("legacy")
+                .await
+                .unwrap()
+                .unwrap()
+                .external_id,
+            None
+        );
+        assert_eq!(
+            repo.list_scim_groups(&"corp".into())
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|g| g.id == "group")
+                .unwrap()
+                .external_id
+                .as_deref(),
+            Some("mutated-id")
+        );
+        repo.mutate_scim_group(
+            "group",
+            Box::new(|current| {
+                let mut replacement = current.clone();
+                replacement.external_id = None;
+                Ok(ScimMutation::Replace(replacement))
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            repo.get_scim_group("group")
+                .await
+                .unwrap()
+                .unwrap()
+                .external_id,
+            None
+        );
+        match repo {
+            AnyRepository::Sql(repo) => repo.close().await,
+            AnyRepository::File(repo) => {
+                repo.flush().await.unwrap();
+                drop(repo);
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

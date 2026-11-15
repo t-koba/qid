@@ -206,12 +206,13 @@ impl ScimRepository for SqlRepository {
         // pre-read precedes the write; only a unique violation becomes a
         // conflict, every other storage error is preserved.
         sqlx::query(
-            "INSERT INTO scim_groups (id, realm_id, display_name, members_json) VALUES (?, ?, ?, ?)",
+            "INSERT INTO scim_groups (id, realm_id, display_name, members_json, external_id) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&group.id)
         .bind(&group.realm_id)
         .bind(&group.display_name)
         .bind(group.members_json.to_string())
+        .bind(&group.external_id)
         .execute(&self.pool)
         .await
         .map_err(|error| {
@@ -295,10 +296,11 @@ impl ScimRepository for SqlRepository {
                         message: "serialized mutation cannot change resource identity".into(),
                     });
                 }
-                sqlx::query("UPDATE scim_groups SET display_name = $1, members_json = $2, updated_at = $3 WHERE id = $4")
+                sqlx::query("UPDATE scim_groups SET display_name = $1, members_json = $2, updated_at = $3, external_id = $4 WHERE id = $5")
                     .bind(&replacement.display_name)
                     .bind(replacement.members_json.to_string())
                     .bind(qid_core::util::now_seconds() as i64)
+                    .bind(&replacement.external_id)
                     .bind(id)
                     .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
                 replacement

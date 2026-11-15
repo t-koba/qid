@@ -525,6 +525,7 @@ async fn nested_group_expansion_flattens_users_and_stops_cycles() {
     state
         .repo
         .create_scim_group(&ScimGroup {
+            external_id: None,
             id: "group-root".to_string(),
             realm_id: "corp".to_string(),
             display_name: "root".to_string(),
@@ -540,6 +541,7 @@ async fn nested_group_expansion_flattens_users_and_stops_cycles() {
     state
         .repo
         .create_scim_group(&ScimGroup {
+            external_id: None,
             id: "group-child".to_string(),
             realm_id: "corp".to_string(),
             display_name: "child".to_string(),
@@ -553,6 +555,7 @@ async fn nested_group_expansion_flattens_users_and_stops_cycles() {
     state
         .repo
         .create_scim_group(&ScimGroup {
+            external_id: None,
             id: "group-other-realm".to_string(),
             realm_id: "other".to_string(),
             display_name: "outside".to_string(),
@@ -610,6 +613,7 @@ async fn dynamic_group_sync_replaces_user_members_and_preserves_nested_groups() 
     state
         .repo
         .create_scim_group(&ScimGroup {
+            external_id: None,
             id: "group-child".to_string(),
             realm_id: "corp".to_string(),
             display_name: "child".to_string(),
@@ -620,6 +624,7 @@ async fn dynamic_group_sync_replaces_user_members_and_preserves_nested_groups() 
     state
         .repo
         .create_scim_group(&ScimGroup {
+            external_id: None,
             id: "group-dynamic".to_string(),
             realm_id: "corp".to_string(),
             display_name: "platform-users".to_string(),
@@ -1880,6 +1885,7 @@ async fn hr_mover_none_clears_department_and_manager_with_group_and_chain_effect
     state
         .repo
         .create_scim_group(&ScimGroup {
+            external_id: None,
             id: "group-eng".to_string(),
             realm_id: "corp".to_string(),
             display_name: "eng".to_string(),

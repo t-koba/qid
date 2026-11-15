@@ -76,6 +76,7 @@ pub(crate) async fn schemas() -> impl IntoResponse {
         "name": "Group",
         "description": "Group",
         "attributes": [
+            attr("externalId", "string", false, false),
             attr("displayName", "string", false, true), attr("members", "complex", true, false),
         ]}),
         serde_json::json!({

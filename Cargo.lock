@@ -4113,8 +4113,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "clap",
+ "http-body-util",
  "lettre",
  "qid-core",
  "qid-crypto",
@@ -4135,6 +4137,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-rustls",
+ "tower 0.5.3",
  "ulid",
  "zeroize",
 ]

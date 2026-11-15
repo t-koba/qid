@@ -32,6 +32,8 @@ pub struct ScimUser {
 /// A SCIM group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScimGroup {
+    #[serde(default)]
+    pub external_id: Option<String>,
     pub id: String,
     pub realm_id: String,
     pub display_name: String,

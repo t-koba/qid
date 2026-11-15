@@ -3040,3 +3040,148 @@ async fn scim_bulk_patch_rejects_a_non_object_enterprise_container() {
     assert_eq!(fetched["meta"]["version"], version);
     assert!(fetched.get(ENTERPRISE_USER_SCHEMA).is_none());
 }
+
+#[tokio::test]
+async fn group_external_id_round_trips_filters_and_rejects_malformed_values() {
+    let (app, repo, path) = setup_with_store().await;
+    // An authenticated realm always overrides client-controlled realm values.
+    async fn call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .extension(qid_scim::ScimRequestContext {
+                realm_id: "corp".into(),
+            })
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        (response.status(), response_json(response).await)
+    }
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/scim/v2/Groups",
+        serde_json::json!({"realm":"other", "displayName":"Team", "externalId":"source-id"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["externalId"], "source-id");
+    let id = created["id"].as_str().unwrap();
+    let uri = format!("/scim/v2/Groups/{id}");
+    let mut foreign = repo.get_scim_group(id).await.unwrap().unwrap();
+    assert_eq!(foreign.realm_id, "corp");
+    foreign.id = "foreign".into();
+    foreign.realm_id = "other".into();
+    repo.create_scim_group(&foreign).await.unwrap();
+    let (status, list) = call(
+        &app,
+        "GET",
+        "/scim/v2/Groups?realm=other&filter=externalId%20eq%20%22source-id%22",
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["totalResults"], 1);
+    assert_eq!(list["Resources"][0]["id"], id);
+    let (status, replaced) = call(
+        &app,
+        "PUT",
+        &uri,
+        serde_json::json!({"displayName":"Team", "externalId":"replaced"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replaced["externalId"], "replaced");
+    assert_ne!(created["meta"]["version"], replaced["meta"]["version"]);
+    let mut version = replaced["meta"]["version"].clone();
+    for (op, value, expected) in [
+        ("remove", serde_json::Value::Null, None),
+        ("add", serde_json::json!("added"), Some("added")),
+        ("replace", serde_json::json!("patched"), Some("patched")),
+    ] {
+        let (status, result) = call(
+            &app,
+            "PATCH",
+            &uri,
+            serde_json::json!({"Operations":[{"op":op,"path":"externalId","value":value}]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result.get("externalId").and_then(|v| v.as_str()), expected);
+        assert_ne!(version, result["meta"]["version"]);
+        version = result["meta"]["version"].clone();
+    }
+    for bad in [
+        serde_json::json!(4),
+        serde_json::json!({}),
+        serde_json::json!([]),
+        serde_json::json!(false),
+    ] {
+        for method in ["POST", "PUT", "PATCH"] {
+            let body = if method == "PATCH" {
+                serde_json::json!({"Operations":[{"op":"replace","path":"externalId","value":bad}]})
+            } else {
+                serde_json::json!({"displayName":"Malformed", "externalId":bad})
+            };
+            let (status, _) = call(
+                &app,
+                method,
+                if method == "POST" {
+                    "/scim/v2/Groups"
+                } else {
+                    &uri
+                },
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                repo.get_scim_group(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .external_id
+                    .as_deref(),
+                Some("patched")
+            );
+        }
+    }
+    let (status, bulk) = call(&app, "POST", "/scim/v2/Bulk", serde_json::json!({"Operations":[{"method":"POST", "path":"/Groups", "bulkId":"bulk-group", "data":{"displayName":"Bulk group", "externalId":"bulk-id"}}]})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bulk["Operations"][0]["status"], "201");
+    assert!(
+        repo.list_scim_groups(&"corp".into())
+            .await
+            .unwrap()
+            .iter()
+            .any(|g| g.external_id.as_deref() == Some("bulk-id"))
+    );
+    // Omission on PUT unassigns an optional externalId; legacy groups stay valid.
+    let (status, legacy) = call(&app, "PUT", &uri, serde_json::json!({"displayName":"Team"})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(legacy.get("externalId").is_none());
+    let (_, schemas) = call(&app, "GET", "/scim/v2/Schemas", serde_json::Value::Null).await;
+    let group = schemas["Resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "Group")
+        .unwrap();
+    assert!(
+        group["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "externalId" && a["type"] == "string" && a["required"] == false)
+    );
+    drop(app);
+    repo.flush().await.unwrap();
+    drop(repo);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}

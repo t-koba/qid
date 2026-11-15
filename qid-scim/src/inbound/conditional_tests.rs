@@ -82,6 +82,7 @@ async fn conditions_match_current_resources_on_both_backends() {
             active: true,
         };
         let group = ScimGroup {
+            external_id: None,
             id: "group".into(),
             realm_id: "corp".into(),
             display_name: "Team".into(),
@@ -437,6 +438,7 @@ async fn conditional_put_rejects_explicit_realm_move_preserves_omitted() {
             active: true,
         };
         let group = ScimGroup {
+            external_id: None,
             id: "g-realm".into(),
             realm_id: "other".into(),
             display_name: "base".into(),

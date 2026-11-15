@@ -212,13 +212,17 @@ pub(crate) fn scim_user(user: ScimUser) -> serde_json::Value {
 
 pub(crate) fn scim_group(group: ScimGroup) -> serde_json::Value {
     let version = scim_group_version(&group);
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
         "id": group.id,
         "displayName": group.display_name,
         "members": group.members_json,
         "meta": { "resourceType": "Group", "version": version }
-    })
+    });
+    if let Some(id) = group.external_id {
+        value["externalId"] = serde_json::Value::String(id);
+    }
+    value
 }
 
 pub(crate) fn scim_user_version(user: &ScimUser) -> String {
@@ -239,6 +243,7 @@ pub(crate) fn scim_group_version(group: &ScimGroup) -> String {
     let material = serde_json::json!({
         "id": group.id,
         "realm_id": group.realm_id,
+        "external_id": group.external_id,
         "display_name": group.display_name,
         "members": group.members_json
     });

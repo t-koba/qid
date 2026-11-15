@@ -36,20 +36,18 @@ pub(crate) async fn list_groups<R: Repository>(
             Ok(groups) => groups,
             Err(e) => return qid_http::error_response(e),
         };
-        let parsed = match filter::parse_eq_filter(filter, &["displayName"]) {
+        let parsed = match filter::parse_eq_filter(filter, &["displayName", "externalId"]) {
             Ok(parsed) => parsed,
             Err(e) => return qid_http::error_response(e),
         };
-        match parsed.attribute {
-            "displayName" => {
-                groups.retain(|g| filter::string_filter_matches(&parsed.value, &g.display_name));
-            }
-            _ => {
-                return qid_http::error_response(QidError::Internal {
-                    message: "unexpected filter attribute".to_string(),
-                });
-            }
-        }
+        groups.retain(|group| {
+            let value = if parsed.attribute == "externalId" {
+                group.external_id.as_deref()
+            } else {
+                Some(group.display_name.as_str())
+            };
+            value.is_some_and(|value| filter::string_filter_matches(&parsed.value, value))
+        });
         let total = groups.len();
         let page: Vec<ScimGroup> = groups.into_iter().skip(start).take(count).collect();
         (total, page)
@@ -92,6 +90,7 @@ pub(crate) async fn create_group_record<R: Repository>(
 ) -> QidResult<ScimGroup> {
     super::complex::validate_group_complex(req.members.as_ref())?;
     let group = ScimGroup {
+        external_id: req.external_id,
         id: ulid::Ulid::new().to_string(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),
         display_name: req.display_name,
@@ -154,6 +153,7 @@ pub(crate) async fn replace_group<R: Repository>(
 fn replace_group_value(existing: ScimGroup, req: CreateGroup) -> QidResult<ScimGroup> {
     super::complex::validate_group_complex(req.members.as_ref())?;
     Ok(ScimGroup {
+        external_id: req.external_id,
         id: existing.id.clone(),
         realm_id: req.realm.unwrap_or_else(super::default_realm),
         display_name: req.display_name,
@@ -235,6 +235,10 @@ fn apply_group_patch(group: &mut ScimGroup, op: PatchOperation) -> Result<(), Qi
         ("add" | "replace", "displayName") => {
             group.display_name = string_value(op.value, "displayName")?
         }
+        ("add" | "replace", "externalId") => {
+            group.external_id = Some(string_value(op.value, "externalId")?);
+        }
+        ("remove", "externalId") => group.external_id = None,
         ("add", "members") => {
             let mut members = group.members_json.as_array().cloned().unwrap_or_default();
             match op.value {

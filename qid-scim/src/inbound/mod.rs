@@ -113,6 +113,8 @@ pub(crate) struct CreateUser {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateGroup {
+    #[serde(default, rename = "externalId")]
+    pub(crate) external_id: Option<String>,
     #[serde(default)]
     pub(crate) realm: Option<String>,
     #[serde(rename = "displayName")]

@@ -94,7 +94,7 @@ jobs:
           }
           if ($failed) { exit 1 }
           Write-Host 'Headless helper preflight passed (no diagnostic output retained).'
-      - name: Run the exact failed IGA cleanup tests with bounded owner capture
+      - name: Run one exact user-deletion cleanup test with bounded owner capture
         timeout-minutes: 24
         shell: pwsh
         env:
@@ -103,45 +103,51 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          # IsolatedDb uses <temp>/qid_test. Own that tree only after proving it
-          # is absent; the final step can then remove the test DB and schema.
-          $testRoot = Join-Path ([IO.Path]::GetTempPath()) 'qid_test'
-          try {
-            if (Test-Path -LiteralPath $testRoot) { throw 'Test root already exists' }
-            'QID_DIAGNOSTIC_OWNED=true' >> $env:GITHUB_ENV
-          } catch {
-            Write-Host 'ERROR: Diagnostic test-root preflight failed (raw exception suppressed).'
-            exit 1
-          }
-          # Target both exact IGA tests named by the historical Windows failures.
-          # Capture runs after repository closure and immediately before the
-          # unchanged deletion. An empty Restart Manager result is not exhaustive.
-          $targets = @(
-            'sql::iga_tests::sql_iga_entitlement_store_upserts_tenant_scoped_row',
-            'sql::realm_tests::realm_creation_sql_clears_orphans_only_after_claiming_absent_id'
-          )
-          foreach ($target in $targets) {
-            foreach ($iteration in 1..5) {
-              Write-Host "IGA cleanup diagnostic $target iteration $iteration/5"
-              & cargo test --locked -p qid-storage --lib $target -- --exact --nocapture --test-threads=1
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $suffix = "diagnostic-$([Guid]::NewGuid().ToString('N'))"
+          $database = Join-Path ([IO.Path]::GetTempPath()) "qid-user-deletion-$suffix.db"
+          $paths = @($database, "$database-wal", "$database-shm", "$database-journal")
+          foreach ($path in $paths) {
+            if (Test-Path -LiteralPath $path) {
+              Write-Host 'ERROR: Diagnostic path collision; no existing file was claimed.'
+              exit 1
             }
           }
-      - name: Erase the diagnostic test root
+          # The test reads this exact random suffix. Cleanup later removes only
+          # this previously absent database and its SQLite sidecars.
+          "QID_SQLITE_CLEANUP_SUFFIX=$suffix" >> $env:GITHUB_ENV
+          "QID_DIAGNOSTIC_OWNED=true" >> $env:GITHUB_ENV
+          $env:QID_SQLITE_CLEANUP_SUFFIX = $suffix
+          # The test captures this exact DB and sidecars after repository
+          # closure and immediately before its unchanged first deletion. An
+          # empty Restart Manager result is not an exhaustive handle trace.
+          Write-Host 'Running focused Windows user-deletion cleanup test (1/1)'
+          $arguments = @(
+            'test', '--locked', '-p', 'qid-storage', '--test', 'user_deletion',
+            'sql_user_deletion_cleans_only_owned_authentication_state',
+            '--', '--exact', '--nocapture', '--test-threads=1'
+          )
+          & cargo @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Erase the diagnostic SQLite files
         timeout-minutes: 2
         if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:QID_DIAGNOSTIC_OWNED -ne 'true') { exit 0 }
-          $testRoot = Join-Path ([IO.Path]::GetTempPath()) 'qid_test'
-          try {
-            # This tree was absent before the test and is exclusively owned by
-            # this diagnostic run. Removal failure remains visible.
-            if (Test-Path -LiteralPath $testRoot) {
-              Remove-Item -LiteralPath $testRoot -Recurse -Force
-            }
-          } catch {
-            Write-Host 'ERROR: Diagnostic cleanup could not remove its test root.'
+          $suffix = $env:QID_SQLITE_CLEANUP_SUFFIX
+          if ([string]::IsNullOrEmpty($suffix) -or $suffix -cnotmatch '\A[A-Za-z0-9-]+\z') {
+            Write-Host 'ERROR: Diagnostic cleanup key is missing or invalid.'
             exit 1
           }
+          $database = Join-Path ([IO.Path]::GetTempPath()) "qid-user-deletion-$suffix.db"
+          $failed = $false
+          foreach ($path in @($database, "$database-wal", "$database-shm", "$database-journal")) {
+            try {
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+            } catch {
+              Write-Host 'ERROR: Diagnostic cleanup could not remove an owned SQLite file.'
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }

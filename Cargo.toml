@@ -44,15 +44,16 @@ exclude = ["vendor/rustls"]
 # does; an accepted new capability raises it by its measured size in the same
 # change. Total and touched per-crate caps rise only by the exact measured source delta.
 # Per-crate caps are otherwise lowered to measured size as each crate is touched.
-total = 111211
+total = 110720
 default_per_crate = 4000
 
 [workspace.metadata.budget.per_crate]
 qid-network = 2079
+qid-proxy = 2720
 qid-admin = 6000
 qid-core = 14152
 qid-crypto = 4411
-qid-storage = 15994
+qid-storage = 15676
 qid-session = 4806
 qid-oidc = 6000
 qid-policy = 2348

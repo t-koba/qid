@@ -1,5 +1,4 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use krb5::rcache::ReplayStore;
 use qid_core::cache::SharedCache;
 use sha2::{Digest, Sha256};
 use std::{fmt, io, sync::Arc};
@@ -31,8 +30,10 @@ impl fmt::Debug for KerberosReplayStore {
     }
 }
 
-impl ReplayStore for KerberosReplayStore {
-    fn insert(&self, tag: &[u8], now: i64, expires: i64) -> io::Result<bool> {
+impl KerberosReplayStore {
+    /// Atomically record a replay tag through its inclusive expiry second.
+    /// `now` and `expires` are Unix seconds.
+    pub fn insert(&self, tag: &[u8], now: i64, expires: i64) -> io::Result<bool> {
         // Match krb5's in-memory store: tags are zero-padded or truncated to
         // the longest supported checksum before they identify a replay.
         let mut canonical_tag = [0; 24];

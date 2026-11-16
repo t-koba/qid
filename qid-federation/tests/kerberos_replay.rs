@@ -1,4 +1,3 @@
-use krb5::rcache::ReplayStore;
 use qid_core::{
     QidError,
     cache::{MemoryCache, SharedCache},

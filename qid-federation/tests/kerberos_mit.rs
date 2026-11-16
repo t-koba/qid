@@ -4,6 +4,7 @@
 use krb5::{
     KerberosError, Keytab,
     acceptor::{AcceptOptions, DEFAULT_CLOCK_SKEW_SECS},
+    rcache::ReplayStore,
     spnego::SpnegoAcceptor,
 };
 use qid_core::cache::MemoryCache;
@@ -86,6 +87,15 @@ impl Drop for MitPeer {
     }
 }
 
+#[derive(Debug)]
+struct TestReplayStore(KerberosReplayStore);
+
+impl ReplayStore for TestReplayStore {
+    fn insert(&self, tag: &[u8], now: i64, expires: i64) -> io::Result<bool> {
+        self.0.insert(tag, now, expires)
+    }
+}
+
 fn acceptor<'k>(keytab: &'k Keytab, cache: &Arc<MemoryCache>) -> SpnegoAcceptor<'k> {
     // krb5 1.0.0 makes AcceptOptions non_exhaustive and offers only Default
     // for construction outside its crate. Overwrite EVERY public field before
@@ -93,7 +103,9 @@ fn acceptor<'k>(keytab: &'k Keytab, cache: &Arc<MemoryCache>) -> SpnegoAcceptor<
     let mut options = AcceptOptions::default();
     options.max_skew_secs = DEFAULT_CLOCK_SKEW_SECS;
     options.channel_bindings = None;
-    options.replay_cache = Some(Arc::new(KerberosReplayStore::new(cache.clone())));
+    options.replay_cache = Some(Arc::new(TestReplayStore(KerberosReplayStore::new(
+        cache.clone(),
+    ))));
     // Distinct adapter instances model independent acceptors sharing one cache.
     SpnegoAcceptor::with_options(keytab, options)
 }

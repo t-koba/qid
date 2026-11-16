@@ -213,7 +213,7 @@ jobs:
         env:
           QID_SQLITE_CLEANUP_DIAGNOSTIC: "1"
           QID_SQLITE_CLEANUP_DIAGNOSTIC_TIMEOUT_SECONDS: "15"
-          QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF: "test_2.db,test_5.db"
+          QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF: "test_1.db,test_2.db,test_3.db,test_5.db,store.db"
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
@@ -230,7 +230,7 @@ jobs:
           $script:reportNoticeBytes = [Text.Encoding]::UTF8.GetByteCount($script:reportNotice)
           $script:reportTruncated = $false
           $script:report = $report
-          $script:reportPattern = '\A(?:RM image=[A-Za-z0-9_.-]+ pid=[0-9]+ suffix=(?:db|-wal|-shm|-journal)|RM test=[A-Za-z0-9_:.-]+ pid=[0-9]+|RM suffix=(?:db|-wal|-shm|-journal) holders=none|RM snapshot complete \(not an exhaustive handle trace\)\.|HANDLE pid=[0-9]+ db=test_(?:14|15)\.db exact_file_matches=[0-9]+ \(live snapshot, not exhaustive\)\.|HANDLE unavailable \((?:helper could not be collected|raw output suppressed)\)\.|ERROR: Restart Manager snapshot untrusted \(raw exception suppressed\)\.|ERROR: Windows cleanup diagnostic process tree was not confirmed stopped|ERROR: Windows cleanup diagnostic timed out or could not be collected)\z'
+          $script:reportPattern = '\A(?:RM image=[A-Za-z0-9_.-]+ pid=[0-9]+ suffix=(?:db|-wal|-shm|-journal)|RM test=[A-Za-z0-9_:.-]+ pid=[0-9]+|RM suffix=(?:db|-wal|-shm|-journal) holders=none|RM snapshot complete \(not an exhaustive handle trace\)\.|HANDLE pid=[0-9]+ db=[A-Za-z0-9_.-]+ exact_file_matches=[0-9]+ \(live snapshot, not exhaustive\)\.|HANDLE unavailable \((?:helper could not be collected|raw output suppressed)\)\.|ERROR: Restart Manager snapshot untrusted \(raw exception suppressed\)\.|ERROR: Windows cleanup diagnostic process tree was not confirmed stopped|ERROR: Windows cleanup diagnostic timed out or could not be collected)\z'
           function Add-SanitizedDiagnosticLines {
             param([object[]]$Lines)
             foreach ($candidate in $Lines) {
@@ -324,9 +324,9 @@ jobs:
           "QID_DIAGNOSTIC_OWNED=true" >> $env:GITHUB_ENV
           $env:QID_SQLITE_CLEANUP_SUFFIX = $suffix
           # Every invocation retains Restart Manager capture before unchanged
-          # cleanup, restricted by leaf to the observed test_2.db and test_5.db.
-          # Handle adds a PID/full-path filtered snapshot only for
-          # test_14.db and test_15.db; neither source is an exhaustive trace.
+          # cleanup, restricted by leaf to the observed failing databases.
+          # Handle adds a PID/exact-path snapshot only for that same allowlist;
+          # neither source is an exhaustive handle trace.
           Write-Host 'Running focused Windows user-deletion cleanup test (1/2)'
           $userDeletionArguments = @(
             'test', '--locked', '-p', 'qid-storage', '--test', 'user_deletion',
@@ -347,7 +347,7 @@ jobs:
           if ($libraryExitCode -ne 0) { $failed = $true }
           # The parallel library suite is the only invocation that has reproduced
           # a SQL cleanup owner failure on the exact source. The leaf filter
-          # limits owner capture to the two observed per-process database files.
+          # limits owner capture to the observed per-process database files.
           # Three bounded attempts seek recurrence without changing cleanup.
           $parallelAttempts = 3
           for ($attempt = 1; $attempt -le $parallelAttempts; $attempt++) {

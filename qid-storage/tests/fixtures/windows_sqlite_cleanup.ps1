@@ -118,10 +118,15 @@ public static class QidCleanupOwners {
     foreach ($row in $rows) { Write-Host $row }
     Write-Host 'RM snapshot complete (not an exhaustive handle trace).'
     # Query live handles last, immediately before returning to the original delete.
-    # Only these two observed library-test databases get a Handle query. No
-    # sidecars, integration-test paths, wildcard queries or system-wide scans.
+    # Only the observed leaf allowlist gets a Handle query. No sidecars,
+    # wildcard queries or system-wide scans.
     $leaf = [IO.Path]::GetFileName($Database)
-    if ($leaf -ceq 'test_14.db' -or $leaf -ceq 'test_15.db') {
+    $allowlist = $env:QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF
+    if ([string]::IsNullOrEmpty($allowlist) -or
+        $allowlist -cnotmatch '\A[A-Za-z0-9_.,-]{1,256}\z') {
+      throw 'Invalid diagnostic leaf allowlist'
+    }
+    if (@($allowlist -split ',') -ccontains $leaf) {
         try {
             $executable = $env:QID_SQLITE_HANDLE_EXE
             $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

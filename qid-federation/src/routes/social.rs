@@ -8,12 +8,13 @@ use qid_core::state::SharedState;
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
-use crate::{
-    HomeRealmDiscoveryRequest, plan_inbound_login, route_inbound_provider, verify_inbound_idp_token,
-};
+use crate::{HomeRealmDiscoveryRequest, route_inbound_provider, verify_inbound_idp_token};
 
 use super::oidc::{exchange_code_for_tokens, extract_claims_from_oidc_response};
-use super::{OidcCallbackQuery, exec_broker_login_plan, load_broker_links, providers_from_config};
+use super::{
+    OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
+    providers_from_config,
+};
 
 pub async fn social_login_callback<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
@@ -160,17 +161,18 @@ pub async fn social_login_callback<R: Repository>(
         }
     };
 
-    let links = load_broker_links(state.repo.as_ref(), &realm, &provider.id, &claims).await;
-
-    let login_plan = match plan_inbound_login(&providers, &request, &claims, &links) {
+    let login_plan = match plan_broker_login(
+        state.repo.as_ref(),
+        &realm,
+        &provider.id,
+        &providers,
+        &request,
+        &claims,
+    )
+    .await
+    {
         Ok(plan) => plan,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "login_plan_failed", "message": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(error) => return broker_login_plan_error_response(error),
     };
 
     let local_user_id = exec_broker_login_plan(

@@ -1,5 +1,7 @@
 use axum::{
-    Router,
+    Json, Router,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use qid_core::{
@@ -13,7 +15,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
-    BrokerAccountLink, ExternalIdentityClaims, InboundIdentityProvider, InboundProviderKind,
+    BrokerAccountLink, ExternalIdentityClaims, HomeRealmDiscoveryRequest, InboundIdentityProvider,
+    InboundProviderKind, plan_inbound_login,
 };
 
 pub mod discovery;
@@ -69,19 +72,52 @@ async fn load_broker_links<R: Repository>(
     realm_id: &str,
     provider: &str,
     claims: &ExternalIdentityClaims,
-) -> Vec<BrokerAccountLink> {
+) -> Result<Vec<BrokerAccountLink>, QidError> {
     let realm = RealmId(realm_id.to_string());
-    match repo
+    Ok(repo
         .get_ciam_identity_link_by_external_subject(&realm, provider, &claims.subject)
-        .await
-    {
-        Ok(Some(link)) => vec![BrokerAccountLink {
-            provider_id: link.provider.clone(),
+        .await?
+        .into_iter()
+        .map(|link| BrokerAccountLink {
+            provider_id: link.provider,
             external_subject: claims.subject.clone(),
             local_subject: link.user_id,
-        }],
-        Ok(None) => Vec::new(),
-        Err(_) => Vec::new(),
+        })
+        .collect())
+}
+
+#[derive(Debug)]
+enum BrokerLoginPlanError {
+    LinkLookup,
+    Plan(QidError),
+}
+
+async fn plan_broker_login<R: Repository>(
+    repo: &R,
+    realm_id: &str,
+    provider_id: &str,
+    providers: &[InboundIdentityProvider],
+    request: &HomeRealmDiscoveryRequest,
+    claims: &ExternalIdentityClaims,
+) -> Result<crate::BrokerLoginPlan, BrokerLoginPlanError> {
+    let links = load_broker_links(repo, realm_id, provider_id, claims)
+        .await
+        .map_err(|_| BrokerLoginPlanError::LinkLookup)?;
+    plan_inbound_login(providers, request, claims, &links).map_err(BrokerLoginPlanError::Plan)
+}
+
+fn broker_login_plan_error_response(error: BrokerLoginPlanError) -> Response {
+    match error {
+        BrokerLoginPlanError::LinkLookup => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "identity_link_lookup_failed"})),
+        )
+            .into_response(),
+        BrokerLoginPlanError::Plan(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "login_plan_failed", "message": error.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -281,9 +317,7 @@ pub(crate) struct SamlAcsForm {
 #[cfg(test)]
 mod login_tests {
     use super::*;
-    use crate::{
-        ClaimMapping, ExternalIdentityClaims, HomeRealmDiscoveryRequest, plan_inbound_login,
-    };
+    use crate::{ClaimMapping, ExternalIdentityClaims, HomeRealmDiscoveryRequest};
     use qid_core::tenant::TenantId;
     use qid_storage::AnyRepository;
     use std::{collections::BTreeMap, path::PathBuf};
@@ -368,7 +402,16 @@ mod login_tests {
             ]),
         };
 
-        let first_plan = plan_inbound_login(&providers, &request, &claims, &[]).unwrap();
+        let first_plan = plan_broker_login(
+            repo,
+            realm.as_str(),
+            "corp-oidc",
+            &providers,
+            &request,
+            &claims,
+        )
+        .await
+        .unwrap();
         assert!(first_plan.create_subject);
         assert!(first_plan.linked_subject.is_none());
         let first_user =
@@ -383,9 +426,16 @@ mod login_tests {
             .expect("first login stores the verified identity link");
         assert_eq!(link_before.user_id, first_user);
 
-        let links = load_broker_links(repo, realm.as_str(), "corp-oidc", &claims).await;
-        assert_eq!(links.len(), 1);
-        let returning_plan = plan_inbound_login(&providers, &request, &claims, &links).unwrap();
+        let returning_plan = plan_broker_login(
+            repo,
+            realm.as_str(),
+            "corp-oidc",
+            &providers,
+            &request,
+            &claims,
+        )
+        .await
+        .unwrap();
         assert!(!returning_plan.create_subject);
         assert_eq!(
             returning_plan.linked_subject.as_deref(),
@@ -422,6 +472,198 @@ mod login_tests {
                 count,
                 "unexpected {action} audit count"
             );
+        }
+    }
+
+    fn test_user(id: &str, realm_id: &str, email: &str) -> User {
+        User {
+            id: id.to_string(),
+            realm_id: realm_id.to_string(),
+            email: Some(email.to_string()),
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        }
+    }
+
+    fn external_claims() -> ExternalIdentityClaims {
+        ExternalIdentityClaims {
+            issuer: "https://login.corp.example".to_string(),
+            subject: "external-alice".to_string(),
+            claims: BTreeMap::from([
+                (
+                    "email".to_string(),
+                    serde_json::Value::String("alice@corp.example".to_string()),
+                ),
+                ("email_verified".to_string(), serde_json::Value::Bool(true)),
+            ]),
+        }
+    }
+
+    fn login_request() -> HomeRealmDiscoveryRequest {
+        HomeRealmDiscoveryRequest {
+            idp_hint: Some("corp-oidc".to_string()),
+            ..Default::default()
+        }
+    }
+
+    async fn assert_no_jit_side_effects(repo: &impl Repository, realm: &RealmId, users: usize) {
+        assert_eq!(repo.list_users(realm).await.unwrap().len(), users);
+        assert!(
+            repo.get_user_by_email(realm, "alice@corp.example")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repo.list_audit_events(Some(realm), 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_identity_link_aborts_planning_without_jit_side_effects() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("ambiguous-links.json");
+        let realm = RealmId::from("ambiguous-link-realm");
+        let file_repo = match AnyRepository::connect(path.to_str().unwrap())
+            .await
+            .unwrap()
+        {
+            AnyRepository::File(repo) => repo,
+            AnyRepository::Sql(_) => unreachable!(),
+        };
+        file_repo
+            .create_realm(
+                &TenantId::from("test-tenant"),
+                &realm,
+                "https://qid.example",
+                None,
+            )
+            .await
+            .unwrap();
+        for (id, email) in [
+            ("user-one", "one@corp.example"),
+            ("user-two", "two@corp.example"),
+        ] {
+            file_repo
+                .create_user(&test_user(id, realm.as_str(), email))
+                .await
+                .unwrap();
+        }
+        let first_link = CiamIdentityLink {
+            id: "link-one".to_string(),
+            realm_id: realm.0.clone(),
+            user_id: "user-one".to_string(),
+            provider: "corp-oidc".to_string(),
+            external_subject: "external-alice".to_string(),
+            external_email: Some("alice@corp.example".to_string()),
+            profile_json: serde_json::json!({}),
+            linked_at_epoch_seconds: 1_800_000_000,
+            verified: true,
+        };
+        file_repo
+            .store_ciam_identity_link(&first_link)
+            .await
+            .unwrap();
+        file_repo.flush().await.unwrap();
+        drop(file_repo);
+
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let links = stored["ciam_identity_links"].as_object_mut().unwrap();
+        let mut second_link = links.get("link-one").unwrap().clone();
+        second_link["id"] = serde_json::Value::String("link-two".to_string());
+        second_link["user_id"] = serde_json::Value::String("user-two".to_string());
+        links.insert("link-two".to_string(), second_link);
+        std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+
+        let repo = AnyRepository::connect(path.to_str().unwrap())
+            .await
+            .unwrap();
+        let result = plan_broker_login(
+            &repo,
+            realm.as_str(),
+            "corp-oidc",
+            &[provider()],
+            &login_request(),
+            &external_claims(),
+        )
+        .await;
+        assert!(matches!(
+            load_broker_links(&repo, realm.as_str(), "corp-oidc", &external_claims()).await,
+            Err(QidError::Conflict { .. })
+        ));
+        assert!(matches!(result, Err(BrokerLoginPlanError::LinkLookup)));
+        assert_no_jit_side_effects(&repo, &realm, 2).await;
+        for user_id in ["user-one", "user-two"] {
+            assert_eq!(
+                repo.list_ciam_identity_links(&realm, user_id)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_link_repository_failure_aborts_planning_without_jit_side_effects() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("lookup-failure.db");
+        let url = format!("sqlite:{}", path.display());
+        let realm = RealmId::from("lookup-failure-realm");
+        let sql_repo = match AnyRepository::connect(&url).await.unwrap() {
+            AnyRepository::Sql(repo) => repo,
+            AnyRepository::File(_) => unreachable!(),
+        };
+        sql_repo
+            .create_realm(
+                &TenantId::from("test-tenant"),
+                &realm,
+                "https://qid.example",
+                None,
+            )
+            .await
+            .unwrap();
+        sql_repo
+            .create_user(&test_user(
+                "existing-user",
+                realm.as_str(),
+                "existing@corp.example",
+            ))
+            .await
+            .unwrap();
+        let lookup_repo = AnyRepository::Sql(sql_repo.clone());
+        sql_repo.close().await;
+
+        let result = plan_broker_login(
+            &lookup_repo,
+            realm.as_str(),
+            "corp-oidc",
+            &[provider()],
+            &login_request(),
+            &external_claims(),
+        )
+        .await;
+        assert!(matches!(result, Err(BrokerLoginPlanError::LinkLookup)));
+        drop(lookup_repo);
+
+        let repo = AnyRepository::connect(&url).await.unwrap();
+        assert_no_jit_side_effects(&repo, &realm, 1).await;
+        assert!(
+            repo.list_ciam_identity_links(&realm, "existing-user")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        match repo {
+            AnyRepository::Sql(repo) => repo.close().await,
+            AnyRepository::File(_) => unreachable!(),
         }
     }
 

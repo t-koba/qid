@@ -10,11 +10,12 @@ use qid_storage::prelude::*;
 use roxmltree::{Document, Node};
 use std::sync::Arc;
 
-use crate::{
-    ExternalIdentityClaims, HomeRealmDiscoveryRequest, InboundIdentityProvider, plan_inbound_login,
-};
+use crate::{ExternalIdentityClaims, HomeRealmDiscoveryRequest, InboundIdentityProvider};
 
-use super::{SamlAcsForm, exec_broker_login_plan, load_broker_links, providers_from_config};
+use super::{
+    SamlAcsForm, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
+    providers_from_config,
+};
 
 const SAML_PROTOCOL_NS: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
 const SAML_ASSERTION_NS: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
@@ -128,9 +129,10 @@ pub async fn saml_inbound_acs<R: Repository>(
             .into_response();
     }
     let claims = validated.claims;
-    let links = load_broker_links(state.repo.as_ref(), &realm, &provider.id, &claims).await;
-
-    let login_plan = match plan_inbound_login(
+    let login_plan = match plan_broker_login(
+        state.repo.as_ref(),
+        &realm,
+        &provider.id,
         &providers,
         &HomeRealmDiscoveryRequest {
             login_hint: None,
@@ -139,16 +141,11 @@ pub async fn saml_inbound_acs<R: Repository>(
             social_provider: None,
         },
         &claims,
-        &links,
-    ) {
+    )
+    .await
+    {
         Ok(plan) => plan,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "login_plan_failed", "message": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(error) => return broker_login_plan_error_response(error),
     };
 
     let local_user_id = exec_broker_login_plan(

@@ -8,11 +8,12 @@ use qid_core::{QidError, state::SharedState};
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
-use crate::{
-    ExternalIdentityClaims, HomeRealmDiscoveryRequest, plan_inbound_login, verify_inbound_idp_token,
-};
+use crate::{ExternalIdentityClaims, HomeRealmDiscoveryRequest, verify_inbound_idp_token};
 
-use super::{OidcCallbackQuery, exec_broker_login_plan, load_broker_links, providers_from_config};
+use super::{
+    OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
+    providers_from_config,
+};
 
 /// Exchange an authorization code for tokens at the external provider's token endpoint.
 pub async fn exchange_code_for_tokens(
@@ -308,9 +309,10 @@ pub async fn oidc_inbound_callback<R: Repository>(
         }
     };
 
-    let links = load_broker_links(state.repo.as_ref(), &realm, &provider.id, &claims).await;
-
-    let login_plan = match plan_inbound_login(
+    let login_plan = match plan_broker_login(
+        state.repo.as_ref(),
+        &realm,
+        &provider.id,
         &providers,
         &HomeRealmDiscoveryRequest {
             login_hint: None,
@@ -319,16 +321,11 @@ pub async fn oidc_inbound_callback<R: Repository>(
             social_provider: None,
         },
         &claims,
-        &links,
-    ) {
+    )
+    .await
+    {
         Ok(plan) => plan,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "login_plan_failed", "message": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(error) => return broker_login_plan_error_response(error),
     };
 
     let local_user_id = exec_broker_login_plan(

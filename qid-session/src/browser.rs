@@ -256,6 +256,7 @@ mod tests {
     struct FailingSessionRepo {
         sessions: Mutex<Vec<Session>>,
         fail_revoke: AtomicBool,
+        fail_create: AtomicBool,
         create_calls: AtomicUsize,
     }
 
@@ -263,6 +264,11 @@ mod tests {
     impl SessionRepository for FailingSessionRepo {
         async fn create_session(&self, session: &Session) -> QidResult<()> {
             self.create_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_create.load(Ordering::SeqCst) {
+                return Err(QidError::Storage {
+                    message: "replacement creation failed".to_string(),
+                });
+            }
             self.sessions.lock().unwrap().push(session.clone());
             Ok(())
         }
@@ -395,5 +401,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cache.invalidated.lock().unwrap().as_slice(), &["old"]);
+    }
+    #[tokio::test]
+    async fn regeneration_invalidates_cache_even_when_replacement_creation_fails() {
+        let repo = Arc::new(FailingSessionRepo::default());
+        let now = qid_core::util::now_seconds();
+        repo.create_session(&Session {
+            id: "old".to_string(),
+            realm_id: "corp".to_string(),
+            user_id: "user".to_string(),
+            auth_time: now,
+            acr: Some("pwd".to_string()),
+            amr: vec!["pwd".to_string()],
+            idle_expires_at: now + 30,
+            absolute_expires_at: now + 3600,
+            revoked: false,
+            created_at: now,
+            cnf: None,
+        })
+        .await
+        .unwrap();
+        repo.create_calls.store(0, Ordering::SeqCst);
+        repo.fail_create.store(true, Ordering::SeqCst);
+        let cache = Arc::new(RecordingCache::default());
+        let manager = SessionManager::with_cache(repo.clone(), 30, 8, cache.clone());
+        let err = manager
+            .create_with_regeneration("corp", "user", "pwd", &["pwd".to_string()], Some("old"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, QidError::Storage { .. }));
+        assert_eq!(cache.invalidated.lock().unwrap().as_slice(), &["old"]);
+        assert!(repo.sessions.lock().unwrap()[0].revoked);
     }
 }

@@ -480,7 +480,10 @@ pub struct SamlProtocolConfig {
     /// Path to a PKCS#8 PEM private key used to produce W3C XMLDSig
     /// signatures on SAML Responses, Assertions, and the IdP metadata
     /// document. Required when SAML response/assertion signing or
-    /// metadata signing is enabled.
+    /// metadata signing is enabled. Also required whenever SAML is enabled
+    /// for SSO/SLO SessionIndex binding, even when response/assertion and
+    /// metadata signing are disabled. Rotating this key invalidates
+    /// outstanding SessionIndexes.
     #[serde(default)]
     pub idp_signing_key_pem_path: Option<String>,
     /// Path to a PKCS#8 PEM private key used to decrypt incoming

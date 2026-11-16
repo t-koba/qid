@@ -1531,6 +1531,21 @@ impl RealmConfig {
                 });
             }
         }
+        if self.protocols.saml.enabled
+            && self
+                .protocols
+                .saml
+                .idp_signing_key_pem_path
+                .as_deref()
+                .is_none_or(|path| path.trim().is_empty())
+        {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {} SAML SSO/SLO SessionIndex binding requires idp_signing_key_pem_path",
+                    self.id
+                ),
+            });
+        }
         for provider in &self.protocols.federation.inbound_providers {
             if provider.enabled
                 && provider.kind.eq_ignore_ascii_case("saml")

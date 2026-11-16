@@ -1075,6 +1075,41 @@ fn deployment_profiles_enforce_required_capabilities() {
 }
 
 #[test]
+fn saml_enabled_requires_session_index_binding_key_without_signing() {
+    let mut config = minimal_config();
+    config.realms[0].protocols.saml = SamlProtocolConfig {
+        enabled: true,
+        sign_assertions: false,
+        sign_metadata: false,
+        service_providers: vec![SamlServiceProviderConfig {
+            entity_id: "https://sp.example.com/metadata".to_string(),
+            acs_url: "https://sp.example.com/acs".to_string(),
+            slo_url: None,
+            name_id_formats: vec![],
+            attribute_release_policy: vec![],
+            signing_certificates: vec!["MIIBsigning".to_string()],
+            encryption_certificates: vec![],
+            want_assertions_signed: false,
+        }],
+        ..SamlProtocolConfig::default()
+    };
+
+    for key_path in [None, Some(" \t\n".to_string())] {
+        config.realms[0].protocols.saml.idp_signing_key_pem_path = key_path;
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, QidError::Config { .. }));
+        assert_eq!(
+            err.message(),
+            "config error: realm corp SAML SSO/SLO SessionIndex binding requires idp_signing_key_pem_path"
+        );
+    }
+
+    config.realms[0].protocols.saml.idp_signing_key_pem_path =
+        Some("saml/idp-signing.key".to_string());
+    config.validate().unwrap();
+}
+
+#[test]
 fn saml_service_provider_config_validates_trust_material() {
     let mut config = QidConfig {
         include: Vec::new(),

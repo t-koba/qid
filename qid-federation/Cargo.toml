@@ -33,7 +33,7 @@ krb5 = "=1.0.0"
 bergshamra-dsig = { version = "=0.11.0", default-features = false }
 bergshamra-keys = { version = "=0.11.0", default-features = false }
 http-body-util = { workspace = true }
-qid-core = { workspace = true, features = ["test-utils"] }
+qid-core = { workspace = true, features = ["test-utils", "redis-cache"] }
 qid-crypto = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true }

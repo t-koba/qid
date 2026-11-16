@@ -169,7 +169,8 @@ impl SharedCache for MemoryCache {
 pub mod redis_cache {
     //! Redis-backed SharedCache implementation.
     use super::SharedCache;
-    use redis::{Client, Commands, Connection, RedisError};
+    use redis::{Client, Commands, Connection, RedisError, Value};
+    use std::num::NonZeroU32;
     use std::sync::Mutex;
 
     /// Redis-backed cache implementing `SharedCache`.
@@ -184,6 +185,58 @@ pub mod redis_cache {
             Ok(Self {
                 conn: Mutex::new(conn),
             })
+        }
+
+        /// Opt-in local-AOF durability qualification; not used by `SharedCache`.
+        ///
+        /// Requires Redis >= 7.2 with AOF enabled. On this same locked connection,
+        /// a new `SET NX EX` is followed by `WAITAOF 1 0 timeout_ms`. The caller
+        /// chooses a finite, nonzero server wait in milliseconds (zero would
+        /// mean forever in Redis). Only an exact local fsync acknowledgement
+        /// succeeds; duplicates return false without waiting. Errors leave any
+        /// inserted key in place, rejecting retries rather than undoing a write
+        /// whose durability is uncertain. Error text never includes server data.
+        ///
+        /// This acknowledges one server's AOF, not replica/failover durability or
+        /// a production deployment guarantee. Transport deadlines are separate
+        /// from the server-side wait; this operation does not change the generic
+        /// cache connection's transport settings.
+        pub fn set_if_absent_wait_aof(
+            &self,
+            key: &str,
+            value: Vec<u8>,
+            ttl_seconds: u64,
+            timeout_ms: NonZeroU32,
+        ) -> crate::error::QidResult<bool> {
+            let unavailable = || crate::error::QidError::Internal {
+                message: "redis local AOF acknowledgement unavailable".into(),
+            };
+            let mut conn = self.conn.lock().map_err(|_| unavailable())?;
+            let response = redis::cmd("SET")
+                .arg(key)
+                .arg(value)
+                .arg("NX")
+                .arg("EX")
+                .arg(ttl_seconds)
+                .query::<Value>(&mut *conn)
+                .map_err(|_| unavailable())?;
+            match response {
+                Value::Nil => return Ok(false),
+                Value::Okay => {}
+                _ => return Err(unavailable()),
+            }
+            let response = redis::cmd("WAITAOF")
+                .arg(1)
+                .arg(0)
+                .arg(timeout_ms.get())
+                .query::<Value>(&mut *conn)
+                .map_err(|_| unavailable())?;
+            match response {
+                Value::Array(counts) if matches!(counts.as_slice(), [Value::Int(1), Value::Int(replicas)] if *replicas >= 0) => {
+                    Ok(true)
+                }
+                _ => Err(unavailable()),
+            }
         }
     }
 

@@ -5,6 +5,7 @@ on:
     paths:
       - 'qid-federation/**'
       - 'qid-core/src/cache.rs'
+      - 'qid-core/tests/redis_durability.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/kerberos/**'
@@ -13,6 +14,7 @@ on:
     paths:
       - 'qid-federation/**'
       - 'qid-core/src/cache.rs'
+      - 'qid-core/tests/redis_durability.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/kerberos/**'
@@ -43,3 +45,14 @@ jobs:
           sudo -E apt-get install -y --no-install-recommends krb5-kdc krb5-admin-server krb5-user libkrb5-dev python3-gssapi
       - name: Prove the candidate acceptor with the QID replay store
         run: /usr/bin/python3 scripts/kerberos/test-mit-spnego.py
+
+  redis-replay-qualification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Qualify local AOF replay retention across a Redis crash
+        run: python3 scripts/kerberos/test-redis-replay.py

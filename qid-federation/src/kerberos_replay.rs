@@ -8,7 +8,10 @@ use std::{fmt, io, sync::Arc};
 /// Replay protection has only the sharing and durability that the backend
 /// provides. QID's default `MemoryCache` is process-local and is cleared on
 /// restart; multi-process acceptors need a shared backend that retains entries
-/// for their TTL.
+/// for their TTL. The generic Redis `SharedCache` operation is atomic but does
+/// not acknowledge durable storage. The isolated Redis qualification fixture
+/// uses an explicit local-AOF operation via a test-only adapter; it is not a
+/// production backend selection or a multi-host failover guarantee.
 pub struct KerberosReplayStore {
     cache: Arc<dyn SharedCache>,
 }

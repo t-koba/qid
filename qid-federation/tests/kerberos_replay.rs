@@ -144,3 +144,98 @@ fn backend_errors_fail_closed_and_debug_is_opaque() {
         2
     );
 }
+
+// Qualification only: no provider, route or runtime backend selection uses this
+// adapter. Keep the generic Redis SharedCache semantics unchanged.
+struct LocalAofCache(qid_core::cache::redis_cache::RedisCache);
+
+impl SharedCache for LocalAofCache {
+    fn get(&self, _: &str) -> Option<Vec<u8>> {
+        panic!("replay insertion must not use get")
+    }
+
+    fn set(&self, _: &str, _: Vec<u8>, _: u64) {
+        panic!("replay insertion must not use set")
+    }
+
+    fn delete(&self, _: &str) {
+        panic!("replay insertion must not use delete")
+    }
+
+    #[allow(clippy::expect_used)] // A literal nonzero fixture timeout.
+    fn set_if_absent(&self, key: &str, value: Vec<u8>, ttl: u64) -> QidResult<bool> {
+        self.0.set_if_absent_wait_aof(
+            key,
+            value,
+            ttl,
+            std::num::NonZeroU32::new(2000).expect("nonzero fixture wait"),
+        )
+    }
+}
+
+/// Run only through scripts/kerberos/test-redis-replay.py: it owns a disposable
+/// Redis process and bounds each phase. No Redis URL or replay tag is printed.
+#[test]
+#[ignore = "requires the isolated Redis restart harness"]
+fn redis_local_aof_qualification() -> io::Result<()> {
+    use qid_core::cache::redis_cache::RedisCache;
+    let url = std::env::var("QID_TEST_REDIS_URL")
+        .map_err(|_| io::Error::other("missing fixture endpoint"))?;
+    // Each acceptor has a separate TCP connection, not just a shared mutex.
+    let stores: Vec<_> = (0..8)
+        .map(|_| {
+            RedisCache::new(&url)
+                .map(|cache| Arc::new(KerberosReplayStore::new(Arc::new(LocalAofCache(cache)))))
+                .map_err(|_| io::Error::other("fixture connection failed"))
+        })
+        .collect::<io::Result<_>>()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| io::Error::other("fixture clock failed"))?
+        .as_secs() as i64;
+    match std::env::var("QID_TEST_REDIS_PHASE").as_deref() {
+        Ok("before-restart") => {
+            let barrier = Arc::new(Barrier::new(stores.len()));
+            let handles: Vec<_> = stores
+                .iter()
+                .map(|store| {
+                    let store = store.clone();
+                    let barrier = barrier.clone();
+                    thread::spawn(move || {
+                        barrier.wait();
+                        store.insert(b"redis-restart-candidate", now, now + 600)
+                    })
+                })
+                .collect();
+            let mut winners = 0;
+            for handle in handles {
+                if handle
+                    .join()
+                    .map_err(|_| io::Error::other("fixture worker panicked"))??
+                {
+                    winners += 1;
+                }
+            }
+            assert_eq!(winners, 1);
+            assert!(!stores[0].insert(b"redis-restart-candidate", now, now + 600)?);
+        }
+        Ok("after-restart") => {
+            for store in &stores {
+                assert!(!store.insert(b"redis-restart-candidate", now, now + 600)?);
+            }
+            assert!(stores[0].insert(b"fresh-after-restart", now, now + 600)?);
+            assert!(!stores[1].insert(b"fresh-after-restart", now, now + 600)?);
+        }
+        Ok("unavailable") => {
+            let error = stores[0]
+                .insert(b"unacknowledged", now, now + 600)
+                .expect_err("an unacknowledged write must fail closed");
+            assert_eq!(error.to_string(), "Kerberos replay cache unavailable");
+            // Failure must not undo the uncertain SET; a different acceptor
+            // still rejects this tag instead of accepting it on a retry.
+            assert!(!stores[1].insert(b"unacknowledged", now, now + 600)?);
+        }
+        _ => return Err(io::Error::other("invalid fixture phase")),
+    }
+    Ok(())
+}

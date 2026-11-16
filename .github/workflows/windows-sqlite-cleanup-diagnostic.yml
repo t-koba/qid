@@ -235,7 +235,16 @@ jobs:
             foreach ($candidate in $Lines) {
               if ($script:reportTruncated) { break }
               $line = [string]$candidate
-              if ($line -cnotmatch $script:reportPattern) { continue }
+              if ($line -cnotmatch $script:reportPattern) {
+                # libtest can leave its `test … ... ` progress prefix without a
+                # newline while the child diagnostic writes to inherited stdout.
+                # Strip any prefix only when the remaining complete record still
+                # matches the strict allowlist; never preserve the joined text.
+                $marker = $line.LastIndexOf('RM ', [StringComparison]::Ordinal)
+                if ($marker -lt 0) { continue }
+                $line = $line.Substring($marker)
+                if ($line -cnotmatch $script:reportPattern) { continue }
+              }
               $record = $line + [Environment]::NewLine
               $recordBytes = [Text.Encoding]::UTF8.GetByteCount($record)
               if ($script:reportBytes + $recordBytes + $script:reportNoticeBytes -gt $script:reportLimit) {
@@ -248,6 +257,37 @@ jobs:
               $script:reportBytes += $recordBytes
             }
           }
+          # Exercise the same sanitizer and report file that the artifact upload
+          # consumes. The joined progress prefix and malformed row must never be
+          # persisted; restore the header before collecting real diagnostics.
+          $reportBeforeSanitizerTest = [IO.File]::ReadAllBytes($script:report)
+          $reportBytesBeforeSanitizerTest = $script:reportBytes
+          $reportTruncatedBeforeSanitizerTest = $script:reportTruncated
+          $sanitizerTestFailed = $false
+          try {
+            $safeProbe = 'RM image=sqlx_sqlite.exe pid=1234 suffix=db'
+            $joinedProbe = 'test qid_storage::sql::cleanup ... PRIVATE_PREFIX ' + $safeProbe
+            $invalidProbe = 'test qid_storage::cleanup ... RM image=../private pid=1234 suffix=db'
+            Add-SanitizedDiagnosticLines @($joinedProbe, $invalidProbe)
+            $sanitized = [IO.File]::ReadAllLines($script:report)
+            if ($sanitized.Count -ne 2 -or $sanitized[1] -cne $safeProbe -or
+                (($sanitized -join "`n") -match 'PRIVATE_PREFIX|\.\./private')) {
+              throw 'Sanitized report mismatch'
+            }
+          } catch {
+            Write-Host 'ERROR: Workflow sanitizer artifact self-test failed (raw output suppressed).'
+            $sanitizerTestFailed = $true
+          } finally {
+            try {
+              [IO.File]::WriteAllBytes($script:report, $reportBeforeSanitizerTest)
+              $script:reportBytes = $reportBytesBeforeSanitizerTest
+              $script:reportTruncated = $reportTruncatedBeforeSanitizerTest
+            } catch {
+              Write-Host 'ERROR: Workflow sanitizer artifact self-test cleanup failed (raw output suppressed).'
+              $sanitizerTestFailed = $true
+            }
+          }
+          if ($sanitizerTestFailed) { exit 1 }
           $suffix = "diagnostic-$([Guid]::NewGuid().ToString('N'))"
           $database = Join-Path ([IO.Path]::GetTempPath()) "qid-user-deletion-$suffix.db"
           $paths = @($database, "$database-wal", "$database-shm", "$database-journal")

@@ -260,7 +260,7 @@ SIEM and notification delivery send HTTPS requests by default. Add `--dry-run` t
 | `audit-siem-deliver` | Send a SIEM webhook to an HTTPS endpoint; `--dry-run` records without sending. |
 | `audit-siem-redrive` | Redrive a persistent SIEM delivery queue entry. |
 | `notification-deliver` | Send email or push notification to an HTTPS endpoint, or send email via SMTP when `--provider` is `smtp(s)://`; `--dry-run` records without sending. |
-| `push-cleanup` | Delete a bounded batch of expired push records and OIDC authorization continuations; schedule repeated invocations externally. |
+| `push-cleanup` | Delete bounded batches of expired push records, OIDC authorization continuations, and AdminElevation rows; schedule repeated invocations externally. |
 | `directory-sync` | Synchronize a configured directory provider. |
 | `scim-outbound-sync` | Reconcile realm SCIM users and groups to HTTPS; dry-run by default, `--apply` enables writes. |
 | `key-rotation-plan` | Plan key rotation and optionally record an audit event. |
@@ -295,8 +295,8 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml push-cleanup --limit 10
 
 `push-cleanup` is a one-shot command. The external scheduler must run it
 repeatedly; qid does not schedule cleanup itself. `--limit` bounds each of the
-push-record and OIDC-continuation cleanup batches independently (default `100`,
-allowed `1..=1000`).
+push-record, OIDC-continuation, and AdminElevation cleanup batches independently
+(default `100`, allowed `1..=1000`).
 
 ### SCIM outbound
 

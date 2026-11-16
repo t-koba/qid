@@ -95,11 +95,10 @@ The TOTP admin sample explicitly selects this lower, TOTP-only assurance; it
 is not password-plus-TOTP. These settings do not grant admin membership or
 provision an elevation.
 
-Admin elevation storage reclaims other records whose expiry is at or before
-its next elevation's server-created timestamp. Active elevations are retained;
-IDs remain create-only even when the incumbent is expired. Cleanup is driven
-by elevation writes, not a background timer, and does not remove approvals
-or browser sessions.
+Expired elevation rows are reclaimed by the one-shot `qid-worker push-cleanup`
+job in bounded batches (expiry is inclusive). Repeated external scheduling bounds
+cleanup lag without adding work to elevation issuance. Elevation IDs remain
+create-only until reclaimed; cleanup does not remove approvals or browser sessions.
 
 For sensitive deployments, enable approval and keep elevation TTL short.
 

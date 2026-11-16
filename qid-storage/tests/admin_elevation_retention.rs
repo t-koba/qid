@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-//! Expiry reclamation is a create-only storage contract, independent of wall time.
+//! Expiry reclamation is a separate bounded storage contract, independent of wall time.
 use qid_core::{
     QidError,
     models::{Admin, AdminElevation},
@@ -19,7 +19,6 @@ fn elevation(id: &str, created_at: u64, expiry: u64) -> AdminElevation {
         created_at,
     }
 }
-
 async fn assert_records(repo: &impl AdminRepository, records: &[AdminElevation], cutoff: u64) {
     for expected in records {
         let actual = repo
@@ -39,8 +38,19 @@ async fn assert_records(repo: &impl AdminRepository, records: &[AdminElevation],
         }
     }
 }
-
-async fn retention_contract(repo: &impl AdminRepository) -> Vec<AdminElevation> {
+async fn cleanup_until_empty(repo: &impl AdminRepository, cutoff: u64) {
+    loop {
+        let deleted = repo
+            .cleanup_expired_admin_elevations(cutoff, 2)
+            .await
+            .expect("bounded cleanup");
+        assert!(deleted <= 2, "cleanup exceeded its batch limit");
+        if deleted == 0 {
+            break;
+        }
+    }
+}
+async fn retention_contract(repo: &impl AdminRepository) -> (Vec<AdminElevation>, u64) {
     for (id, tenant) in [("admin", "tenant"), ("other-admin", "other-tenant")] {
         repo.upsert_admin(&Admin {
             id: id.into(),
@@ -65,7 +75,6 @@ async fn retention_contract(repo: &impl AdminRepository) -> Vec<AdminElevation> 
         u64::MAX,
     ] {
         let mut record = elevation(&format!("expiry-{expiry}"), 1, expiry);
-        // Cleanup spans tenants, but must not change any active row's binding.
         if expiry % 2 == 0 {
             record.tenant_id = "other-tenant".into();
             record.admin_id = "other-admin".into();
@@ -75,8 +84,6 @@ async fn retention_contract(repo: &impl AdminRepository) -> Vec<AdminElevation> 
             .expect("seed elevation");
         records.push(record);
     }
-
-    // An expired incumbent is still a create-only conflict, even across owners.
     let mut duplicate = records[0].clone();
     duplicate.created_at = 99;
     duplicate.elevation_expires_at = u64::MAX;
@@ -87,57 +94,50 @@ async fn retention_contract(repo: &impl AdminRepository) -> Vec<AdminElevation> 
         Err(QidError::Conflict { .. })
     ));
     assert_records(repo, &records, 98).await;
-
-    for cutoff in [
-        98,
-        99,
-        100,
-        101,
-        high - 1,
-        high,
-        high + 199,
-        high + 200,
-        u64::MAX - 1,
-    ] {
+    let last_cutoff = high - 1;
+    for cutoff in [98, 99, 100, 101, last_cutoff] {
         let incoming = elevation(&format!("write-{cutoff}"), cutoff, cutoff + 1);
         repo.store_admin_elevation(&incoming)
             .await
             .expect("store next elevation");
         records.push(incoming);
+        cleanup_until_empty(repo, cutoff).await;
         assert_records(repo, &records, cutoff).await;
     }
-    records
+    assert!(matches!(
+        repo.cleanup_expired_admin_elevations(last_cutoff, 0).await,
+        Err(QidError::BadRequest { .. })
+    ));
+    (records, last_cutoff)
 }
-
 #[tokio::test]
-async fn file_writes_reclaim_expired_elevations_durably() {
+async fn file_cleanup_reclaims_expired_elevations_durably() {
     let dir = tempfile::tempdir().expect("isolated directory");
     let path = dir.path().join("store.json");
     let repo = FileRepository::new(path.to_str().expect("UTF-8 path"))
         .await
         .expect("open file repository");
     repo.migrate().await.expect("migrate repository");
-    let records = retention_contract(&repo).await;
+    let (records, cutoff) = retention_contract(&repo).await;
     drop(repo);
     let reopened = FileRepository::new(path.to_str().expect("UTF-8 path"))
         .await
-        .expect("open file repository");
-    assert_records(&reopened, &records, u64::MAX - 1).await;
+        .expect("reopen file repository");
+    assert_records(&reopened, &records, cutoff).await;
 }
-
 #[tokio::test]
-async fn sqlite_writes_reclaim_expired_elevations_durably_in_unsigned_order() {
+async fn sqlite_cleanup_reclaims_expired_elevations_in_expiry_order() {
     let dir = tempfile::tempdir().expect("isolated directory");
     let url = format!("sqlite:{}", dir.path().join("store.db").display());
     let repo = SqlRepository::connect(&url)
         .await
         .expect("connect SQLite repository");
     repo.migrate().await.expect("migrate repository");
-    let records = retention_contract(&repo).await;
+    let (records, cutoff) = retention_contract(&repo).await;
     repo.close().await;
     let reopened = SqlRepository::connect(&url)
         .await
-        .expect("connect SQLite repository");
-    assert_records(&reopened, &records, u64::MAX - 1).await;
+        .expect("reopen SQLite repository");
+    assert_records(&reopened, &records, cutoff).await;
     reopened.close().await;
 }

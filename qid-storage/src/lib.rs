@@ -360,6 +360,7 @@ delegate!(AdminRepository {
     upsert_admin(&self, admin: &qid_core::models::Admin) -> QidResult<()>;
     get_admin_elevation(&self, id: &str) -> QidResult<Option<qid_core::models::AdminElevation>>;
     store_admin_elevation(&self, elevation: &qid_core::models::AdminElevation) -> QidResult<()>;
+    cleanup_expired_admin_elevations(&self, now: u64, limit: u32) -> QidResult<u64>;
     get_admin_approval(&self, id: &str) -> QidResult<Option<qid_core::models::AdminApproval>>;
     store_admin_approval(&self, approval: &qid_core::models::AdminApproval) -> QidResult<()>;
     consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool>;

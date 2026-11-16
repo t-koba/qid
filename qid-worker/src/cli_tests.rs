@@ -1,6 +1,6 @@
 use super::*;
 use qid_core::{
-    models::{AuditEvent, AuditRetentionConfig, ScimUser},
+    models::{AdminElevation, AuditEvent, AuditRetentionConfig, ScimUser},
     tenant::RealmId,
 };
 use qid_storage::prelude::*;
@@ -47,6 +47,18 @@ async fn push_cleanup_command_is_bounded_and_independent_of_audit() {
         .await
         .unwrap();
     append_audit_event(&repo, "must-remain", 1).await;
+    repo.store_admin_elevation(&AdminElevation {
+        id: "expired-elevation".into(),
+        tenant_id: "tenant".into(),
+        admin_id: "admin".into(),
+        source_session_id: Some("session".into()),
+        acr: None,
+        amr: vec![],
+        elevation_expires_at: 1,
+        created_at: 1,
+    })
+    .await
+    .unwrap();
     drop(repo);
     let args = Args::try_parse_from([
         "qid-worker",
@@ -57,10 +69,17 @@ async fn push_cleanup_command_is_bounded_and_independent_of_audit() {
     .unwrap();
     let result = run(args).await.unwrap();
     assert_eq!(result["command"], "push_cleanup");
-    assert_eq!(result["deleted"], 0);
+    assert_eq!(result["deleted"], 1);
+    assert_eq!(result["admin_elevations_deleted"], 1);
     let repo = AnyRepository::connect(store.to_str().unwrap())
         .await
         .unwrap();
+    assert!(
+        repo.get_admin_elevation("expired-elevation")
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         repo.list_audit_events(None, 10)
             .await

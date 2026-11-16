@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use super::*;
+use crate::oidc_continuation as state;
 
 #[async_trait]
 impl AdminRepository for FileRepository {
@@ -49,10 +50,63 @@ impl AdminRepository for FileRepository {
         reject_duplicate_id(elevations.contains_key(&elevation.id), || {
             format!("Admin elevation ID {} already exists", elevation.id)
         })?;
-        elevations.retain(|_, old| old.elevation_expires_at > elevation.created_at);
         elevations.insert(elevation.id.clone(), elevation.clone());
         drop(store);
         self.save().await
+    }
+
+    async fn cleanup_expired_admin_elevations(&self, now: u64, limit: u32) -> QidResult<u64> {
+        state::validate_cleanup(now, limit)?;
+        let repo = self.clone();
+        tokio::spawn(async move {
+            let save_guard = repo.save_lock.lock().await;
+            let mut store = repo.store.write().await;
+            let mut oldest =
+                std::collections::BinaryHeap::<(u64, String)>::with_capacity(limit as usize);
+            for (id, row) in &store.admin_elevations {
+                if row.id != *id {
+                    return Err(QidError::Internal {
+                        message: "admin elevation index is inconsistent".into(),
+                    });
+                }
+                if row.elevation_expires_at <= now {
+                    let candidate = (row.elevation_expires_at, id.clone());
+                    if oldest.len() < limit as usize {
+                        oldest.push(candidate);
+                    } else if oldest.peek().is_some_and(|last| candidate < *last) {
+                        oldest.pop();
+                        oldest.push(candidate);
+                    }
+                }
+            }
+            let removed: Vec<_> = oldest
+                .into_vec()
+                .into_iter()
+                .filter_map(|(_, id)| store.admin_elevations.remove(&id).map(|row| (id, row)))
+                .collect();
+            let deleted = removed.len() as u64;
+            if deleted == 0 {
+                return Ok(0);
+            }
+            let written = async {
+                let content = serde_json::to_string(&*store).map_err(|_| QidError::Internal {
+                    message: "admin elevation cleanup serialization failed".into(),
+                })?;
+                repo.write_store_content_locked(&save_guard, &content).await
+            }
+            .await;
+            if let Err(error) = written {
+                for (id, row) in removed {
+                    store.admin_elevations.insert(id, row);
+                }
+                return Err(error);
+            }
+            Ok(deleted)
+        })
+        .await
+        .map_err(|_| QidError::Internal {
+            message: "admin elevation cleanup task failed".into(),
+        })?
     }
 
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {

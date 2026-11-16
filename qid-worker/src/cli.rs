@@ -371,16 +371,19 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
             Ok(serde_json::json!({"command": "scim_outbound_sync", "report": report}))
         }
         Command::PushCleanup { limit } => {
-            use qid_storage::{OidcContinuationRepository, PushRepository};
+            use qid_storage::{AdminRepository, OidcContinuationRepository, PushRepository};
             let now = now_seconds();
             let push_deleted = repo.cleanup_expired_push_records(now, limit).await?;
             let oidc_continuations_deleted =
                 repo.cleanup_expired_oidc_continuations(now, limit).await?;
+            let admin_elevations_deleted =
+                repo.cleanup_expired_admin_elevations(now, limit).await?;
             Ok(serde_json::json!({
                 "command": "push_cleanup",
-                "deleted": push_deleted + oidc_continuations_deleted,
+                "deleted": push_deleted + oidc_continuations_deleted + admin_elevations_deleted,
                 "push_deleted": push_deleted,
-                "oidc_continuations_deleted": oidc_continuations_deleted
+                "oidc_continuations_deleted": oidc_continuations_deleted,
+                "admin_elevations_deleted": admin_elevations_deleted
             }))
         }
         Command::RetentionEvaluate {

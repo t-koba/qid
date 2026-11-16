@@ -965,9 +965,10 @@ pub trait AdminRepository: Send + Sync + 'static {
     async fn get_admin_by_id(&self, id: &str) -> QidResult<Option<Admin>>;
     async fn upsert_admin(&self, admin: &Admin) -> QidResult<()>;
     async fn get_admin_elevation(&self, id: &str) -> QidResult<Option<AdminElevation>>;
-    /// Create-only insert; reclaim other records expiring at or before the
-    /// server-created `elevation.created_at`, preserving all active records.
+    /// Create-only insert; expiry reclamation is a separate bounded operation.
     async fn store_admin_elevation(&self, elevation: &AdminElevation) -> QidResult<()>;
+    /// Delete at most `limit` elevations expiring at or before `now` (inclusive).
+    async fn cleanup_expired_admin_elevations(&self, now: u64, limit: u32) -> QidResult<u64>;
     async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>>;
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()>;
     async fn consume_admin_approval_if_unconsumed(&self, id: &str) -> QidResult<bool>;

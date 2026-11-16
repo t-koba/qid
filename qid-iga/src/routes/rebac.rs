@@ -274,6 +274,10 @@ mod read_and_check_tests {
             Ok(())
         }
 
+        async fn cleanup_expired_admin_elevations(&self, _now: u64, _limit: u32) -> QidResult<u64> {
+            Ok(0)
+        }
+
         async fn get_admin_approval(&self, id: &str) -> QidResult<Option<AdminApproval>> {
             let _ = id;
             Ok(None)

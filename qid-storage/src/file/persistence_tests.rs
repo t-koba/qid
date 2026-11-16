@@ -1240,3 +1240,33 @@ async fn interval_ciam_attempt_remains_dirty_until_flush() {
         1
     );
 }
+
+#[tokio::test]
+async fn admin_elevation_cleanup_failure_rolls_back_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.json");
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    repo.store_admin_elevation(&AdminElevation {
+        id: "expired".into(),
+        tenant_id: "tenant".into(),
+        admin_id: "admin".into(),
+        source_session_id: Some("session".into()),
+        acr: None,
+        amr: vec![],
+        elevation_expires_at: 10,
+        created_at: 1,
+    })
+    .await
+    .unwrap();
+    let disk = std::fs::read(&path).unwrap();
+    std::fs::create_dir(path.with_extension("tmp")).unwrap();
+    assert!(repo.cleanup_expired_admin_elevations(10, 1).await.is_err());
+    assert!(repo.get_admin_elevation("expired").await.unwrap().is_some());
+    assert_eq!(std::fs::read(&path).unwrap(), disk);
+    std::fs::remove_dir(path.with_extension("tmp")).unwrap();
+    assert_eq!(
+        repo.cleanup_expired_admin_elevations(10, 1).await.unwrap(),
+        1
+    );
+    assert!(repo.get_admin_elevation("expired").await.unwrap().is_none());
+}

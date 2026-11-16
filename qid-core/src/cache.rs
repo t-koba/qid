@@ -145,6 +145,14 @@ impl CacheExpiryState {
         }
         self.next_deadline() != earliest
     }
+
+    fn live_store(&mut self, id: CacheStoreId) -> Option<Arc<Mutex<CacheStore>>> {
+        let store = self.stores.get(&id).and_then(Weak::upgrade);
+        if store.is_none() {
+            self.stores.remove(&id);
+        }
+        store
+    }
 }
 
 struct CacheExpiryReaper {
@@ -183,6 +191,29 @@ impl CacheExpiryReaper {
         }
     }
 
+    fn process_due_cache(&self, id: CacheStoreId) {
+        let store = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.live_store(id)
+        };
+        let Some(store) = store else {
+            return;
+        };
+        let mut store = store.lock().unwrap_or_else(|error| error.into_inner());
+        #[cfg(test)]
+        {
+            store.reaper_visits += 1;
+        }
+        let now = Instant::now();
+        let next = store.next_expiration();
+        if next.is_none_or(|deadline| deadline > now) {
+            self.update_deadline(id, next);
+            return;
+        }
+        store.remove_expired(now);
+        self.update_deadline(id, store.next_expiration());
+    }
+
     fn run(self: Arc<Self>) {
         loop {
             let due = {
@@ -214,28 +245,7 @@ impl CacheExpiryReaper {
             };
 
             for id in due {
-                let store = {
-                    let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-                    state.stores.get(&id).and_then(Weak::upgrade)
-                };
-                let Some(store) = store else {
-                    let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-                    state.stores.remove(&id);
-                    continue;
-                };
-                let mut store = store.lock().unwrap_or_else(|error| error.into_inner());
-                #[cfg(test)]
-                {
-                    store.reaper_visits += 1;
-                }
-                let now = Instant::now();
-                let next = store.next_expiration();
-                if next.is_none_or(|deadline| deadline > now) {
-                    self.update_deadline(id, next);
-                    continue;
-                }
-                store.remove_expired(now);
-                self.update_deadline(id, store.next_expiration());
+                self.process_due_cache(id);
             }
         }
     }
@@ -721,10 +731,11 @@ impl SessionCache {
 mod tests {
     use super::{
         ASSERTION_SCOPE_OAUTH_JWT_BEARER, ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT,
-        ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT, DpopState, MemoryCache, SharedCache,
-        assertion_replay_key, cache_expiry_reaper, cache_store_id,
+        ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT, CacheEntry, CacheExpiryReaper, CacheExpiryState,
+        CacheStore, DpopState, MemoryCache, SharedCache, assertion_replay_key, cache_expiry_reaper,
+        cache_store_id,
     };
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, Condvar, Mutex, Weak};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -885,6 +896,80 @@ mod tests {
         drop(cache);
         let state = cache_expiry_reaper().state.lock().unwrap();
         assert!(!state.stores.contains_key(&id));
+        assert!(!state.scheduled.contains_key(&id));
+    }
+
+    #[test]
+    fn memory_cache_reaper_keeps_a_reused_registration_after_a_stale_due_visit() {
+        let reaper = CacheExpiryReaper {
+            state: Mutex::new(CacheExpiryState::default()),
+            changed: Condvar::new(),
+        };
+        let old_store = Arc::new(Mutex::new(CacheStore::default()));
+        let id = cache_store_id(&old_store);
+        let expired_at = Instant::now() - Duration::from_secs(1);
+        reaper.register(&old_store);
+        reaper.update_deadline(id, Some(expired_at));
+        {
+            let mut state = reaper.state.lock().unwrap();
+            let (deadline, due) = state.deadlines.pop_first().unwrap();
+            assert_eq!(deadline, expired_at);
+            assert!(due.contains(&id));
+            for due_id in due {
+                state.scheduled.remove(&due_id);
+            }
+        }
+        reaper.unregister(&old_store);
+        drop(old_store);
+
+        // This is the stale due visit after the original cache was dropped.
+        // Its cleanup completes before a new registration can take the same ID.
+        reaper.process_due_cache(id);
+        assert!(!reaper.state.lock().unwrap().stores.contains_key(&id));
+
+        let new_store = Arc::new(Mutex::new(CacheStore::default()));
+        new_store.lock().unwrap().insert(
+            "expires".to_string(),
+            CacheEntry {
+                value: b"new cache".to_vec(),
+                expires_at: expired_at,
+            },
+        );
+        {
+            // Reuse the old ID deterministically instead of relying on allocator
+            // address reuse to reproduce the registration race.
+            reaper
+                .state
+                .lock()
+                .unwrap()
+                .stores
+                .insert(id, Arc::downgrade(&new_store));
+        }
+        reaper.update_deadline(id, Some(expired_at));
+        {
+            let mut state = reaper.state.lock().unwrap();
+            let (deadline, due) = state.deadlines.pop_first().unwrap();
+            assert_eq!(deadline, expired_at);
+            assert!(due.contains(&id));
+            for due_id in due {
+                state.scheduled.remove(&due_id);
+            }
+        }
+
+        reaper.process_due_cache(id);
+
+        let store = new_store.lock().unwrap();
+        assert!(store.entries.is_empty());
+        assert!(store.expirations.is_empty());
+        drop(store);
+        let state = reaper.state.lock().unwrap();
+        assert!(
+            state
+                .stores
+                .get(&id)
+                .and_then(Weak::upgrade)
+                .is_some_and(|registered| Arc::ptr_eq(&registered, &new_store))
+        );
         assert!(!state.scheduled.contains_key(&id));
     }
 

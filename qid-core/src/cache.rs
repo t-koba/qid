@@ -9,7 +9,7 @@ use lru::LruCache;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,12 @@ struct CacheStore {
 }
 
 impl CacheStore {
+    fn next_expiration(&self) -> Option<Instant> {
+        self.expirations
+            .first_key_value()
+            .map(|(&expires_at, _)| expires_at)
+    }
+
     fn insert(&mut self, key: String, entry: CacheEntry) {
         let _ = self.remove(&key);
         self.expirations
@@ -94,16 +100,121 @@ impl CacheStore {
     }
 }
 
+/// One process-wide expiry worker services weakly registered in-memory caches.
+/// It sleeps until an entry can expire (or a cache changes its next deadline),
+/// and does not keep cache stores alive.
+struct CacheExpiryReaper {
+    stores: Mutex<Vec<Weak<Mutex<CacheStore>>>>,
+    changed: Condvar,
+}
+
+impl CacheExpiryReaper {
+    fn register(&self, store: &Arc<Mutex<CacheStore>>) {
+        let mut stores = self
+            .stores
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stores.push(Arc::downgrade(store));
+        self.changed.notify_one();
+    }
+
+    fn unregister(&self, store: &Arc<Mutex<CacheStore>>) {
+        let store = Arc::downgrade(store);
+        let mut stores = self
+            .stores
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stores.retain(|candidate| !Weak::ptr_eq(candidate, &store));
+        self.changed.notify_one();
+    }
+
+    fn signal(&self) {
+        // Take the same lock as the worker so a notification cannot be lost
+        // between its sweep and entering the condition-variable wait.
+        let _stores = self
+            .stores
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.changed.notify_one();
+    }
+
+    fn run(self: Arc<Self>) {
+        let mut stores = self
+            .stores
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            let now = Instant::now();
+            let mut next_expiration = None;
+            stores.retain(|weak| {
+                let Some(store) = weak.upgrade() else {
+                    return false;
+                };
+                let mut store = store.lock().unwrap_or_else(|error| error.into_inner());
+                store.remove_expired(now);
+                if let Some(expires_at) = store.next_expiration() {
+                    next_expiration = Some(
+                        next_expiration
+                            .map_or(expires_at, |current: Instant| current.min(expires_at)),
+                    );
+                }
+                true
+            });
+
+            if let Some(expires_at) = next_expiration {
+                let timeout = expires_at.saturating_duration_since(Instant::now());
+                let (next, _) = self
+                    .changed
+                    .wait_timeout(stores, timeout)
+                    .unwrap_or_else(|error| error.into_inner());
+                stores = next;
+            } else {
+                stores = self
+                    .changed
+                    .wait(stores)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+        }
+    }
+}
+
+fn cache_expiry_reaper() -> &'static CacheExpiryReaper {
+    static REAPER: OnceLock<Arc<CacheExpiryReaper>> = OnceLock::new();
+    REAPER
+        .get_or_init(|| {
+            let reaper = Arc::new(CacheExpiryReaper {
+                stores: Mutex::new(Vec::new()),
+                changed: Condvar::new(),
+            });
+            let worker = Arc::clone(&reaper);
+            std::thread::spawn(move || worker.run());
+            reaper
+        })
+        .as_ref()
+}
+
 /// In-memory cache backed by a HashMap and expiry-ordered TTL eviction.
 pub struct MemoryCache {
-    store: Mutex<CacheStore>,
+    store: Arc<Mutex<CacheStore>>,
 }
 
 impl MemoryCache {
     pub fn new() -> Self {
-        Self {
-            store: Mutex::new(CacheStore::default()),
+        let store = Arc::new(Mutex::new(CacheStore::default()));
+        cache_expiry_reaper().register(&store);
+        Self { store }
+    }
+
+    fn wake_reaper_if_earlier(&self, previous: Option<Instant>, next: Option<Instant>) {
+        if next.is_some_and(|next| previous.is_none_or(|previous| next < previous)) {
+            cache_expiry_reaper().signal();
         }
+    }
+}
+
+impl Drop for MemoryCache {
+    fn drop(&mut self) {
+        cache_expiry_reaper().unregister(&self.store);
     }
 }
 
@@ -122,6 +233,7 @@ impl SharedCache for MemoryCache {
 
     fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = store.next_expiration();
         let now = Instant::now();
         store.remove_expired(now);
         store.insert(
@@ -131,15 +243,25 @@ impl SharedCache for MemoryCache {
                 expires_at: now + Duration::from_secs(ttl_seconds),
             },
         );
+        let next = store.next_expiration();
+        drop(store);
+        self.wake_reaper_if_earlier(previous, next);
     }
 
     fn set_if_absent(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) -> QidResult<bool> {
         let mut store = self.store.lock().map_err(|e| QidError::Internal {
             message: format!("memory cache lock poisoned: {e}"),
         })?;
+        let previous = store.next_expiration();
         let now = Instant::now();
         store.remove_expired(now);
         if store.entries.contains_key(key) {
+            let next = store
+                .expirations
+                .first_key_value()
+                .map(|(&expires_at, _)| expires_at);
+            drop(store);
+            self.wake_reaper_if_earlier(previous, next);
             return Ok(false);
         }
         store.insert(
@@ -149,6 +271,9 @@ impl SharedCache for MemoryCache {
                 expires_at: now + Duration::from_secs(ttl_seconds),
             },
         );
+        let next = store.next_expiration();
+        drop(store);
+        self.wake_reaper_if_earlier(previous, next);
         Ok(true)
     }
 
@@ -539,18 +664,36 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn memory_cache_reclaims_expired_entries_without_key_reuse() {
+    fn memory_cache_keeps_zero_ttl_immediately_expired() {
         let cache = MemoryCache::new();
         cache.set("expired", b"value".to_vec(), 0);
-        {
-            let store = cache.store.lock().unwrap_or_else(|e| e.into_inner());
-            assert_eq!(store.entries.len(), 1);
-        }
 
-        assert_eq!(cache.get("unrelated"), None);
+        assert_eq!(cache.get("expired"), None);
         let store = cache.store.lock().unwrap_or_else(|e| e.into_inner());
         assert!(store.entries.is_empty());
         assert!(store.expirations.is_empty());
+    }
+
+    #[test]
+    fn memory_cache_reclaims_expired_entries_while_idle() {
+        use std::time::{Duration, Instant};
+
+        let cache = MemoryCache::new();
+        cache.set("idle-expired", b"value".to_vec(), 1);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let store = cache.store.lock().unwrap_or_else(|e| e.into_inner());
+            if store.entries.is_empty() {
+                assert!(store.expirations.is_empty());
+                return;
+            }
+            drop(store);
+            assert!(
+                Instant::now() < deadline,
+                "idle cache entry was not reclaimed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

@@ -286,6 +286,14 @@ Installed when any realm enables SAML; each endpoint also checks that the reques
 | `POST` | `/saml/:realm/artifact` | Artifact resolution. |
 | `POST` | `/saml/:realm/attribute-query` | Strict signed SOAP 1.1 AttributeQuery; configured realm-local SP certificate required. |
 
+SP-initiated SLO requires a signed LogoutRequest from a configured realm-local
+SP and a nonempty NameID resolving to a user in that realm. Email-format NameIDs
+resolve by email; persistent and unformatted NameIDs resolve by user ID. Other
+formats are rejected. Every existing same-realm SessionIndex must belong to that
+user; a missing, unknown or mismatched subject rejects the request with `400`
+before any session is revoked. Missing and foreign-realm sessions are ignored,
+and repeating a valid logout is idempotent.
+
 ### AttributeQuery subset
 
 Requires `protocols.saml.enabled` (default `false`) and an SP's

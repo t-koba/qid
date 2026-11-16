@@ -108,6 +108,7 @@ pub struct SamlLogoutRequest {
     pub issuer: String,
     pub destination: Option<String>,
     pub name_id: Option<String>,
+    pub name_id_format: Option<String>,
     pub session_indexes: Vec<String>,
     pub relay_state: Option<String>,
     pub raw_xml: String,
@@ -834,11 +835,35 @@ pub fn inspect_saml_logout_request(
         .ok_or_else(|| QidError::BadRequest {
             message: "SAML LogoutRequest Issuer is required".to_string(),
         })?;
+    // Consume the subject only from a direct SAML child of the signed request.
+    let doc = roxmltree::Document::parse(xml).map_err(|err| QidError::BadRequest {
+        message: format!("SAML LogoutRequest XML parse error: {err}"),
+    })?;
+    let mut names = doc
+        .root_element()
+        .children()
+        .filter(|node| node.has_tag_name(("urn:oasis:names:tc:SAML:2.0:assertion", "NameID")));
+    let name = names.next();
+    if names.next().is_some() || name.is_some_and(|node| node.children().any(|n| n.is_element())) {
+        return Err(QidError::BadRequest {
+            message: "SAML LogoutRequest must contain a single text NameID".to_string(),
+        });
+    }
     Ok(SamlLogoutRequest {
         id,
         issuer,
         destination: attr_value(&tag_body, "Destination"),
-        name_id: text_values(body, "NameID").into_iter().next(),
+        name_id: name.map(|node| {
+            let value: String = node
+                .children()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .collect();
+            value.trim().to_string()
+        }),
+        name_id_format: name
+            .and_then(|node| node.attribute("Format"))
+            .map(str::to_string),
         session_indexes: text_values(body, "SessionIndex"),
         relay_state,
         raw_xml: xml.to_string(),

@@ -543,21 +543,51 @@ async fn slo<R: Repository>(
         )
             .into_response();
     }
+    let invalid_subject = || {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_saml_logout_subject",
+                "message": "SAML LogoutRequest NameID must identify the selected sessions' subject",
+            })),
+        )
+            .into_response()
+    };
+    let Some(name_id) = req.name_id.as_deref().filter(|name| !name.is_empty()) else {
+        return invalid_subject();
+    };
+    let realm_id = qid_core::tenant::RealmId::from(realm.as_str());
+    // Match the assertion subject mapping: email NameIDs carry email, persistent
+    // NameIDs carry the user ID. Unformatted NameIDs retain the ID lookup.
+    let user = match req.name_id_format.as_deref() {
+        Some(EMAIL_NAME_ID_FORMAT) => state.repo.get_user_by_email(&realm_id, name_id).await,
+        Some(crate::PERSISTENT_NAME_ID_FORMAT) | None => {
+            state.repo.get_user_by_id_in_realm(&realm_id, name_id).await
+        }
+        Some(_) => return invalid_subject(),
+    };
+    let user = match user {
+        Ok(Some(user)) if user.realm_id == realm => user,
+        Ok(_) => return invalid_subject(),
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "saml_logout_lookup_failed",
+                    "message": err.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    // Preflight the entire selection before mutating any session: a later
+    // mismatched subject must not leave earlier sessions revoked.
     let mut revoked_sessions = Vec::new();
     for session_index in &req.session_indexes {
         match state.repo.get_session(session_index).await {
             Ok(Some(session)) if session.realm_id == realm => {
-                if let Err(err) =
-                    revoke_logout_session(state.repo.as_ref(), session_index, &realm).await
-                {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": "saml_logout_failed",
-                            "message": err.to_string(),
-                        })),
-                    )
-                        .into_response();
+                if session.user_id != user.id {
+                    return invalid_subject();
                 }
                 revoked_sessions.push(session_index.clone());
             }
@@ -572,6 +602,18 @@ async fn slo<R: Repository>(
                 )
                     .into_response();
             }
+        }
+    }
+    for session_index in &revoked_sessions {
+        if let Err(err) = revoke_logout_session(state.repo.as_ref(), session_index, &realm).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "saml_logout_failed",
+                    "message": err.to_string(),
+                })),
+            )
+                .into_response();
         }
     }
     if let Some(slo_url) = &sp.slo_url {

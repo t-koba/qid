@@ -13,10 +13,12 @@ use std::{
     io::{self, Read, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::Arc,
+    time::Duration,
 };
 
 const SERVICE: &str = "HTTP/acceptor.qid.test@QID.MIT.TEST";
 const WRONG_SERVICE: &str = "HTTP/other.qid.test@QID.MIT.TEST";
+const EXPIRED_SERVICE: &str = "HTTP/expired.qid.test@QID.MIT.TEST";
 const CLIENT: &str = "client@QID.MIT.TEST";
 const MAX_TOKEN: usize = 1024 * 1024; // Fixture IPC budget, not a protocol limit.
 
@@ -96,18 +98,26 @@ impl ReplayStore for TestReplayStore {
     }
 }
 
-fn acceptor<'k>(keytab: &'k Keytab, cache: &Arc<MemoryCache>) -> SpnegoAcceptor<'k> {
+fn acceptor_with_skew<'k>(
+    keytab: &'k Keytab,
+    cache: &Arc<MemoryCache>,
+    max_skew_secs: i64,
+) -> SpnegoAcceptor<'k> {
     // krb5 1.0.0 makes AcceptOptions non_exhaustive and offers only Default
     // for construction outside its crate. Overwrite EVERY public field before
     // handing options to an acceptor; never use its environment-selected store.
     let mut options = AcceptOptions::default();
-    options.max_skew_secs = DEFAULT_CLOCK_SKEW_SECS;
+    options.max_skew_secs = max_skew_secs;
     options.channel_bindings = None;
     options.replay_cache = Some(Arc::new(TestReplayStore(KerberosReplayStore::new(
         cache.clone(),
     ))));
     // Distinct adapter instances model independent acceptors sharing one cache.
     SpnegoAcceptor::with_options(keytab, options)
+}
+
+fn acceptor<'k>(keytab: &'k Keytab, cache: &Arc<MemoryCache>) -> SpnegoAcceptor<'k> {
+    acceptor_with_skew(keytab, cache, DEFAULT_CLOCK_SKEW_SECS)
 }
 
 #[test]
@@ -196,5 +206,24 @@ fn mit_spnego_acceptor_proof() -> io::Result<()> {
         "real ticket for another service must not be accepted"
     );
     assert!(!wrong.is_established() && wrong.context().is_none());
+
+    // MIT issues this separate service a ten-second ticket. With zero test
+    // skew, a real KDC-issued token delayed past endtime must fail specifically
+    // at ticket-time validation, before its now-stale authenticator is checked.
+    let expired_keytab_path =
+        std::env::var_os("QID_MIT_EXPIRED_KEYTAB").expect("run the MIT fixture script");
+    let expired_keytab = Keytab::load(expired_keytab_path)
+        .unwrap_or_else(|_| panic!("load fixture expired-service keytab"));
+    let mut expired_peer = MitPeer::new(EXPIRED_SERVICE)?;
+    let expired_token = expired_peer.initial()?;
+    std::thread::sleep(Duration::from_secs(12));
+    let mut expired = acceptor_with_skew(&expired_keytab, &cache, 0);
+    match expired.step(&expired_token) {
+        Err(KerberosError::TicketNotValid(reason)) => {
+            assert!(reason.starts_with("ticket expired at "), "{reason}");
+        }
+        _ => panic!("expired MIT ticket must fail specifically at ticket-time validation"),
+    }
+    assert!(!expired.is_established() && expired.context().is_none());
     Ok(())
 }

@@ -6,10 +6,12 @@ python3-gssapi; run with /usr/bin/python3. No system realm is changed. No
 passwords are needed: kadmin generates random client/service keys and kinit
 uses a private client keytab. All runtime material is removed in finally.
 
-Expired tickets remain UNPROVEN: krb5 1.0.0 exposes no acceptor clock override,
-MIT's initiator will not use an expired credential, and this proof neither
-sleeps until expiry nor changes clocks/forges tickets. An authenticator-skew
-or tamper failure is not evidence of expired-ticket validation.
+The expired-ticket case uses a separate MIT service principal with a ten-second
+maximum ticket life, obtains a real KDC-issued AP-REQ, waits twelve seconds, and
+presents it to a test acceptor configured with zero clock skew. It asserts the
+specific ticket-expired error before authenticator validation, within the
+existing 60-second proof deadline. Other cases retain the default five-minute
+skew; this does not test the full default-skew boundary.
 """
 import os
 from pathlib import Path
@@ -25,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REALM = "QID.MIT.TEST"
 SERVICE = f"HTTP/acceptor.qid.test@{REALM}"
 WRONG_SERVICE = f"HTTP/other.qid.test@{REALM}"
+EXPIRED_SERVICE = f"HTTP/expired.qid.test@{REALM}"
 CLIENT = f"client@{REALM}"
 
 
@@ -138,6 +141,7 @@ def main():
             # explicit QID replay store must protect the Rust acceptor.
             "KRB5RCACHETYPE": "none", "GSS_USE_PROXY": "0",
             "QID_MIT_KEYTAB": str(directory / "service.keytab"),
+            "QID_MIT_EXPIRED_KEYTAB": str(directory / "expired.keytab"),
             "QID_MIT_PYTHON": sys.executable,
         })
         # Feed a generated master password on stdin, never argv or diagnostics.
@@ -148,7 +152,14 @@ def main():
         for principal in [CLIENT, SERVICE, WRONG_SERVICE]:
             run(["kadmin.local", "-r", REALM, "-q", f"addprinc -randkey {principal}"],
                 env, "principal creation")
-        for principal, filename in [(CLIENT, "client.keytab"), (SERVICE, "service.keytab")]:
+        run(["kadmin.local", "-r", REALM, "-q",
+             f'addprinc -randkey -maxlife "10 seconds" {EXPIRED_SERVICE}'],
+            env, "short-lived service principal creation")
+        for principal, filename in [
+            (CLIENT, "client.keytab"),
+            (SERVICE, "service.keytab"),
+            (EXPIRED_SERVICE, "expired.keytab"),
+        ]:
             run(["kadmin.local", "-r", REALM, "-q",
                  f"ktadd -k {directory}/{filename} {principal}"], env, "keytab creation")
         kdc = subprocess.Popen(
@@ -172,8 +183,8 @@ def main():
                 env, "MIT client login")
             run(test + ["--", "--ignored", "--exact", "mit_spnego_acceptor_proof"],
                 env, "MIT SPNEGO proof", timeout=60, visible=True)
-            print("MIT SPNEGO: mutual handshake, replay, tamper and wrong-service checks passed")
-            print("Expired-ticket refusal: UNPROVEN (see fixture source for limitations)")
+            print("MIT SPNEGO: mutual handshake, replay, tamper, wrong-service and expired-ticket checks passed")
+            print("Expired-ticket case: 10-second MIT ticket delayed 12 seconds; test skew 0 seconds")
         finally:
             stop(kdc)
 

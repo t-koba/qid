@@ -146,12 +146,10 @@ impl CacheExpiryState {
         self.next_deadline() != earliest
     }
 
-    fn live_store(&mut self, id: CacheStoreId) -> Option<Arc<Mutex<CacheStore>>> {
-        let store = self.stores.get(&id).and_then(Weak::upgrade);
-        if store.is_none() {
+    fn remove_dead_store(&mut self, id: CacheStoreId) {
+        if self.stores.get(&id).and_then(Weak::upgrade).is_none() {
             self.stores.remove(&id);
         }
-        store
     }
 }
 
@@ -191,12 +189,19 @@ impl CacheExpiryReaper {
         }
     }
 
+    fn lookup_due_store(&self, id: CacheStoreId) -> Option<Arc<Mutex<CacheStore>>> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.stores.get(&id).and_then(Weak::upgrade)
+    }
+
+    fn remove_dead_store(&self, id: CacheStoreId) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.remove_dead_store(id);
+    }
+
     fn process_due_cache(&self, id: CacheStoreId) {
-        let store = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.live_store(id)
-        };
-        let Some(store) = store else {
+        let Some(store) = self.lookup_due_store(id) else {
+            self.remove_dead_store(id);
             return;
         };
         let mut store = store.lock().unwrap_or_else(|error| error.into_inner());
@@ -922,11 +927,10 @@ mod tests {
         reaper.unregister(&old_store);
         drop(old_store);
 
-        // This is the stale due visit after the original cache was dropped.
-        // Its cleanup completes before a new registration can take the same ID.
-        reaper.process_due_cache(id);
-        assert!(!reaper.state.lock().unwrap().stores.contains_key(&id));
-
+        // Reproduce the vulnerable interleaving deterministically: the stale
+        // due lookup misses after drop, then a new store takes the same ID
+        // before the stale cleanup runs.
+        assert!(reaper.lookup_due_store(id).is_none());
         let new_store = Arc::new(Mutex::new(CacheStore::default()));
         new_store.lock().unwrap().insert(
             "expires".to_string(),
@@ -945,6 +949,17 @@ mod tests {
                 .stores
                 .insert(id, Arc::downgrade(&new_store));
         }
+        reaper.remove_dead_store(id);
+        assert!(
+            reaper
+                .state
+                .lock()
+                .unwrap()
+                .stores
+                .get(&id)
+                .and_then(Weak::upgrade)
+                .is_some_and(|registered| Arc::ptr_eq(&registered, &new_store))
+        );
         reaper.update_deadline(id, Some(expired_at));
         {
             let mut state = reaper.state.lock().unwrap();

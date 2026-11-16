@@ -93,22 +93,27 @@ fn sqlite_main_path(path: &Path) -> PathBuf {
         .map_or_else(|| path.to_path_buf(), |name| path.with_file_name(name))
 }
 
-fn remove_sqlite_database_files(path: &Path) -> std::io::Result<()> {
+type CleanupError = (PathBuf, std::io::Error);
+
+fn remove_sqlite_database_files(path: &Path) -> Result<(), CleanupError> {
     for suffix in ["-wal", "-shm", "-journal", ""] {
         let mut candidate = path.as_os_str().to_os_string();
         candidate.push(suffix);
-        match std::fs::remove_file(PathBuf::from(candidate)) {
+        let candidate = PathBuf::from(candidate);
+        match std::fs::remove_file(&candidate) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+            Err(error) => return Err((candidate, error)),
         }
     }
     Ok(())
 }
 
-fn clean_oidc_test_databases(dir: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let database = sqlite_main_path(&entry?.path());
+fn clean_oidc_test_databases(dir: &Path) -> Result<(), CleanupError> {
+    let entries = std::fs::read_dir(dir).map_err(|error| (dir.to_path_buf(), error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| (dir.to_path_buf(), error))?;
+        let database = sqlite_main_path(&entry.path());
         let name = database
             .file_name()
             .and_then(|name| name.to_str())
@@ -261,6 +266,14 @@ fn sqlite_database_cleanup_removes_stale_sidecars_without_matching_template() {
         assert!(PathBuf::from(template_file).exists());
     }
     remove_sqlite_database_files(&template).unwrap();
+
+    // Keep the original OS error while naming the exact file that could not be removed.
+    let not_a_file = dir.join("test_not_a_file.db");
+    std::fs::create_dir(&not_a_file).unwrap();
+    let (failed_path, error) = remove_sqlite_database_files(&not_a_file).unwrap_err();
+    assert_eq!(failed_path, not_a_file);
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+    std::fs::remove_dir(&failed_path).unwrap();
 
     let root = TestDirectory::new();
     let mut children = Children {

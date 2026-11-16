@@ -230,7 +230,7 @@ jobs:
           $script:reportNoticeBytes = [Text.Encoding]::UTF8.GetByteCount($script:reportNotice)
           $script:reportTruncated = $false
           $script:report = $report
-          $script:reportPattern = '\A(?:RM image=[A-Za-z0-9_.-]+ pid=[0-9]+ suffix=(?:db|-wal|-shm|-journal)|RM test=[A-Za-z0-9_:.-]+ pid=[0-9]+|RM suffix=(?:db|-wal|-shm|-journal) holders=none|RM snapshot complete \(not an exhaustive handle trace\)\.|HANDLE pid=[0-9]+ db=[A-Za-z0-9_.-]+ exact_file_matches=[0-9]+ \(live snapshot, not exhaustive\)\.|HANDLE unavailable \((?:helper could not be collected|raw output suppressed)\)\.|ERROR: Restart Manager snapshot untrusted \(raw exception suppressed\)\.|ERROR: Windows cleanup diagnostic process tree was not confirmed stopped|ERROR: Windows cleanup diagnostic timed out or could not be collected)\z'
+          $script:reportPattern = '\A(?:RM image=[A-Za-z0-9_.-]+ pid=[0-9]+ suffix=(?:db|-wal|-shm|-journal)|RM test=[A-Za-z0-9_:.-]+ pid=[0-9]+|RM suffix=(?:db|-wal|-shm|-journal) holders=none|RM snapshot complete \(not an exhaustive handle trace\)\.|HANDLE pid=[0-9]+ db=[A-Za-z0-9_.-]+ exact_file_matches=[0-9]+ \(live snapshot, not exhaustive\)\.|HANDLE unavailable \((?:helper could not be collected|raw output suppressed)\)\.|ERROR: Restart Manager snapshot untrusted \(raw exception suppressed\)\.|ERROR: Windows cleanup diagnostic process tree was not confirmed stopped|ERROR: Windows cleanup diagnostic timed out or could not be collected|SQL_CLEANUP_STAGE=(?:after_pool_close|after_repo_close|after_reopened_close))\z'
           function Add-SanitizedDiagnosticLines {
             param([object[]]$Lines)
             foreach ($candidate in $Lines) {
@@ -239,10 +239,11 @@ jobs:
               if ($line -cnotmatch $script:reportPattern) {
                 # libtest can leave its `test … ... ` progress prefix without a
                 # newline while a child diagnostic writes to inherited stdout.
-                # Recover only an RM, HANDLE or fixed ERROR record whose entire
-                # suffix matches the allowlist; never preserve the joined text.
+                # Recover only an RM, HANDLE, fixed ERROR or fixed stage
+                # label record whose entire suffix matches the allowlist; never
+                # preserve the joined text.
                 $record = $null
-                foreach ($marker in [regex]::Matches($line, 'RM |HANDLE |ERROR:')) {
+                foreach ($marker in [regex]::Matches($line, 'RM |HANDLE |ERROR:|SQL_CLEANUP_STAGE=')) {
                   $recordCandidate = $line.Substring($marker.Index)
                   if ($recordCandidate -cmatch $script:reportPattern) {
                     $record = $recordCandidate
@@ -277,6 +278,9 @@ jobs:
               'RM test=push_tests::sql_delayed_admission_cleanup_boundary pid=1234',
               'HANDLE pid=1234 db=test_14.db exact_file_matches=0 (live snapshot, not exhaustive).',
               'HANDLE unavailable (helper could not be collected).',
+              'SQL_CLEANUP_STAGE=after_pool_close',
+              'SQL_CLEANUP_STAGE=after_repo_close',
+              'SQL_CLEANUP_STAGE=after_reopened_close',
               'ERROR: Restart Manager snapshot untrusted (raw exception suppressed).',
               'ERROR: Windows cleanup diagnostic timed out or could not be collected'
             )

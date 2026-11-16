@@ -173,6 +173,23 @@ fn require_capport_realm<R: Repository>(state: &SharedState<R>, realm_id: &str) 
     Ok(())
 }
 
+/// Reject sessions that do not belong to the target realm or are no longer
+/// active. Both cache and repository lookups converge here before any binding
+/// is created or replaced.
+fn validate_capport_session(session: &qid_core::Session, realm: &str, now: u64) -> QidResult<()> {
+    if session.realm_id != realm {
+        return Err(QidError::Unauthorized {
+            message: "session realm mismatch".to_string(),
+        });
+    }
+    if !session.is_active(now) {
+        return Err(QidError::Unauthorized {
+            message: "session is not active".to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub fn captive_portal_routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
     Router::new()
         .route(CAPPORT_BIND_PATH, post(captive_portal_bind::<R>))
@@ -226,6 +243,9 @@ async fn captive_portal_bind<R: Repository>(
     };
 
     let now = now_seconds();
+    if let Err(error) = validate_capport_session(&session, &realm, now) {
+        return qid_http::error_response(error);
+    }
     let ttl = req.ttl_seconds.unwrap_or(3600).min(86400);
     let binding = CaptivePortalBinding {
         realm_id: realm,
@@ -395,4 +415,50 @@ async fn captive_portal_details<R: Repository>(
         axum::http::HeaderValue::from_static("no-store, max-age=0"),
     );
     response
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::validate_capport_session;
+    use qid_core::Session;
+
+    fn session() -> Session {
+        Session {
+            id: "session-1".to_string(),
+            realm_id: "realm-a".to_string(),
+            user_id: "user-1".to_string(),
+            auth_time: 90,
+            acr: None,
+            amr: Vec::new(),
+            idle_expires_at: 200,
+            absolute_expires_at: 300,
+            revoked: false,
+            created_at: 80,
+            cnf: None,
+        }
+    }
+
+    #[test]
+    fn capport_validation_accepts_an_active_same_realm_session() {
+        assert!(validate_capport_session(&session(), "realm-a", 100).is_ok());
+    }
+
+    #[test]
+    fn capport_validation_rejects_foreign_realm_revoked_and_expired_sessions() {
+        let mut other = session();
+        other.realm_id = "realm-b".to_string();
+        assert!(validate_capport_session(&other, "realm-a", 100).is_err());
+
+        let mut revoked = session();
+        revoked.revoked = true;
+        assert!(validate_capport_session(&revoked, "realm-a", 100).is_err());
+
+        let mut idle = session();
+        idle.idle_expires_at = 99;
+        assert!(validate_capport_session(&idle, "realm-a", 100).is_err());
+
+        let mut absolute = session();
+        absolute.absolute_expires_at = 99;
+        assert!(validate_capport_session(&absolute, "realm-a", 100).is_err());
+    }
 }

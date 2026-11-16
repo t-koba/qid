@@ -65,7 +65,7 @@ async fn postgres_cleanup_preserves_fresh_elevation_reusing_a_stale_id() {
     })
     .await;
     assert_eq!(deleted, 0, "fresh issuance must not be reclaimed");
-    let fresh: (i64, i64) = sqlx::query_as(
+    let fresh: (i32, i32) = sqlx::query_as(
         "SELECT elevation_expires_at, created_at FROM admin_elevations WHERE id = 'reused'",
     )
     .fetch_one(&mut issuer)
@@ -123,7 +123,7 @@ async fn refresh_during_cleanup(
     // their READ COMMITTED snapshot and find the stale tuple before blocking.
     // A BEFORE ROW trigger would already hold this tuple lock, preventing the
     // concurrent UPDATE we need to exercise EvalPlanQual's predicate recheck.
-    let stale: (i64, i64) = sqlx::query_as(
+    let stale: (i32, i32) = sqlx::query_as(
         "SELECT elevation_expires_at, created_at FROM admin_elevations WHERE id = 'reused' FOR UPDATE",
     )
     .fetch_one(&mut *replacement)

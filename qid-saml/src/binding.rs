@@ -1,4 +1,71 @@
 use super::*;
+use aes_gcm::{
+    Aes256Gcm, KeyInit, Nonce,
+    aead::{Aead, Payload},
+};
+use rand::RngCore;
+use sha2::{Digest, Sha256};
+
+fn session_index_cipher(private_key_pem: &[u8]) -> Aes256Gcm {
+    let mut hash = Sha256::new();
+    hash.update(b"qid-saml/session-index/v1\0");
+    hash.update(private_key_pem);
+    Aes256Gcm::new(&hash.finalize())
+}
+
+/// Encrypt the session ID with fresh randomness and authenticate the requesting SP.
+pub(crate) fn bind_session_index_to_sp(
+    session_id: &str,
+    sp_entity_id: &str,
+    private_key_pem: &[u8],
+) -> QidResult<String> {
+    let mut nonce = [0u8; 12]; // AES-GCM's 96-bit nonce.
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|_| QidError::Crypto {
+            message: "failed to generate SAML SessionIndex nonce".into(),
+        })?;
+    let ciphertext = session_index_cipher(private_key_pem)
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: session_id.as_bytes(),
+                aad: sp_entity_id.as_bytes(),
+            },
+        )
+        .map_err(|_| QidError::Crypto {
+            message: "failed to encrypt SAML SessionIndex".into(),
+        })?;
+    let mut encoded = nonce.to_vec();
+    encoded.extend_from_slice(&ciphertext); // Includes the authentication tag.
+    Ok(base64::engine::general_purpose::STANDARD.encode(encoded))
+}
+
+pub(crate) fn resolve_session_index_for_sp(
+    session_index: &str,
+    sp_entity_id: &str,
+    private_key_pem: &[u8],
+) -> Option<String> {
+    let encoded = base64::engine::general_purpose::STANDARD
+        .decode(session_index)
+        .ok()?;
+    // At minimum the value contains a 12-byte nonce and a 16-byte GCM tag.
+    if encoded.len() < 12 + 16 {
+        return None;
+    }
+    let plaintext = session_index_cipher(private_key_pem)
+        .decrypt(
+            Nonce::from_slice(&encoded[..12]),
+            Payload {
+                msg: &encoded[12..],
+                aad: sp_entity_id.as_bytes(),
+            },
+        )
+        .ok()?;
+    String::from_utf8(plaintext)
+        .ok()
+        .filter(|id| !id.is_empty())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SamlRelayStatePolicy {
@@ -1064,4 +1131,46 @@ pub fn build_saml_logout_redirect_response(
         relay_state_param
     );
     SamlRedirectResponse { redirect_url }
+}
+
+#[cfg(test)]
+mod session_index_tests {
+    use super::*;
+    use crate::test_support::TEST_SP_KEY_PEM;
+
+    #[test]
+    fn session_index_requires_authenticated_sp_and_key_binding() {
+        let key = TEST_SP_KEY_PEM.as_bytes();
+        let session_id = "session.with.dots";
+        let bound = bind_session_index_to_sp(session_id, "sp-a", key).unwrap();
+        assert_eq!(
+            resolve_session_index_for_sp(&bound, "sp-a", key).as_deref(),
+            Some(session_id)
+        );
+        assert!(!bound.contains(session_id));
+        assert_ne!(
+            bound,
+            bind_session_index_to_sp(session_id, "sp-a", key).unwrap()
+        );
+        assert_eq!(resolve_session_index_for_sp(&bound, "sp-b", key), None);
+        assert_eq!(
+            resolve_session_index_for_sp(&bound, "sp-a", b"wrong key"),
+            None
+        );
+        let mut tampered = base64::engine::general_purpose::STANDARD
+            .decode(&bound)
+            .unwrap();
+        tampered[12] ^= 1;
+        for invalid in [
+            "".to_owned(),
+            session_id.to_owned(),
+            "session.not-a-tag".to_owned(),
+            base64::engine::general_purpose::STANDARD.encode([0u8; 27]),
+            base64::engine::general_purpose::STANDARD.encode(tampered),
+            bind_session_index_to_sp("", "sp-a", key).unwrap(),
+            format!("{bound}0"),
+        ] {
+            assert_eq!(resolve_session_index_for_sp(&invalid, "sp-a", key), None);
+        }
+    }
 }

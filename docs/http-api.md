@@ -289,10 +289,21 @@ Installed when any realm enables SAML; each endpoint also checks that the reques
 SP-initiated SLO requires a signed LogoutRequest from a configured realm-local
 SP and a nonempty NameID resolving to a user in that realm. Email-format NameIDs
 resolve by email; persistent and unformatted NameIDs resolve by user ID. Other
-formats are rejected. Every existing same-realm SessionIndex must belong to that
-user; a missing, unknown or mismatched subject rejects the request with `400`
-before any session is revoked. Missing and foreign-realm sessions are ignored,
-and repeating a valid logout is idempotent.
+formats are rejected. SSO issues encrypted, SP-bound SessionIndexes using
+AES-256-GCM and key material derived from the realm's IdP signing private key
+PEM. SSO and SP-initiated SLO require a readable
+`protocols.saml.idp_signing_key_pem_path`, even when response signing is disabled;
+a missing or unreadable key fails closed with a configuration error. Each index
+hides the session ID and authenticates the verified requester's SP entity ID.
+Malformed, unbound (including legacy plain session IDs), wrong-key and wrong-SP
+indexes reject the request with `400`. A SessionIndex is not a bearer secret:
+a signed LogoutRequest and a matching NameID are still required. Rotating the
+IdP signing key (or changing its PEM bytes) invalidates previously issued
+indexes. Every existing same-realm
+session selected by a bound index must belong to the NameID user; a missing,
+unknown or mismatched subject also rejects with `400`. The entire selection is
+validated before any revocation. Missing and foreign-realm sessions referenced
+by valid bound indexes are ignored, and repeating a valid logout is idempotent.
 
 ### AttributeQuery subset
 

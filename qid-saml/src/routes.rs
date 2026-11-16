@@ -12,11 +12,11 @@ use std::sync::Arc;
 
 use crate::{
     ARTIFACT_BINDING, EMAIL_NAME_ID_FORMAT, SamlBrowserSubject, SamlPostBindingForm,
-    SamlRelayStatePolicy, build_assertion_request_from_authn, build_saml_logout_post_response,
-    build_saml_logout_response, build_saml_post_response, build_saml_response,
-    parse_post_binding_authn_request, parse_post_binding_logout_request,
-    service_provider_from_config, subject_from_browser_session, validate_authn_request_for_sp,
-    validate_logout_request_for_sp,
+    SamlRelayStatePolicy, bind_session_index_to_sp, build_assertion_request_from_authn,
+    build_saml_logout_post_response, build_saml_logout_response, build_saml_post_response,
+    build_saml_response, parse_post_binding_authn_request, parse_post_binding_logout_request,
+    resolve_session_index_for_sp, service_provider_from_config, subject_from_browser_session,
+    validate_authn_request_for_sp, validate_logout_request_for_sp,
 };
 
 pub fn saml_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
@@ -135,6 +135,16 @@ fn saml_config_error(message: &str) -> Response {
         Json(serde_json::json!({ "error": message })),
     )
         .into_response()
+}
+
+fn load_session_index_key(
+    config: &qid_core::config::SamlProtocolConfig,
+) -> Result<Vec<u8>, String> {
+    let path = config
+        .idp_signing_key_pem_path
+        .as_deref()
+        .ok_or_else(|| "SAML SessionIndex binding requires idp_signing_key_pem_path".to_owned())?;
+    std::fs::read(path).map_err(|err| format!("failed to read SAML IdP signing key: {err}"))
 }
 
 pub(crate) fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -278,6 +288,15 @@ async fn sso<R: Repository>(
                     .into_response();
             }
         };
+        let private_key_pem = match load_session_index_key(&realm_config.protocols.saml) {
+            Ok(key) => key,
+            Err(message) => return saml_config_error(&message),
+        };
+        let session_index =
+            match bind_session_index_to_sp(&session_id, &sp.entity_id, &private_key_pem) {
+                Ok(index) => index,
+                Err(err) => return saml_config_error(&err.to_string()),
+            };
         let subject = subject_from_browser_session(&SamlBrowserSubject { session, user });
         let assertion_req = match build_assertion_request_from_authn(
             &req,
@@ -286,7 +305,7 @@ async fn sso<R: Repository>(
             subject,
             qid_core::util::now_seconds(),
             300,
-            Some(session_id),
+            Some(session_index),
         ) {
             Ok(req) => req,
             Err(err) => {
@@ -317,32 +336,9 @@ async fn sso<R: Repository>(
             }
         };
         let should_sign = realm_config.protocols.saml.sign_assertions || sp.want_assertions_signed;
-        let private_key_pem = if should_sign {
-            let Some(key_path) = realm_config
-                .protocols
-                .saml
-                .idp_signing_key_pem_path
-                .as_deref()
-            else {
-                return saml_config_error(
-                    "SAML response signing requires idp_signing_key_pem_path",
-                );
-            };
-            let private_key_pem = match std::fs::read(key_path) {
-                Ok(key) => key,
-                Err(err) => {
-                    return saml_config_error(&format!(
-                        "failed to read SAML response signing key: {err}"
-                    ));
-                }
-            };
-            Some(private_key_pem)
-        } else {
-            None
-        };
         // Sign the plaintext Assertion before encryption removes its target.
         // Keep the Response unsigned until its final (possibly encrypted) form.
-        let issued = if let Some(private_key_pem) = private_key_pem.as_deref() {
+        let issued = if should_sign {
             match crate::signature::sign_saml_response_with_key(
                 &issued,
                 &sp,
@@ -350,7 +346,7 @@ async fn sso<R: Repository>(
                     sign_response: false,
                     sign_assertion: true,
                 },
-                private_key_pem,
+                &private_key_pem,
                 crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256,
             ) {
                 Ok(signed) => signed,
@@ -411,13 +407,13 @@ async fn sso<R: Repository>(
         } else {
             issued
         };
-        let issued = if let Some(private_key_pem) = private_key_pem.as_deref() {
+        let issued = if should_sign {
             match crate::xmldsig::sign_saml_document_with_key(
                 &issued.xml,
                 crate::xmldsig::SamlSigningElement::Response,
                 &issued.response_id,
                 crate::xmldsig::SamlXmlSignatureAlgorithm::RsaSha256,
-                private_key_pem,
+                &private_key_pem,
             ) {
                 Ok(xml) => crate::SamlIssuedResponse { xml, ..issued },
                 Err(err) => {
@@ -543,6 +539,10 @@ async fn slo<R: Repository>(
         )
             .into_response();
     }
+    let private_key_pem = match load_session_index_key(&realm_config.protocols.saml) {
+        Ok(key) => key,
+        Err(message) => return saml_config_error(&message),
+    };
     let invalid_subject = || {
         (
             StatusCode::BAD_REQUEST,
@@ -581,15 +581,27 @@ async fn slo<R: Repository>(
         }
     };
     // Preflight the entire selection before mutating any session: a later
-    // mismatched subject must not leave earlier sessions revoked.
+    // mismatched subject or SP binding must not leave earlier sessions revoked.
     let mut revoked_sessions = Vec::new();
     for session_index in &req.session_indexes {
-        match state.repo.get_session(session_index).await {
+        let Some(session_id) =
+            resolve_session_index_for_sp(session_index, &sp.entity_id, &private_key_pem)
+        else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_saml_logout_session_index",
+                    "message": "SAML SessionIndex must be bound to the requesting SP",
+                })),
+            )
+                .into_response();
+        };
+        match state.repo.get_session(&session_id).await {
             Ok(Some(session)) if session.realm_id == realm => {
                 if session.user_id != user.id {
                     return invalid_subject();
                 }
-                revoked_sessions.push(session_index.clone());
+                revoked_sessions.push(session_id);
             }
             Ok(_) => {}
             Err(err) => {

@@ -237,13 +237,19 @@ jobs:
               $line = [string]$candidate
               if ($line -cnotmatch $script:reportPattern) {
                 # libtest can leave its `test … ... ` progress prefix without a
-                # newline while the child diagnostic writes to inherited stdout.
-                # Strip any prefix only when the remaining complete record still
-                # matches the strict allowlist; never preserve the joined text.
-                $marker = $line.LastIndexOf('RM ', [StringComparison]::Ordinal)
-                if ($marker -lt 0) { continue }
-                $line = $line.Substring($marker)
-                if ($line -cnotmatch $script:reportPattern) { continue }
+                # newline while a child diagnostic writes to inherited stdout.
+                # Recover only an RM, HANDLE or fixed ERROR record whose entire
+                # suffix matches the allowlist; never preserve the joined text.
+                $record = $null
+                foreach ($marker in [regex]::Matches($line, 'RM |HANDLE |ERROR:')) {
+                  $recordCandidate = $line.Substring($marker.Index)
+                  if ($recordCandidate -cmatch $script:reportPattern) {
+                    $record = $recordCandidate
+                    break
+                  }
+                }
+                if ($null -eq $record) { continue }
+                $line = $record
               }
               $record = $line + [Environment]::NewLine
               $recordBytes = [Text.Encoding]::UTF8.GetByteCount($record)
@@ -265,14 +271,27 @@ jobs:
           $reportTruncatedBeforeSanitizerTest = $script:reportTruncated
           $sanitizerTestFailed = $false
           try {
-            $safeProbe = 'RM image=sqlx_sqlite.exe pid=1234 suffix=db'
-            $joinedProbe = 'test qid_storage::sql::cleanup ... PRIVATE_PREFIX ' + $safeProbe
+            $safeProbes = @(
+              'RM image=sqlx_sqlite.exe pid=1234 suffix=db',
+              'HANDLE pid=1234 db=test_14.db exact_file_matches=0 (live snapshot, not exhaustive).',
+              'HANDLE unavailable (helper could not be collected).',
+              'ERROR: Restart Manager snapshot untrusted (raw exception suppressed).',
+              'ERROR: Windows cleanup diagnostic timed out or could not be collected'
+            )
+            $joinedProbes = @($safeProbes | ForEach-Object {
+              'test qid_storage::sql::cleanup ... PRIVATE_PREFIX ' + $_
+            })
             $invalidProbe = 'test qid_storage::cleanup ... RM image=../private pid=1234 suffix=db'
-            Add-SanitizedDiagnosticLines @($joinedProbe, $invalidProbe)
+            $trailingProbe = 'test qid_storage::cleanup ... ERROR: Restart Manager snapshot untrusted (raw exception suppressed). PRIVATE_SUFFIX'
+            Add-SanitizedDiagnosticLines @($joinedProbes + $invalidProbe + $trailingProbe)
             $sanitized = [IO.File]::ReadAllLines($script:report)
-            if ($sanitized.Count -ne 2 -or $sanitized[1] -cne $safeProbe -or
-                (($sanitized -join "`n") -match 'PRIVATE_PREFIX|\.\./private')) {
-              throw 'Sanitized report mismatch'
+            $expectedLines = @('Sanitized diagnostic rows only; Restart Manager and Handle snapshots are not exhaustive.') + $safeProbes
+            if ($sanitized.Count -ne $expectedLines.Count) { throw 'Sanitized report row count mismatch' }
+            for ($i = 0; $i -lt $expectedLines.Count; $i++) {
+              if ($sanitized[$i] -cne $expectedLines[$i]) { throw 'Sanitized report row mismatch' }
+            }
+            if (($sanitized -join "`n") -match 'PRIVATE_PREFIX|PRIVATE_SUFFIX|\.\./private') {
+              throw 'Sanitized report retained joined or malformed text'
             }
           } catch {
             Write-Host 'ERROR: Workflow sanitizer artifact self-test failed (raw output suppressed).'

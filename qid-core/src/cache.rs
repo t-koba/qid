@@ -7,7 +7,7 @@
 use crate::error::{QidError, QidResult};
 use lru::LruCache;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -41,15 +41,68 @@ pub trait SharedCache: Send + Sync {
     }
 }
 
-/// In-memory cache backed by a HashMap with TTL-based eviction.
+#[derive(Default)]
+struct CacheStore {
+    entries: HashMap<String, CacheEntry>,
+    // Index deadlines so operations visit expired buckets, not all live entries.
+    expirations: BTreeMap<Instant, HashSet<String>>,
+}
+
+impl CacheStore {
+    fn insert(&mut self, key: String, entry: CacheEntry) {
+        let _ = self.remove(&key);
+        self.expirations
+            .entry(entry.expires_at)
+            .or_default()
+            .insert(key.clone());
+        self.entries.insert(key, entry);
+    }
+
+    fn remove(&mut self, key: &str) -> Option<CacheEntry> {
+        let entry = self.entries.remove(key)?;
+        let empty_bucket = self
+            .expirations
+            .get_mut(&entry.expires_at)
+            .is_some_and(|keys| {
+                keys.remove(key);
+                keys.is_empty()
+            });
+        if empty_bucket {
+            self.expirations.remove(&entry.expires_at);
+        }
+        Some(entry)
+    }
+
+    fn remove_expired(&mut self, now: Instant) {
+        while let Some((&expires_at, _)) = self.expirations.first_key_value() {
+            if expires_at > now {
+                break;
+            }
+            let Some((_, keys)) = self.expirations.pop_first() else {
+                break;
+            };
+            for key in keys {
+                if self
+                    .entries
+                    .get(&key)
+                    .is_some_and(|entry| entry.expires_at == expires_at)
+                {
+                    self.entries.remove(&key);
+                }
+            }
+        }
+    }
+}
+
+/// In-memory cache backed by a HashMap and expiry-ordered TTL eviction.
 pub struct MemoryCache {
-    store: Mutex<HashMap<String, CacheEntry>>,
+    store: Mutex<CacheStore>,
 }
 
 impl MemoryCache {
     pub fn new() -> Self {
         Self {
-            store: Mutex::new(HashMap::new()),
+            store: Mutex::new(CacheStore::default()),
         }
     }
 }
@@ -63,22 +116,19 @@ impl Default for MemoryCache {
 impl SharedCache for MemoryCache {
     fn get(&self, key: &str) -> Option<Vec<u8>> {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = store.get(key) {
-            if entry.expires_at > Instant::now() {
-                return Some(entry.value.clone());
-            }
-            store.remove(key);
-        }
-        None
+        store.remove_expired(Instant::now());
+        store.entries.get(key).map(|entry| entry.value.clone())
     }
 
     fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        store.remove_expired(now);
         store.insert(
             key.to_string(),
             CacheEntry {
                 value,
-                expires_at: Instant::now() + Duration::from_secs(ttl_seconds),
+                expires_at: now + Duration::from_secs(ttl_seconds),
             },
         );
     }
@@ -88,9 +138,8 @@ impl SharedCache for MemoryCache {
             message: format!("memory cache lock poisoned: {e}"),
         })?;
         let now = Instant::now();
-        if let Some(entry) = store.get(key)
-            && entry.expires_at > now
-        {
+        store.remove_expired(now);
+        if store.entries.contains_key(key) {
             return Ok(false);
         }
         store.insert(
@@ -105,18 +154,14 @@ impl SharedCache for MemoryCache {
 
     fn delete(&self, key: &str) {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.remove_expired(Instant::now());
         store.remove(key);
     }
 
     fn take(&self, key: &str) -> Option<Vec<u8>> {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let live = matches!(store.get(key), Some(entry) if entry.expires_at > Instant::now());
-        if live {
-            store.remove(key).map(|entry| entry.value)
-        } else {
-            store.remove(key);
-            None
-        }
+        store.remove_expired(Instant::now());
+        store.remove(key).map(|entry| entry.value)
     }
 }
 
@@ -435,9 +480,58 @@ impl SessionCache {
 mod tests {
     use super::{
         ASSERTION_SCOPE_OAUTH_JWT_BEARER, ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT,
-        ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT, DpopState, MemoryCache, assertion_replay_key,
+        ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT, DpopState, MemoryCache, SharedCache,
+        assertion_replay_key,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn memory_cache_reclaims_expired_entries_without_key_reuse() {
+        let cache = MemoryCache::new();
+        cache.set("expired", b"value".to_vec(), 0);
+        {
+            let store = cache.store.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(store.entries.len(), 1);
+        }
+
+        assert_eq!(cache.get("unrelated"), None);
+        let store = cache.store.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(store.entries.is_empty());
+        assert!(store.expirations.is_empty());
+    }
+
+    #[test]
+    fn memory_cache_keeps_expiry_index_consistent_across_mutations() {
+        let cache = MemoryCache::new();
+        cache.set("overwritten", b"old".to_vec(), 3_600);
+        cache.set("overwritten", b"new".to_vec(), 7_200);
+        cache.set("deleted", b"delete".to_vec(), 3_600);
+        cache.delete("deleted");
+        cache.set("taken", b"once".to_vec(), 3_600);
+        assert_eq!(cache.take("taken"), Some(b"once".to_vec()));
+
+        assert!(
+            !cache
+                .set_if_absent("overwritten", b"duplicate".to_vec(), 3_600)
+                .unwrap()
+        );
+        assert!(
+            cache
+                .set_if_absent("new", b"fresh".to_vec(), 3_600)
+                .unwrap()
+        );
+        let store = cache.store.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(store.entries.len(), 2);
+        assert_eq!(
+            store
+                .expirations
+                .values()
+                .map(|keys| keys.len())
+                .sum::<usize>(),
+            2
+        );
+        assert_eq!(store.entries["overwritten"].value, b"new");
+    }
 
     #[test]
     fn replay_key_is_single_use_until_expiry() {

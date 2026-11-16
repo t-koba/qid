@@ -1107,12 +1107,25 @@ async fn sql_push_activation_failure_rolls_back_and_state_survives_reopen() {
     .unwrap();
     assert_eq!(old_tables, 0);
     pool.close().await;
+    #[cfg(windows)]
+    {
+        eprintln!("SQL_CLEANUP_STAGE=after_pool_close");
+        windows_sqlite_cleanup_diagnostic::capture(&path);
+    }
     repo.close().await;
+    #[cfg(windows)]
+    {
+        eprintln!("SQL_CLEANUP_STAGE=after_repo_close");
+        windows_sqlite_cleanup_diagnostic::capture(&path);
+    }
     let reopened = SqlRepository::connect(&url).await.unwrap();
     check_durable(&reopened).await;
     reopened.close().await;
     #[cfg(windows)]
-    let diagnostic_ok = windows_sqlite_cleanup_diagnostic::capture(&path);
+    let diagnostic_ok = {
+        eprintln!("SQL_CLEANUP_STAGE=after_reopened_close");
+        windows_sqlite_cleanup_diagnostic::capture(&path)
+    };
     std::fs::remove_dir_all(dir).unwrap();
     #[cfg(windows)]
     assert!(diagnostic_ok, "Windows cleanup diagnostic failed");

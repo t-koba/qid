@@ -20,8 +20,13 @@ macro_rules! admin_repository {
     };
 }
 
-const EXPIRED_LOW: &str = "SELECT id FROM admin_elevations WHERE elevation_expires_at >= 0 AND elevation_expires_at <= $1 ORDER BY elevation_expires_at LIMIT $2";
-const DELETE_EXPIRED: &str = "DELETE FROM admin_elevations WHERE id = $1";
+// Recheck expiry on the deletion target, not only on the bounded candidates:
+// an overlapping cleanup and issuer may replace an expired ID with a fresh row.
+const DELETE_EXPIRED: &str = "DELETE FROM admin_elevations \
+    WHERE elevation_expires_at >= 0 AND elevation_expires_at <= $1 \
+    AND id IN (SELECT id FROM admin_elevations \
+    WHERE elevation_expires_at >= 0 AND elevation_expires_at <= $1 \
+    ORDER BY elevation_expires_at LIMIT $2)";
 
 admin_repository! {
     [
@@ -73,16 +78,11 @@ admin_repository! {
 
     async fn cleanup_expired_admin_elevations(&self, now: u64, limit: u32) -> QidResult<u64> {
         state::validate_cleanup(now, limit)?;
-        let mut tx = self.begin_write("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
-        let ids: Vec<String> = sqlx::query_scalar(EXPIRED_LOW)
+        sqlx::query(DELETE_EXPIRED)
             .bind(now as i64).bind(i64::from(limit))
-            .fetch_all(&mut *tx).await.map_err(storage_to_qid_error)?;
-        let mut deleted = 0u64;
-        for id in &ids {
-            deleted += sqlx::query(DELETE_EXPIRED).bind(id).execute(&mut *tx).await.map_err(storage_to_qid_error)?.rows_affected();
-        }
-        tx.commit().await.map_err(storage_to_qid_error)?;
-        Ok(deleted)
+            .execute(&self.pool).await
+            .map(|result| result.rows_affected())
+            .map_err(storage_to_qid_error)
     }
 
     async fn store_admin_approval(&self, approval: &AdminApproval) -> QidResult<()> {

@@ -1,4 +1,4 @@
-use super::EXPIRED_LOW;
+use super::DELETE_EXPIRED;
 use std::borrow::Cow;
 
 const INDEX_VERSION: i64 = 20261115000002;
@@ -39,7 +39,7 @@ async fn additive_expiry_index_preserves_rows_and_serves_bounded_cleanup() {
         .execute(&pool).await.expect("SQLite fixture operation succeeds");
     sqlx::query("INSERT INTO admin_elevations (id, tenant_id, admin_id, elevation_expires_at, created_at) VALUES ('legacy', 'tenant', 'admin', -1, 1)")
         .execute(&pool).await.expect("SQLite fixture operation succeeds");
-    for (query, args) in [(EXPIRED_LOW, &[100, 1][..])] {
+    for (query, args) in [(DELETE_EXPIRED, &[100, 1][..])] {
         let details = plan(&pool, query, args).await;
         assert!(
             details
@@ -62,7 +62,7 @@ async fn additive_expiry_index_preserves_rows_and_serves_bounded_cleanup() {
             .await
             .expect("SQLite fixture operation succeeds");
     assert_eq!(expiry, -1, "index migration must not rewrite existing data");
-    for (query, args, ranges) in [(EXPIRED_LOW, &[100, 1][..], 1)] {
+    for (query, args, ranges) in [(DELETE_EXPIRED, &[100, 1][..], 1)] {
         let details = plan(&pool, query, args).await;
         assert_eq!(
             details

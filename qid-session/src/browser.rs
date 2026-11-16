@@ -43,13 +43,12 @@ impl<R: SessionRepository + ?Sized> SessionManager<R> {
         config: &BrowserSessionConfig,
         cache: Arc<dyn SessionCacheInvalidator>,
     ) -> Self {
-        let mut manager = Self::new(
+        Self::with_cache(
             repo,
             config.idle_timeout_minutes,
             config.absolute_timeout_hours,
-        );
-        manager.cache = Some(cache);
-        manager
+            cache,
+        )
     }
 
     pub(crate) fn with_cache(

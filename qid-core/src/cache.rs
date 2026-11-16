@@ -46,6 +46,8 @@ struct CacheStore {
     entries: HashMap<String, CacheEntry>,
     // Index deadlines so operations visit expired buckets, not all live entries.
     expirations: BTreeMap<Instant, HashSet<String>>,
+    #[cfg(test)]
+    reaper_visits: usize,
 }
 
 impl CacheStore {
@@ -100,79 +102,140 @@ impl CacheStore {
     }
 }
 
-/// One process-wide expiry worker services weakly registered in-memory caches.
-/// It sleeps until an entry can expire (or a cache changes its next deadline),
-/// and does not keep cache stores alive.
+/// One process-wide expiry worker services only caches whose next deadline is due.
+/// It keeps weak references and an ordered index, not a registry-wide scan.
+type CacheStoreId = usize;
+
+#[derive(Default)]
+struct CacheExpiryState {
+    stores: HashMap<CacheStoreId, Weak<Mutex<CacheStore>>>,
+    deadlines: BTreeMap<Instant, HashSet<CacheStoreId>>,
+    scheduled: HashMap<CacheStoreId, Instant>,
+}
+
+impl CacheExpiryState {
+    fn next_deadline(&self) -> Option<Instant> {
+        self.deadlines
+            .first_key_value()
+            .map(|(&deadline, _)| deadline)
+    }
+
+    fn remove_deadline(&mut self, id: CacheStoreId) -> bool {
+        let Some(deadline) = self.scheduled.remove(&id) else {
+            return false;
+        };
+        if let Some(ids) = self.deadlines.get_mut(&deadline) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.deadlines.remove(&deadline);
+            }
+        }
+        true
+    }
+
+    fn set_deadline(&mut self, id: CacheStoreId, next: Option<Instant>) -> bool {
+        if self.scheduled.get(&id).copied() == next {
+            return false;
+        }
+        let earliest = self.next_deadline();
+        self.remove_deadline(id);
+        if let Some(deadline) = next {
+            self.deadlines.entry(deadline).or_default().insert(id);
+            self.scheduled.insert(id, deadline);
+        }
+        self.next_deadline() != earliest
+    }
+}
+
 struct CacheExpiryReaper {
-    stores: Mutex<Vec<Weak<Mutex<CacheStore>>>>,
+    state: Mutex<CacheExpiryState>,
     changed: Condvar,
+}
+
+fn cache_store_id(store: &Arc<Mutex<CacheStore>>) -> CacheStoreId {
+    Arc::as_ptr(store) as CacheStoreId
 }
 
 impl CacheExpiryReaper {
     fn register(&self, store: &Arc<Mutex<CacheStore>>) {
-        let mut stores = self
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state
             .stores
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        stores.push(Arc::downgrade(store));
-        self.changed.notify_one();
+            .insert(cache_store_id(store), Arc::downgrade(store));
+    }
+
+    fn update_deadline(&self, id: CacheStoreId, next: Option<Instant>) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.stores.contains_key(&id) {
+            return;
+        }
+        if state.set_deadline(id, next) {
+            self.changed.notify_one();
+        }
     }
 
     fn unregister(&self, store: &Arc<Mutex<CacheStore>>) {
-        let store = Arc::downgrade(store);
-        let mut stores = self
-            .stores
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        stores.retain(|candidate| !Weak::ptr_eq(candidate, &store));
-        self.changed.notify_one();
-    }
-
-    fn signal(&self) {
-        // Take the same lock as the worker so a notification cannot be lost
-        // between its sweep and entering the condition-variable wait.
-        let _stores = self
-            .stores
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        self.changed.notify_one();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let id = cache_store_id(store);
+        state.stores.remove(&id);
+        if state.set_deadline(id, None) {
+            self.changed.notify_one();
+        }
     }
 
     fn run(self: Arc<Self>) {
-        let mut stores = self
-            .stores
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         loop {
-            let now = Instant::now();
-            let mut next_expiration = None;
-            stores.retain(|weak| {
-                let Some(store) = weak.upgrade() else {
-                    return false;
+            let due = {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                loop {
+                    if let Some((&deadline, _)) = state.deadlines.first_key_value() {
+                        let timeout = deadline.saturating_duration_since(Instant::now());
+                        if timeout.is_zero() {
+                            let Some((_, ids)) = state.deadlines.pop_first() else {
+                                continue;
+                            };
+                            for id in &ids {
+                                state.scheduled.remove(id);
+                            }
+                            break ids;
+                        }
+                        let (next, _) = self
+                            .changed
+                            .wait_timeout(state, timeout)
+                            .unwrap_or_else(|error| error.into_inner());
+                        state = next;
+                    } else {
+                        state = self
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(|error| error.into_inner());
+                    }
+                }
+            };
+
+            for id in due {
+                let store = {
+                    let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                    state.stores.get(&id).and_then(Weak::upgrade)
+                };
+                let Some(store) = store else {
+                    let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                    state.stores.remove(&id);
+                    continue;
                 };
                 let mut store = store.lock().unwrap_or_else(|error| error.into_inner());
-                store.remove_expired(now);
-                if let Some(expires_at) = store.next_expiration() {
-                    next_expiration = Some(
-                        next_expiration
-                            .map_or(expires_at, |current: Instant| current.min(expires_at)),
-                    );
+                #[cfg(test)]
+                {
+                    store.reaper_visits += 1;
                 }
-                true
-            });
-
-            if let Some(expires_at) = next_expiration {
-                let timeout = expires_at.saturating_duration_since(Instant::now());
-                let (next, _) = self
-                    .changed
-                    .wait_timeout(stores, timeout)
-                    .unwrap_or_else(|error| error.into_inner());
-                stores = next;
-            } else {
-                stores = self
-                    .changed
-                    .wait(stores)
-                    .unwrap_or_else(|error| error.into_inner());
+                let now = Instant::now();
+                let next = store.next_expiration();
+                if next.is_none_or(|deadline| deadline > now) {
+                    self.update_deadline(id, next);
+                    continue;
+                }
+                store.remove_expired(now);
+                self.update_deadline(id, store.next_expiration());
             }
         }
     }
@@ -183,7 +246,7 @@ fn cache_expiry_reaper() -> &'static CacheExpiryReaper {
     REAPER
         .get_or_init(|| {
             let reaper = Arc::new(CacheExpiryReaper {
-                stores: Mutex::new(Vec::new()),
+                state: Mutex::new(CacheExpiryState::default()),
                 changed: Condvar::new(),
             });
             let worker = Arc::clone(&reaper);
@@ -205,9 +268,10 @@ impl MemoryCache {
         Self { store }
     }
 
-    fn wake_reaper_if_earlier(&self, previous: Option<Instant>, next: Option<Instant>) {
-        if next.is_some_and(|next| previous.is_none_or(|previous| next < previous)) {
-            cache_expiry_reaper().signal();
+    fn update_deadline_if_changed(&self, store: &CacheStore, previous: Option<Instant>) {
+        let next = store.next_expiration();
+        if previous != next {
+            cache_expiry_reaper().update_deadline(cache_store_id(&self.store), next);
         }
     }
 }
@@ -226,13 +290,16 @@ impl Default for MemoryCache {
 
 impl SharedCache for MemoryCache {
     fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = store.next_expiration();
         store.remove_expired(Instant::now());
-        store.entries.get(key).map(|entry| entry.value.clone())
+        let value = store.entries.get(key).map(|entry| entry.value.clone());
+        self.update_deadline_if_changed(&store, previous);
+        value
     }
 
     fn set(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) {
-        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
         let previous = store.next_expiration();
         let now = Instant::now();
         store.remove_expired(now);
@@ -243,25 +310,18 @@ impl SharedCache for MemoryCache {
                 expires_at: now + Duration::from_secs(ttl_seconds),
             },
         );
-        let next = store.next_expiration();
-        drop(store);
-        self.wake_reaper_if_earlier(previous, next);
+        self.update_deadline_if_changed(&store, previous);
     }
 
     fn set_if_absent(&self, key: &str, value: Vec<u8>, ttl_seconds: u64) -> QidResult<bool> {
-        let mut store = self.store.lock().map_err(|e| QidError::Internal {
-            message: format!("memory cache lock poisoned: {e}"),
+        let mut store = self.store.lock().map_err(|error| QidError::Internal {
+            message: format!("memory cache lock poisoned: {error}"),
         })?;
         let previous = store.next_expiration();
         let now = Instant::now();
         store.remove_expired(now);
         if store.entries.contains_key(key) {
-            let next = store
-                .expirations
-                .first_key_value()
-                .map(|(&expires_at, _)| expires_at);
-            drop(store);
-            self.wake_reaper_if_earlier(previous, next);
+            self.update_deadline_if_changed(&store, previous);
             return Ok(false);
         }
         store.insert(
@@ -271,22 +331,25 @@ impl SharedCache for MemoryCache {
                 expires_at: now + Duration::from_secs(ttl_seconds),
             },
         );
-        let next = store.next_expiration();
-        drop(store);
-        self.wake_reaper_if_earlier(previous, next);
+        self.update_deadline_if_changed(&store, previous);
         Ok(true)
     }
 
     fn delete(&self, key: &str) {
-        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = store.next_expiration();
         store.remove_expired(Instant::now());
         store.remove(key);
+        self.update_deadline_if_changed(&store, previous);
     }
 
     fn take(&self, key: &str) -> Option<Vec<u8>> {
-        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = store.next_expiration();
         store.remove_expired(Instant::now());
-        store.remove(key).map(|entry| entry.value)
+        let value = store.remove(key).map(|entry| entry.value);
+        self.update_deadline_if_changed(&store, previous);
+        value
     }
 }
 
@@ -659,9 +722,10 @@ mod tests {
     use super::{
         ASSERTION_SCOPE_OAUTH_JWT_BEARER, ASSERTION_SCOPE_OAUTH_PRIVATE_KEY_JWT,
         ASSERTION_SCOPE_PAR_PRIVATE_KEY_JWT, DpopState, MemoryCache, SharedCache,
-        assertion_replay_key,
+        assertion_replay_key, cache_expiry_reaper, cache_store_id,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn memory_cache_keeps_zero_ttl_immediately_expired() {
@@ -727,6 +791,140 @@ mod tests {
             2
         );
         assert_eq!(store.entries["overwritten"].value, b"new");
+    }
+
+    #[test]
+    fn memory_cache_reaper_tracks_deadline_changes_and_drop() {
+        let cache = MemoryCache::new();
+        let id = cache_store_id(&cache.store);
+        cache.set("early", b"early".to_vec(), 3_600);
+        cache.set("later", b"later".to_vec(), 7_200);
+        assert_eq!(
+            Arc::strong_count(&cache.store),
+            1,
+            "reaper must keep only a weak store reference"
+        );
+        let early_deadline = cache.store.lock().unwrap().next_expiration().unwrap();
+        {
+            let state = cache_expiry_reaper().state.lock().unwrap();
+            assert_eq!(state.scheduled.get(&id), Some(&early_deadline));
+            assert!(state.deadlines[&early_deadline].contains(&id));
+        }
+
+        cache.delete("early");
+        let later_deadline = cache.store.lock().unwrap().next_expiration().unwrap();
+        assert!(later_deadline > early_deadline);
+        {
+            let state = cache_expiry_reaper().state.lock().unwrap();
+            assert_eq!(state.scheduled.get(&id), Some(&later_deadline));
+            assert!(
+                !state
+                    .deadlines
+                    .get(&early_deadline)
+                    .is_some_and(|ids| ids.contains(&id))
+            );
+        }
+
+        cache.set("latest", b"latest".to_vec(), 10_800);
+        assert_eq!(cache.take("later"), Some(b"later".to_vec()));
+        let latest_deadline = cache.store.lock().unwrap().next_expiration().unwrap();
+        {
+            let state = cache_expiry_reaper().state.lock().unwrap();
+            assert_eq!(state.scheduled.get(&id), Some(&latest_deadline));
+        }
+        drop(cache);
+        let state = cache_expiry_reaper().state.lock().unwrap();
+        assert!(!state.stores.contains_key(&id));
+        assert!(!state.scheduled.contains_key(&id));
+        assert!(state.deadlines.values().all(|ids| !ids.contains(&id)));
+    }
+
+    #[test]
+    fn memory_cache_reaper_deadlines_follow_concurrent_mutations() {
+        const WORKERS: usize = 8;
+        let cache = Arc::new(MemoryCache::new());
+        let barrier = Arc::new(Barrier::new(WORKERS));
+        std::thread::scope(|scope| {
+            for worker in 0..WORKERS {
+                let cache = Arc::clone(&cache);
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for index in 0..200 {
+                        let key = format!("{worker}-{}", index % 7);
+                        cache.set(&key, vec![worker as u8], 3_600 + (index % 60) as u64);
+                        let _ = cache.get(&key);
+                        if index % 2 == 0 {
+                            cache.delete(&key);
+                        }
+                        if index % 3 == 0 {
+                            let _ = cache.take(&key);
+                        }
+                        if index % 5 == 0 {
+                            cache.set_if_absent(&key, vec![index as u8], 7_200).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+
+        let id = cache_store_id(&cache.store);
+        let expected = cache.store.lock().unwrap().next_expiration();
+        let state = cache_expiry_reaper().state.lock().unwrap();
+        assert_eq!(state.scheduled.get(&id).copied(), expected);
+        assert_eq!(
+            state
+                .deadlines
+                .values()
+                .filter(|ids| ids.contains(&id))
+                .count(),
+            usize::from(expected.is_some()),
+            "a cache must have exactly one deadline-index entry"
+        );
+        drop(state);
+        drop(cache);
+        let state = cache_expiry_reaper().state.lock().unwrap();
+        assert!(!state.stores.contains_key(&id));
+        assert!(!state.scheduled.contains_key(&id));
+    }
+
+    #[test]
+    fn memory_cache_reaper_visits_only_due_store_among_thousand_idle_caches() {
+        const CACHE_COUNT: usize = 1_000;
+        let caches: Vec<_> = (0..CACHE_COUNT)
+            .map(|index| {
+                let cache = MemoryCache::new();
+                cache.set(&format!("live-{index}"), vec![1], 3_600);
+                cache
+            })
+            .collect();
+        caches[0].set("short", vec![2], 1);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let store = caches[0].store.lock().unwrap();
+            if store.reaper_visits > 0 {
+                assert!(!store.entries.contains_key("short"));
+                break;
+            }
+            drop(store);
+            assert!(
+                Instant::now() < deadline,
+                "reaper did not process the due cache"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let visits: usize = caches
+            .iter()
+            .map(|cache| cache.store.lock().unwrap().reaper_visits)
+            .sum();
+        assert_eq!(visits, 1, "expiry swept unrelated live-but-idle caches");
+        for cache in &caches[1..] {
+            let store = cache.store.lock().unwrap();
+            assert_eq!(store.reaper_visits, 0);
+            assert_eq!(store.entries.len(), 1);
+        }
     }
 
     #[test]

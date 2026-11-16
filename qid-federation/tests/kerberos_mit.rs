@@ -1,6 +1,9 @@
 //! Test-only live MIT proof. Run through scripts/kerberos/test-mit-spnego.py,
 //! which owns the realm, credentials, process-group deadline and cleanup.
 //! Ordinary workspace tests report this proof as ignored, never as passed.
+#[path = "kerberos_mit/strict_keytab.rs"]
+mod strict_keytab;
+
 use krb5::{
     KerberosError, Keytab,
     acceptor::{AcceptOptions, DEFAULT_CLOCK_SKEW_SECS},
@@ -124,8 +127,8 @@ fn acceptor<'k>(keytab: &'k Keytab, cache: &Arc<MemoryCache>) -> SpnegoAcceptor<
 #[ignore = "requires disposable MIT realm; run scripts/kerberos/test-mit-spnego.py"]
 fn mit_spnego_acceptor_proof() -> io::Result<()> {
     let keytab_path = std::env::var_os("QID_MIT_KEYTAB").expect("run the MIT fixture script");
-    let keytab =
-        Keytab::load(keytab_path).unwrap_or_else(|_| panic!("load fixture service keytab"));
+    let keytab = strict_keytab::load(std::path::Path::new(&keytab_path))
+        .unwrap_or_else(|_| panic!("load fixture service keytab"));
     let cache = Arc::new(MemoryCache::new());
     let mut mit = MitPeer::new(SERVICE)?;
     let original = mit.initial()?;
@@ -212,7 +215,7 @@ fn mit_spnego_acceptor_proof() -> io::Result<()> {
     // at ticket-time validation, before its now-stale authenticator is checked.
     let expired_keytab_path =
         std::env::var_os("QID_MIT_EXPIRED_KEYTAB").expect("run the MIT fixture script");
-    let expired_keytab = Keytab::load(expired_keytab_path)
+    let expired_keytab = strict_keytab::load(std::path::Path::new(&expired_keytab_path))
         .unwrap_or_else(|_| panic!("load fixture expired-service keytab"));
     let mut expired_peer = MitPeer::new(EXPIRED_SERVICE)?;
     let expired_token = expired_peer.initial()?;

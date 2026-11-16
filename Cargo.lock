@@ -3640,6 +3640,7 @@ dependencies = [
  "tracing",
  "ulid",
  "urlencoding",
+ "zeroize",
 ]
 
 [[package]]

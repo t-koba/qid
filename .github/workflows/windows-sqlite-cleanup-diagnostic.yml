@@ -323,8 +323,8 @@ jobs:
           "QID_SQLITE_CLEANUP_SUFFIX=$suffix" >> $env:GITHUB_ENV
           "QID_DIAGNOSTIC_OWNED=true" >> $env:GITHUB_ENV
           $env:QID_SQLITE_CLEANUP_SUFFIX = $suffix
-          # All three invocations retain Restart Manager capture before
-          # unchanged cleanup, restricted by leaf to the observed test_2.db.
+          # Every invocation retains Restart Manager capture before unchanged
+          # cleanup, restricted by leaf to the observed test_2.db.
           # Handle adds a PID/full-path filtered snapshot only for
           # test_14.db and test_15.db; neither source is an exhaustive trace.
           Write-Host 'Running focused Windows user-deletion cleanup test (1/2)'
@@ -348,12 +348,16 @@ jobs:
           # The parallel library suite is the only invocation that has reproduced
           # the delayed-admission cleanup failure on the exact source. The leaf
           # filter limits owner capture to the one per-process test_2.db file.
-          Write-Host 'Running parallel qid-storage library suite with targeted owner capture (3/3)'
-          $output = @()
-          & cargo test --locked -p qid-storage --lib -- --nocapture 2>&1 | Tee-Object -Variable output
-          $parallelExitCode = $LASTEXITCODE
-          Add-SanitizedDiagnosticLines $output
-          if ($parallelExitCode -ne 0) { $failed = $true }
+          # Three bounded attempts seek recurrence without changing cleanup.
+          $parallelAttempts = 3
+          for ($attempt = 1; $attempt -le $parallelAttempts; $attempt++) {
+            Write-Host "Running parallel qid-storage library suite with targeted owner capture ($attempt/$parallelAttempts)"
+            $output = @()
+            & cargo test --locked -p qid-storage --lib -- --nocapture 2>&1 | Tee-Object -Variable output
+            $parallelExitCode = $LASTEXITCODE
+            Add-SanitizedDiagnosticLines $output
+            if ($parallelExitCode -ne 0) { $failed = $true }
+          }
           if ($failed) { exit 1 }
       - name: Erase the diagnostic SQLite files
         timeout-minutes: 2

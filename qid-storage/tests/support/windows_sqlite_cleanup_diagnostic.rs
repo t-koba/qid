@@ -61,19 +61,18 @@ fn terminate_tree_and_reap(child: &mut std::process::Child) -> bool {
 
 #[cfg(windows)]
 fn targeted_leaf_allows(path: &Path) -> bool {
-    match std::env::var("QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF") {
-        Err(std::env::VarError::NotPresent) => true,
-        Ok(leaf)
-            if !leaf.is_empty()
-                && leaf.len() <= 64
-                && leaf.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
-                }) =>
-        {
-            path.file_name().and_then(|name| name.to_str()) == Some(leaf.as_str())
-        }
-        _ => false,
-    }
+    let Ok(value) = std::env::var("QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF") else {
+        return true;
+    };
+    let leaf = path.file_name().and_then(|name| name.to_str());
+    value.split(',').any(|candidate| {
+        !candidate.is_empty()
+            && candidate.len() <= 64
+            && candidate
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            && leaf == Some(candidate)
+    })
 }
 
 #[cfg(windows)]

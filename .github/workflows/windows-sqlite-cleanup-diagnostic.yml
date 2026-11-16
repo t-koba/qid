@@ -213,7 +213,7 @@ jobs:
         env:
           QID_SQLITE_CLEANUP_DIAGNOSTIC: "1"
           QID_SQLITE_CLEANUP_DIAGNOSTIC_TIMEOUT_SECONDS: "15"
-          QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF: "test_2.db"
+          QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF: "test_2.db,test_5.db"
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
@@ -324,7 +324,7 @@ jobs:
           "QID_DIAGNOSTIC_OWNED=true" >> $env:GITHUB_ENV
           $env:QID_SQLITE_CLEANUP_SUFFIX = $suffix
           # Every invocation retains Restart Manager capture before unchanged
-          # cleanup, restricted by leaf to the observed test_2.db.
+          # cleanup, restricted by leaf to the observed test_2.db and test_5.db.
           # Handle adds a PID/full-path filtered snapshot only for
           # test_14.db and test_15.db; neither source is an exhaustive trace.
           Write-Host 'Running focused Windows user-deletion cleanup test (1/2)'
@@ -346,8 +346,8 @@ jobs:
           Add-SanitizedDiagnosticLines $output
           if ($libraryExitCode -ne 0) { $failed = $true }
           # The parallel library suite is the only invocation that has reproduced
-          # the delayed-admission cleanup failure on the exact source. The leaf
-          # filter limits owner capture to the one per-process test_2.db file.
+          # a SQL cleanup owner failure on the exact source. The leaf filter
+          # limits owner capture to the two observed per-process database files.
           # Three bounded attempts seek recurrence without changing cleanup.
           $parallelAttempts = 3
           for ($attempt = 1; $attempt -le $parallelAttempts; $attempt++) {

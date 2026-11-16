@@ -215,15 +215,23 @@ fn verification_page_for_grant(
     resource: &[String],
     user_code: &str,
 ) -> String {
-    let approval_body = serde_json::json!({"user_code": user_code}).to_string();
+    // JSON supplies JavaScript string escaping; escaping '<' also prevents an
+    // embedded value from closing the HTML script element.
+    let approval_request = serde_json::json!({
+        "path": approval_path,
+        "body": {"user_code": user_code},
+    })
+    .to_string()
+    .replace('<', "\\u003c")
+    .replace('\u{2028}', "\\u2028")
+    .replace('\u{2029}', "\\u2029");
     format!(
-        "<!doctype html><html><body><h1>Authorize device?</h1><p>Client <b>{}</b> requests access with scopes: {}.</p><p>Resource: {}</p><p>Confirm the code on your device matches: <b>{}</b></p><button id=\"approve\">Approve</button> <span id=\"result\"></span><script>const approve=document.getElementById(\"approve\"),result=document.getElementById(\"result\");approve.onclick=async()=>{{const r=await fetch(\"{}\",{{method:\"POST\",headers:{{\"Content-Type\":\"application/json\"}},body:{},credentials:\"same-origin\"}});result.textContent=r.ok?\"Approved. You may close this page.\":\"Approval failed: \"+r.status;}};</script></body></html>",
+        "<!doctype html><html><body><h1>Authorize device?</h1><p>Client <b>{}</b> requests access with scopes: {}.</p><p>Resource: {}</p><p>Confirm the code on your device matches: <b>{}</b></p><button id=\"approve\">Approve</button> <span id=\"result\"></span><script>const request={};const approve=document.getElementById(\"approve\"),result=document.getElementById(\"result\");approve.onclick=async()=>{{const r=await fetch(request.path,{{method:\"POST\",headers:{{\"Content-Type\":\"application/json\"}},body:JSON.stringify(request.body),credentials:\"same-origin\"}});result.textContent=r.ok?\"Approved. You may close this page.\":\"Approval failed: \"+r.status;}};</script></body></html>",
         html_escape(client_id),
         html_escape(&scopes.join(" ")),
         html_escape(&resource.join(" ")),
         html_escape(user_code),
-        html_escape(approval_path),
-        approval_body,
+        approval_request,
     )
 }
 
@@ -473,4 +481,306 @@ async fn enforce_device_poll_interval<R: Repository>(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware,
+    };
+    use http_body_util::BodyExt;
+    use qid_core::{
+        models::{Client, ClientType, User},
+        test_helpers,
+    };
+    use qid_crypto::LocalSigner;
+    use qid_session::browser::SessionManager;
+    use qid_storage::FileRepository;
+    use tower::ServiceExt;
+
+    // Parse the page's request literal and its fetch body expression, rather
+    // than constructing an unrelated approval payload in the endpoint test.
+    fn page_submission(html: &str) -> (String, String) {
+        let script = html
+            .split_once("<script>const request=")
+            .unwrap()
+            .1
+            .split_once("</script>")
+            .unwrap()
+            .0;
+        let mut json = serde_json::Deserializer::from_str(script).into_iter::<serde_json::Value>();
+        let request = json.next().unwrap().unwrap();
+        let handler = &script[json.byte_offset()..];
+        assert!(handler.starts_with(";const approve="));
+        assert!(handler.contains(
+            "fetch(request.path,{method:\"POST\",headers:{\"Content-Type\":\"application/json\"},body:JSON.stringify(request.body),credentials:\"same-origin\"})"
+        ));
+        (
+            request["path"].as_str().unwrap().to_string(),
+            serde_json::to_string(&request["body"]).unwrap(),
+        )
+    }
+
+    #[test]
+    fn verification_submission_serializes_json_without_script_injection() {
+        let hostile = "\"\\\n&</script><script>alert('x')</script><!--\u{2028}\u{2029}";
+        let path = format!("/device/{hostile}/approve");
+        let page = verification_page_for_grant(
+            &path,
+            hostile,
+            &[hostile.to_string()],
+            &[hostile.to_string()],
+            hostile,
+        );
+        assert_eq!(page.matches("<script>").count(), 1);
+        assert_eq!(page.matches("</script>").count(), 1);
+        assert!(page.contains(&html_escape(hostile)));
+        let script = page.split_once("<script>").unwrap().1;
+        assert!(!script.contains(hostile));
+        assert!(script.contains("\\u003c/script>"));
+        assert!(script.contains("\\u2028\\u2029"));
+        let (actual_path, body) = page_submission(&page);
+        assert_eq!(actual_path, path);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"user_code": hostile})
+        );
+    }
+
+    async fn response_text(response: Response) -> String {
+        String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn verification_payload_approves_authenticated_session_then_redeems_device_token() {
+        // Remove the file store and its lock even if an assertion fails.
+        struct TestDirectory(std::path::PathBuf);
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TestDirectory(
+            std::env::temp_dir().join(format!("qid_device_page_{}", ulid::Ulid::new())),
+        );
+        let repo = Arc::new(
+            FileRepository::new(dir.0.join("store.json").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        repo.migrate().await.unwrap();
+        let mut config = test_helpers::test_config();
+        config.realms[0]
+            .protocols
+            .oauth
+            .device_authorization
+            .enabled = true;
+        let mut other = config.realms[0].clone();
+        other.id = "other".into();
+        other.issuer = "https://other.example.com".into();
+        config.realms.push(other);
+        for realm in &config.realms {
+            repo.create_realm(
+                &"tenant".into(),
+                &realm.id.as_str().into(),
+                &realm.issuer,
+                None,
+            )
+            .await
+            .unwrap();
+            repo.create_user(&User {
+                id: format!("{}-user", realm.id),
+                realm_id: realm.id.clone(),
+                email: None,
+                email_verified: false,
+                display_name: None,
+                failed_login_attempts: 0,
+                locked_until: None,
+                org: None,
+            })
+            .await
+            .unwrap();
+        }
+        let mut client = Client {
+            id: "device-client-id".into(),
+            realm_id: "test".into(),
+            client_id: "device-client".into(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".into(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: serde_json::json!({"keys": []}),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".into()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
+        };
+        repo.create_client(&client).await.unwrap();
+        client.id = "wrong-client-id".into();
+        client.client_id = "wrong-client".into();
+        repo.create_client(&client).await.unwrap();
+        let state = Arc::new(
+            SharedState::new(
+                config,
+                repo.clone(),
+                Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests")),
+                serde_json::json!({"keys": []}),
+            )
+            .unwrap(),
+        );
+        let app = super::super::routes(&state.paths)
+            .layer(middleware::from_fn_with_state(
+                state.paths.clone(),
+                qid_http::middleware::csrf_protection_layer_with_server_paths,
+            ))
+            .with_state(state.clone());
+        let authorization = app
+            .clone()
+            .oneshot(
+                Request::post(&state.paths.device_authorization)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("client_id=device-client&scope=api"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authorization.status(), StatusCode::OK);
+        let authorization: serde_json::Value =
+            serde_json::from_str(&response_text(authorization).await).unwrap();
+        let page = app
+            .clone()
+            .oneshot(
+                Request::get(authorization["verification_uri_complete"].as_str().unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let (path, body) = page_submission(&response_text(page).await);
+        assert_eq!(
+            path,
+            format!("{}/approve", state.paths.device_authorization)
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"user_code": authorization["user_code"]})
+        );
+        let sessions = SessionManager::new(repo.clone(), 60, 24);
+        let active = sessions
+            .create("test", "test-user", "password", &[])
+            .await
+            .unwrap();
+        let wrong_realm = sessions
+            .create("other", "other-user", "password", &[])
+            .await
+            .unwrap();
+        let revoked = sessions
+            .create("test", "test-user", "password", &[])
+            .await
+            .unwrap();
+        repo.revoke_session(&revoked.id, None).await.unwrap();
+        let cookie_name = &state
+            .require_realm("test")
+            .unwrap()
+            .browser_session
+            .cookie_name;
+        for (session_id, site, expected) in [
+            (None, "same-origin", StatusCode::UNAUTHORIZED),
+            (Some("missing"), "same-origin", StatusCode::UNAUTHORIZED),
+            (
+                Some(revoked.id.as_str()),
+                "same-origin",
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                Some(wrong_realm.id.as_str()),
+                "same-origin",
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                Some(active.id.as_str()),
+                "cross-site",
+                StatusCode::FORBIDDEN,
+            ),
+            (Some(active.id.as_str()), "same-origin", StatusCode::OK),
+        ] {
+            let mut request = Request::post(&path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", site);
+            if let Some(id) = session_id {
+                request = request.header(header::COOKIE, format!("{cookie_name}={id}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(body.clone())).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            let grant = repo
+                .get_device_authorization_grant_by_user_code(
+                    authorization["user_code"].as_str().unwrap(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                grant.user_id.as_deref(),
+                (expected == StatusCode::OK).then_some("test-user")
+            );
+        }
+        // Wrong-client redemption must not consume the approved grant; the
+        // rightful client gets tokens once and replay is rejected.
+        for (client, expected) in [
+            ("wrong-client", StatusCode::UNAUTHORIZED),
+            ("device-client", StatusCode::OK),
+            ("device-client", StatusCode::UNAUTHORIZED),
+        ] {
+            let form = format!(
+                "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id={client}&device_code={}",
+                authorization["device_code"].as_str().unwrap(),
+            );
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(&state.paths.token)
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(form))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                let token: serde_json::Value =
+                    serde_json::from_str(&response_text(response).await).unwrap();
+                assert!(!token["access_token"].as_str().unwrap().is_empty());
+                assert!(!token["refresh_token"].as_str().unwrap().is_empty());
+                assert_eq!(token["scope"], "api");
+            }
+        }
+    }
 }

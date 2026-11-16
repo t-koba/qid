@@ -2,7 +2,8 @@
 # The parent test bounds this entire process, suppresses stderr, and still makes
 # its original first deletion assertion even if this snapshot fails or times out.
 # -Preflight validates Restart Manager setup only; it never enumerates owners.
-# Handle is optional, read-only and restricted to the two observed library DBs.
+# Handle is optional and read-only, gated by QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF
+# with the two observed library DBs as its default when that variable is unset.
 param([string]$Database, [uint32]$TestProcessId, [string]$TestThread, [switch]$Preflight)
 $ErrorActionPreference = 'Stop'
 try {
@@ -122,8 +123,10 @@ public static class QidCleanupOwners {
     # wildcard queries or system-wide scans.
     $leaf = [IO.Path]::GetFileName($Database)
     $allowlist = $env:QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF
-    if ([string]::IsNullOrEmpty($allowlist) -or
-        $allowlist -cnotmatch '\A[A-Za-z0-9_.,-]{1,256}\z') {
+    if ([string]::IsNullOrEmpty($allowlist)) {
+      $allowlist = 'test_14.db,test_15.db'
+    }
+    if ($allowlist -cnotmatch '\A[A-Za-z0-9_.,-]{1,256}\z') {
       throw 'Invalid diagnostic leaf allowlist'
     }
     if (@($allowlist -split ',') -ccontains $leaf) {

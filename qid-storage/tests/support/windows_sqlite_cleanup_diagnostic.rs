@@ -60,19 +60,37 @@ fn terminate_tree_and_reap(child: &mut std::process::Child) -> bool {
 }
 
 #[cfg(windows)]
+fn valid_leaf(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && candidate.len() <= 64
+        && candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+#[cfg(windows)]
 fn targeted_leaf_allows(path: &Path) -> bool {
     let Ok(value) = std::env::var("QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF") else {
         return true;
     };
     let leaf = path.file_name().and_then(|name| name.to_str());
-    value.split(',').any(|candidate| {
-        !candidate.is_empty()
-            && candidate.len() <= 64
-            && candidate
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-            && leaf == Some(candidate)
-    })
+    value
+        .split(',')
+        .any(|candidate| valid_leaf(candidate) && leaf == Some(candidate))
+}
+
+#[cfg(windows)]
+fn handle_leaf_allows(path: &Path) -> bool {
+    let leaf = path.file_name().and_then(|name| name.to_str());
+    match std::env::var("QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF") {
+        Err(std::env::VarError::NotPresent) => {
+            matches!(leaf, Some("test_14.db" | "test_15.db"))
+        }
+        Ok(value) => value
+            .split(',')
+            .any(|candidate| valid_leaf(candidate) && leaf == Some(candidate)),
+        Err(_) => false,
+    }
 }
 
 #[cfg(windows)]
@@ -91,10 +109,7 @@ pub(crate) fn capture(path: &Path) -> bool {
         return true;
     }
     let unavailable = || {
-        if matches!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some("test_14.db" | "test_15.db")
-        ) {
+        if handle_leaf_allows(path) {
             eprintln!("HANDLE unavailable (helper could not be collected).");
         }
         false

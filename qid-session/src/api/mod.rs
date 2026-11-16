@@ -201,6 +201,7 @@ pub(crate) async fn load_browser_session<'a, R: Repository>(
     let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
         &realm_config.browser_session,
+        state.clone(),
     );
     let session = match manager.get(&session_id).await {
         Ok(Some(session)) => session,

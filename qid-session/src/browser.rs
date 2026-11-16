@@ -3,6 +3,7 @@
 use qid_core::config::BrowserSessionConfig;
 use qid_core::error::QidResult;
 use qid_core::models::Session;
+use qid_core::state::SharedState;
 use qid_ops::{CacheKey, CachePut};
 use qid_storage::prelude::*;
 use rand::RngCore;
@@ -18,24 +19,54 @@ pub struct BrowserSession {
 }
 
 /// Manages browser sessions.
+/// Invalidates cached browser sessions after authoritative revocation.
+pub trait SessionCacheInvalidator: Send + Sync + 'static {
+    fn invalidate(&self, session_id: &str);
+}
+
+impl<R: Repository> SessionCacheInvalidator for SharedState<R> {
+    fn invalidate(&self, session_id: &str) {
+        self.session_cache_delete(session_id);
+    }
+}
+
 pub struct SessionManager<R: SessionRepository + ?Sized> {
     repo: Arc<R>,
+    cache: Option<Arc<dyn SessionCacheInvalidator>>,
     idle_timeout_seconds: u64,
     absolute_timeout_seconds: u64,
 }
 
 impl<R: SessionRepository + ?Sized> SessionManager<R> {
-    pub(crate) fn from_browser_session_config(repo: Arc<R>, config: &BrowserSessionConfig) -> Self {
-        Self::new(
+    pub(crate) fn from_browser_session_config(
+        repo: Arc<R>,
+        config: &BrowserSessionConfig,
+        cache: Arc<dyn SessionCacheInvalidator>,
+    ) -> Self {
+        let mut manager = Self::new(
             repo,
             config.idle_timeout_minutes,
             config.absolute_timeout_hours,
-        )
+        );
+        manager.cache = Some(cache);
+        manager
+    }
+
+    pub(crate) fn with_cache(
+        repo: Arc<R>,
+        idle_timeout_minutes: u64,
+        absolute_timeout_hours: u64,
+        cache: Arc<dyn SessionCacheInvalidator>,
+    ) -> Self {
+        let mut manager = Self::new(repo, idle_timeout_minutes, absolute_timeout_hours);
+        manager.cache = Some(cache);
+        manager
     }
 
     pub fn new(repo: Arc<R>, idle_timeout_minutes: u64, absolute_timeout_hours: u64) -> Self {
         Self {
             repo,
+            cache: None,
             idle_timeout_seconds: idle_timeout_minutes * 60,
             absolute_timeout_seconds: absolute_timeout_hours * 60 * 60,
         }
@@ -78,6 +109,9 @@ impl<R: SessionRepository + ?Sized> SessionManager<R> {
     ) -> QidResult<Session> {
         if let Some(old_id) = old_session_id {
             self.repo.revoke_session(old_id, Some(realm_id)).await?;
+            if let Some(cache) = &self.cache {
+                cache.invalidate(old_id);
+            }
         }
         self.create(realm_id, user_id, acr, amr).await
     }
@@ -308,5 +342,58 @@ mod tests {
         assert_eq!(repo.create_calls.load(Ordering::SeqCst), 1);
         assert_eq!(replacement.realm_id, "corp");
         assert!(repo.sessions.lock().unwrap()[0].revoked);
+    }
+    #[derive(Default)]
+    struct RecordingCache {
+        invalidated: Mutex<Vec<String>>,
+    }
+
+    impl SessionCacheInvalidator for RecordingCache {
+        fn invalidate(&self, session_id: &str) {
+            self.invalidated
+                .lock()
+                .unwrap()
+                .push(session_id.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn regeneration_invalidates_the_old_session_cache_after_revocation() {
+        let repo = Arc::new(FailingSessionRepo::default());
+        let now = qid_core::util::now_seconds();
+        repo.create_session(&Session {
+            id: "old".to_string(),
+            realm_id: "corp".to_string(),
+            user_id: "user".to_string(),
+            auth_time: now,
+            acr: Some("pwd".to_string()),
+            amr: vec!["pwd".to_string()],
+            idle_expires_at: now + 30,
+            absolute_expires_at: now + 3600,
+            revoked: false,
+            created_at: now,
+            cnf: None,
+        })
+        .await
+        .unwrap();
+        let cache = Arc::new(RecordingCache::default());
+        let manager = SessionManager::with_cache(repo.clone(), 30, 8, cache.clone());
+        let amr = vec!["pwd".to_string()];
+
+        repo.fail_revoke.store(true, Ordering::SeqCst);
+        assert!(
+            manager
+                .create_with_regeneration("corp", "user", "pwd", &amr, Some("old"))
+                .await
+                .is_err()
+        );
+        assert!(cache.invalidated.lock().unwrap().is_empty());
+
+        repo.fail_revoke.store(false, Ordering::SeqCst);
+        manager
+            .create_with_regeneration("corp", "user", "pwd", &amr, Some("old"))
+            .await
+            .unwrap();
+        assert_eq!(cache.invalidated.lock().unwrap().as_slice(), &["old"]);
     }
 }

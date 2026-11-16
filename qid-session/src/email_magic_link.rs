@@ -350,8 +350,11 @@ pub(crate) async fn verify<R: Repository>(
         _ => return invalid(),
     };
     // Consumed before session creation: any later failure must not revive this credential.
-    let manager =
-        SessionManager::from_browser_session_config(state.repo.clone(), &runtime.browser_session);
+    let manager = SessionManager::from_browser_session_config(
+        state.repo.clone(),
+        &runtime.browser_session,
+        state.clone(),
+    );
     let old_session = extract_cookie(&headers, &runtime.browser_session.cookie_name);
     let session = match manager
         .create_with_regeneration(

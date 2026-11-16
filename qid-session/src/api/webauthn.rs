@@ -189,6 +189,7 @@ async fn require_webauthn_registration_session<R: Repository>(
     let manager = SessionManager::from_browser_session_config(
         state.repo.clone(),
         &realm_config.browser_session,
+        state.clone(),
     );
     let session = manager
         .get(&session_id)
@@ -310,15 +311,19 @@ async fn complete_webauthn_authentication<R: Repository>(
 ) -> qid_core::error::QidResult<(HeaderMap, qid_core::models::Session)> {
     accept_webauthn_assertion(state.repo.as_ref(), user_id, creds, auth_result).await?;
 
-    let session = SessionManager::from_browser_session_config(state.repo.clone(), session_config)
-        .create_with_regeneration(
-            realm,
-            user_id,
-            "phr", // ACR = phishing-resistant
-            &webauthn_session_amr(),
-            extract_cookie(headers, &session_config.cookie_name).as_deref(),
-        )
-        .await?;
+    let session = SessionManager::from_browser_session_config(
+        state.repo.clone(),
+        session_config,
+        state.clone(),
+    )
+    .create_with_regeneration(
+        realm,
+        user_id,
+        "phr", // ACR = phishing-resistant
+        &webauthn_session_amr(),
+        extract_cookie(headers, &session_config.cookie_name).as_deref(),
+    )
+    .await?;
 
     let mut headers = HeaderMap::new();
     super::set_session_cookie(

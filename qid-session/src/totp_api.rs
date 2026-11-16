@@ -318,7 +318,11 @@ async fn totp_authenticate<R: Repository>(
 
     let session_config = &realm_config.browser_session;
     let old_session_id = extract_cookie(&headers, &session_config.cookie_name);
-    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
+    let manager = SessionManager::from_browser_session_config(
+        state.repo.clone(),
+        session_config,
+        state.clone(),
+    );
 
     let session = match manager
         .create_with_regeneration(

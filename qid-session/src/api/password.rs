@@ -108,7 +108,11 @@ pub(super) async fn establish_session<R: Repository>(
     let session_config = &state.require_realm(realm)?.browser_session;
     let old_session_id = super::extract_cookie(headers, &session_config.cookie_name);
 
-    let manager = SessionManager::from_browser_session_config(state.repo.clone(), session_config);
+    let manager = SessionManager::from_browser_session_config(
+        state.repo.clone(),
+        session_config,
+        state.clone(),
+    );
 
     let session = manager
         .create_with_regeneration(

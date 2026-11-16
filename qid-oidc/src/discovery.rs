@@ -13,7 +13,7 @@ use qid_core::{
     config::{OAuthProtocolConfig, OAuthResourceServerConfig, OidcProtocolConfig, ServerPaths},
     error::QidResult,
     jwt::{Audience, JwtClaims},
-    models::Client,
+    models::{Client, Session},
     state::SharedState,
     tenant::RealmId,
     util,
@@ -856,11 +856,70 @@ struct BackchannelLogoutRequest {
     logout_token: String,
 }
 
+// Only authoritative local termination is fallible here. RP notifications remain
+// a separate, best-effort phase after these operations succeed.
+async fn terminate_browser_session<S: SessionRepository>(
+    repo: &S,
+    sid: Option<&str>,
+    realm_id: &str,
+    invalidate: impl Fn(&str),
+) -> QidResult<Option<Session>> {
+    let Some(sid) = sid else { return Ok(None) };
+    let session = repo.get_session(sid).await?;
+    if let Some(session) = &session
+        && session.realm_id == realm_id
+        && repo.revoke_session(sid, Some(realm_id)).await?
+    {
+        invalidate(sid);
+    }
+    Ok(session)
+}
+
+async fn terminate_backchannel_sessions<S: SessionRepository>(
+    repo: &S,
+    realm_id: &str,
+    sid: Option<&str>,
+    sub: Option<&str>,
+    invalidate: impl Fn(&str),
+) -> QidResult<()> {
+    if let Some(sid) = sid {
+        let revoked = repo.revoke_session(sid, Some(realm_id)).await?;
+        if revoked
+            || repo
+                .get_session(sid)
+                .await?
+                .is_some_and(|session| session.realm_id == realm_id)
+        {
+            invalidate(sid);
+        }
+    }
+    if let Some(sub) = sub {
+        let sessions = repo.list_sessions(realm_id, Some(sub)).await?;
+        #[cfg(test)]
+        let repo = logout_tests::ObservedSessions(repo);
+        for session in sessions.iter().filter(|session| !session.revoked) {
+            repo.revoke_session(&session.id, Some(realm_id)).await?;
+            invalidate(&session.id);
+        }
+    }
+    Ok(())
+}
+
 async fn logout<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     OriginalUri(original_uri): OriginalUri,
     headers: axum::http::HeaderMap,
     Form(form): Form<LogoutRequest>,
+) -> Response {
+    logout_with_sessions(&state, state.repo.as_ref(), original_uri, headers, form).await
+}
+
+async fn logout_with_sessions<R: Repository, S: SessionRepository>(
+    state: &SharedState<R>,
+    sessions: &S,
+    original_uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    form: LogoutRequest,
 ) -> Response {
     let mut logout_realm_id = None;
     let mut logout_issuer = None;
@@ -875,7 +934,7 @@ async fn logout<R: Repository>(
                 let Some(realm) = claims
                     .iss
                     .as_deref()
-                    .and_then(|iss| realm_by_issuer(&state, iss))
+                    .and_then(|iss| realm_by_issuer(state, iss))
                 else {
                     return qid_http::error_response(bad_request(
                         "id_token_hint iss does not match a configured realm issuer",
@@ -922,18 +981,18 @@ async fn logout<R: Repository>(
     if logout_realm_id.is_none()
         && let Some(client_id) = form.client_id.as_deref()
     {
-        let realm = match logout_client_realm(&state, client_id).await {
+        let realm = match logout_client_realm(state, client_id).await {
             Ok(realm) => realm,
             Err(error) => return qid_http::error_response(error),
         };
         logout_realm_id = Some(realm.id.clone());
         logout_issuer = Some(realm.issuer.clone());
     }
-    if logout_realm_id.is_none() {
+    let Some(realm_id) = logout_realm_id.as_deref() else {
         return qid_http::error_response(bad_request(
             "logout requires id_token_hint or client_id to determine realm",
         ));
-    }
+    };
     let logout_enabled = state
         .config
         .realms
@@ -973,30 +1032,23 @@ async fn logout<R: Repository>(
     let mut session_id = cookie_header.and_then(|c| parse_cookie(c, &cookie_name));
     let mut foreign_session = false;
 
-    let user_id = if let Some(sid) = session_id {
-        if let Ok(Some(session)) = state.repo.get_session(sid).await {
-            if Some(session.realm_id.as_str()) != logout_realm_id.as_deref() {
-                foreign_session = true;
-                session_id = None;
-                None
-            } else {
-                if matches!(
-                    state
-                        .repo
-                        .revoke_session(sid, Some(session.realm_id.as_str()))
-                        .await,
-                    Ok(true)
-                ) {
-                    state.session_cache_delete(sid);
-                }
-                Some(session.user_id)
-            }
-        } else {
-            None
-        }
-    } else {
-        None
+    let session = match terminate_browser_session(sessions, session_id, realm_id, |sid| {
+        state.session_cache_delete(sid)
+    })
+    .await
+    {
+        Ok(session) => session,
+        Err(error) => return qid_http::error_response(error),
     };
+    let user_id = session.and_then(|session| {
+        if Some(session.realm_id.as_str()) != logout_realm_id.as_deref() {
+            foreign_session = true;
+            session_id = None;
+            None
+        } else {
+            Some(session.user_id)
+        }
+    });
 
     // Get all clients with logout URIs for OP-initiated logout
     let mut clients_with_logout_uris = Vec::new();
@@ -1021,7 +1073,7 @@ async fn logout<R: Repository>(
     }
 
     let redirect_uri = match validate_post_logout_redirect_uri(
-        &state,
+        state,
         form.client_id.as_deref(),
         form.post_logout_redirect_uri.as_deref(),
     )
@@ -1065,7 +1117,7 @@ async fn logout<R: Repository>(
     {
         for client in &clients_with_logout_uris {
             if let Some(uri) = &client.backchannel_logout_uri
-                && let Some(token) = build_logout_token(&state, issuer, user_id, sid, client).await
+                && let Some(token) = build_logout_token(state, issuer, user_id, sid, client).await
                 && let Err(error) = send_backchannel_logout(uri, &token).await
             {
                 tracing::warn!(
@@ -1139,6 +1191,14 @@ async fn backchannel_logout<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Form(form): Form<BackchannelLogoutRequest>,
 ) -> Response {
+    backchannel_logout_with_sessions(&state, state.repo.as_ref(), form).await
+}
+
+async fn backchannel_logout_with_sessions<R: Repository, S: SessionRepository>(
+    state: &SharedState<R>,
+    sessions: &S,
+    form: BackchannelLogoutRequest,
+) -> Response {
     // OIDC Back-Channel Logout 1.0 §2.2 mandates signature verification using the
     // issuer's published key material. The decode() call below verifies the
     // signature with the OP's active signer and enforces exp validation
@@ -1167,7 +1227,7 @@ async fn backchannel_logout<R: Repository>(
     };
 
     // The logout_token's `iss` MUST identify a realm of this OP.
-    let Some(logout_realm) = realm_by_issuer(&state, iss) else {
+    let Some(logout_realm) = realm_by_issuer(state, iss) else {
         return qid_http::oauth_error_response_with_description(
             axum::http::StatusCode::UNAUTHORIZED,
             "invalid_token",
@@ -1230,47 +1290,13 @@ async fn backchannel_logout<R: Repository>(
         return qid_http::error_response(bad_request("logout_token must contain sid or sub"));
     }
 
-    if let Some(sid_val) = sid {
-        match state
-            .repo
-            .revoke_session(sid_val, Some(logout_realm.id.as_str()))
-            .await
-        {
-            Ok(true) => state.session_cache_delete(sid_val),
-            Ok(false) => {
-                if state
-                    .repo
-                    .get_session(sid_val)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|session| session.realm_id == logout_realm.id)
-                {
-                    state.session_cache_delete(sid_val);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {sid_val}");
-            }
-        }
-    }
-    if let Some(sub_val) = sub {
-        let sessions = state
-            .repo
-            .list_sessions(&logout_realm.id, Some(sub_val))
-            .await
-            .unwrap_or_default();
-        let repo = &*state.repo;
-        #[cfg(test)]
-        let repo = logout_tests::ObservedSessions(repo);
-        let realm_scope = Some(logout_realm.id.as_str());
-        for session in sessions.iter().filter(|session| !session.revoked) {
-            if let Err(e) = repo.revoke_session(&session.id, realm_scope).await {
-                tracing::warn!(error = %e, "backchannel_logout: failed to revoke session {}", session.id);
-            } else {
-                state.session_cache_delete(&session.id);
-            }
-        }
+    if let Err(error) =
+        terminate_backchannel_sessions(sessions, &logout_realm.id, sid, sub, |sid| {
+            state.session_cache_delete(sid)
+        })
+        .await
+    {
+        return qid_http::error_response(error);
     }
 
     tracing::info!(

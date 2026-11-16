@@ -11,6 +11,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     env:
+      CARGO_TERM_COLOR: never
       QID_DIAGNOSTIC_OWNED: "false"
     steps:
       - uses: actions/checkout@v7
@@ -215,6 +216,38 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
+          $reportName = 'windows-sqlite-cleanup-diagnostic-{0}-{1}.txt' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT
+          $report = Join-Path $env:RUNNER_TEMP $reportName
+          $reportFile = [IO.File]::Open($report, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+          $reportFile.Dispose()
+          $script:reportLimit = 65536
+          $script:reportEncoding = [Text.UTF8Encoding]::new($false)
+          $header = 'Sanitized diagnostic rows only; Restart Manager and Handle snapshots are not exhaustive.' + [Environment]::NewLine
+          [IO.File]::WriteAllText($report, $header, $script:reportEncoding)
+          $script:reportBytes = [Text.Encoding]::UTF8.GetByteCount($header)
+          $script:reportNotice = 'REPORT truncated: sanitized diagnostics exceeded the 65536-byte limit.' + [Environment]::NewLine
+          $script:reportNoticeBytes = [Text.Encoding]::UTF8.GetByteCount($script:reportNotice)
+          $script:reportTruncated = $false
+          $script:report = $report
+          $script:reportPattern = '\A(?:RM image=[A-Za-z0-9_.-]+ pid=[0-9]+ suffix=(?:db|-wal|-shm|-journal)|RM suffix=(?:db|-wal|-shm|-journal) holders=none|RM snapshot complete \(not an exhaustive handle trace\)\.|HANDLE pid=[0-9]+ db=test_(?:14|15)\.db exact_file_matches=[0-9]+ \(live snapshot, not exhaustive\)\.|HANDLE unavailable \((?:helper could not be collected|raw output suppressed)\)\.|ERROR: Restart Manager snapshot untrusted \(raw exception suppressed\)\.|ERROR: Windows cleanup diagnostic process tree was not confirmed stopped|ERROR: Windows cleanup diagnostic timed out or could not be collected)\z'
+          function Add-SanitizedDiagnosticLines {
+            param([object[]]$Lines)
+            foreach ($candidate in $Lines) {
+              if ($script:reportTruncated) { break }
+              $line = [string]$candidate
+              if ($line -cnotmatch $script:reportPattern) { continue }
+              $record = $line + [Environment]::NewLine
+              $recordBytes = [Text.Encoding]::UTF8.GetByteCount($record)
+              if ($script:reportBytes + $recordBytes + $script:reportNoticeBytes -gt $script:reportLimit) {
+                [IO.File]::AppendAllText($script:report, $script:reportNotice, $script:reportEncoding)
+                $script:reportBytes += $script:reportNoticeBytes
+                $script:reportTruncated = $true
+                break
+              }
+              [IO.File]::AppendAllText($script:report, $record, $script:reportEncoding)
+              $script:reportBytes += $recordBytes
+            }
+          }
           $suffix = "diagnostic-$([Guid]::NewGuid().ToString('N'))"
           $database = Join-Path ([IO.Path]::GetTempPath()) "qid-user-deletion-$suffix.db"
           $paths = @($database, "$database-wal", "$database-shm", "$database-journal")
@@ -238,13 +271,18 @@ jobs:
             'sql_user_deletion_cleans_only_owned_authentication_state',
             '--', '--exact', '--nocapture', '--test-threads=1'
           )
-          & cargo @userDeletionArguments
+          $output = @()
+          & cargo @userDeletionArguments 2>&1 | Tee-Object -Variable output
           $failed = $LASTEXITCODE -ne 0
+          Add-SanitizedDiagnosticLines $output
           # Match the normal Windows suite's single-threaded qid-storage test
           # order so the IGA cases exercise their original per-test DB sequence.
           Write-Host 'Running single-threaded qid-storage library cleanup suite (2/2)'
-          & cargo test --locked -p qid-storage --lib -- --nocapture --test-threads=1
-          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          $output = @()
+          & cargo test --locked -p qid-storage --lib -- --nocapture --test-threads=1 2>&1 | Tee-Object -Variable output
+          $libraryExitCode = $LASTEXITCODE
+          Add-SanitizedDiagnosticLines $output
+          if ($libraryExitCode -ne 0) { $failed = $true }
           if ($failed) { exit 1 }
       - name: Erase the diagnostic SQLite files
         timeout-minutes: 2
@@ -285,5 +323,26 @@ jobs:
             Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "qid-handle-$key") -Recurse -Force
           } catch {
             Write-Host 'ERROR: Could not remove the owned Handle download (raw output suppressed).'
+            exit 1
+          }
+      - name: Upload sanitized Windows SQLite diagnostic
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-sqlite-cleanup-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-sqlite-cleanup-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Erase sanitized Windows SQLite diagnostic
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportName = 'windows-sqlite-cleanup-diagnostic-{0}-{1}.txt' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT
+          $report = Join-Path $env:RUNNER_TEMP $reportName
+          try {
+            if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force }
+          } catch {
+            Write-Host 'ERROR: Could not erase the owned sanitized diagnostic report.'
             exit 1
           }

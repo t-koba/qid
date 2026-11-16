@@ -262,6 +262,43 @@ fn webauthn_session_amr() -> Vec<String> {
     vec!["webauthn".to_string()]
 }
 
+async fn accept_webauthn_assertion<R: CredentialRepository>(
+    repo: &R,
+    user_id: &str,
+    creds: &[qid_core::models::WebAuthnCredential],
+    auth_result: &crate::webauthn::WebAuthnAuthOutcome,
+) -> qid_core::error::QidResult<()> {
+    let cred = creds
+        .iter()
+        .find(|credential| credential.credential_id == auth_result.credential_id)
+        .ok_or_else(|| QidError::Crypto {
+            message: "authenticated WebAuthn credential is not registered".to_string(),
+        })?;
+    // WebAuthn L3 §6.1.1: authenticators that do not implement a signature
+    // counter always return 0. Allow 0→0, then atomically recheck the current
+    // row so a stale completion or a credential deleted before this claim fails
+    // before session creation.
+    if (auth_result.counter != 0 || cred.counter != 0) && auth_result.counter <= cred.counter {
+        return Err(QidError::Crypto {
+            message: "credential cloning detected: signCount did not increase".to_string(),
+        });
+    }
+    if !repo
+        .accept_webauthn_credential_counter(
+            user_id,
+            &cred.id,
+            &auth_result.credential_id,
+            auth_result.counter,
+        )
+        .await?
+    {
+        return Err(QidError::Crypto {
+            message: "WebAuthn credential counter claim was not accepted".to_string(),
+        });
+    }
+    Ok(())
+}
+
 async fn complete_webauthn_authentication<R: Repository>(
     state: &Arc<SharedState<R>>,
     realm: &str,
@@ -271,23 +308,7 @@ async fn complete_webauthn_authentication<R: Repository>(
     creds: &[qid_core::models::WebAuthnCredential],
     auth_result: &crate::webauthn::WebAuthnAuthOutcome,
 ) -> qid_core::error::QidResult<(HeaderMap, qid_core::models::Session)> {
-    // Verify signCount monotonicity (credential cloning detection)
-    if let Some(cred) = creds
-        .iter()
-        .find(|c| c.credential_id.as_slice() == auth_result.credential_id.as_slice())
-    {
-        // WebAuthn L3 §6.1.1: authenticators that do not implement a
-        // signature counter always return 0.  Allow 0→0 transitions.
-        if (auth_result.counter != 0 || cred.counter != 0) && auth_result.counter <= cred.counter {
-            return Err(QidError::Crypto {
-                message: "credential cloning detected: signCount did not increase".to_string(),
-            });
-        }
-        state
-            .repo
-            .update_webauthn_credential_counter(user_id, &cred.id, auth_result.counter)
-            .await?;
-    }
+    accept_webauthn_assertion(state.repo.as_ref(), user_id, creds, auth_result).await?;
 
     let session = SessionManager::from_browser_session_config(state.repo.clone(), session_config)
         .create_with_regeneration(
@@ -509,7 +530,8 @@ pub async fn webauthn_discoverable_auth_finish<R: Repository>(
 
 #[cfg(test)]
 mod tests {
-    use super::webauthn_session_amr;
+    use super::{accept_webauthn_assertion, webauthn_session_amr};
+    use qid_storage::{CredentialRepository, FileRepository};
 
     #[test]
     fn webauthn_session_amr_marks_method_without_hardware_claim() {
@@ -526,5 +548,46 @@ mod tests {
             !amr.iter().any(|method| method == "hwk" || method == "swk"),
             "unclassified credential claims hardware assurance: {amr:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn deleted_credential_cannot_pass_pre_session_counter_gate() {
+        let directory = tempfile::tempdir().expect("create temporary repository directory");
+        let path = directory.path().join("credentials.json");
+        let repo = FileRepository::new(path.to_str().expect("UTF-8 test path"))
+            .await
+            .expect("create file repository");
+        let credential = qid_core::models::WebAuthnCredential {
+            id: "credential-record".to_string(),
+            user_id: "alice".to_string(),
+            credential_id: vec![1, 2, 3],
+            public_key: vec![4, 5, 6],
+            counter: 0,
+            aaguid: vec![0; 16],
+            device_name: None,
+            created_at: 1,
+        };
+        repo.store_webauthn_credential(&credential)
+            .await
+            .expect("store WebAuthn credential");
+        let stale_credentials = repo
+            .get_webauthn_credentials("alice")
+            .await
+            .expect("read WebAuthn credential snapshot");
+        repo.delete_webauthn_credential("alice", &credential.id)
+            .await
+            .expect("delete WebAuthn credential");
+
+        let result = accept_webauthn_assertion(
+            &repo,
+            "alice",
+            &stale_credentials,
+            &crate::webauthn::WebAuthnAuthOutcome {
+                credential_id: credential.credential_id,
+                counter: 1,
+            },
+        )
+        .await;
+        assert!(result.is_err(), "deleted credential must not be accepted");
     }
 }

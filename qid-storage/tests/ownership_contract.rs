@@ -233,11 +233,11 @@ async fn service_account_realm_delete_holds_in_both_backends() {
 }
 
 #[tokio::test]
-async fn webauthn_credential_identity_ownership_holds_in_both_backends() {
+async fn webauthn_credential_ownership_and_counter_acceptance_hold_in_both_backends() {
     let sql = support::sql_repo().await;
-    support::assert_webauthn_credential_identity_ownership(&sql).await;
+    support::assert_webauthn_credential_ownership_and_counter_acceptance(&sql).await;
     let file = support::file_repo("ownership-contract-webauthn-credential").await;
-    support::assert_webauthn_credential_identity_ownership(&file).await;
+    support::assert_webauthn_credential_ownership_and_counter_acceptance(&file).await;
 }
 
 #[tokio::test]
@@ -1332,7 +1332,7 @@ async fn webauthn_duplicate_record_id_counter_update_fails_without_changes() {
 
     let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
     assert!(matches!(
-        repo.update_webauthn_credential_counter("alice", "shared-record", 11)
+        repo.accept_webauthn_credential_counter("alice", "shared-record", &[1], 11)
             .await,
         Err(QidError::Conflict { .. })
     ));

@@ -285,12 +285,17 @@ pub trait TokenRepository: Send + Sync + 'static {
 pub trait CredentialRepository: Send + Sync + 'static {
     async fn get_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>>;
     async fn store_webauthn_credential(&self, cred: &WebAuthnCredential) -> QidResult<()>;
-    async fn update_webauthn_credential_counter(
+    /// Atomically accept a verified assertion only while the exact credential
+    /// row remains current and its sign counter advances. Counterless 0→0
+    /// authenticators are accepted while the stored counter remains zero.
+    /// Returns false for a missing/mismatched credential or a stale counter.
+    async fn accept_webauthn_credential_counter(
         &self,
         user_id: &str,
         id: &str,
+        credential_id: &[u8],
         counter: u64,
-    ) -> QidResult<()>;
+    ) -> QidResult<bool>;
     async fn delete_webauthn_credential(&self, user_id: &str, id: &str) -> QidResult<()>;
     async fn list_webauthn_credentials(&self, user_id: &str) -> QidResult<Vec<WebAuthnCredential>> {
         self.get_webauthn_credentials(user_id).await

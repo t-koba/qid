@@ -1141,7 +1141,7 @@ pub fn sample_cross_realm_client(id: &str, realm_id: &str, client_id: &str) -> C
 
 /// WebAuthn record IDs and raw credential IDs are globally unique, so neither
 /// can be reused to attach another authenticator, even for the same user.
-pub async fn assert_webauthn_credential_identity_ownership<R>(repo: &R)
+pub async fn assert_webauthn_credential_ownership_and_counter_acceptance<R>(repo: &R)
 where
     R: RealmRepository + UserRepository + CredentialRepository,
 {
@@ -1251,9 +1251,17 @@ where
             .is_empty()
     );
 
-    repo.update_webauthn_credential_counter(&other_user.id, &credential.id, 7)
-        .await
-        .expect("wrong-owner counter update should be a no-op");
+    assert!(
+        !repo
+            .accept_webauthn_credential_counter(
+                &other_user.id,
+                &credential.id,
+                &credential.credential_id,
+                7,
+            )
+            .await
+            .expect("wrong-owner counter claim should not be accepted")
+    );
     let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!(
@@ -1261,30 +1269,155 @@ where
         "wrong owner changed incumbent counter"
     );
 
-    repo.update_webauthn_credential_counter(&user.id, &credential.id, 8)
+    assert!(
+        repo.accept_webauthn_credential_counter(
+            &user.id,
+            &credential.id,
+            &credential.credential_id,
+            8,
+        )
         .await
-        .expect("owner counter update failed");
-    repo.update_webauthn_credential_counter(&user.id, &credential.id, 10)
+        .expect("owner counter claim failed")
+    );
+    assert!(
+        repo.accept_webauthn_credential_counter(
+            &user.id,
+            &credential.id,
+            &credential.credential_id,
+            10,
+        )
         .await
-        .expect("newer owner counter update failed");
-    repo.update_webauthn_credential_counter(&user.id, &credential.id, 9)
-        .await
-        .expect("stale owner counter update should be harmless");
+        .expect("newer owner counter claim failed")
+    );
+    assert!(
+        !repo
+            .accept_webauthn_credential_counter(
+                &user.id,
+                &credential.id,
+                &credential.credential_id,
+                9,
+            )
+            .await
+            .expect("stale owner counter claim should be rejected")
+    );
+    assert!(
+        !repo
+            .accept_webauthn_credential_counter(&user.id, &credential.id, &[99], 11)
+            .await
+            .expect("mismatched raw credential ID should not be accepted")
+    );
     let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!(
         stored[0].counter, 10,
-        "stale owner update rolled back the authenticator counter"
+        "stale or mismatched claim changed counter"
     );
 
-    repo.update_webauthn_credential_counter(&user.id, "unknown-credential", 11)
+    assert!(
+        !repo
+            .accept_webauthn_credential_counter(
+                &user.id,
+                "unknown-credential",
+                &credential.credential_id,
+                11,
+            )
+            .await
+            .expect("unknown credential claim should not be accepted")
+    );
+
+    // Two completions with the same stale snapshot and same new counter must
+    // have exactly one winner in either storage backend.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = std::sync::Arc::clone(&barrier);
+    let second_barrier = std::sync::Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        repo.accept_webauthn_credential_counter(
+            &user.id,
+            &credential.id,
+            &credential.credential_id,
+            11,
+        )
         .await
-        .expect("unknown credential update should be a no-op");
-    let stored = repo.get_webauthn_credentials(&user.id).await.unwrap();
-    assert_eq!(stored.len(), 1);
+    };
+    let second = async {
+        second_barrier.wait().await;
+        repo.accept_webauthn_credential_counter(
+            &user.id,
+            &credential.id,
+            &credential.credential_id,
+            11,
+        )
+        .await
+    };
+    let (first, second) = tokio::join!(first, second);
     assert_eq!(
-        stored[0].counter, 10,
-        "unknown ID changed incumbent counter"
+        [first.unwrap(), second.unwrap()]
+            .into_iter()
+            .filter(|accepted| *accepted)
+            .count(),
+        1,
+        "concurrent equal counters must have exactly one winner"
+    );
+    assert_eq!(
+        repo.get_webauthn_credentials(&user.id).await.unwrap()[0].counter,
+        11
+    );
+
+    let counterless = WebAuthnCredential {
+        id: "alice-counterless-credential".to_string(),
+        credential_id: vec![6],
+        counter: 0,
+        ..credential.clone()
+    };
+    repo.store_webauthn_credential(&counterless)
+        .await
+        .expect("store counterless credential failed");
+    for _ in 0..2 {
+        assert!(
+            repo.accept_webauthn_credential_counter(
+                &user.id,
+                &counterless.id,
+                &counterless.credential_id,
+                0,
+            )
+            .await
+            .expect("counterless 0→0 authentication should be accepted")
+        );
+    }
+    repo.delete_webauthn_credential(&user.id, &counterless.id)
+        .await
+        .expect("remove temporary counterless credential failed");
+
+    let deleted = WebAuthnCredential {
+        id: "alice-deleted-credential".to_string(),
+        credential_id: vec![7],
+        counter: 3,
+        ..credential.clone()
+    };
+    repo.store_webauthn_credential(&deleted)
+        .await
+        .expect("store deletion-race credential failed");
+    let stale_snapshot = repo
+        .get_webauthn_credentials(&user.id)
+        .await
+        .expect("read deletion-race snapshot failed")
+        .into_iter()
+        .find(|stored| stored.id == deleted.id)
+        .expect("deletion-race credential present");
+    repo.delete_webauthn_credential(&user.id, &deleted.id)
+        .await
+        .expect("delete credential before counter claim failed");
+    assert!(
+        !repo
+            .accept_webauthn_credential_counter(
+                &user.id,
+                &stale_snapshot.id,
+                &stale_snapshot.credential_id,
+                4,
+            )
+            .await
+            .expect("deleted credential claim should be rejected")
     );
 
     let sibling = WebAuthnCredential {

@@ -40,20 +40,23 @@ impl CredentialRepository for SqlRepository {
         })
     }
 
-    async fn update_webauthn_credential_counter(
+    async fn accept_webauthn_credential_counter(
         &self,
         user_id: &str,
         id: &str,
+        credential_id: &[u8],
         counter: u64,
-    ) -> QidResult<()> {
-        sqlx::query("UPDATE credentials_webauthn SET counter = CASE WHEN counter < $1 THEN $1 ELSE counter END WHERE user_id = $2 AND id = $3")
+    ) -> QidResult<bool> {
+        let credential_id = base64::engine::general_purpose::STANDARD.encode(credential_id);
+        let result = sqlx::query("UPDATE credentials_webauthn SET counter = $1 WHERE user_id = $2 AND id = $3 AND credential_id = $4 AND ((counter = 0 AND $1 = 0) OR counter < $1)")
             .bind(counter as i64)
             .bind(user_id)
             .bind(id)
+            .bind(credential_id)
             .execute(&self.pool)
             .await
             .map_err(storage_to_qid_error)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     async fn store_totp_credential(&self, cred: &TotpCredential) -> QidResult<()> {

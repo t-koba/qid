@@ -34,32 +34,44 @@ impl CredentialRepository for FileRepository {
         self.save().await
     }
 
-    async fn update_webauthn_credential_counter(
+    async fn accept_webauthn_credential_counter(
         &self,
         user_id: &str,
         id: &str,
+        credential_id: &[u8],
         counter: u64,
-    ) -> QidResult<()> {
+    ) -> QidResult<bool> {
         let mut store = self.store.write().await;
         reject_duplicate_id(
             store
                 .webauthn_credentials
                 .get(user_id)
                 .is_some_and(|creds| {
-                    let mut matches = creds.iter().filter(|c| c.id == id);
+                    let mut matches = creds.iter().filter(|cred| cred.id == id);
                     matches.next().is_some() && matches.next().is_some()
                 }),
             || format!("ambiguous WebAuthn credential record ID {id}"),
         )?;
-        if let Some(cred) = store
+        let Some(cred) = store
             .webauthn_credentials
             .get_mut(user_id)
-            .and_then(|creds| creds.iter_mut().find(|c| c.id == id))
-        {
-            cred.counter = cred.counter.max(counter);
+            .and_then(|creds| creds.iter_mut().find(|cred| cred.id == id))
+        else {
+            return Ok(false);
+        };
+        if cred.credential_id != credential_id {
+            return Ok(false);
         }
+        if counter == 0 && cred.counter == 0 {
+            return Ok(true);
+        }
+        if counter <= cred.counter {
+            return Ok(false);
+        }
+        cred.counter = counter;
         drop(store);
-        self.save().await
+        self.save().await?;
+        Ok(true)
     }
 
     async fn delete_webauthn_credential(&self, user_id: &str, id: &str) -> QidResult<()> {

@@ -71,6 +71,137 @@ fn assertion_session_validation_fails_closed() {
     assert!(validate_assertion_session(&other_realm, "corp", now).is_err());
 }
 
+#[tokio::test]
+async fn assertion_rejects_cached_session_after_regeneration_and_accepts_replacement()
+-> anyhow::Result<()> {
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode, header},
+    };
+    use qid_core::models::PasswordCredential;
+    use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, hash_password_with_params};
+    use tower::ServiceExt;
+
+    let mut config = qid_core::test_helpers::test_config();
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations =
+        vec![qid_core::config::PepRegistrationConfig {
+            name: "egress-main".to_string(),
+            audience: Some("urn:qid:pep:qpx:test/egress-main".to_string()),
+            capabilities: Vec::new(),
+            assertion: qid_core::config::ProxyAssertionConfig::default(),
+            decision: qid_core::config::PepDecisionConfig::default(),
+            auth: qid_core::config::PepRegistrationAuthConfig::default(),
+        }];
+    // Exercise session regeneration, not the production Argon2 work factor.
+    let cost = &mut config.realms[0].authentication.password.argon2id;
+    cost.memory_kib = 8;
+    cost.time_cost = 1;
+    cost.parallelism = 1;
+    let cookie_name = config.realms[0].sessions.browser.cookie_name.clone();
+    let login_path = config.server.paths.auth_password.replace(":realm", "test");
+    let path = std::env::temp_dir().join(format!(
+        "qid-proxy-assertion-regeneration-{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = Arc::new(qid_storage::FileRepository::new(path.to_str().unwrap()).await?);
+    repo.migrate().await?;
+    let user = User {
+        id: "usr_regeneration".to_string(),
+        realm_id: "test".to_string(),
+        email: Some("alice@example.com".to_string()),
+        email_verified: true,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user).await?;
+    repo.store_password_credential(&PasswordCredential {
+        user_id: user.id.clone(),
+        hash: hash_password_with_params("correct-password", &Argon2idParams::new(8, 1, 1))?,
+        algorithm: ARGON2ID_ALGORITHM.to_string(),
+    })
+    .await?;
+    let manager = qid_session::browser::SessionManager::new(repo.clone(), 30, 8);
+    let old = manager
+        .create("test", &user.id, "pwd", &["pwd".to_string()])
+        .await?;
+    let state = Arc::new(SharedState::new_with_pep_assertion_signers(
+        config,
+        repo.clone(),
+        Arc::new(qid_crypto::LocalSigner::from_secret(
+            "oidc",
+            b"test-oidc-key",
+        )),
+        std::collections::BTreeMap::from([(
+            "test".to_string(),
+            Arc::new(qid_crypto::LocalSigner::from_secret("pep", b"test-pep-key"))
+                as Arc<dyn qid_core::jwt::Signer>,
+        )]),
+        serde_json::json!({}),
+    )?);
+    let mut request = AssertionRequest {
+        edge: Some("egress-main".to_string()),
+        session: Some(old.id.clone()),
+        access_token: None,
+    };
+    // Warm the exact hot cache consumed by assertion issuance with an active session.
+    do_issue_assertion(&state, "test", &request, &HeaderMap::new()).await?;
+    let cached = state
+        .session_cache_get(&old.id)
+        .expect("old session cached");
+    let cached_session = decode_cached_session(&cached, qid_core::util::now_seconds())?
+        .expect("cached session is active");
+    validate_assertion_session(&cached_session, "test", qid_core::util::now_seconds())?;
+
+    // The public login route constructs the cache-aware SessionManager and calls
+    // create_with_regeneration; the bare constructor above has no invalidator.
+    let response = qid_session::auth_routes(&state.config.server.paths)
+        .with_state(state.clone())
+        .oneshot(
+            Request::post(login_path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, format!("{cookie_name}={}", old.id))
+                .body(Body::from(
+                    serde_json::json!({"email": "alice@example.com", "password": "correct-password"})
+                        .to_string(),
+                ))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await?)?;
+    let replacement_id = body["session"].as_str().expect("replacement session id");
+    assert_ne!(replacement_id, old.id);
+    assert!(
+        repo.get_session(&old.id)
+            .await?
+            .expect("old session")
+            .revoked
+    );
+
+    let err = do_issue_assertion(&state, "test", &request, &HeaderMap::new())
+        .await
+        .expect_err("regenerated session must not issue an assertion from stale cache");
+    assert!(matches!(err, QidError::Unauthorized { .. }));
+    assert_eq!(state.session_cache_get(&old.id), None);
+
+    request.session = Some(replacement_id.to_string());
+    let assertion = do_issue_assertion(&state, "test", &request, &HeaderMap::new()).await?;
+    let claims = state
+        .pep_assertion_signer("test")
+        .unwrap()
+        .decode_with_aud(&assertion.assertion, "urn:qid:pep:qpx:test/egress-main")?
+        .claims;
+    assert_eq!(claims.extra["sid"], replacement_id);
+    assert_eq!(claims.sub.as_deref(), Some(user.id.as_str()));
+    drop(state);
+    drop(manager);
+    drop(repo);
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
 #[test]
 fn assertion_extra_claims_use_authoritative_session_auth() {
     let now = 1_800_000_000;

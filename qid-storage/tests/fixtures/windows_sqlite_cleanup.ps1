@@ -3,7 +3,7 @@
 # its original first deletion assertion even if this snapshot fails or times out.
 # -Preflight validates Restart Manager setup only; it never enumerates owners.
 # Handle is optional, read-only and restricted to the two observed library DBs.
-param([string]$Database, [uint32]$TestProcessId, [switch]$Preflight)
+param([string]$Database, [uint32]$TestProcessId, [string]$TestThread, [switch]$Preflight)
 $ErrorActionPreference = 'Stop'
 try {
     Add-Type -WarningAction SilentlyContinue -TypeDefinition @'
@@ -108,6 +108,10 @@ public static class QidCleanupOwners {
         [QidCleanupOwners]::Preflight($Database)
         exit 0
     }
+    if ($TestThread -cnotmatch '\A[A-Za-z0-9_:.-]{1,128}\z') {
+        throw 'Invalid test thread label'
+    }
+    Write-Host "RM test=$TestThread pid=$TestProcessId"
     # Emit only after every exact-resource query and session shutdown succeeded.
     # No full paths, command lines, app/service labels or raw exceptions escape.
     $rows = [QidCleanupOwners]::Capture($Database)

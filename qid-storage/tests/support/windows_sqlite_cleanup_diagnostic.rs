@@ -1,3 +1,6 @@
+// Owner capture is opt-in. The workflow can restrict it to one observed
+// database leaf so a parallel suite does not spawn a helper for every
+// temporary database.
 use std::path::Path;
 
 #[cfg(windows)]
@@ -57,6 +60,23 @@ fn terminate_tree_and_reap(child: &mut std::process::Child) -> bool {
 }
 
 #[cfg(windows)]
+fn targeted_leaf_allows(path: &Path) -> bool {
+    match std::env::var("QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF") {
+        Err(std::env::VarError::NotPresent) => true,
+        Ok(leaf)
+            if !leaf.is_empty()
+                && leaf.len() <= 64
+                && leaf.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                }) =>
+        {
+            path.file_name().and_then(|name| name.to_str()) == Some(leaf.as_str())
+        }
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn capture(path: &Path) -> bool {
     use std::{
         process::{Command, Stdio},
@@ -67,6 +87,9 @@ pub(crate) fn capture(path: &Path) -> bool {
         Err(std::env::VarError::NotPresent) => return true,
         Ok(value) if value == "1" => {}
         _ => return false,
+    }
+    if !targeted_leaf_allows(path) {
+        return true;
     }
     let unavailable = || {
         if matches!(
@@ -85,6 +108,18 @@ pub(crate) fn capture(path: &Path) -> bool {
     else {
         return unavailable();
     };
+    let thread = std::thread::current()
+        .name()
+        .unwrap_or("unknown")
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | ':' | '.' | '-')
+        })
+        .take(128)
+        .collect::<String>();
+    if thread.is_empty() {
+        return unavailable();
+    }
     let Ok(mut child) = Command::new("pwsh")
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
         .arg(concat!(
@@ -94,6 +129,8 @@ pub(crate) fn capture(path: &Path) -> bool {
         .arg(path)
         .arg("-TestProcessId")
         .arg(std::process::id().to_string())
+        .arg("-TestThread")
+        .arg(thread)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         // PowerShell startup/parser/native errors may contain private paths.

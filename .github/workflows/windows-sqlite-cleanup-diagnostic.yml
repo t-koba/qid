@@ -213,6 +213,7 @@ jobs:
         env:
           QID_SQLITE_CLEANUP_DIAGNOSTIC: "1"
           QID_SQLITE_CLEANUP_DIAGNOSTIC_TIMEOUT_SECONDS: "15"
+          QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF: "test_2.db"
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
@@ -229,7 +230,7 @@ jobs:
           $script:reportNoticeBytes = [Text.Encoding]::UTF8.GetByteCount($script:reportNotice)
           $script:reportTruncated = $false
           $script:report = $report
-          $script:reportPattern = '\A(?:RM image=[A-Za-z0-9_.-]+ pid=[0-9]+ suffix=(?:db|-wal|-shm|-journal)|RM suffix=(?:db|-wal|-shm|-journal) holders=none|RM snapshot complete \(not an exhaustive handle trace\)\.|HANDLE pid=[0-9]+ db=test_(?:14|15)\.db exact_file_matches=[0-9]+ \(live snapshot, not exhaustive\)\.|HANDLE unavailable \((?:helper could not be collected|raw output suppressed)\)\.|ERROR: Restart Manager snapshot untrusted \(raw exception suppressed\)\.|ERROR: Windows cleanup diagnostic process tree was not confirmed stopped|ERROR: Windows cleanup diagnostic timed out or could not be collected)\z'
+          $script:reportPattern = '\A(?:RM image=[A-Za-z0-9_.-]+ pid=[0-9]+ suffix=(?:db|-wal|-shm|-journal)|RM test=[A-Za-z0-9_:.-]+ pid=[0-9]+|RM suffix=(?:db|-wal|-shm|-journal) holders=none|RM snapshot complete \(not an exhaustive handle trace\)\.|HANDLE pid=[0-9]+ db=test_(?:14|15)\.db exact_file_matches=[0-9]+ \(live snapshot, not exhaustive\)\.|HANDLE unavailable \((?:helper could not be collected|raw output suppressed)\)\.|ERROR: Restart Manager snapshot untrusted \(raw exception suppressed\)\.|ERROR: Windows cleanup diagnostic process tree was not confirmed stopped|ERROR: Windows cleanup diagnostic timed out or could not be collected)\z'
           function Add-SanitizedDiagnosticLines {
             param([object[]]$Lines)
             foreach ($candidate in $Lines) {
@@ -273,6 +274,7 @@ jobs:
           try {
             $safeProbes = @(
               'RM image=sqlx_sqlite.exe pid=1234 suffix=db',
+              'RM test=push_tests::sql_delayed_admission_cleanup_boundary pid=1234',
               'HANDLE pid=1234 db=test_14.db exact_file_matches=0 (live snapshot, not exhaustive).',
               'HANDLE unavailable (helper could not be collected).',
               'ERROR: Restart Manager snapshot untrusted (raw exception suppressed).',
@@ -321,8 +323,9 @@ jobs:
           "QID_SQLITE_CLEANUP_SUFFIX=$suffix" >> $env:GITHUB_ENV
           "QID_DIAGNOSTIC_OWNED=true" >> $env:GITHUB_ENV
           $env:QID_SQLITE_CLEANUP_SUFFIX = $suffix
-          # Both invocations retain Restart Manager capture before unchanged
-          # cleanup. Handle adds a PID/full-path filtered snapshot only for
+          # All three invocations retain Restart Manager capture before
+          # unchanged cleanup, restricted by leaf to the observed test_2.db.
+          # Handle adds a PID/full-path filtered snapshot only for
           # test_14.db and test_15.db; neither source is an exhaustive trace.
           Write-Host 'Running focused Windows user-deletion cleanup test (1/2)'
           $userDeletionArguments = @(
@@ -342,6 +345,15 @@ jobs:
           $libraryExitCode = $LASTEXITCODE
           Add-SanitizedDiagnosticLines $output
           if ($libraryExitCode -ne 0) { $failed = $true }
+          # The parallel library suite is the only invocation that has reproduced
+          # the delayed-admission cleanup failure on the exact source. The leaf
+          # filter limits owner capture to the one per-process test_2.db file.
+          Write-Host 'Running parallel qid-storage library suite with targeted owner capture (3/3)'
+          $output = @()
+          & cargo test --locked -p qid-storage --lib -- --nocapture 2>&1 | Tee-Object -Variable output
+          $parallelExitCode = $LASTEXITCODE
+          Add-SanitizedDiagnosticLines $output
+          if ($parallelExitCode -ne 0) { $failed = $true }
           if ($failed) { exit 1 }
       - name: Erase the diagnostic SQLite files
         timeout-minutes: 2

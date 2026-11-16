@@ -51,6 +51,13 @@ impl TransactionToken {
     }
 
     pub fn encode(&self, signer: &dyn qid_core::jwt::Signer) -> QidResult<String> {
+        let mut extra = std::collections::HashMap::from([(
+            "tx".to_string(),
+            serde_json::to_value(&self.tx).unwrap_or_default(),
+        )]);
+        if let Some(cnf) = &self.cnf {
+            extra.insert("cnf".to_string(), cnf.clone());
+        }
         let claims = qid_core::jwt::JwtClaims {
             iss: Some(self.iss.clone()),
             sub: Some(self.sub.clone()),
@@ -59,10 +66,7 @@ impl TransactionToken {
             nbf: Some(self.iat as usize),
             iat: Some(self.iat as usize),
             jti: Some(self.jti.clone()),
-            extra: std::collections::HashMap::from([(
-                "tx".to_string(),
-                serde_json::to_value(&self.tx).unwrap_or_default(),
-            )]),
+            extra,
         };
         signer.sign(&claims).map_err(Into::into)
     }
@@ -83,6 +87,47 @@ mod tests {
         );
         assert_eq!(tt.tx.method, "POST");
         assert!(tt.jti.len() > 10);
+    }
+
+    #[test]
+    fn encoded_transaction_token_preserves_optional_confirmation() {
+        use qid_core::jwt::Signer;
+
+        let key = qid_crypto::jwk::generate_es256("transaction-test").unwrap();
+        let signer =
+            qid_crypto::LocalSigner::from_ec_pem("transaction-test", key.private_pem.as_bytes())
+                .unwrap();
+        for cnf in [None, Some(serde_json::json!({"jkt": "key-thumbprint"}))] {
+            let mut tt = TransactionToken::new(
+                "https://as.example.com",
+                "user-1",
+                "api://resource",
+                "POST",
+                "/api/data",
+            );
+            if let Some(cnf) = &cnf {
+                tt = tt.with_cnf(cnf.clone());
+            }
+            let token = tt.encode(&signer).unwrap();
+            let decoded = signer.decode_with_aud(&token, &tt.aud).unwrap();
+            let claims = serde_json::to_value(decoded.claims).unwrap();
+            let mut expected = serde_json::json!({
+                "iss": tt.iss,
+                "sub": tt.sub,
+                "aud": tt.aud,
+                "exp": tt.exp,
+                "nbf": tt.iat,
+                "iat": tt.iat,
+                "jti": tt.jti,
+                "tx": tt.tx,
+            });
+            if let Some(cnf) = cnf {
+                expected["cnf"] = cnf;
+            } else {
+                assert!(claims.get("cnf").is_none());
+            }
+            assert_eq!(claims, expected);
+        }
     }
 
     #[test]

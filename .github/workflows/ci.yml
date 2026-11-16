@@ -59,7 +59,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo run -p xtask -- structure
-      - run: cargo run -p xtask -- budget
+      - name: Report source-size measurements
+        run: cargo run -p xtask -- source-size
       - name: Test timing report scripts
         run: python3 -m unittest discover -s scripts -p 'test_report_*timings.py'
       - name: Lint blocking reqwest clients

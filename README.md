@@ -17,7 +17,7 @@ The repository contains the HTTP identity daemon, a control CLI, asynchronous wo
 | `qid-sync` | Runs lifecycle synchronization helpers for HR, LDAP/AD, dynamic groups, nested groups, and manager chains. |
 | `qid-agent` | Registers endpoint device posture and workload identities. |
 | `qid-migrate` | Plans and applies SQL database migrations. |
-| `cargo xtask` | Runs repository structure, budget, coverage, and quality gate tasks. |
+| `cargo xtask` | Runs repository structure, report-only source-size measurements, coverage, and quality gate tasks. |
 
 ## Quick Start
 

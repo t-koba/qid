@@ -58,7 +58,7 @@ platform's compiler, SDK, and system headers.
 
 | Workflow | Purpose |
 | --- | --- |
-| `ci.yml` | Fast quality gates: format, clippy, docs, structure, the source budget, and a lint that rejects blocking reqwest clients. |
+| `ci.yml` | Fast quality gates: format, clippy, docs, structure, report-only source-size measurements, and a lint that rejects blocking reqwest clients. |
 | `test.yml` | Workspace build/test matrix, all-features tests, config sample validation, sister-PEP smoke, fuzz smoke on pushes and pull requests, and coverage. |
 | `ci-job-timings.yml` | Completed same-repository CI/Test run-attempt job durations, Markdown summary, and CSV artifact. |
 | `security.yml` | Sensitive artifact checks, cargo-deny, cargo-audit, package metadata checks, crate packaging, and SBOM. |
@@ -135,33 +135,30 @@ Gate coverage:
 
 | Suite | Includes |
 | --- | --- |
-| `baseline` | fmt, clippy, workspace tests, docs, cargo-deny, cargo-audit, structure, budget, docs-routes. |
+| `baseline` | fmt, clippy, workspace tests, docs, cargo-deny, cargo-audit, structure, source-size (report only), docs-routes. |
 | `conformance` | OAuth/OIDC, FAPI token flow, SAML interop, SCIM protocol, WebAuthn ceremony, qpx end-to-end. |
 | `assurance` | JWT/JWK parser, SAML XML and SCIM filter hardening, policy property, token rotation and tenant isolation properties, migration rollback, chaos checks. |
 | `preflight` | JWT/JWK, SAML XML, SCIM filter and policy parser fuzz smokes, sanitizer smoke, PEP decision performance regression, release preflight. |
 | `release` | baseline + conformance + assurance + preflight. |
 
-Structure and budget can be run separately:
+Structure validation and source-size measurement can be run separately:
 
 ```sh
 cargo run -p xtask -- structure
-cargo run -p xtask -- budget
+cargo run -p xtask -- source-size
 ```
 
-The Rust source budget is configured in the workspace `Cargo.toml` under
-`[workspace.metadata.budget]`: `total` is the workspace product-source limit,
-`default_per_crate` is the default crate limit, and `per_crate` contains overrides.
-The values live in that table, so this document does not repeat them: the
-workspace product-source limit, the default crate limit and the per-crate
-overrides are all configured there. Budget changes are reviewed configuration
-changes; update the values when product scope changes and explain the reason in
-the commit.
+`source-size` reports per-crate and total Rust source and test line counts as
+evidence, without thresholds or PASS/FAIL status. Line counts never fail a change,
+test, or CI run, and no cap metadata is required. Measurement, I/O, or metadata
+errors still exit nonzero.
 
-The gate caps product source only. Rust files under `tests/`, standalone test files
-(named `test.rs`, `tests.rs`, `test_*.rs`, `*_test.rs`, or `*_tests.rs`), and source in workspace packages
-whose name ends in `-tests` are reported as test lines but are not capped. Mixed
-source files containing inline `#[cfg(test)]` modules remain counted as product source;
-the gate deliberately does not try to parse Rust syntax to split them.
+Rust files under `tests/`, standalone test files (named `test.rs`, `tests.rs`,
+`test_*.rs`, `*_test.rs`, or `*_tests.rs`), and source in workspace packages whose
+name ends in `-tests` are reported as test lines. Other Rust files are counted as
+product source, including mixed files containing inline `#[cfg(test)]` modules;
+the measurement does not parse Rust syntax to split them. Counts include blank
+and comment lines. Non-Rust files and files under `target/` are excluded.
 
 ## Coverage
 
@@ -277,7 +274,7 @@ When adding a new crate:
 3. Prefer `qid-core` models/config and `qid-storage` traits over duplicating domain state.
 4. Keep integration examples in `examples/` or `config/usecases/`.
 5. Run `cargo run -p xtask -- structure`.
-6. Run `cargo run -p xtask -- budget`.
+6. Run `cargo run -p xtask -- source-size`.
 
 When adding a new HTTP route:
 

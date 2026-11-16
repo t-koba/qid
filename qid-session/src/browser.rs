@@ -18,13 +18,13 @@ pub struct BrowserSession {
 }
 
 /// Manages browser sessions.
-pub struct SessionManager<R: Repository> {
+pub struct SessionManager<R: SessionRepository + ?Sized> {
     repo: Arc<R>,
     idle_timeout_seconds: u64,
     absolute_timeout_seconds: u64,
 }
 
-impl<R: Repository> SessionManager<R> {
+impl<R: SessionRepository + ?Sized> SessionManager<R> {
     pub(crate) fn from_browser_session_config(repo: Arc<R>, config: &BrowserSessionConfig) -> Self {
         Self::new(
             repo,
@@ -77,7 +77,7 @@ impl<R: Repository> SessionManager<R> {
         old_session_id: Option<&str>,
     ) -> QidResult<Session> {
         if let Some(old_id) = old_session_id {
-            let _ = self.repo.revoke_session(old_id, Some(realm_id)).await;
+            self.repo.revoke_session(old_id, Some(realm_id)).await?;
         }
         self.create(realm_id, user_id, acr, amr).await
     }
@@ -206,5 +206,107 @@ mod cache_tests {
 
         let value = serde_json::to_vec(&expired).unwrap();
         assert!(decode_cached_session(&value, now).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qid_core::error::QidError;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    #[derive(Default)]
+    struct FailingSessionRepo {
+        sessions: Mutex<Vec<Session>>,
+        fail_revoke: AtomicBool,
+        create_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionRepository for FailingSessionRepo {
+        async fn create_session(&self, session: &Session) -> QidResult<()> {
+            self.create_calls.fetch_add(1, Ordering::SeqCst);
+            self.sessions.lock().unwrap().push(session.clone());
+            Ok(())
+        }
+
+        async fn get_session(&self, id: &str) -> QidResult<Option<Session>> {
+            Ok(self
+                .sessions
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|session| session.id == id)
+                .cloned())
+        }
+
+        async fn update_session_idle_expiry(
+            &self,
+            _id: &str,
+            _idle_expires_at: u64,
+            _realm_scope: Option<&str>,
+        ) -> QidResult<bool> {
+            Ok(false)
+        }
+
+        async fn revoke_session(&self, id: &str, realm_scope: Option<&str>) -> QidResult<bool> {
+            if self.fail_revoke.load(Ordering::SeqCst) {
+                return Err(QidError::Storage {
+                    message: "old session revocation failed".to_string(),
+                });
+            }
+            let mut sessions = self.sessions.lock().unwrap();
+            let Some(session) = sessions.iter_mut().find(|session| {
+                session.id == id && realm_scope.is_none_or(|realm| session.realm_id == realm)
+            }) else {
+                return Ok(false);
+            };
+            session.revoked = true;
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn regeneration_returns_revocation_errors_before_issuing_a_replacement() {
+        let repo = Arc::new(FailingSessionRepo::default());
+        let now = qid_core::util::now_seconds();
+        repo.create_session(&Session {
+            id: "old".to_string(),
+            realm_id: "corp".to_string(),
+            user_id: "user".to_string(),
+            auth_time: now,
+            acr: Some("pwd".to_string()),
+            amr: vec!["pwd".to_string()],
+            idle_expires_at: now + 30,
+            absolute_expires_at: now + 3600,
+            revoked: false,
+            created_at: now,
+            cnf: None,
+        })
+        .await
+        .unwrap();
+        repo.create_calls.store(0, Ordering::SeqCst);
+        repo.fail_revoke.store(true, Ordering::SeqCst);
+        let manager = SessionManager::new(repo.clone(), 30, 8);
+        let amr = vec!["pwd".to_string()];
+        let err = manager
+            .create_with_regeneration("corp", "user", "pwd", &amr, Some("old"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, QidError::Storage { .. }));
+        assert_eq!(repo.create_calls.load(Ordering::SeqCst), 0);
+        assert!(!repo.sessions.lock().unwrap()[0].revoked);
+
+        repo.fail_revoke.store(false, Ordering::SeqCst);
+        let replacement = manager
+            .create_with_regeneration("corp", "user", "pwd", &amr, Some("old"))
+            .await
+            .unwrap();
+        assert_eq!(repo.create_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(replacement.realm_id, "corp");
+        assert!(repo.sessions.lock().unwrap()[0].revoked);
     }
 }

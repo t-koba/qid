@@ -287,6 +287,33 @@ fn a_directory_fetch_fault_keeps_every_kind() {
 }
 
 #[test]
+fn rejected_or_unsupported_worker_reports_make_the_command_exit_nonzero() {
+    for status in ["rejected", "unsupported_actions"] {
+        let report = serde_json::json!({"command": "key_rotation", "report": {"status": status}});
+        assert!(
+            crate::sync::sync_failed(&report),
+            "status {status} must fail"
+        );
+    }
+    for status in ["ready", "action_required", "executed"] {
+        let report = serde_json::json!({"command": "key_rotation", "report": {"status": status}});
+        assert!(
+            !crate::sync::sync_failed(&report),
+            "status {status} must pass"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(crate::KeyRotationPlanningJobStatus::Rejected).expect("status"),
+        "rejected"
+    );
+    assert_eq!(
+        serde_json::to_value(crate::KeyRotationExecutionJobStatus::UnsupportedActions)
+            .expect("status"),
+        "unsupported_actions"
+    );
+}
+
+#[test]
 fn failed_delivery_reports_make_the_command_exit_nonzero() {
     for status in [
         crate::AuditSiemDeliveryStatus::FailedRetryable,

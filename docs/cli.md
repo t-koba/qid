@@ -264,7 +264,7 @@ SIEM and notification delivery send HTTPS requests by default. Add `--dry-run` t
 | `directory-sync` | Synchronize a configured directory provider. |
 | `scim-outbound-sync` | Reconcile realm SCIM users and groups to HTTPS; dry-run by default, `--apply` enables writes. |
 | `key-rotation-plan` | Plan key rotation and optionally record an audit event. |
-| `key-rotation-execute` | Execute supported key rotation actions from a plan JSON file. |
+| `key-rotation-execute` | Execute supported key rotation actions from a plan JSON file. `rejected` and `unsupported_actions` reports exit nonzero. |
 
 `notification-deliver` sends email through SMTP when `--provider` is an `smtp://host[:port]`
 (STARTTLS, default port 587) or `smtps://host[:port]` (implicit TLS, default port 465)

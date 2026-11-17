@@ -71,10 +71,12 @@ pub(crate) fn directory_fetch_error(err: QidError) -> QidError {
 /// only an exact `failed` comparison would let an authoritative delivery
 /// failure exit successfully.
 pub fn sync_failed(result: &serde_json::Value) -> bool {
-    result["report"]["status"]
-        .as_str()
-        .is_some_and(|status| status == "failed" || status.starts_with("failed_"))
-        || result["report"]["failed"].as_u64().is_some_and(|n| n > 0)
+    result["report"]["status"].as_str().is_some_and(|status| {
+        status == "failed"
+            || status.starts_with("failed_")
+            || status == "rejected"
+            || status == "unsupported_actions"
+    }) || result["report"]["failed"].as_u64().is_some_and(|n| n > 0)
         || result["report"]["errors"]
             .as_array()
             .is_some_and(|errors| !errors.is_empty())

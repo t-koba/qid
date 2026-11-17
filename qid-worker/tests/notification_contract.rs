@@ -79,3 +79,24 @@ fn worker_reexport_matches_core_channel_shape() {
     let value = serde_json::to_value(&request).expect("request serializes");
     assert_eq!(value["channel"], "push");
 }
+
+#[test]
+fn sms_uses_the_shared_notification_wire_contract() {
+    assert_eq!(qid_worker::NotificationChannel::Sms.as_str(), "sms");
+    let request = NotificationRequest {
+        channel: qid_worker::NotificationChannel::Sms,
+        provider: "https://hooks.example.com/notify".into(),
+        recipient: "+12025550123".into(),
+        subject: None,
+        body: "recovery code".into(),
+        template_id: None,
+        data_json: serde_json::json!({}),
+    };
+    let value = serde_json::to_value(&request).unwrap();
+    assert_eq!(value["channel"], "sms");
+    assert_eq!(value["recipient"], "+12025550123");
+    let debug = format!("{request:?}");
+    for private in [request.provider, request.recipient, request.body] {
+        assert!(!debug.contains(&private));
+    }
+}

@@ -3491,3 +3491,82 @@ fn workload_est_is_opt_in_and_requires_existing_capabilities() {
     }
     assert!(serde_json::from_str::<WorkloadProtocolConfig>(r#"{"est":"true"}"#).is_err());
 }
+
+#[test]
+fn sms_recovery_defaults_validation_and_redaction() {
+    let mut config = minimal_config();
+    let policy = &config.realms[0].authentication.mfa.sms_recovery;
+    assert!(!policy.enabled && policy.destinations.is_empty());
+    assert_eq!(
+        (
+            policy.ttl_seconds,
+            policy.max_attempts,
+            policy.max_issuances_per_window,
+            policy.issuance_window_seconds
+        ),
+        (300, 5, 5, 3600)
+    );
+    config.realms[0].authentication.mfa.sms_recovery.enabled = true;
+    assert!(config.validate().is_err());
+    config.server.notification = Some(ServerNotificationConfig {
+        provider: "https://notify.example.com".into(),
+        timeout_seconds: 10,
+        max_concurrent_deliveries: 1,
+    });
+    config.realms[0]
+        .authentication
+        .mfa
+        .sms_recovery
+        .destinations
+        .insert("account".into(), "+12025550123".into());
+    config.validate().unwrap();
+    let plan = crate::plan::RuntimePlan::from_config(&config).unwrap();
+    assert!(plan.realms[0].mfa.sms_recovery.enabled);
+    assert!(
+        !format!("{:?}", config.realms[0].authentication.mfa.sms_recovery).contains("+12025550123")
+    );
+    for base in [
+        "http://id.example.com",
+        "https://u:p@id.example.com",
+        "https://id.example.com/?query",
+        "https://id.example.com/#fragment",
+    ] {
+        let mut bad = config.clone();
+        bad.server.public_base_url = base.into();
+        assert!(bad.validate().is_err());
+    }
+    for case in [
+        "ttl",
+        "attempts",
+        "issuances",
+        "window",
+        "destination",
+        "cookie",
+    ] {
+        let mut bad = config.clone();
+        let p = &mut bad.realms[0].authentication.mfa.sms_recovery;
+        match case {
+            "ttl" => p.ttl_seconds = 0,
+            "attempts" => p.max_attempts = 0,
+            "issuances" => p.max_issuances_per_window = 0,
+            "window" => p.issuance_window_seconds = 86401,
+            "destination" => {
+                p.destinations
+                    .insert("account".into(), "request supplied phone".into());
+            }
+            _ => {
+                bad.realms[0].sessions.browser.cookie_name = SMS_RECOVERY_BINDING_COOKIE_NAME.into()
+            }
+        }
+        assert!(bad.validate().is_err());
+    }
+    let mfa: MfaConfig =
+        serde_json::from_value(serde_json::json!({"sms_recovery":{"enabled":true}})).unwrap();
+    assert!(mfa.sms_recovery.enabled);
+    assert!(
+        serde_json::from_value::<MfaConfig>(
+            serde_json::json!({"sms_recovery":{"phone":"untrusted"}})
+        )
+        .is_err()
+    );
+}

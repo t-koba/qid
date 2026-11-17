@@ -205,14 +205,17 @@ impl CiamRepository for SqlRepository {
         Ok(verified)
     }
 
-    async fn try_issue_email_challenge(
+    async fn try_issue_delivery_challenge(
         &self,
         challenge: &CiamVerificationChallengeRecord,
         max_issuances: u32,
         window_seconds: u64,
     ) -> QidResult<bool> {
-        let start =
-            crate::domain::email_challenge_window_start(challenge, max_issuances, window_seconds)?;
+        let start = crate::domain::delivery_challenge_window_start(
+            challenge,
+            max_issuances,
+            window_seconds,
+        )?;
         // Serialize admission before checking the budget, as for password resets.
         let mut tx = self.begin_write("BEGIN").await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
@@ -239,16 +242,17 @@ impl CiamRepository for SqlRepository {
         }
         let current_owner: Option<String> = sqlx::query_scalar(match self.database_kind {
             SqlDatabaseKind::Sqlite => {
-                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = $4"
+                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND ($5 = 'sms_recovery' OR (email = $3 AND email_verified = $4))"
             }
             SqlDatabaseKind::Postgres => {
-                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND email = $3 AND email_verified = $4 FOR UPDATE"
+                "SELECT id FROM users WHERE id = $1 AND realm_id = $2 AND ($5 = 'sms_recovery' OR (email = $3 AND email_verified = $4)) FOR UPDATE"
             }
         })
         .bind(&challenge.user_id)
         .bind(&challenge.realm_id)
         .bind(&challenge.address)
         .bind(i64::from(challenge.purpose == "email_magic_link"))
+        .bind(&challenge.purpose)
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage_to_qid_error)?;
@@ -269,18 +273,28 @@ impl CiamRepository for SqlRepository {
         .execute(&mut *tx).await.map_err(|error| unique_violation_to_qid_error(error, || QidError::Conflict {
             message: "CIAM verification challenge ID already exists".into()
         }))?;
+        if result.rows_affected() == 1 && challenge.purpose == "sms_recovery" {
+            sqlx::query("DELETE FROM ciam_verification_challenges WHERE realm_id = $1 AND user_id = $2 AND purpose = 'sms_recovery' AND created_at_epoch_seconds < $3 AND expires_at_epoch_seconds < $4")
+                .bind(&challenge.realm_id).bind(&challenge.user_id).bind(start as i64)
+                .bind(challenge.created_at_epoch_seconds as i64)
+                .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
+        }
         tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(result.rows_affected() == 1)
     }
 
-    async fn redeem_email_magic_link_challenge(
+    async fn redeem_delivery_challenge(
         &self,
         realm_id: &RealmId,
         id: &str,
         candidate_hash: &str,
         attempted_at: u64,
         max_attempts: u32,
+        purpose: &str,
     ) -> QidResult<Option<User>> {
+        if !matches!(purpose, "email_magic_link" | "sms_recovery") {
+            return Ok(None);
+        }
         let Ok(attempted_at) = i64::try_from(attempted_at) else {
             return Ok(None);
         };
@@ -288,8 +302,8 @@ impl CiamRepository for SqlRepository {
         // Write-lock without spending an attempt. Compare binding under this lock
         // before atomically counting a token failure or consuming a success.
         let row: Option<CiamVerificationChallengeRow> = sqlx::query_as(
-            "UPDATE ciam_verification_challenges SET attempt_count = attempt_count WHERE realm_id = $1 AND id = $2 AND channel = 'email' AND purpose = 'email_magic_link' AND consumed_at_epoch_seconds IS NULL AND created_at_epoch_seconds <= $3 AND expires_at_epoch_seconds >= $3 AND attempt_count < $4 AND EXISTS (SELECT 1 FROM users WHERE users.id = ciam_verification_challenges.user_id AND users.realm_id = ciam_verification_challenges.realm_id AND users.email = ciam_verification_challenges.address AND users.email_verified = 1) RETURNING *"
-        ).bind(realm_id.as_str()).bind(id).bind(attempted_at).bind(i64::from(max_attempts))
+            "UPDATE ciam_verification_challenges SET attempt_count = attempt_count WHERE realm_id = $1 AND id = $2 AND channel = $5 AND purpose = $6 AND ($6 <> 'sms_recovery' OR expires_at_epoch_seconds > $3) AND consumed_at_epoch_seconds IS NULL AND created_at_epoch_seconds <= $3 AND expires_at_epoch_seconds >= $3 AND attempt_count < $4 AND EXISTS (SELECT 1 FROM users WHERE users.id = ciam_verification_challenges.user_id AND users.realm_id = ciam_verification_challenges.realm_id AND ($6 = 'sms_recovery' OR (users.email = ciam_verification_challenges.address AND users.email_verified = 1))) RETURNING *"
+        ).bind(realm_id.as_str()).bind(id).bind(attempted_at).bind(i64::from(max_attempts)).bind(if purpose == "sms_recovery" { "phone" } else { "email" }).bind(purpose)
             .fetch_optional(&mut *tx).await.map_err(storage_to_qid_error)?;
         let Some(row) = row else {
             return Ok(None);
@@ -309,14 +323,15 @@ impl CiamRepository for SqlRepository {
         .await
         .map_err(storage_to_qid_error)?;
         let user: Option<User> = user.map(Into::into);
-        let Some(user) = user
-            .filter(|u| u.email_verified && u.email.as_deref() == Some(challenge.address.as_str()))
-        else {
+        let Some(user) = user.filter(|u| {
+            purpose == "sms_recovery"
+                || u.email_verified && u.email.as_deref() == Some(challenge.address.as_str())
+        }) else {
             tx.rollback().await.map_err(storage_to_qid_error)?;
             return Ok(None);
         };
         let Some(verified) =
-            crate::domain::email_magic_link_token_matches(&challenge.code_hash, candidate_hash)
+            crate::domain::delivery_token_matches(&challenge.code_hash, candidate_hash, purpose)
         else {
             tx.rollback().await.map_err(storage_to_qid_error)?;
             return Ok(None);
@@ -329,7 +344,7 @@ impl CiamRepository for SqlRepository {
                 .bind(attempted_at).bind(realm_id.as_str()).bind(id)
                 .execute(&mut *tx).await.map_err(storage_to_qid_error)?;
             crate::ownership::ensure_upsert_applied(result.rows_affected(), || {
-                "magic-link challenge could not be consumed".into()
+                "delivery challenge could not be consumed".into()
             })?;
         }
         tx.commit().await.map_err(storage_to_qid_error)?;

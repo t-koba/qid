@@ -70,7 +70,7 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 
 At the token and PAR endpoints, set `aud` to the exact issuer identifier advertised by the authenticated client's realm, either as a string or as a one-element array. The issuer is matched exactly, including any trailing slash. Assertions using a token or PAR endpoint URL, a different realm's issuer, or an array containing additional values are rejected. Clients previously using endpoint audiences must update their assertion configuration before upgrading; there is no endpoint-audience fallback. A missing JWT `typ` header remains accepted; clients may send `typ=client-authentication+jwt`. Existing signature, expiration and replay requirements continue to apply.
 
-## Session, email magic link, WebAuthn, TOTP, and push MFA
+## Session, email magic link, SMS recovery, WebAuthn, TOTP, and push MFA
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -85,6 +85,8 @@ At the token and PAR endpoints, set `aud` to the exact issuer identifier adverti
 | `POST` | configurable `auth_email_magic_link_send`, default `/api/v1/:realm/auth/email-magic-link/send` | Email selector only: `{"email":"alice@example.com"}`; unknown fields/redirects are rejected. Always generic `202` for valid requests, with the browser-binding cookie, independent of eligibility/delivery. No recipient, ID, expiry or secret is returned. |
 | `GET` | configurable `auth_email_magic_link_verify`, default `/api/v1/:realm/auth/email-magic-link/verify` | Confirmation page only, never session creation or challenge consumption. Reads `#challenge_id.token`, clears fragment history and POSTs only on explicit button click. Open in the requesting browser. |
 | `POST` | same configurable `auth_email_magic_link_verify` | `{"challenge_id":"...","token":"..."}` plus the binding cookie; no extra fields. Success sets the configured session cookie and returns only `{"status":"authenticated"}`. Invalid/expired/replayed/foreign credentials return uniform `401 {"status":"authentication_failed"}` without a session cookie. |
+| `POST` | `<auth_password>/recovery/sms/send` | Explicit, default-disabled recovery only: `{"user_id":"account-id"}`. Unknown fields rejected; destinations are operator-enrolled out of band, never request-supplied. Generic `202` with an opaque `challenge_id` and a same-browser binding cookie, independent of eligibility and delivery; no enrolled phone number or code is returned. See [SMS recovery](password-push-login.md#sms-recovery). |
+| `POST` | `<auth_password>/recovery/sms/redeem` | `{"user_id":"...","challenge_id":"...","code":"..."}` plus the binding cookie; no extra fields. Durable one-use with bounded attempts, server-time expiry, and cross-owner, wrong-browser and foreign-purpose rejection. Success sets the configured session cookie with recovery assurance and returns `{"status":"recovered"}`; failures return uniform `401 {"status":"recovery_failed"}`. Provider acceptance never counts as approval. |
 | `POST` | configurable `auth_session_refresh`, default `/api/v1/:realm/auth/session/refresh` | Refresh browser session. |
 | `POST` | configurable `auth_session_revoke`, default `/api/v1/:realm/auth/session/revoke` | Revoke browser session. |
 | `POST` | configurable `auth_webauthn_start`, default `/api/v1/:realm/auth/webauthn/start` | WebAuthn registration start. |

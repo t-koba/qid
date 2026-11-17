@@ -162,18 +162,20 @@ pub(crate) fn password_reset_window_start(
         .saturating_sub(window_seconds - 1))
 }
 
-/// Shared rolling-window admission for both email challenge kinds (same bounds
-/// as password resets); only `email_magic_link` carries the digest-pair proof.
-pub(crate) fn email_challenge_window_start(
+/// Shared rolling-window admission for delivered challenges. Email login and SMS
+/// recovery require distinct browser/token digest pairs; verification uses a single digest.
+pub(crate) fn delivery_challenge_window_start(
     challenge: &qid_core::models::CiamVerificationChallengeRecord,
     max_issuances: u32,
     window_seconds: u64,
 ) -> QidResult<u64> {
     challenge.validate()?;
     let magic_link = challenge.purpose == "email_magic_link";
-    if challenge.channel != "email"
-        || (!magic_link && challenge.purpose != "email_verification")
-        || (magic_link != email_magic_link_proof(&challenge.code_hash).is_some())
+    let sms = challenge.purpose == "sms_recovery";
+    if !(sms && challenge.channel == "phone" || !sms && challenge.channel == "email")
+        || (!sms && !magic_link && challenge.purpose != "email_verification")
+        || ((magic_link || sms)
+            != delivery_proof(&challenge.code_hash, if sms { "sr1:" } else { "ml2:" }).is_some())
         || challenge.attempt_count != 0
         || challenge.consumed_at_epoch_seconds.is_some()
         || max_issuances == 0
@@ -182,7 +184,7 @@ pub(crate) fn email_challenge_window_start(
         || i64::try_from(challenge.expires_at_epoch_seconds).is_err()
     {
         return Err(QidError::BadRequest {
-            message: "invalid email challenge, issuance budget or timestamp".into(),
+            message: "invalid delivery challenge, issuance budget or timestamp".into(),
         });
     }
     Ok(challenge
@@ -190,10 +192,10 @@ pub(crate) fn email_challenge_window_start(
         .saturating_sub(window_seconds - 1))
 }
 
-/// Strict versioned magic-link proof encoding, held in the existing code_hash column.
+/// Strict versioned delivered-secret proof encoding in the existing code_hash column.
 /// Old combined digests and malformed proofs fail closed without spending attempts.
-fn email_magic_link_proof(value: &str) -> Option<(&str, &str)> {
-    let (binding, token) = value.strip_prefix("ml2:")?.split_once(':')?;
+fn delivery_proof<'a>(value: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+    let (binding, token) = value.strip_prefix(prefix)?.split_once(':')?;
     let digest = |v: &str| {
         v.len() == 64
             && v.bytes()
@@ -203,9 +205,14 @@ fn email_magic_link_proof(value: &str) -> Option<(&str, &str)> {
 }
 
 /// None means no binding authority (no attempt); Some is the token comparison.
-pub(crate) fn email_magic_link_token_matches(stored: &str, candidate: &str) -> Option<bool> {
-    let (binding, token) = email_magic_link_proof(stored)?;
-    let (candidate_binding, candidate_token) = email_magic_link_proof(candidate)?;
+pub(crate) fn delivery_token_matches(stored: &str, candidate: &str, purpose: &str) -> Option<bool> {
+    let prefix = match purpose {
+        "email_magic_link" => "ml2:",
+        "sms_recovery" => "sr1:",
+        _ => return None,
+    };
+    let (binding, token) = delivery_proof(stored, prefix)?;
+    let (candidate_binding, candidate_token) = delivery_proof(candidate, prefix)?;
     if !qid_core::util::constant_time_eq(binding.as_bytes(), candidate_binding.as_bytes()) {
         return None;
     }

@@ -7,7 +7,6 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use qid_core::{
     models::CiamVerificationChallengeRecord,
     notification::{NotificationChannel, NotificationRequest},
@@ -15,10 +14,10 @@ use qid_core::{
     util::now_seconds,
 };
 use qid_storage::prelude::*;
-use rand::RngCore;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tracing::instrument::WithSubscriber;
+
+use crate::delivered_challenge::{challenge_hash, protected, random_secret, well_formed};
 
 use crate::{
     api::{extract_cookie, set_session_cookie},
@@ -40,59 +39,8 @@ pub(crate) struct VerifyRequest {
     token: String,
 }
 
-fn random_secret() -> String {
-    let mut bytes = [0; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn well_formed(value: &str) -> bool {
-    value.len() == 43 && URL_SAFE_NO_PAD.decode(value).is_ok_and(|v| v.len() == 32)
-}
-
 fn binding(headers: &HeaderMap) -> Option<String> {
     extract_cookie(headers, BINDING_COOKIE).filter(|v| well_formed(v))
-}
-
-// Versioned, separately domain-separated proofs; every component is length-prefixed.
-// Storage checks the browser proof before spending any token attempt.
-fn challenge_hash(c: &CiamVerificationChallengeRecord, token: &str, binding: &str) -> String {
-    let digest = |domain: &str, secret: &str| {
-        let mut hash = Sha256::new();
-        for part in [
-            domain,
-            &c.id,
-            &c.realm_id,
-            &c.user_id,
-            &c.address,
-            &c.channel,
-            &c.purpose,
-            secret,
-        ] {
-            hash.update((part.len() as u64).to_be_bytes());
-            hash.update(part.as_bytes());
-        }
-        qid_core::util::hex_encode_lower(&hash.finalize())
-    };
-    format!(
-        "ml2:{}:{}",
-        digest("qid:email-magic-link:v2:binding", binding),
-        digest("qid:email-magic-link:v2:token", token)
-    )
-}
-
-fn protected(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-        .headers_mut()
-        .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    response.headers_mut().insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
-    );
-    response
 }
 
 pub(crate) async fn send<R: Repository>(

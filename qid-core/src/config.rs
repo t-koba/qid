@@ -307,6 +307,25 @@ impl QidConfig {
                 });
             }
             realm.validate()?;
+            if realm.authentication.mfa.sms_recovery.enabled {
+                let secure = url::Url::parse(&self.server.public_base_url).is_ok_and(|u| {
+                    u.scheme() == "https"
+                        && u.host_str().is_some()
+                        && u.username().is_empty()
+                        && u.password().is_none()
+                        && u.query().is_none()
+                        && u.fragment().is_none()
+                });
+                if !secure
+                    || self.server.notification.is_none()
+                    || self
+                        .realms
+                        .iter()
+                        .any(|r| r.sessions.browser.cookie_name == SMS_RECOVERY_BINDING_COOKIE_NAME)
+                {
+                    return Err(QidError::Config { message: "SMS recovery requires server.notification, a credential/query/fragment-free HTTPS public_base_url and a non-reserved session cookie".into() });
+                }
+            }
             if realm.authentication.email_magic_link.enabled {
                 let secure_base = url::Url::parse(&self.server.public_base_url)
                     .ok()
@@ -1699,6 +1718,7 @@ impl RealmConfig {
         self.authentication.password.validate(&self.id)?;
         self.authentication.mfa.totp.validate(&self.id)?;
         self.authentication.mfa.push.validate()?;
+        self.authentication.mfa.sms_recovery.validate()?;
         self.authentication.email_magic_link.validate()?;
         self.authentication.email_verification.validate()?;
         self.authentication.password_reset.validate()?;

@@ -3,7 +3,8 @@
 This guide describes account-owned push-device enrollment, password-plus-push
 authentication, and revocation. Push requirements apply to password-based session
 and OIDC password flows; the separate email magic-link behavior is unchanged.
-SMS recovery is not provided.
+Explicit, default-disabled [SMS recovery](#sms-recovery) is a separate fallback;
+it does not count as push approval or change password-login enforcement.
 
 The configured `auth_password` path (by default
 `/api/v1/:realm/auth/password`) still accepts `email` and `password`. Existing
@@ -176,3 +177,64 @@ proof/destination bounds. Delivery failure or timeout leaves only unactivated
 pending state under the same durable issuance quota and expiry/cleanup rules;
 retries cannot evade the quota. No route logs request bodies, proofs, destination,
 nonce or provider diagnostics.
+
+
+## SMS recovery
+
+SMS is a recovery credential for an account that has lost its primary factor,
+not an additional primary sign-in option and not a high-assurance MFA proof.
+Opt in per realm with `authentication.mfa.sms_recovery.enabled = true`, enroll
+trusted account destinations out of band, and configure the **existing shared**
+notification transport with an HTTPS adapter supporting `channel: "sms"`.
+See [configuration](configuration.md#sms-recovery-policy) for policy defaults,
+bounds and enrollment responsibilities. SIM swapping, carrier interception and
+recycled numbers make SMS weaker than passkeys; enable recovery only where this
+trade-off is acceptable. High-assurance applications must not accept recovery
+assurance as equivalent to their primary factor.
+
+The routes are suffixes of configured `server.paths.auth_password` (default
+`/api/v1/:realm/auth/password`):
+
+1. `POST .../recovery/sms/send` with JSON `{"user_id":"account-id"}` explicitly
+   requests recovery. The generic `202` response contains an opaque
+   `challenge_id`, whether the account is eligible or not. A Secure, HttpOnly,
+   SameSite=Strict `__Host-qid_sms_recovery` cookie binds subsequent redemption
+   to this browser. No destination, code or delivery status is returned.
+2. The adapter delivers an eight-digit recovery code to the configured enrolled
+   number. Provider acceptance **never** recovers the account, approves a factor
+   or creates a session. A delivery failure is not an authentication success.
+3. `POST .../recovery/sms/redeem` in the same browser with JSON
+   `{"user_id":"account-id","challenge_id":"opaque-id","code":"eight-digits"}`
+   consumes the challenge once and returns `{"status":"recovered"}` with a
+   regenerated browser session cookie. The session has
+   `acr=urn:qid:acr:recovery`, `amr=["sms_recovery"]`, not `pwd`, `push`,
+   `webauthn`, `totp`, or email-primary assurance. This is recovery access, not
+   an OIDC authorization continuation; challenges cannot be exchanged through
+   email magic-link or other token redemption paths.
+
+This flow does not automatically delete or replace primary credentials or push
+registrations, mint OAuth tokens, satisfy existing stronger-factor enrollment
+checks, or provide self-service phone enrollment. Existing factor-management
+requirements remain in force. Ordinary password and OIDC push requirements are
+unchanged. Use the recovered account access under application policy and the
+existing trusted administration procedures to restore a lost primary factor.
+
+Challenge identity, realm, account, destination and recovery purpose are immutable.
+Only separate browser-binding and code digests are persisted in the shared CIAM
+challenge store; the code digest also includes the high-entropy browser secret,
+so a database-only reader cannot enumerate the short code offline. Expiry uses
+server time (the expiry instant itself is invalid). Malformed or wrong codes
+from the correct browser spend durable bounded attempts; foreign realms,
+accounts, purposes and browser bindings cannot consume another challenge's
+budget. Replay and concurrent redemption cannot create a second session.
+Consumption is durable before session creation, even if session creation fails.
+
+All issuance outcomes count against the rolling durable account budget, including
+failed delivery and already-used challenges. Expired SMS rows outside the
+issuance window are retired on that account's next admitted issuance; deleting
+the user removes its challenge state. Issuance also uses the shared bounded
+delivery slots and timeout. Responses are non-cacheable and provider diagnostics,
+recipients and codes are never logged by qid; notification request/response Debug
+output is redacted. Deployment HTTP/body tracing and adapter logging must retain
+these protections. Disabling recovery or removing the transport fails closed
+for outstanding challenges as well as new ones.

@@ -608,6 +608,22 @@ pub trait CiamRepository: Send + Sync + 'static {
         challenge: &CiamVerificationChallengeRecord,
         max_issuances: u32,
         window_seconds: u64,
+    ) -> QidResult<bool> {
+        if challenge.channel != "email" {
+            return Err(qid_core::error::QidError::BadRequest {
+                message: "expected email challenge".into(),
+            });
+        }
+        self.try_issue_delivery_challenge(challenge, max_issuances, window_seconds)
+            .await
+    }
+    /// Atomic budgeted admission for email verification, email login or SMS recovery.
+    /// SMS destinations must be operator-enrolled and checked by the caller.
+    async fn try_issue_delivery_challenge(
+        &self,
+        challenge: &CiamVerificationChallengeRecord,
+        max_issuances: u32,
+        window_seconds: u64,
     ) -> QidResult<bool>;
     /// Redeem only an email/email_magic_link challenge bound to its current
     /// realm/user's exact stored email and email_verified=true. The candidate
@@ -631,6 +647,28 @@ pub trait CiamRepository: Send + Sync + 'static {
         candidate_hash: &str,
         attempted_at: u64,
         max_attempts: u32,
+    ) -> QidResult<Option<User>> {
+        self.redeem_delivery_challenge(
+            realm_id,
+            id,
+            candidate_hash,
+            attempted_at,
+            max_attempts,
+            "email_magic_link",
+        )
+        .await
+    }
+    /// Same durable browser-first one-use semantics as email login. Only
+    /// email_magic_link and sms_recovery purposes are accepted. The caller checks
+    /// the current operator-enrolled SMS destination and requested owner before hashing.
+    async fn redeem_delivery_challenge(
+        &self,
+        realm_id: &RealmId,
+        id: &str,
+        candidate_hash: &str,
+        attempted_at: u64,
+        max_attempts: u32,
+        purpose: &str,
     ) -> QidResult<Option<User>>;
     /// Trusted federation callers must validate provider proof before storing verified links.
     /// Session-only API callers cannot create or update links, regardless of verified status.

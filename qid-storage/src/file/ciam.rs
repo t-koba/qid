@@ -250,14 +250,17 @@ impl CiamRepository for FileRepository {
         })?
     }
 
-    async fn try_issue_email_challenge(
+    async fn try_issue_delivery_challenge(
         &self,
         challenge: &CiamVerificationChallengeRecord,
         max_issuances: u32,
         window_seconds: u64,
     ) -> QidResult<bool> {
-        let start =
-            crate::domain::email_challenge_window_start(challenge, max_issuances, window_seconds)?;
+        let start = crate::domain::delivery_challenge_window_start(
+            challenge,
+            max_issuances,
+            window_seconds,
+        )?;
         let repo = self.clone();
         let challenge = challenge.clone();
         // Cancellation must not interrupt persistence or rollback under interval flushing.
@@ -272,8 +275,9 @@ impl CiamRepository for FileRepository {
             )?;
             if !store.users.get(&challenge.user_id).is_some_and(|user| {
                 user.realm_id == challenge.realm_id
-                    && user.email.as_deref() == Some(challenge.address.as_str())
-                    && user.email_verified == (challenge.purpose == "email_magic_link")
+                    && (challenge.purpose == "sms_recovery"
+                        || user.email.as_deref() == Some(challenge.address.as_str())
+                            && user.email_verified == (challenge.purpose == "email_magic_link"))
             }) {
                 return Ok(false);
             }
@@ -290,35 +294,60 @@ impl CiamRepository for FileRepository {
             if count as u128 >= u128::from(max_issuances) {
                 return Ok(false);
             }
+            // Retire only this account's SMS rows that no longer serve expiry or
+            // issuance accounting. Preserve clock-rollback/future rows and all email behavior.
+            let retired: Vec<_> = store
+                .ciam_verification_challenges
+                .values()
+                .filter(|c| {
+                    challenge.purpose == "sms_recovery"
+                        && c.purpose == challenge.purpose
+                        && c.realm_id == challenge.realm_id
+                        && c.user_id == challenge.user_id
+                        && c.created_at_epoch_seconds < start
+                        && c.expires_at_epoch_seconds < challenge.created_at_epoch_seconds
+                })
+                .cloned()
+                .collect();
+            for c in &retired {
+                store.ciam_verification_challenges.remove(&c.id);
+            }
             store
                 .ciam_verification_challenges
                 .insert(challenge.id.clone(), challenge.clone());
             let result = repo.write_challenge_store_locked(&save_guard, &store).await;
             if result.is_err() {
                 store.ciam_verification_challenges.remove(&challenge.id);
+                for c in retired {
+                    store.ciam_verification_challenges.insert(c.id.clone(), c);
+                }
             }
             result.map(|()| true)
         })
         .await
         .map_err(|_| QidError::Internal {
-            message: "email challenge issuance persistence task failed".into(),
+            message: "delivery challenge issuance persistence task failed".into(),
         })?
     }
 
-    async fn redeem_email_magic_link_challenge(
+    async fn redeem_delivery_challenge(
         &self,
         realm_id: &RealmId,
         id: &str,
         candidate_hash: &str,
         attempted_at: u64,
         max_attempts: u32,
+        purpose: &str,
     ) -> QidResult<Option<User>> {
-        if i64::try_from(attempted_at).is_err() {
+        if !matches!(purpose, "email_magic_link" | "sms_recovery")
+            || i64::try_from(attempted_at).is_err()
+        {
             return Ok(None);
         }
         let repo = self.clone();
         let (realm_id, id, candidate_hash) =
             (realm_id.clone(), id.to_owned(), candidate_hash.to_owned());
+        let purpose = purpose.to_owned();
         tokio::spawn(async move {
             let save_guard = repo.save_lock.lock().await;
             let mut store = repo.store.write().await;
@@ -327,11 +356,17 @@ impl CiamRepository for FileRepository {
                 .get(&id)
                 .filter(|c| {
                     c.realm_id == realm_id.0
-                        && c.channel == "email"
-                        && c.purpose == "email_magic_link"
+                        && c.channel
+                            == if purpose == "sms_recovery" {
+                                "phone"
+                            } else {
+                                "email"
+                            }
+                        && c.purpose == purpose
                         && c.consumed_at_epoch_seconds.is_none()
                         && c.created_at_epoch_seconds <= attempted_at
                         && attempted_at <= c.expires_at_epoch_seconds
+                        && (purpose != "sms_recovery" || attempted_at < c.expires_at_epoch_seconds)
                         && c.attempt_count < max_attempts
                 })
                 .cloned()
@@ -343,16 +378,18 @@ impl CiamRepository for FileRepository {
                 .get(&challenge.user_id)
                 .filter(|u| {
                     u.realm_id == realm_id.0
-                        && u.email.as_deref() == Some(challenge.address.as_str())
-                        && u.email_verified
+                        && (purpose == "sms_recovery"
+                            || u.email.as_deref() == Some(challenge.address.as_str())
+                                && u.email_verified)
                 })
                 .cloned()
             else {
                 return Ok(None);
             };
-            let Some(verified) = crate::domain::email_magic_link_token_matches(
+            let Some(verified) = crate::domain::delivery_token_matches(
                 &challenge.code_hash,
                 &candidate_hash,
+                &purpose,
             ) else {
                 return Ok(None);
             };
@@ -360,7 +397,7 @@ impl CiamRepository for FileRepository {
                 .ciam_verification_challenges
                 .get_mut(&id)
                 .ok_or_else(|| QidError::Internal {
-                    message: "magic-link challenge disappeared during redemption".into(),
+                    message: "delivery challenge disappeared during redemption".into(),
                 })?;
             current.attempt_count += 1;
             if verified {
@@ -374,7 +411,7 @@ impl CiamRepository for FileRepository {
         })
         .await
         .map_err(|_| QidError::Internal {
-            message: "magic-link redemption persistence task failed".into(),
+            message: "delivery redemption persistence task failed".into(),
         })?
     }
 

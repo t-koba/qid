@@ -170,7 +170,7 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 60000)]
         max_delay_ms: u64,
     },
-    /// Send an email or push notification; HTTPS providers receive JSON, smtp(s) providers send email.
+    /// Send an email, SMS or push notification; HTTPS providers receive JSON, smtp(s) providers send email.
     #[command(name = "notification-deliver")]
     NotificationDeliver {
         #[arg(long)]
@@ -823,6 +823,7 @@ fn parse_notification_channel(raw: &str) -> anyhow::Result<NotificationChannel> 
     match raw {
         "email" => Ok(NotificationChannel::Email),
         "push" => Ok(NotificationChannel::Push),
+        "sms" => Ok(NotificationChannel::Sms),
         other => anyhow::bail!("unsupported notification channel: {other}"),
     }
 }

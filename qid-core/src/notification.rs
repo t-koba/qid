@@ -11,6 +11,7 @@ use std::fmt;
 #[serde(rename_all = "snake_case")]
 pub enum NotificationChannel {
     Email,
+    Sms,
     Push,
 }
 
@@ -18,6 +19,7 @@ impl NotificationChannel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Email => "email",
+            Self::Sms => "sms",
             Self::Push => "push",
         }
     }

@@ -240,11 +240,15 @@ fn validate_notification_config(config: &NotificationDeliveryConfig) -> QidResul
                 });
             }
         }
-        NotificationChannel::Push => {
+        NotificationChannel::Push | NotificationChannel::Sms => {
             if config.recipient.chars().any(char::is_whitespace) {
                 return Err(QidError::BadRequest {
-                    message: "push notification recipient token must not contain whitespace"
-                        .to_string(),
+                    message: if config.channel == NotificationChannel::Push {
+                        "push notification recipient token must not contain whitespace"
+                    } else {
+                        "SMS notification recipient must not contain whitespace"
+                    }
+                    .to_string(),
                 });
             }
         }

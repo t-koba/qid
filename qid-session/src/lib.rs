@@ -6,10 +6,12 @@
 pub mod api;
 pub mod auth;
 pub mod browser;
+mod delivered_challenge;
 mod email_magic_link;
 mod password_limit;
 pub mod push;
 pub mod refresh;
+mod sms_recovery;
 pub mod totp_api;
 mod totp_limit;
 pub mod webauthn;

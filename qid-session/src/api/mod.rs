@@ -57,6 +57,14 @@ pub fn auth_routes_with_password_attempt_limiter<R: Repository>(
 ) -> Router<Arc<SharedState<R>>> {
     Router::new()
         .route(
+            &format!("{}/recovery/sms/send", paths.auth_password),
+            post(crate::sms_recovery::send::<R>),
+        )
+        .route(
+            &format!("{}/recovery/sms/redeem", paths.auth_password),
+            post(crate::sms_recovery::redeem::<R>),
+        )
+        .route(
             &paths.auth_email_magic_link_send,
             post(crate::email_magic_link::send::<R>),
         )

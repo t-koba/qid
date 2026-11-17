@@ -393,6 +393,8 @@ fn default_max_failed_attempts_per_realm() -> u32 {
 #[serde(deny_unknown_fields)]
 pub struct MfaConfig {
     #[serde(default)]
+    pub sms_recovery: SmsRecoveryConfig,
+    #[serde(default)]
     pub push: PushConfig,
     #[serde(default)]
     pub totp: TotpConfig,
@@ -943,3 +945,54 @@ impl PushConfig {
         Ok(())
     }
 }
+
+/// Recovery only. Destinations are enrolled out of band by the operator, never by a login request.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SmsRecoveryConfig {
+    pub enabled: bool,
+    pub ttl_seconds: u64,
+    pub max_attempts: u32,
+    pub max_issuances_per_window: u32,
+    pub issuance_window_seconds: u64,
+    pub destinations: std::collections::BTreeMap<String, String>,
+}
+impl std::fmt::Debug for SmsRecoveryConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmsRecoveryConfig")
+            .field("enabled", &self.enabled)
+            .field("destinations", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+impl Default for SmsRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ttl_seconds: 300,
+            max_attempts: 5,
+            max_issuances_per_window: 5,
+            issuance_window_seconds: 3600,
+            destinations: Default::default(),
+        }
+    }
+}
+impl SmsRecoveryConfig {
+    pub(crate) fn validate(&self) -> QidResult<()> {
+        if !(1..=600).contains(&self.ttl_seconds)
+            || !(1..=20).contains(&self.max_attempts)
+            || !(1..=100).contains(&self.max_issuances_per_window)
+            || !(1..=86400).contains(&self.issuance_window_seconds)
+            || self.destinations.iter().any(|(user, phone)| {
+                user.trim().is_empty()
+                    || !phone.starts_with('+')
+                    || !(9..=16).contains(&phone.len())
+                    || !phone.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+            })
+        {
+            return Err(QidError::Config { message: "authentication.mfa.sms_recovery requires ttl_seconds in 1..=600, max_attempts in 1..=20, max_issuances_per_window in 1..=100, issuance_window_seconds in 1..=86400 and account-keyed international phone destinations".into() });
+        }
+        Ok(())
+    }
+}
+pub const SMS_RECOVERY_BINDING_COOKIE_NAME: &str = "__Host-qid_sms_recovery";

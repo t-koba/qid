@@ -182,10 +182,10 @@ Common flags:
 
 | Subcommand | Purpose |
 | --- | --- |
-| `check` | Print cache/cluster/backup/emergency readiness JSON. |
+| `check` | Print config readiness JSON; an `error` report exits nonzero. |
 | `backup-manifest` | Build a manifest for exported objects. |
-| `restore-plan` | Plan restore from a manifest. |
-| `restore-execute` | Execute local restore with optional dry-run. |
+| `restore-plan` | Plan restore from a manifest; a `rejected` plan exits nonzero. |
+| `restore-execute` | Execute local restore with optional dry-run; `rejected` and `failed` reports exit nonzero. |
 | `cache-key` | Render a non-PII cache key for a namespace/material pair. |
 | `key-rotation-plan` | Plan key rotation from inventory and requirements. |
 | `key-rotation-check` | Inspect local state directory and keyring rotation requirements. |

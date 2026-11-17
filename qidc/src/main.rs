@@ -37,6 +37,15 @@ use ops::*;
 mod cli;
 use cli::*;
 
+/// Whether a qidc JSON report describes an authoritative failure that must
+/// abort the command. Informational and warning reports still exit zero.
+fn report_failed(report: &serde_json::Value) -> bool {
+    matches!(
+        report["status"].as_str(),
+        Some("error" | "rejected" | "failed")
+    )
+}
+
 fn primary_config_path(config_paths: &[PathBuf]) -> anyhow::Result<&Path> {
     config_paths
         .last()
@@ -113,7 +122,11 @@ async fn main() -> anyhow::Result<()> {
             let report = build_check_report(&config, &plan, primary_config_path(&config_paths)?);
             let mut report = report;
             report.extend_checks(check_storage_saas(&config).await);
+            let report = serde_json::to_value(&report)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
+            if report_failed(&report) {
+                std::process::exit(1);
+            }
         }
         Command::Plan => {
             let config = load_config(&config_paths).context("failed to load config")?;
@@ -306,7 +319,11 @@ async fn main() -> anyhow::Result<()> {
                     &current_migration_version,
                     read_only,
                 );
+                let plan = serde_json::to_value(&plan)?;
                 println!("{}", serde_json::to_string_pretty(&plan)?);
+                if report_failed(&plan) {
+                    std::process::exit(1);
+                }
             }
             OpsCommand::RestoreExecute(restore_args) => {
                 let config = load_config(&config_paths).context("failed to load config")?;
@@ -329,7 +346,11 @@ async fn main() -> anyhow::Result<()> {
                         dry_run: restore_args.dry_run,
                     },
                 )?;
+                let report = serde_json::to_value(&report)?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
+                if report_failed(&report) {
+                    std::process::exit(1);
+                }
             }
             OpsCommand::CacheKey(cache_args) => {
                 let config = load_config(&config_paths).context("failed to load config")?;

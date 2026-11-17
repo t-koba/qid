@@ -1416,3 +1416,20 @@ fn ops_readiness_descriptions_state_no_runtime_guarantee() {
         "{readiness}"
     );
 }
+
+#[test]
+fn authoritative_qidc_reports_fail_the_command() {
+    for status in ["error", "rejected", "failed"] {
+        assert!(
+            crate::report_failed(&serde_json::json!({ "status": status })),
+            "status {status} must fail"
+        );
+    }
+    for status in ["ok", "warning", "ready", "restored", "dry_run_verified"] {
+        assert!(
+            !crate::report_failed(&serde_json::json!({ "status": status })),
+            "status {status} must pass"
+        );
+    }
+    assert!(!crate::report_failed(&serde_json::json!({ "count": 0 })));
+}

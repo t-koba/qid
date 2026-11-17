@@ -296,6 +296,14 @@ fn a_failed_directory_sync_makes_the_command_exit_nonzero() {
         "report": {"status": status, "errors": ["provider missing-provider not found"]}
     });
     assert!(crate::sync::sync_failed(&failed));
+    let audit_failure = serde_json::json!({
+        "command": "directory_sync",
+        "report": {
+            "status": "completed",
+            "errors": ["failed to persist directory sync audit event"]
+        }
+    });
+    assert!(crate::sync::sync_failed(&audit_failure));
     let skipped = serde_json::json!({
         "command": "directory_sync",
         "report": {"status": "skipped_disabled", "errors": []}

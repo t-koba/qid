@@ -71,6 +71,9 @@ pub(crate) fn directory_fetch_error(err: QidError) -> QidError {
 pub fn sync_failed(result: &serde_json::Value) -> bool {
     result["report"]["status"] == "failed"
         || result["report"]["failed"].as_u64().is_some_and(|n| n > 0)
+        || result["report"]["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty())
 }
 
 /// The connector a directory sync job fetches through.

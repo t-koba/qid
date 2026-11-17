@@ -368,9 +368,7 @@ impl PushRepository for SqlRepository {
     }
     async fn cleanup_expired_push_records(&self, now: u64, limit: u32) -> QidResult<u64> {
         let cutoff = state::cleanup_cutoff(now, limit)?;
-        let mut tx = self
-            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
-            .await?;
+        let mut tx = self.begin_push_write().await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind("push-cleanup".to_string())
@@ -446,9 +444,7 @@ impl SqlRepository {
     ) -> QidResult<bool> {
         state::validate_registration(challenge)?;
         let a = &challenge.authenticator;
-        let mut tx = self
-            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
-            .await?;
+        let mut tx = self.begin_push_write().await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(
@@ -508,9 +504,7 @@ impl SqlRepository {
         clock: state::AdmissionClock,
     ) -> QidResult<Option<PushLoginChallenge>> {
         state::validate_login_record(expected)?;
-        let mut tx = self
-            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
-            .await?;
+        let mut tx = self.begin_push_write().await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(
@@ -586,9 +580,7 @@ impl SqlRepository {
     ) -> QidResult<bool> {
         state::validate_login(challenge)?;
         let purpose = state::login_purpose_str(challenge.purpose);
-        let mut tx = self
-            .begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
-            .await?;
+        let mut tx = self.begin_push_write().await?;
         if self.database_kind == SqlDatabaseKind::Postgres {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(

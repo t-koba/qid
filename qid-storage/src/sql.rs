@@ -94,6 +94,11 @@ impl SqlRepository {
         migration_plan_for_pool(&self.pool, self.database_kind).await
     }
 
+    async fn begin_push_write(&self) -> QidResult<sqlx::Transaction<'_, sqlx::Any>> {
+        self.begin_write("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await
+    }
+
     async fn begin_write(
         &self,
         postgres_begin: &'static str,

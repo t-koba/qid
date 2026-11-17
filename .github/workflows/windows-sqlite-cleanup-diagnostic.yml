@@ -2,6 +2,12 @@ name: Windows SQLite Cleanup Diagnostic
 
 on:
   workflow_dispatch:
+    inputs:
+      leaf_allowlist:
+        description: 'Comma-separated temporary database leaf names allowed for owner capture'
+        required: false
+        default: 'test_1.db,test_2.db,test_3.db,test_5.db,test_11.db,store.db'
+        type: string
 
 permissions:
   contents: read
@@ -213,7 +219,7 @@ jobs:
         env:
           QID_SQLITE_CLEANUP_DIAGNOSTIC: "1"
           QID_SQLITE_CLEANUP_DIAGNOSTIC_TIMEOUT_SECONDS: "15"
-          QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF: "test_1.db,test_2.db,test_3.db,test_5.db,store.db"
+          QID_SQLITE_CLEANUP_DIAGNOSTIC_LEAF: "${{ inputs.leaf_allowlist }}"
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false

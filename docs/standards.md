@@ -58,6 +58,12 @@ This document records exact implementation boundaries. A helper type, parser, or
 
 The proprietary ACS in `qid-federation` requires one direct assertion `Conditions` element and a matching `AudienceRestriction`; every restriction group must contain the realm issuer. It evaluates `Conditions@NotBefore` and `NotOnOrAfter` when present, accepts at most one empty `OneTimeUse` marker, and rejects `ProxyRestriction`, generic or extension `Condition` elements, and all other unrecognized condition children. `OneTimeUse` relies on the ACS's mandatory assertion-scoped replay guard, which records before broker effects and retains keys through the acceptance window. Multi-instance deployments must use the shared replay cache described in [Shared Cache](operations.md#shared-cache). This is a scoped broker profile, not a claim of full SAML interoperability.
 
+### Inbound OIDC broker
+
+The proprietary `GET /federation/:realm/oidc/callback` in `qid-federation` is a stateless provider-routing and verified-claim-to-local-link map, not a session-issuing OIDC login flow. `state` is a configured provider identifier, not a session-bound nonce; missing, empty, or unknown identifiers are rejected with `provider_not_found`. The code is redeemed only at that provider's configured token endpoint, and any ID token is verified against the same provider's issuer, JWKS, and configured audience policy (including its client ID).
+
+The handler issues no qid session and keeps no browser session. Session binding, CSRF/COAT protection, and PKCE obligations belong to an external orchestrator; the provider identifier alone provides none of them. No such session-issuing consumer exists in this repository.
+
 ## OpenID Federation 1.0
 
 | Standard | qid status | Boundary |

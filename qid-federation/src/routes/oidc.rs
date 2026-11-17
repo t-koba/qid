@@ -357,6 +357,63 @@ pub async fn oidc_inbound_callback<R: Repository>(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn oidc_callback_rejects_missing_empty_and_unknown_provider_state() {
+        use http_body_util::BodyExt;
+        use qid_core::test_helpers;
+        use qid_crypto::LocalSigner;
+        use qid_storage::FileRepository;
+
+        let mut config = test_helpers::test_config();
+        let federation = &mut config.realms[0].protocols.federation;
+        federation.enabled = true;
+        federation.inbound_providers = serde_json::from_value(serde_json::json!([{
+            "id": "configured-provider",
+            "kind": "oidc",
+            "issuer": "https://provider.example.com",
+            "enabled": true
+        }]))
+        .unwrap();
+        let directory = std::env::temp_dir().join(format!("qid-oidc-state-{}", ulid::Ulid::new()));
+        let repo = Arc::new(
+            FileRepository::new(directory.join("store.json").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let state = Arc::new(
+            SharedState::new(
+                config,
+                repo,
+                Arc::new(LocalSigner::from_secret("oidc-state-test", b"test-secret")),
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        );
+        for (provider_id, expected_error) in [
+            (None, "provider_not_found"),
+            (Some(""), "provider_not_found"),
+            (Some("unknown-provider"), "provider_not_found"),
+            // A known identifier reaches the next check, proving the configured list is used.
+            (Some("configured-provider"), "client_id_not_configured"),
+        ] {
+            let response = oidc_inbound_callback(
+                State(state.clone()),
+                Path("test".to_string()),
+                Query(OidcCallbackQuery {
+                    code: "unused-code".to_string(),
+                    state: provider_id.map(str::to_string),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], expected_error, "state: {provider_id:?}");
+        }
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn id_token_response(sub_json: &str) -> serde_json::Value {
         use base64::Engine;
         let body = if sub_json.is_empty() {

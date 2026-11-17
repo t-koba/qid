@@ -366,12 +366,13 @@ cargo run --bin qid-worker -- --config /etc/qid/qid.yaml directory-sync \
   --provider-id ad-main
 ```
 
-A normal JSON report has status `completed`, `skipped_disabled`, or `failed`;
-`failed` exits nonzero, while a disabled provider or directory reports
-`skipped_disabled` and exits zero. Configuration, connector, or storage errors
-can abort with a nonzero exit before a JSON report exists. Audit append errors
-are included in `report.errors` even when the sync itself completed, so capture
-the report and inspect both exit status and errors. The HTTP status route does
+A normal JSON report has status `completed`, `skipped_disabled`, or `failed`.
+A `failed` report exits nonzero, and so does any report with a nonempty
+`report.errors` array — including an audit append failure on an otherwise
+`completed` sync, where directory mutations may already have occurred. A
+disabled provider or directory reports `skipped_disabled` with an empty errors
+array and exits zero. Configuration, connector, or storage errors can abort
+with a nonzero exit before a JSON report exists. The HTTP status route does
 not provide job state; the external scheduler owns its run history.
 
 For JSON-based lifecycle testing or one-off sync, `--provider-id` must remain stable for the directory provider. LDAP rows retain the raw DN as SCIM `externalId` and record ownership in the internal server-owned `directory_provider_id` (never in `enterprise_json`, which SCIM clients can forge). Existing rows without an owner need explicit internal migration; ownership is never inferred from `enterprise_json`, even with a single provider. SCIM clients cannot change or remove `externalId` on provider-owned users. An unowned row whose `externalId` collides with an incoming DN fails the sync with a conflict before any write; unrelated ownerless rows do not block sync.

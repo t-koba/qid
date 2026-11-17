@@ -2830,6 +2830,85 @@ async fn passkey_preference_preserves_session_reuse_and_password_login() {
 }
 
 #[tokio::test]
+async fn authorize_non_jarm_errors_include_discovery_issuer() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].issuer = "https://id.example.com/realms/test".to_string();
+    config.realms[0].authentication.passkeys.enabled = true;
+    config.realms[0].authentication.passwordless_only = true;
+    let (app, state) = setup_with_config(config).await;
+    let metadata = get_json(
+        app.clone(),
+        "/realms/test/.well-known/openid-configuration",
+        None,
+    )
+    .await;
+    let issuer = metadata["issuer"].as_str().unwrap();
+    assert_ne!(issuer, state.plan.public_base_url);
+
+    for mode in [None, Some("query"), Some("form_post")] {
+        for state_param in [None, Some("state +/=?%")] {
+            let mut query = authorize_query(&state, "").replace("&state=s", "");
+            if let Some(value) = state_param {
+                query.push_str(&format!("&state={}", urlencoding::encode(value)));
+            }
+            if let Some(mode) = mode {
+                query.push_str(&format!("&response_mode={mode}"));
+            }
+            // Valid credentials, but this realm refuses password authentication.
+            let response = post_form(app.clone(), query, LOGIN_FORM).await;
+            let mut params: Vec<(String, String)> =
+                if mode == Some("form_post") {
+                    assert_eq!(response.status(), StatusCode::OK);
+                    assert_eq!(
+                        response.headers()["content-type"],
+                        "text/html; charset=utf-8"
+                    );
+                    assert!(!response.headers().contains_key("location"));
+                    let body = response.into_body().collect().await.unwrap().to_bytes();
+                    let html = String::from_utf8(body.to_vec()).unwrap();
+                    assert!(html.contains(
+                        r#"<form method="POST" action="https://app.example.com/callback">"#
+                    ));
+                    html.split(r#"<input type="hidden" name=""#)
+                        .skip(1)
+                        .map(|field| {
+                            let (name, rest) = field.split_once(r#"" value=""#).unwrap();
+                            (
+                                name.to_string(),
+                                rest.split('"').next().unwrap().to_string(),
+                            )
+                        })
+                        .collect()
+                } else {
+                    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+                    let location = reqwest::Url::parse(&redirect_location(&response)).unwrap();
+                    assert_eq!(
+                        location.origin().ascii_serialization(),
+                        "https://app.example.com"
+                    );
+                    assert_eq!(location.path(), "/callback");
+                    assert_eq!(location.fragment(), None);
+                    location.query_pairs().into_owned().collect()
+                };
+            let mut expected = vec![
+                ("error".to_string(), "access_denied".to_string()),
+                (
+                    "error_description".to_string(),
+                    "password authentication is disabled for this realm".to_string(),
+                ),
+                ("iss".to_string(), issuer.to_string()),
+            ];
+            if let Some(value) = state_param {
+                expected.push(("state".to_string(), value.to_string()));
+            }
+            params.sort();
+            expected.sort();
+            assert_eq!(params, expected, "mode={mode:?}, state={state_param:?}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn authorize_post_refuses_password_login_for_passwordless_realm() {
     let mut config = test_helpers::test_config();
     // A passwordless realm must have passkeys enabled.

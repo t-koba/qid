@@ -1274,17 +1274,11 @@ fn form_post_response(redirect_uri: &str, params: &[(&str, &str)]) -> Response {
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
-fn form_post_error(
-    redirect_uri: &str,
-    state: Option<&str>,
-    error: &str,
-    description: &str,
-) -> Response {
-    let mut params = vec![("error", error), ("error_description", description)];
-    if let Some(s) = state {
-        params.push(("state", s));
-    }
-    form_post_response(redirect_uri, &params)
+fn authorization_issuer<'a, R: Repository>(state: &'a SharedState<R>, client: &Client) -> &'a str {
+    state
+        .realm(&client.realm_id)
+        .map(|realm| realm.issuer.as_str())
+        .unwrap_or(&state.plan.public_base_url)
 }
 
 fn authorization_error_response<R: Repository>(
@@ -1322,10 +1316,20 @@ fn authorization_error_response<R: Repository>(
             Err(e) => return qid_http::error_response(e),
         }
     }
-    if req.response_mode.as_deref() == Some("form_post") {
-        return form_post_error(&req.redirect_uri, req.state.as_deref(), error, description);
+    let mut params = vec![("error", error), ("error_description", description)];
+    if let Some(state_param) = req.state.as_deref() {
+        params.push(("state", state_param));
     }
-    qid_http::redirect_error(&req.redirect_uri, req.state.as_deref(), error, description)
+    params.push(("iss", authorization_issuer(state, client)));
+    if req.response_mode.as_deref() == Some("form_post") {
+        return form_post_response(&req.redirect_uri, &params);
+    }
+    let query = params
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencoding::encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    Redirect::temporary(&format!("{}?{query}", req.redirect_uri)).into_response()
 }
 
 fn sign_jarm_response<R: Repository>(
@@ -1334,10 +1338,7 @@ fn sign_jarm_response<R: Repository>(
     client: &Client,
     entries: Vec<(String, serde_json::Value)>,
 ) -> QidResult<(String, String)> {
-    let issuer = state
-        .realm(&client.realm_id)
-        .map(|realm| realm.issuer.clone())
-        .unwrap_or_else(|| state.plan.public_base_url.clone());
+    let issuer = authorization_issuer(state, client).to_string();
     let now = qid_core::util::now_seconds();
     let mut extra = HashMap::new();
     for (key, value) in entries {
@@ -1405,13 +1406,10 @@ async fn authorization_response_redirect<R: Repository>(
         return Ok(Redirect::temporary(&redirect_url).into_response());
     }
 
-    let issuer = state
-        .realm(&client.realm_id)
-        .map(|realm| realm.issuer.clone())
-        .unwrap_or_else(|| state.plan.public_base_url.clone());
+    let issuer = authorization_issuer(state, client);
 
     if req.response_mode.as_deref() == Some("form_post") {
-        let mut params = vec![("code", code), ("iss", &issuer)];
+        let mut params = vec![("code", code), ("iss", issuer)];
         if let Some(state) = &req.state {
             params.push(("state", state));
         }
@@ -1419,9 +1417,8 @@ async fn authorization_response_redirect<R: Repository>(
     }
 
     let mut redirect_url = format!("{}?code={}", req.redirect_uri, urlencoding::encode(code));
-    // RFC 9207 §2.1: include the issuer identifier in the redirect when the
-    // client supports it.
-    redirect_url.push_str(&format!("&iss={}", urlencoding::encode(&issuer)));
+    // RFC 9207 §2.1: include the same issuer identifier as discovery and errors.
+    redirect_url.push_str(&format!("&iss={}", urlencoding::encode(issuer)));
     if let Some(state_param) = &req.state {
         redirect_url.push_str(&format!("&state={}", urlencoding::encode(state_param)));
     }

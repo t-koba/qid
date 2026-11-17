@@ -113,6 +113,44 @@ fn unsupported_par_client_metadata_response() -> Response {
     )
 }
 
+fn validate_callback_destinations<R: Repository>(
+    state: &SharedState<R>,
+    realm_id: &str,
+    req: &DynamicClientRegistrationRequest,
+) -> Option<Response> {
+    let Some(realm) = state
+        .config
+        .realms
+        .iter()
+        .find(|realm| realm.id == realm_id)
+    else {
+        return Some(qid_http::error_response(QidError::Config {
+            message: "registration realm configuration is unavailable".to_string(),
+        }));
+    };
+    for (endpoint, policy) in [
+        (
+            req.backchannel_logout_uri.as_deref(),
+            &realm.client_callback_destinations.backchannel_logout,
+        ),
+        (
+            req.backchannel_client_notification_endpoint.as_deref(),
+            &realm.client_callback_destinations.ciba_notification,
+        ),
+    ] {
+        if let Some(endpoint) = endpoint
+            && let Err(reason) = policy.authorize(endpoint)
+        {
+            return Some(qid_http::oauth_error_response_with_description(
+                axum::http::StatusCode::BAD_REQUEST,
+                qid_core::error::ErrorCode::InvalidClientMetadata.as_str(),
+                &format!("callback destination denied: {reason}"),
+            ));
+        }
+    }
+    None
+}
+
 pub async fn dynamic_client_registration<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
@@ -227,6 +265,9 @@ pub async fn dynamic_client_registration<R: Repository>(
         }
     };
     let metadata = super::error_response_or_return!(validate_dynamic_client_metadata(&req));
+    if let Some(response) = validate_callback_destinations(&state, &realm.id, &req) {
+        return response;
+    }
     if req.require_pushed_authorization_requests
         && !oauth_feature_enabled(&state, &realm.id, |oauth| oauth.par.enabled)
     {
@@ -759,6 +800,9 @@ pub async fn dynamic_client_registration_update<R: Repository>(
     super::error_response_or_return!(
         authenticate_dcr_management_client(&state, &headers, &realm_id, &client_id).await
     );
+    if let Some(response) = validate_callback_destinations(&state, &realm_id, &req) {
+        return response;
+    }
     if req.require_pushed_authorization_requests
         && !oauth_feature_enabled(&state, &realm_id, |oauth| oauth.par.enabled)
     {

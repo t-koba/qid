@@ -1245,9 +1245,14 @@ pub use security::*;
 
 mod security;
 
+mod outbound;
+pub use outbound::*;
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RealmConfig {
+    #[serde(default)]
+    pub client_callback_destinations: ClientCallbackDestinationsConfig,
     pub id: String,
     pub issuer: String,
     #[serde(default)]
@@ -1318,6 +1323,7 @@ impl RealmConfig {
     }
 
     fn validate(&self) -> QidResult<()> {
+        self.client_callback_destinations.validate(&self.id)?;
         self.protocols.workload.validate(&self.id)?;
         if self.id.trim().is_empty() {
             return Err(QidError::Config {

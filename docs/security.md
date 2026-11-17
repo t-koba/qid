@@ -12,6 +12,28 @@ qid is fail-closed by default because it sits on identity, token, policy, and PE
 | PEP to qid | credential-bound registration, audience, replay, capability, schema, and fail-closed validation. |
 | qid to PEP | short-lived signed assertions or signed decision responses where configured, minimal PII, scoped audience. |
 
+## Server-fetched client callbacks
+
+Backchannel logout and CIBA ping use independent, per-realm exact-origin allowlists
+under `client_callback_destinations` (see [Configuration](configuration.md#client-callback-destinations)).
+Omission or an empty list denies every destination. DCR checks both callback fields
+on create and update, even for disabled features, and dispatch rechecks authorization
+for all clients immediately before POST. Denial sends no request, but local logout
+completion and recorded CIBA approval still succeed. Redirects are never followed,
+even to allowed origins; the logout and CIBA timeouts remain 5 and 10 seconds.
+
+Use trusted HTTPS origins in normal deployments. Nothing infers trust from the
+issuer, redirect URIs, tokens, client authentication, localhost, another realm or
+the other callback purpose. Explicit HTTP origins, including loopback fixtures,
+are insecure deployment opt-ins and authorize only their configured effective port.
+
+This closes the unauthorized direct-target gap with bounded origin-level destination
+authorization, **not complete SSRF protection**. It does not restrict paths or queries
+on an allowed origin, resolved IP addresses, DNS rebinding, proxies or malicious
+handlers at an allowed origin. Operators remain responsible for trusted origin
+ownership and network egress controls. Callback warnings contain realm/client IDs,
+purpose and bounded reason codes, never submitted URLs or callback payloads.
+
 ## Config Hardening
 
 Config structs reject unknown fields. This prevents misspelled security settings from being silently ignored.

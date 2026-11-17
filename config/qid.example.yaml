@@ -64,6 +64,14 @@ crypto:
 realms:
   - id: corp
     issuer: "https://id.example.com/realms/corp"
+    # Omission or [] denies all server-fetched client callbacks. Policies are separate.
+    # Opt in only trusted exact HTTPS origins; HTTP is an insecure deployment opt-in.
+    # See docs/configuration.md: this is not complete SSRF protection.
+    client_callback_destinations:
+      backchannel_logout:
+        allowed_origins: []
+      ciba_notification:
+        allowed_origins: []
     display_name: "Corp Identity"
 
     clients:

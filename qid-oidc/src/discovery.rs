@@ -65,27 +65,27 @@ async fn build_logout_token<R: Repository>(
     state.signer.sign(&claims).ok()
 }
 
-async fn send_backchannel_logout(logout_uri: &str, logout_token: &str) -> QidResult<()> {
+async fn send_backchannel_logout(
+    logout_uri: &str,
+    logout_token: &str,
+    policy: &qid_core::config::DestinationPolicyConfig,
+) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .map_err(|error| {
-            internal_error(format!(
-                "failed to build backchannel logout client: {error}"
-            ))
-        })?;
+        .map_err(|_| "client_build_failed".to_string())?;
+    let destination = policy
+        .authorize(logout_uri)
+        .map_err(|reason| reason.to_string())?;
     let response = client
-        .post(logout_uri)
+        .post(destination)
         .form(&[("logout_token", logout_token)])
         .send()
         .await
-        .map_err(|error| internal_error(format!("backchannel logout POST failed: {error}")))?;
+        .map_err(|_| "transport_failed".to_string())?;
     if !response.status().is_success() {
-        return Err(bad_request(format!(
-            "backchannel logout endpoint returned HTTP {}",
-            response.status()
-        )));
+        return Err("endpoint_status_failed".to_string());
     }
     Ok(())
 }
@@ -1117,15 +1117,27 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
         && let Some(issuer) = logout_issuer.as_deref()
     {
         for client in &clients_with_logout_uris {
-            if let Some(uri) = &client.backchannel_logout_uri
-                && let Some(token) = build_logout_token(state, issuer, user_id, sid, client).await
-                && let Err(error) = send_backchannel_logout(uri, &token).await
+            let Some(uri) = &client.backchannel_logout_uri else {
+                continue;
+            };
+            let policy = state
+                .config
+                .realms
+                .iter()
+                .find(|realm| realm.id == client.realm_id && realm.id == realm_id)
+                .map(|realm| &realm.client_callback_destinations.backchannel_logout);
+            let Some(policy) = policy else {
+                tracing::warn!(realm_id = %realm_id, client_id = %client.client_id,
+                    purpose = "backchannel_logout", reason = "realm_mismatch",
+                    "callback delivery skipped");
+                continue;
+            };
+            if let Some(token) = build_logout_token(state, issuer, user_id, sid, client).await
+                && let Err(reason) = send_backchannel_logout(uri, &token, policy).await
             {
-                tracing::warn!(
-                    client_id = %client.client_id,
-                    error = %error,
-                    "backchannel logout delivery failed"
-                );
+                tracing::warn!(realm_id = %realm_id, client_id = %client.client_id,
+                    purpose = "backchannel_logout", reason = %reason,
+                    "callback delivery failed");
             }
         }
     }

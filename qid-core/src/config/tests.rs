@@ -19,6 +19,7 @@ fn minimal_config() -> QidConfig {
         storage: StorageConfig::default(),
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
+            client_callback_destinations: Default::default(),
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -154,6 +155,7 @@ fn test_minimal_config_validation() {
         storage: StorageConfig::default(),
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
+            client_callback_destinations: Default::default(),
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -413,6 +415,7 @@ fn test_duplicate_realm_rejected() {
         crypto: CryptoConfig::default(),
         realms: vec![
             RealmConfig {
+                client_callback_destinations: Default::default(),
                 id: "corp".to_string(),
                 issuer: "https://id.example.com/realms/corp".to_string(),
                 display_name: None,
@@ -425,6 +428,7 @@ fn test_duplicate_realm_rejected() {
                 policy: PolicyConfig::default(),
             },
             RealmConfig {
+                client_callback_destinations: Default::default(),
                 id: "corp".to_string(),
                 issuer: "https://id.example.com/realms/corp".to_string(),
                 display_name: None,
@@ -492,6 +496,7 @@ fn test_issuer_url_validation() {
         storage: StorageConfig::default(),
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
+            client_callback_destinations: Default::default(),
             id: "test".to_string(),
             issuer: "not-a-valid-url".to_string(),
             display_name: None,
@@ -523,6 +528,7 @@ fn realm_id_must_be_url_path_segment_safe() {
 fn multi_realm_issuer_must_match_realm_scoped_discovery_route() {
     let mut config = minimal_config();
     config.realms.push(RealmConfig {
+        client_callback_destinations: Default::default(),
         id: "retail".to_string(),
         issuer: "https://retail.example.com".to_string(),
         display_name: None,
@@ -561,6 +567,7 @@ fn ops_config_rejects_incomplete_cache_and_multi_region() {
         storage: StorageConfig::default(),
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
+            client_callback_destinations: Default::default(),
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -1129,6 +1136,7 @@ fn saml_service_provider_config_validates_trust_material() {
         storage: StorageConfig::default(),
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
+            client_callback_destinations: Default::default(),
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -1206,6 +1214,7 @@ fn saml_service_provider_config_rejects_duplicates_and_missing_encryption() {
         storage: StorageConfig::default(),
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
+            client_callback_destinations: Default::default(),
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -3569,4 +3578,36 @@ fn sms_recovery_defaults_validation_and_redaction() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn callback_destinations_are_validated_when_loading_config() {
+    let path = temp_config_path("callbacks.yaml");
+    let base = "server:\n  listen: '127.0.0.1:8443'\n  public_base_url: 'https://id.example.com'\nrealms:\n  - id: corp\n    issuer: 'https://id.example.com'\n";
+    std::fs::write(&path, base).unwrap();
+    let config = QidConfig::from_file(path.to_str().unwrap()).unwrap();
+    assert!(
+        config.realms[0]
+            .client_callback_destinations
+            .backchannel_logout
+            .authorize("https://id.example.com")
+            .is_err()
+    );
+    for policy in [
+        "      unknown: {}\n",
+        "      backchannel_logout:\n        unknown: []\n",
+        "      backchannel_logout:\n        allowed_origins: ['https://example.com/path']\n",
+        "      ciba_notification:\n        allowed_origins: ['https://*.example.com']\n",
+    ] {
+        std::fs::write(
+            &path,
+            format!("{base}    client_callback_destinations:\n{policy}"),
+        )
+        .unwrap();
+        assert!(matches!(
+            QidConfig::from_file(path.to_str().unwrap()),
+            Err(QidError::Config { .. })
+        ));
+    }
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

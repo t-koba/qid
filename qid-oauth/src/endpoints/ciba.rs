@@ -217,55 +217,63 @@ pub async fn backchannel_authentication_approve<R: Repository>(
             .await
     );
     // In Ping mode, notify the client's backchannel notification endpoint asynchronously.
-    let ciba_mode = state
+    let realm = state
         .config
         .realms
         .iter()
-        .find(|candidate| candidate.id == grant.realm_id)
-        .map(|candidate| candidate.protocols.oauth.ciba.mode)
-        .unwrap_or(CibaMode::Poll);
-    if ciba_mode == CibaMode::Ping
+        .find(|realm| realm.id == grant.realm_id);
+    if let Some(realm) = realm
+        && realm.protocols.oauth.ciba.mode == CibaMode::Ping
         && let Ok(Some(client)) = state
             .repo
             .get_client_by_client_id(&RealmId::from(grant.realm_id.clone()), &grant.client_id)
             .await
-        && let Some(notification_endpoint) = &client.backchannel_client_notification_endpoint
+        && let Some(endpoint) = client.backchannel_client_notification_endpoint
     {
-        let auth_req_id = req.auth_req_id.clone();
-        let endpoint = notification_endpoint.clone();
-        tokio::spawn(async move {
-            let client = match reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-            {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!("failed to build CIBA ping notification client: {error}");
-                    return;
-                }
-            };
-            let payload = serde_json::json!({ "auth_req_id": auth_req_id });
-            match client
-                .post(&endpoint)
-                .json(&payload)
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    if !response.status().is_success() {
-                        tracing::warn!(
-                            "CIBA ping notification to {} returned {}",
-                            endpoint,
-                            response.status()
-                        );
+        if client.realm_id != grant.realm_id {
+            tracing::warn!(realm_id = %grant.realm_id, client_id = %grant.client_id,
+                purpose = "ciba_notification", reason = "realm_mismatch", "callback delivery skipped");
+        } else {
+            let policy = realm.client_callback_destinations.ciba_notification.clone();
+            let auth_req_id = req.auth_req_id.clone();
+            let realm_id = grant.realm_id.clone();
+            let client_id = grant.client_id.clone();
+            tokio::spawn(async move {
+                let client = match reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                {
+                    Ok(client) => client,
+                    Err(_) => {
+                        tracing::warn!(%realm_id, %client_id, purpose = "ciba_notification",
+                            reason = "client_build_failed", "callback delivery failed");
+                        return;
+                    }
+                };
+                let payload = serde_json::json!({ "auth_req_id": auth_req_id });
+                let destination = match policy.authorize(&endpoint) {
+                    Ok(destination) => destination,
+                    Err(reason) => {
+                        tracing::warn!(%realm_id, %client_id, purpose = "ciba_notification",
+                            reason = %reason, "callback delivery skipped");
+                        return;
+                    }
+                };
+                match client
+                    .post(destination)
+                    .json(&payload)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => {}
+                    _ => {
+                        tracing::warn!(%realm_id, %client_id, purpose = "ciba_notification",
+                            reason = "delivery_failed", "callback delivery failed");
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("CIBA ping notification to {} failed: {e}", endpoint);
-                }
-            }
-        });
+            });
+        }
     }
     Json(BackchannelAuthenticationApprovalResponse { approved: true }).into_response()
 }

@@ -40,6 +40,7 @@ fn minimal_config() -> QidConfig {
             }],
         },
         realms: vec![RealmConfig {
+            client_callback_destinations: Default::default(),
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,

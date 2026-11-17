@@ -41,6 +41,56 @@ cargo run --bin qidc -- --config base.yaml --config prod.yaml plan
 | `observability` | no | Log format and metrics listener. |
 | `ops` | no | Ops cache, cluster, declared backup target/version, and restore/orchestration interlock. |
 
+## Client callback destinations
+
+Each realm's `client_callback_destinations` authorizes the origins of two
+registration-controlled URLs fetched by the server. The policies are independent:
+`backchannel_logout` covers `backchannel_logout_uri`; `ciba_notification` covers
+`backchannel_client_notification_endpoint`. Omission or `allowed_origins: []`
+authorizes **no destination** for that purpose in that realm:
+
+```yaml
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    client_callback_destinations:
+      backchannel_logout:
+        allowed_origins: []
+      ciba_notification:
+        allowed_origins: []
+```
+
+To enable callbacks, populate only the required policy with exact origins such as
+`https://rp.example.com` or `https://rp.example.com:8443`. HTTPS is recommended.
+An origin entry must be an absolute HTTP(S) URL with a host, no userinfo, query or
+fragment, and no path other than `/`. Ports must be nonzero. Malformed entries,
+wildcards, suffix patterns and unknown keys fail configuration loading.
+
+Matching uses parsed scheme, host and effective port, never a URL prefix or host
+suffix. `https://rp.example.com` and `https://rp.example.com:443` match;
+HTTP, HTTPS and non-default ports are distinct. Callback endpoints may have paths
+and queries, but not userinfo, fragments, whitespace or control characters.
+Absent optional callback metadata causes neither authorization nor a request.
+
+DCR create and update reject unauthorized callback metadata with HTTP 400
+`invalid_client_metadata`, even when the callback feature is disabled. Rejected
+updates leave the stored client unchanged. Every outbound callback is authorized
+again, including callbacks of pre-existing, imported or administrator-created
+clients. A denied callback sends no request and does not prevent local logout
+completion or undo CIBA approval. Both senders refuse to follow redirects,
+including redirects to another allowed origin.
+
+There is no inferred trust from issuer URLs, `redirect_uris`, tokens, client
+authentication, localhost, or another realm or purpose. Explicit HTTP entries are
+insecure deployment opt-ins, not a loopback exception. For example, a local test
+listener at port 49152 must explicitly authorize `http://127.0.0.1:49152` in its
+own purpose's `allowed_origins`; that does not authorize other ports or hosts.
+
+This is bounded, **origin-level destination authorization, not complete SSRF
+protection**. It does not constrain resolved IP addresses, DNS rebinding, proxies,
+or malicious handlers on an allowed origin. Use trusted callback origins and
+appropriate network egress controls; see [Security](security.md).
+
 ## ReBAC Expand resource budgets
 
 `iga.rebac.expand_max_response_bytes` is a nonzero integer, default **2,097,152

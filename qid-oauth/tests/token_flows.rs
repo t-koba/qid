@@ -3614,6 +3614,20 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
 
 #[tokio::test]
 async fn ciba_ping_does_not_follow_redirect() {
+    check_ciba_ping_delivery(true, true).await;
+}
+
+#[tokio::test]
+async fn ciba_ping_posts_to_authorized_destination() {
+    check_ciba_ping_delivery(true, false).await;
+}
+
+#[tokio::test]
+async fn ciba_ping_denial_preserves_approval_without_delivery() {
+    check_ciba_ping_delivery(false, false).await;
+}
+
+async fn check_ciba_ping_delivery(authorized: bool, redirect: bool) {
     let target_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let target_capture = target_requests.clone();
     let target_app = Router::new().fallback(move || async move {
@@ -3621,6 +3635,7 @@ async fn ciba_ping_does_not_follow_redirect() {
         StatusCode::OK
     });
     let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_origin = format!("http://{}", target.local_addr().unwrap());
     let target_uri = format!("http://{}/target", target.local_addr().unwrap());
     let target_task = tokio::spawn(async move { axum::serve(target, target_app).await.unwrap() });
 
@@ -3631,18 +3646,44 @@ async fn ciba_ping_does_not_follow_redirect() {
         axum::routing::post(
             move |axum::Json(payload): axum::Json<serde_json::Value>| async move {
                 capture.lock().unwrap().push(payload);
-                (StatusCode::TEMPORARY_REDIRECT, [("location", target_uri)])
+                (
+                    if redirect {
+                        StatusCode::TEMPORARY_REDIRECT
+                    } else {
+                        StatusCode::OK
+                    },
+                    [("location", target_uri)],
+                )
             },
         ),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/ping", listener.local_addr().unwrap());
+    let endpoint_origin = format!("http://{}", listener.local_addr().unwrap());
     let redirect_task =
         tokio::spawn(async move { axum::serve(listener, redirect_app).await.unwrap() });
 
     let mut config = test_helpers::test_config();
     config.realms[0].protocols.oauth.ciba.enabled = true;
     config.realms[0].protocols.oauth.ciba.mode = qid_core::config::CibaMode::Ping;
+    config.realms[0]
+        .client_callback_destinations
+        .ciba_notification
+        .allowed_origins = vec![target_origin];
+    if authorized {
+        config.realms[0]
+            .client_callback_destinations
+            .ciba_notification
+            .allowed_origins
+            .push(endpoint_origin);
+    } else {
+        // An entry for the other callback purpose must not authorize CIBA.
+        config.realms[0]
+            .client_callback_destinations
+            .backchannel_logout
+            .allowed_origins
+            .push(endpoint_origin);
+    }
     let (app, _, state) = setup_with_config(config).await;
     let mut client = ciba_client("ciba-client");
     client.backchannel_client_notification_endpoint = Some(endpoint);
@@ -3698,17 +3739,26 @@ async fn ciba_ping_does_not_follow_redirect() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Approval spawns the ping: first require an actual POST, then give any
-    // incorrectly followed redirect time to reach the target listener.
-    for _ in 0..100 {
-        if !captured.lock().unwrap().is_empty() {
-            break;
+    let stored = state
+        .repo
+        .get_backchannel_authentication_grant(&util::sha256_base64url(auth_req_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.approved_at.is_some());
+    if authorized {
+        // Require the actual POST before checking the redirect target.
+        for _ in 0..100 {
+            if !captured.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(captured.lock().unwrap().len(), 1);
+        assert_eq!(captured.lock().unwrap()[0]["auth_req_id"], auth_req_id);
     }
-    assert_eq!(captured.lock().unwrap().len(), 1);
-    assert_eq!(captured.lock().unwrap()[0]["auth_req_id"], auth_req_id);
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(captured.lock().unwrap().len(), usize::from(authorized));
     assert_eq!(target_requests.load(Ordering::SeqCst), 0);
     redirect_task.abort();
     target_task.abort();
@@ -5614,4 +5664,148 @@ async fn challenge_defaults_to_phr_and_reflects_explicit_acr_values() {
         body["acr_values"],
         serde_json::json!(["urn:qid:acr:password"])
     );
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_authorizes_callbacks_on_create_and_update() {
+    let mut config = test_helpers::test_config();
+    let realm = &mut config.realms[0];
+    realm.protocols.oauth.dynamic_client_registration.enabled = true;
+    realm
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    // CIBA remains disabled: callback metadata must still be authorized.
+    realm
+        .client_callback_destinations
+        .backchannel_logout
+        .allowed_origins = vec!["https://logout.example".into()];
+    realm
+        .client_callback_destinations
+        .ciba_notification
+        .allowed_origins = vec!["https://ping.example".into()];
+    let mut other = realm.clone();
+    other.id = "other".into();
+    other.issuer = "https://other.example".into();
+    other
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = false;
+    other
+        .client_callback_destinations
+        .backchannel_logout
+        .allowed_origins = vec![
+        "https://unauthorized.example".into(),
+        "https://ping.example".into(),
+    ];
+    other
+        .client_callback_destinations
+        .ciba_notification
+        .allowed_origins = vec![
+        "https://unauthorized.example".into(),
+        "https://logout.example".into(),
+    ];
+    config.realms.insert(0, other);
+    let (app, _, state) = setup_with_config(config).await;
+    let path = &state.paths.dynamic_client_registration;
+    let baseline = serde_json::json!({
+        "client_id": "dcr-callbacks", "redirect_uris": ["https://app.example.com/cb"],
+        "grant_types": ["authorization_code"], "token_endpoint_auth_method": "none",
+        "backchannel_logout_uri": "https://logout.example/logout?app=1",
+        "backchannel_client_notification_endpoint": "https://ping.example/ping",
+    });
+    // Each unauthorized field independently rejects creation without persisting.
+    for (field, denied) in [
+        ("backchannel_logout_uri", "https://ping.example/logout"),
+        (
+            "backchannel_client_notification_endpoint",
+            "https://logout.example/ping",
+        ),
+    ] {
+        let mut body = baseline.clone();
+        body[field] = denied.into();
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "invalid_client_metadata"
+        );
+        assert!(
+            state
+                .repo
+                .get_client_by_client_id(&"test".into(), "dcr-callbacks")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(baseline.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let registration = json_body(response).await;
+    let token = registration["registration_access_token"].as_str().unwrap();
+    let path = state
+        .paths
+        .dynamic_client_registration_management
+        .replace(":client_id", "dcr-callbacks");
+    let prior = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "dcr-callbacks")
+        .await
+        .unwrap()
+        .unwrap();
+    for field in [
+        "backchannel_logout_uri",
+        "backchannel_client_notification_endpoint",
+    ] {
+        let mut body = baseline.clone();
+        body[field] = "https://unauthorized.example/callback".into();
+        body["client_name"] = "must not be persisted".into();
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri(&path)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "invalid_client_metadata"
+        );
+        let after = state
+            .repo
+            .get_client_by_client_id(&"test".into(), "dcr-callbacks")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&after).unwrap(),
+            serde_json::to_value(&prior).unwrap()
+        );
+    }
+    let mut body = baseline;
+    body["backchannel_logout_uri"] = "https://logout.example/new-path".into();
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri(&path)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::OK);
 }

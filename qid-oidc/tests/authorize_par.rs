@@ -393,7 +393,17 @@ fn dpop_proof(
 }
 
 async fn setup() -> (Router, Arc<SharedState<SqlRepository>>) {
+    setup_with_logout_origins(Vec::new()).await
+}
+
+async fn setup_with_logout_origins(
+    origins: Vec<String>,
+) -> (Router, Arc<SharedState<SqlRepository>>) {
     let mut config = test_helpers::test_config();
+    config.realms[0]
+        .client_callback_destinations
+        .backchannel_logout
+        .allowed_origins = origins;
     // The test signer is HS256-based; permit HS256 for the test realm so
     // signed request objects and JARM responses can round-trip.
     config.realms[0]
@@ -1149,7 +1159,6 @@ async fn logout_redirect_requires_registered_client_uri() {
 
 #[tokio::test]
 async fn logout_attempts_backchannel_before_redirect_response() {
-    let (app, state) = setup().await;
     let captured: Arc<std::sync::Mutex<Vec<(String, String)>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let capture_state = captured.clone();
@@ -1163,6 +1172,7 @@ async fn logout_attempts_backchannel_before_redirect_response() {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let (app, state) = setup_with_logout_origins(vec![format!("http://127.0.0.1:{port}")]).await;
     tokio::spawn(async move {
         axum::serve(listener, capture_app).await.unwrap();
     });
@@ -1212,7 +1222,6 @@ async fn logout_attempts_backchannel_before_redirect_response() {
 
 #[tokio::test]
 async fn logout_backchannel_does_not_follow_redirect() {
-    let (app, state) = setup().await;
     let target_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let target_capture = target_requests.clone();
     let target_app = Router::new().fallback(move || async move {
@@ -1220,6 +1229,7 @@ async fn logout_backchannel_does_not_follow_redirect() {
         StatusCode::OK
     });
     let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_origin = format!("http://{}", target.local_addr().unwrap());
     let target_uri = format!("http://{}/target", target.local_addr().unwrap());
     let target_task = tokio::spawn(async move { axum::serve(target, target_app).await.unwrap() });
 
@@ -1234,6 +1244,11 @@ async fn logout_backchannel_does_not_follow_redirect() {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let logout_uri = format!("http://{}/logout", listener.local_addr().unwrap());
+    let (app, state) = setup_with_logout_origins(vec![
+        format!("http://{}", listener.local_addr().unwrap()),
+        target_origin,
+    ])
+    .await;
     let redirect_task =
         tokio::spawn(async move { axum::serve(listener, redirect_app).await.unwrap() });
     let mut client = state
@@ -3527,7 +3542,13 @@ mod push;
 
 #[tokio::test]
 async fn rp_logout_ignores_foreign_session_identity_sid_and_shared_cookie() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
     let mut config = test_helpers::test_config();
+    config.realms[0]
+        .client_callback_destinations
+        .backchannel_logout
+        .allowed_origins = vec![format!("http://127.0.0.1:{port}")];
     let mut other = config.realms[0].clone();
     other.id = "other".into();
     other.issuer = "https://other.example.com".into();
@@ -3560,8 +3581,6 @@ async fn rp_logout_ignores_foreign_session_identity_sid_and_shared_cookie() {
 
     let captured = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let capture_state = captured.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
     let capture_app = Router::new().route(
         "/bc",
         axum::routing::post(move |body: String| async move {
@@ -3816,4 +3835,66 @@ async fn seed_ssf_source(repo: &SqlRepository, realm: &str, subject: &str, id: &
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn logout_denies_destination_without_breaking_completion() {
+    let captured = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits = captured.clone();
+    let capture_app = Router::new().fallback(move || async move {
+        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        StatusCode::OK
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, capture_app).await.unwrap() });
+    let mut config = test_helpers::test_config();
+    // Neither another purpose nor another realm may authorize logout in test.
+    config.realms[0]
+        .client_callback_destinations
+        .ciba_notification
+        .allowed_origins = vec![origin.clone()];
+    let mut other = config.realms[0].clone();
+    other.id = "other".into();
+    other.issuer = "https://other.example.com".into();
+    other
+        .client_callback_destinations
+        .backchannel_logout
+        .allowed_origins = vec![origin.clone()];
+    config.realms.push(other);
+    let (app, state) = setup_with_config(config).await;
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.backchannel_logout_uri = Some(format!("{origin}/logout"));
+    state.repo.update_client(&client).await.unwrap();
+    create_browser_session(&state, "sid-denied-callback").await;
+    let response = post_logout(
+        app,
+        state.paths.logout.clone(),
+        "__Host-qid=sid-denied-callback",
+        "client_id=par-client&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        response.headers().get("location").unwrap(),
+        "https://app.example.com/callback"
+    );
+    assert!(response.headers().contains_key("set-cookie"));
+    assert!(
+        state
+            .repo
+            .get_session("sid-denied-callback")
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked
+    );
+    assert_eq!(state.session_cache_get("sid-denied-callback"), None);
+    assert_eq!(captured.load(std::sync::atomic::Ordering::SeqCst), 0);
+    server.abort();
 }

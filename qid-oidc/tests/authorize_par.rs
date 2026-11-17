@@ -1280,6 +1280,78 @@ async fn logout_backchannel_does_not_follow_redirect() {
 }
 
 #[tokio::test]
+async fn scim_set_delivery_does_not_follow_redirect() {
+    use qid_core::event::{Event, EventBus, EventKind, GLOBAL_EVENT_BUS};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    let target_requests = Arc::new(AtomicUsize::new(0));
+    let target_capture = target_requests.clone();
+    let target_received = Arc::new(Notify::new());
+    let target_signal = target_received.clone();
+    let target_app = Router::new().fallback(move || async move {
+        target_capture.fetch_add(1, Ordering::SeqCst);
+        target_signal.notify_one();
+        StatusCode::OK
+    });
+    let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_uri = format!("http://{}/target", target.local_addr().unwrap());
+    let target_task = tokio::spawn(async move { axum::serve(target, target_app).await.unwrap() });
+
+    let receiver_requests = Arc::new(AtomicUsize::new(0));
+    let receiver_capture = receiver_requests.clone();
+    let receiver_received = Arc::new(Notify::new());
+    let receiver_signal = receiver_received.clone();
+    let redirect_app = Router::new().route(
+        "/events",
+        axum::routing::post(move |body: String| async move {
+            assert!(!body.is_empty(), "receiver must get the signed SET body");
+            receiver_capture.fetch_add(1, Ordering::SeqCst);
+            receiver_signal.notify_one();
+            (StatusCode::TEMPORARY_REDIRECT, [("location", target_uri)])
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let callback_url = format!("http://{}/events", listener.local_addr().unwrap());
+    let redirect_task =
+        tokio::spawn(async move { axum::serve(listener, redirect_app).await.unwrap() });
+    let (_app, state) = setup().await;
+    // Insert directly so this local HTTP receiver bypasses callback URL validation.
+    state
+        .repo
+        .upsert_scim_event_subscription(&qid_storage::ScimEventSubscriptionRecord {
+            id: "redirect-subscription".to_string(),
+            realm_id: "test".to_string(),
+            callback_url,
+            event_types: vec!["urn:ietf:params:scim:event:create".to_string()],
+            enabled: true,
+            created_at: util::now_seconds(),
+        })
+        .await
+        .unwrap();
+    qid_oidc::shared_signals::install_scim_set_publisher(state);
+    GLOBAL_EVENT_BUS.publish(Event {
+        kind: EventKind::ScimProvisioned,
+        realm_id: Some("test".to_string()),
+        tenant_id: None,
+        payload: serde_json::json!({ "operation": "created", "id": "redirect-user" }),
+        timestamp: util::now_seconds(),
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), receiver_received.notified())
+        .await
+        .expect("SCIM SET publisher must POST to the redirect receiver");
+    // Delivery runs in a bus-spawned task. Observe the target with a bounded
+    // notification wait, not a sleep that could race the initial POST.
+    let _ = tokio::time::timeout(Duration::from_secs(1), target_received.notified()).await;
+    redirect_task.abort();
+    target_task.abort();
+    assert_eq!(receiver_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(target_requests.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn logout_redirect_with_frontchannel_renders_completion_page() {
     let (app, state) = setup().await;
     let mut client = state

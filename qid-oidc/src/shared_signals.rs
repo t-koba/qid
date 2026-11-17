@@ -145,7 +145,10 @@ async fn publish_scim_set_event<R: Repository>(
     if subscriptions.is_empty() {
         return Ok(());
     }
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| internal_error("SCIM SET client build failed"))?;
     let now = util::now_seconds();
     for subscription in subscriptions {
         if !subscription.enabled

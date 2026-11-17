@@ -3613,6 +3613,108 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
 }
 
 #[tokio::test]
+async fn ciba_ping_does_not_follow_redirect() {
+    let target_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let target_capture = target_requests.clone();
+    let target_app = Router::new().fallback(move || async move {
+        target_capture.fetch_add(1, Ordering::SeqCst);
+        StatusCode::OK
+    });
+    let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_uri = format!("http://{}/target", target.local_addr().unwrap());
+    let target_task = tokio::spawn(async move { axum::serve(target, target_app).await.unwrap() });
+
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture = captured.clone();
+    let redirect_app = Router::new().route(
+        "/ping",
+        axum::routing::post(
+            move |axum::Json(payload): axum::Json<serde_json::Value>| async move {
+                capture.lock().unwrap().push(payload);
+                (StatusCode::TEMPORARY_REDIRECT, [("location", target_uri)])
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/ping", listener.local_addr().unwrap());
+    let redirect_task =
+        tokio::spawn(async move { axum::serve(listener, redirect_app).await.unwrap() });
+
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.ciba.enabled = true;
+    config.realms[0].protocols.oauth.ciba.mode = qid_core::config::CibaMode::Ping;
+    let (app, _, state) = setup_with_config(config).await;
+    let mut client = ciba_client("ciba-client");
+    client.backchannel_client_notification_endpoint = Some(endpoint);
+    state.repo.update_client(&client).await.unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "ciba-ping-user".to_string(),
+            realm_id: "test".to_string(),
+            email: Some("ciba-ping@example.com".to_string()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let response = post_form(
+        app.clone(),
+        &state.paths.backchannel_authentication,
+        "client_id=ciba-client&client_secret=secret&login_hint=ciba-ping%40example.com&scope=openid"
+            .to_string(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    let auth_req_id = json["auth_req_id"].as_str().unwrap();
+    let sessions = SessionManager::new(state.repo.clone(), 15, 1);
+    let session = sessions
+        .create("test", "ciba-ping-user", "password", &[])
+        .await
+        .unwrap();
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "{}/approve",
+            state.paths.backchannel_authentication
+        ))
+        .header("Content-Type", "application/json")
+        .header(
+            axum::http::header::COOKIE,
+            format!(
+                "{}={}",
+                state.config.realms[0].sessions.browser.cookie_name, session.id
+            ),
+        )
+        .body(Body::from(
+            serde_json::json!({ "auth_req_id": auth_req_id, "user_id": "ciba-ping-user" })
+                .to_string(),
+        ))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Approval spawns the ping: first require an actual POST, then give any
+    // incorrectly followed redirect time to reach the target listener.
+    for _ in 0..100 {
+        if !captured.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(captured.lock().unwrap().len(), 1);
+    assert_eq!(captured.lock().unwrap()[0]["auth_req_id"], auth_req_id);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(target_requests.load(Ordering::SeqCst), 0);
+    redirect_task.abort();
+    target_task.abort();
+}
+
+#[tokio::test]
 async fn authorization_code_used_twice_fails() {
     let (app, token_path, state) = setup().await;
 

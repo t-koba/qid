@@ -1211,6 +1211,60 @@ async fn logout_attempts_backchannel_before_redirect_response() {
 }
 
 #[tokio::test]
+async fn logout_backchannel_does_not_follow_redirect() {
+    let (app, state) = setup().await;
+    let target_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let target_capture = target_requests.clone();
+    let target_app = Router::new().fallback(move || async move {
+        target_capture.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        StatusCode::OK
+    });
+    let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_uri = format!("http://{}/target", target.local_addr().unwrap());
+    let target_task = tokio::spawn(async move { axum::serve(target, target_app).await.unwrap() });
+
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture = captured.clone();
+    let redirect_app = Router::new().route(
+        "/logout",
+        axum::routing::post(move |body: String| async move {
+            capture.lock().unwrap().push(body);
+            (StatusCode::TEMPORARY_REDIRECT, [("location", target_uri)])
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let logout_uri = format!("http://{}/logout", listener.local_addr().unwrap());
+    let redirect_task =
+        tokio::spawn(async move { axum::serve(listener, redirect_app).await.unwrap() });
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.backchannel_logout_uri = Some(logout_uri);
+    state.repo.update_client(&client).await.unwrap();
+    create_browser_session(&state, "sid-logout-redirect").await;
+
+    let response = post_logout(
+        app,
+        state.paths.logout.clone(),
+        "__Host-qid=sid-logout-redirect",
+        "client_id=par-client&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback",
+    )
+    .await;
+    // Logout still completes when backchannel delivery fails (including 3xx).
+    // This is the browser redirect, not a successful backchannel delivery.
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    let bodies = captured.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    assert!(bodies[0].contains("logout_token="));
+    assert_eq!(target_requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    redirect_task.abort();
+    target_task.abort();
+}
+
+#[tokio::test]
 async fn logout_redirect_with_frontchannel_renders_completion_page() {
     let (app, state) = setup().await;
     let mut client = state

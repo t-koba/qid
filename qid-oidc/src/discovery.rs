@@ -67,6 +67,7 @@ async fn build_logout_token<R: Repository>(
 
 async fn send_backchannel_logout(logout_uri: &str, logout_token: &str) -> QidResult<()> {
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|error| {

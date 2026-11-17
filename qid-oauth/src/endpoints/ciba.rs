@@ -234,7 +234,16 @@ pub async fn backchannel_authentication_approve<R: Repository>(
         let auth_req_id = req.auth_req_id.clone();
         let endpoint = notification_endpoint.clone();
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            let client = match reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!("failed to build CIBA ping notification client: {error}");
+                    return;
+                }
+            };
             let payload = serde_json::json!({ "auth_req_id": auth_req_id });
             match client
                 .post(&endpoint)

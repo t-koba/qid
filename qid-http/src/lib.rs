@@ -4,7 +4,7 @@
 use axum::{
     Json,
     http::{HeaderName, HeaderValue, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
 };
 use serde_json::json;
 
@@ -137,25 +137,6 @@ pub fn dpop_nonce_error_response(
         response.headers_mut().insert("DPoP-Nonce", nonce);
     }
     response
-}
-
-/// Build a redirect carrying OAuth/OIDC error parameters.
-pub fn redirect_error(
-    redirect_uri: &str,
-    state: Option<&str>,
-    error: &str,
-    description: &str,
-) -> axum::response::Response {
-    let mut url = format!(
-        "{}?error={}&error_description={}",
-        redirect_uri,
-        urlencoding::encode(error),
-        urlencoding::encode(description)
-    );
-    if let Some(state) = state {
-        url.push_str(&format!("&state={}", urlencoding::encode(state)));
-    }
-    Redirect::temporary(&url).into_response()
 }
 
 /// Read the first named cookie from the Cookie header without decoding its value.

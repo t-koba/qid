@@ -32,7 +32,7 @@ Top-level commands:
 
 | Command | Purpose |
 | --- | --- |
-| `check` | Validate config, runtime plan, diagnostics, and storage SaaS checks. Emits JSON. |
+| `check` | Validate config, runtime plan, diagnostics, and storage SaaS checks. Emits JSON; an `error` report exits nonzero. |
 | `plan` | Print the compiled `RuntimePlan`. |
 | `realm` | Create/list/get/delete realms. |
 | `client` | Create/list/delete clients. |
@@ -182,7 +182,7 @@ Common flags:
 
 | Subcommand | Purpose |
 | --- | --- |
-| `check` | Print config readiness JSON; an `error` report exits nonzero. |
+| `check` | Print cache/cluster/backup/emergency readiness JSON. |
 | `backup-manifest` | Build a manifest for exported objects. |
 | `restore-plan` | Plan restore from a manifest; a `rejected` plan exits nonzero. |
 | `restore-execute` | Execute local restore with optional dry-run; `rejected` and `failed` reports exit nonzero. |

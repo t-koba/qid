@@ -262,7 +262,7 @@ The worker hashes the JSONL audit body with SHA-256, sends a nonce-bearing RFC 3
 
 SIEM delivery posts to the configured HTTPS endpoint by default, with a 10-second timeout and redirects disabled. Use `--dry-run` only to capture a request without sending; it reports `skipped_dry_run` and leaves the queue entry pending. Notification `--provider` is likewise an HTTPS JSON endpoint URL.
 
-SIEM delivery failures are persisted in `siem_delivery_queue`. Retryable failures stay `pending` with `next_retry_at`; exhausted failures become `dead` and can be inspected or redriven:
+SIEM delivery failures are persisted in `siem_delivery_queue`. Retryable failures stay `pending` with `next_retry_at`; exhausted failures become `dead` and can be inspected or redriven. Both `failed_retryable` and `failed_permanent` reports exit nonzero so a scheduler cannot mistake them for success:
 
 ```sh
 cargo run --bin qidc -- --config /etc/qid/qid.yaml ops siem-dlq-list --status dead

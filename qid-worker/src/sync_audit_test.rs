@@ -287,6 +287,44 @@ fn a_directory_fetch_fault_keeps_every_kind() {
 }
 
 #[test]
+fn failed_delivery_reports_make_the_command_exit_nonzero() {
+    for status in [
+        crate::AuditSiemDeliveryStatus::FailedRetryable,
+        crate::AuditSiemDeliveryStatus::FailedPermanent,
+    ] {
+        let status = serde_json::to_value(status).expect("status serializes");
+        let report =
+            serde_json::json!({"command": "audit_siem_deliver", "report": {"status": status}});
+        assert!(
+            crate::sync::sync_failed(&report),
+            "status {status} must fail"
+        );
+    }
+    for status in [
+        crate::NotificationDeliveryStatus::FailedRetryable,
+        crate::NotificationDeliveryStatus::FailedPermanent,
+    ] {
+        let status = serde_json::to_value(status).expect("status serializes");
+        let report =
+            serde_json::json!({"command": "notification_deliver", "report": {"status": status}});
+        assert!(
+            crate::sync::sync_failed(&report),
+            "status {status} must fail"
+        );
+    }
+    let delivered = serde_json::json!({
+        "command": "audit_siem_redrive",
+        "report": {"status": crate::AuditSiemDeliveryStatus::Delivered}
+    });
+    assert!(!crate::sync::sync_failed(&delivered));
+    let skipped = serde_json::json!({
+        "command": "audit_siem_deliver",
+        "report": {"status": crate::AuditSiemDeliveryStatus::SkippedDryRun}
+    });
+    assert!(!crate::sync::sync_failed(&skipped));
+}
+
+#[test]
 fn a_failed_directory_sync_makes_the_command_exit_nonzero() {
     let status =
         serde_json::to_value(crate::DirectorySyncJobStatus::Failed).expect("the status serializes");

@@ -66,10 +66,14 @@ pub(crate) fn directory_fetch_error(err: QidError) -> QidError {
     }
 }
 
-/// Whether the command reports a failed directory sync, so the process
-/// exits non-zero instead of reporting success.
+/// Whether a worker command report describes a failure that must abort the
+/// process. Delivery jobs use `failed_retryable` and `failed_permanent`, so
+/// only an exact `failed` comparison would let an authoritative delivery
+/// failure exit successfully.
 pub fn sync_failed(result: &serde_json::Value) -> bool {
-    result["report"]["status"] == "failed"
+    result["report"]["status"]
+        .as_str()
+        .is_some_and(|status| status == "failed" || status.starts_with("failed_"))
         || result["report"]["failed"].as_u64().is_some_and(|n| n > 0)
         || result["report"]["errors"]
             .as_array()

@@ -5809,3 +5809,110 @@ async fn dynamic_client_registration_authorizes_callbacks_on_create_and_update()
         .unwrap();
     assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn dynamic_client_registration_round_trips_logout_uris() {
+    let mut config = test_helpers::test_config();
+    let realm = &mut config.realms[0];
+    realm.protocols.oauth.dynamic_client_registration.enabled = true;
+    realm
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    realm
+        .client_callback_destinations
+        .backchannel_logout
+        .allowed_origins = vec!["https://logout.example".into()];
+    let (app, _, state) = setup_with_config(config).await;
+    let backchannel = "https://logout.example/logout?app=1";
+    let frontchannel = "https://app.example.com/logout?app=1";
+    let (status, registration) = post_json(
+        app.clone(),
+        &state.paths.dynamic_client_registration,
+        serde_json::json!({
+            "client_id": "dcr-logout-round-trip",
+            "client_name": "Original name",
+            "redirect_uris": ["https://app.example.com/cb"],
+            "grant_types": ["authorization_code"],
+            "token_endpoint_auth_method": "none",
+            "backchannel_logout_uri": backchannel,
+            "frontchannel_logout_uri": frontchannel,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(registration["backchannel_logout_uri"], backchannel);
+    assert_eq!(registration["frontchannel_logout_uri"], frontchannel);
+    let stored = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "dcr-logout-round-trip")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.backchannel_logout_uri.as_deref(), Some(backchannel));
+    assert_eq!(
+        stored.frontchannel_logout_uri.as_deref(),
+        Some(frontchannel)
+    );
+
+    let token = registration["registration_access_token"].as_str().unwrap();
+    let path = state
+        .paths
+        .dynamic_client_registration_management
+        .replace(":client_id", "dcr-logout-round-trip");
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(&path)
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut metadata = json_body(response).await;
+    assert_eq!(metadata["backchannel_logout_uri"], backchannel);
+    assert_eq!(metadata["frontchannel_logout_uri"], frontchannel);
+    metadata["client_name"] = "Updated name".into();
+
+    // First round-trip the GET metadata; then omit both endpoints to clear them.
+    for clear in [false, true] {
+        if clear {
+            let object = metadata.as_object_mut().unwrap();
+            object.remove("backchannel_logout_uri");
+            object.remove("frontchannel_logout_uri");
+        }
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri(&path)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(metadata.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        metadata = json_body(response).await;
+        let stored = state
+            .repo
+            .get_client_by_client_id(&"test".into(), "dcr-logout-round-trip")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata["client_name"], "Updated name");
+        assert_eq!(stored.client_name.as_deref(), Some("Updated name"));
+        assert_eq!(
+            stored.backchannel_logout_uri.as_deref(),
+            (!clear).then_some(backchannel)
+        );
+        assert_eq!(
+            stored.frontchannel_logout_uri.as_deref(),
+            (!clear).then_some(frontchannel)
+        );
+        if clear {
+            assert!(metadata.get("backchannel_logout_uri").is_none());
+            assert!(metadata.get("frontchannel_logout_uri").is_none());
+        } else {
+            assert_eq!(metadata["backchannel_logout_uri"], backchannel);
+            assert_eq!(metadata["frontchannel_logout_uri"], frontchannel);
+        }
+    }
+}

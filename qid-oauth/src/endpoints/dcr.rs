@@ -94,6 +94,10 @@ pub struct DynamicClientRegistrationResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub backchannel_logout_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontchannel_logout_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backchannel_client_notification_endpoint: Option<String>,
     pub require_pushed_authorization_requests: bool,
 }
@@ -349,6 +353,8 @@ pub async fn dynamic_client_registration<R: Repository>(
                 require_auth_time: req.require_auth_time,
                 sector_identifier_uri: req.sector_identifier_uri,
                 subject_type: req.subject_type,
+                backchannel_logout_uri: req.backchannel_logout_uri,
+                frontchannel_logout_uri: req.frontchannel_logout_uri,
                 backchannel_client_notification_endpoint: req
                     .backchannel_client_notification_endpoint
                     .clone(),
@@ -379,6 +385,8 @@ struct DynamicClientRegistrationResponseInput {
     require_auth_time: bool,
     sector_identifier_uri: Option<String>,
     subject_type: Option<String>,
+    backchannel_logout_uri: Option<String>,
+    frontchannel_logout_uri: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
     require_pushed_authorization_requests: bool,
 }
@@ -415,6 +423,8 @@ fn build_dynamic_client_registration_response<R: Repository>(
         require_auth_time: Some(input.require_auth_time),
         sector_identifier_uri: input.sector_identifier_uri,
         subject_type: input.subject_type,
+        backchannel_logout_uri: input.backchannel_logout_uri,
+        frontchannel_logout_uri: input.frontchannel_logout_uri,
         backchannel_client_notification_endpoint: input.backchannel_client_notification_endpoint,
         require_pushed_authorization_requests: input.require_pushed_authorization_requests,
     })
@@ -756,6 +766,8 @@ pub async fn dynamic_client_registration_get<R: Repository>(
                 require_auth_time: client.require_auth_time,
                 sector_identifier_uri: client.sector_identifier_uri,
                 subject_type: client.subject_type,
+                backchannel_logout_uri: client.backchannel_logout_uri,
+                frontchannel_logout_uri: client.frontchannel_logout_uri,
                 backchannel_client_notification_endpoint: client
                     .backchannel_client_notification_endpoint,
                 require_pushed_authorization_requests: client.require_pushed_authorization_requests,
@@ -888,6 +900,8 @@ pub async fn dynamic_client_registration_update<R: Repository>(
                 require_auth_time: req.require_auth_time,
                 sector_identifier_uri: req.sector_identifier_uri,
                 subject_type: req.subject_type,
+                backchannel_logout_uri: req.backchannel_logout_uri,
+                frontchannel_logout_uri: req.frontchannel_logout_uri,
                 backchannel_client_notification_endpoint: req
                     .backchannel_client_notification_endpoint
                     .clone(),

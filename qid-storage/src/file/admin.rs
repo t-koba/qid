@@ -51,6 +51,9 @@ impl AdminRepository for FileRepository {
             format!("Admin elevation ID {} already exists", elevation.id)
         })?;
         elevations.insert(elevation.id.clone(), elevation.clone());
+        store
+            .admin_elevation_expiries
+            .insert((elevation.elevation_expires_at, elevation.id.clone()));
         drop(store);
         self.save().await
     }
@@ -61,28 +64,36 @@ impl AdminRepository for FileRepository {
         tokio::spawn(async move {
             let save_guard = repo.save_lock.lock().await;
             let mut store = repo.store.write().await;
-            let mut oldest =
-                std::collections::BinaryHeap::<(u64, String)>::with_capacity(limit as usize);
-            for (id, row) in &store.admin_elevations {
-                if row.id != *id {
+            // Validation bounds now to i64::MAX, so the next expiry cannot
+            // overflow. Its exclusive bound includes every id expiring at now.
+            let mut oldest = Vec::new();
+            // Validate the complete batch before mutating either structure.
+            for (expiry, id) in store
+                .admin_elevation_expiries
+                .range(..(now + 1, String::new()))
+                .take(limit as usize)
+            {
+                #[cfg(test)]
+                repo.admin_elevation_cleanup_visits
+                    .fetch_add(1, Ordering::Relaxed);
+                if !store
+                    .admin_elevations
+                    .get(id)
+                    .is_some_and(|row| row.id == *id && row.elevation_expires_at == *expiry)
+                {
                     return Err(QidError::Internal {
                         message: "admin elevation index is inconsistent".into(),
                     });
                 }
-                if row.elevation_expires_at <= now {
-                    let candidate = (row.elevation_expires_at, id.clone());
-                    if oldest.len() < limit as usize {
-                        oldest.push(candidate);
-                    } else if oldest.peek().is_some_and(|last| candidate < *last) {
-                        oldest.pop();
-                        oldest.push(candidate);
-                    }
-                }
+                oldest.push((*expiry, id.clone()));
             }
             let removed: Vec<_> = oldest
-                .into_vec()
                 .into_iter()
-                .filter_map(|(_, id)| store.admin_elevations.remove(&id).map(|row| (id, row)))
+                .filter_map(|entry| {
+                    store.admin_elevation_expiries.remove(&entry);
+                    let (_, id) = entry;
+                    store.admin_elevations.remove(&id).map(|row| (id, row))
+                })
                 .collect();
             let deleted = removed.len() as u64;
             if deleted == 0 {
@@ -97,6 +108,9 @@ impl AdminRepository for FileRepository {
             .await;
             if let Err(error) = written {
                 for (id, row) in removed {
+                    store
+                        .admin_elevation_expiries
+                        .insert((row.elevation_expires_at, id.clone()));
                     store.admin_elevations.insert(id, row);
                 }
                 return Err(error);

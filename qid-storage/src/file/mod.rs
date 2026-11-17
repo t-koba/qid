@@ -4,7 +4,7 @@ use qid_core::{
     tenant::{RealmId, TenantId},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -136,6 +136,9 @@ struct Store {
     admins: HashMap<String, Admin>,
     #[serde(default)]
     admin_elevations: HashMap<String, AdminElevation>,
+    // Derived on load and maintained with the rows under the store lock.
+    #[serde(skip)]
+    admin_elevation_expiries: BTreeSet<(u64, String)>,
     #[serde(default)]
     admin_approvals: HashMap<String, AdminApproval>,
     #[serde(default)]
@@ -187,6 +190,8 @@ pub struct FileRepository {
     rotation_hook: Arc<std::sync::Mutex<Option<persistence_tests::RotationHook>>>,
     #[cfg(test)]
     write_hook: Arc<std::sync::Mutex<Option<persistence_tests::FlushHook>>>,
+    #[cfg(test)]
+    admin_elevation_cleanup_visits: Arc<std::sync::atomic::AtomicUsize>,
     _process_lock: Arc<ProcessLock>,
     dirty: Arc<AtomicBool>,
     flush_mode: FileFlushMode,
@@ -262,6 +267,16 @@ impl FileRepository {
                 });
             }
         };
+        for (id, row) in &store.admin_elevations {
+            if row.id != *id {
+                return Err(QidError::Internal {
+                    message: "admin elevation index is inconsistent".into(),
+                });
+            }
+            store
+                .admin_elevation_expiries
+                .insert((row.elevation_expires_at, id.clone()));
+        }
         let mut rekeyed = rekey_records(
             &mut store.ciam_profiles,
             |p| scoped_record_key(&p.realm_id, &p.user_id),
@@ -292,6 +307,8 @@ impl FileRepository {
             rotation_hook: Arc::default(),
             #[cfg(test)]
             write_hook: Arc::default(),
+            #[cfg(test)]
+            admin_elevation_cleanup_visits: Arc::default(),
             _process_lock: Arc::new(process_lock),
             dirty: Arc::new(AtomicBool::new(false)),
             flush_mode,

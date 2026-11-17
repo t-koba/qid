@@ -1242,7 +1242,7 @@ async fn interval_ciam_attempt_remains_dirty_until_flush() {
 }
 
 #[tokio::test]
-async fn admin_elevation_cleanup_failure_rolls_back_map() {
+async fn admin_elevation_cleanup_failure_rolls_back_rows_and_index() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store.json");
     let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
@@ -1269,4 +1269,112 @@ async fn admin_elevation_cleanup_failure_rolls_back_map() {
         1
     );
     assert!(repo.get_admin_elevation("expired").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn admin_elevation_cleanup_visits_only_the_expired_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.json");
+    let elevation = |id: String, expiry| AdminElevation {
+        id,
+        tenant_id: "tenant".into(),
+        admin_id: "admin".into(),
+        source_session_id: None,
+        acr: None,
+        amr: vec![],
+        elevation_expires_at: expiry,
+        created_at: 1,
+    };
+    // Write a fixture once rather than persisting thousands of individual inserts.
+    // Opening it must derive the index solely from the serialized rows.
+    let mut store = Store::default();
+    for i in 0..4096 {
+        let row = elevation(format!("live-{i:04}"), i64::MAX as u64);
+        store.admin_elevations.insert(row.id.clone(), row);
+    }
+    for (id, expiry) in [("z", 10), ("first", 9), ("a", 10)] {
+        let row = elevation(id.into(), expiry);
+        store.admin_elevations.insert(row.id.clone(), row);
+    }
+    std::fs::write(&path, serde_json::to_vec(&store).unwrap()).unwrap();
+    let repo = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    repo.store_admin_elevation(&elevation("m".into(), 10))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.cleanup_expired_admin_elevations(10, 2).await.unwrap(),
+        2
+    );
+    assert_eq!(
+        repo.admin_elevation_cleanup_visits.load(Ordering::Relaxed),
+        2
+    );
+    for id in ["first", "a"] {
+        assert!(repo.get_admin_elevation(id).await.unwrap().is_none());
+    }
+    for id in ["m", "z"] {
+        assert!(repo.get_admin_elevation(id).await.unwrap().is_some());
+    }
+    assert_eq!(
+        repo.cleanup_expired_admin_elevations(10, 10).await.unwrap(),
+        2
+    );
+    assert_eq!(
+        repo.admin_elevation_cleanup_visits.load(Ordering::Relaxed),
+        4
+    );
+    assert_eq!(
+        repo.cleanup_expired_admin_elevations(10, 10).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        repo.admin_elevation_cleanup_visits.load(Ordering::Relaxed),
+        4
+    );
+    {
+        let store = repo.store.read().await;
+        assert_eq!(store.admin_elevations.len(), 4096);
+        assert_eq!(store.admin_elevation_expiries.len(), 4096);
+    }
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(persisted.get("admin_elevation_expiries").is_none());
+    drop(repo);
+
+    let reopened = FileRepository::new(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        reopened
+            .cleanup_expired_admin_elevations(i64::MAX as u64, 2)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        reopened
+            .admin_elevation_cleanup_visits
+            .load(Ordering::Relaxed),
+        2
+    );
+    assert!(
+        reopened
+            .get_admin_elevation("live-0000")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        reopened
+            .get_admin_elevation("live-0001")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        reopened
+            .get_admin_elevation("live-0002")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }

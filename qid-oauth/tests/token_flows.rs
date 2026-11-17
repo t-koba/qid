@@ -1830,7 +1830,7 @@ async fn refresh_preserves_original_scope_ceiling() {
     let (app, token_path, state) =
         setup_with_oauth(|oauth| oauth.default_scope = "write".to_string()).await;
     let code = "scope-ceiling-code-1";
-    let code_verifier = "e1f2a3b4c5d60718293a4b5c6d7e8f9012345678";
+    let code_verifier = "e1f2a3b4c5d60718293a4b5c6d7e8f9012345678abc";
     create_user_with_code(
         &state,
         "scope-ceiling-user",
@@ -1962,7 +1962,7 @@ async fn refresh_preserves_original_authentication_context() {
     let (app, token_path, state) = setup().await;
     let original_auth_time = util::now_seconds() - 3600;
     let code = "auth-context-code-1";
-    let code_verifier = "f1e2d3c4b5a69788796a5b4c3d2e1f0012345678";
+    let code_verifier = "f1e2d3c4b5a69788796a5b4c3d2e1f0012345678abc";
     create_user_with_code(
         &state,
         "auth-context-user",
@@ -2048,7 +2048,7 @@ async fn refresh_omits_unknown_authentication_context_without_inventing_time() {
     // Legacy/unknown context: omit unavailable claims, never synthesize now.
     let (app, token_path, state) = setup().await;
     let code = "auth-unknown-code-1";
-    let code_verifier = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+    let code_verifier = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678abc";
     create_user_with_code(
         &state,
         "auth-unknown-user",
@@ -2116,7 +2116,7 @@ async fn refresh_preserves_authentication_context_for_opaque_tokens() {
     let (app, token_path, state) = setup_with_config(config).await;
     let original_auth_time = util::now_seconds() - 3600;
     let code = "auth-opaque-code-1";
-    let code_verifier = "b1c2d3e4f5a60718293a4b5c6d7e8f9012345678";
+    let code_verifier = "b1c2d3e4f5a60718293a4b5c6d7e8f9012345678abc";
     create_user_with_code(
         &state,
         "auth-opaque-user",
@@ -2206,7 +2206,7 @@ async fn refresh_rejects_cross_client_caller_without_consuming() {
     // authentication, whether by form, Basic, or unauthenticated public use.
     let (app, token_path, state) = setup().await;
     let code = "cross-client-code-1";
-    let code_verifier = "c1d2e3f4a5b60718293a4b5c6d7e8f9012345678";
+    let code_verifier = "c1d2e3f4a5b60718293a4b5c6d7e8f9012345678abc";
     create_user_with_code(
         &state,
         "cross-client-user",
@@ -2452,7 +2452,7 @@ async fn revocation_can_revoke_refresh_token_family() {
     state.repo.create_user(&user).await.unwrap();
 
     let code = "refresh-revoke-code-123";
-    let code_verifier = "d1c2b3a4e5f60718293a4b5c6d7e8f9012345678";
+    let code_verifier = "d1c2b3a4e5f60718293a4b5c6d7e8f9012345678abc";
     let auth_code = AuthorizationCode {
         code_hash: util::sha256_base64url(code),
         client_id: "test-client".to_string(),
@@ -2677,7 +2677,7 @@ async fn authorization_code_grant_succeeds() {
 
     let code = "test-auth-code-123";
     let code_hash = util::sha256_base64url(code);
-    let code_verifier = "e9b6c8a7d5f4e3c2b1a0d9f8e7c6b5a4d3f2e1c0";
+    let code_verifier = "e9b6c8a7d5f4e3c2b1a0d9f8e7c6b5a4d3f2e1c0abc";
     let code_challenge = util::sha256_base64url(code_verifier);
 
     let auth_code = AuthorizationCode {
@@ -2804,10 +2804,11 @@ async fn authorization_code_grant_wrong_verifier_fails() {
 
     let code = "test-auth-code-wrong-vf";
     let code_hash = util::sha256_base64url(code);
-    let code_challenge = util::sha256_base64url("correct-verifier");
+    let correct_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let code_challenge = util::sha256_base64url(correct_verifier);
 
     let auth_code = AuthorizationCode {
-        code_hash,
+        code_hash: code_hash.clone(),
         client_id: "test-client".to_string(),
         user_id: "test-user-2".to_string(),
         realm_id: "test".to_string(),
@@ -2833,12 +2834,26 @@ async fn authorization_code_grant_wrong_verifier_fails() {
         .await
         .unwrap();
 
-    // Use wrong verifier
+    // A wrong but RFC-conforming verifier is refused and spends the code.
     let body = format!(
-        "grant_type=authorization_code&code={}&redirect_uri=https://app.example.com/callback&code_verifier=wrong-verifier",
+        "grant_type=authorization_code&code={}&redirect_uri=https://app.example.com/callback&code_verifier={}",
+        code,
+        "A".repeat(43)
+    );
+    let response = post_form(app.clone(), &token_path, body).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let stored = state
+        .repo
+        .get_authorization_code(&code_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.used, "failed verifier must spend the code");
+    let replay = format!(
+        "grant_type=authorization_code&code={}&redirect_uri=https://app.example.com/callback&code_verifier={correct_verifier}",
         code
     );
-    let response = post_form(app, &token_path, body).await;
+    let response = post_form(app, &token_path, replay).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -3615,7 +3630,7 @@ async fn authorization_code_used_twice_fails() {
 
     let code = "replay-code";
     let code_hash = util::sha256_base64url(code);
-    let verifier = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+    let verifier = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0abc";
     let challenge = util::sha256_base64url(verifier);
 
     let auth_code = AuthorizationCode {
@@ -3676,7 +3691,7 @@ async fn authorization_code_expired_fails() {
 
     let code = "expired-code";
     let code_hash = util::sha256_base64url(code);
-    let verifier = "x1y2z3w4v5u6t7s8r9q0p1o2i3u4y5t6r7e8w9q0";
+    let verifier = "x1y2z3w4v5u6t7s8r9q0p1o2i3u4y5t6r7e8w9q0abc";
     let challenge = util::sha256_base64url(verifier);
 
     let auth_code = AuthorizationCode {

@@ -59,6 +59,13 @@ pub async fn authorization_code_grant<R: Repository>(
         auth_code.code_challenge_method.as_deref(),
         req.code_verifier.as_deref().unwrap_or(""),
     ) {
+        // A failed guess spends the code. An interceptor that already holds
+        // the code could redeem it outright, so burning it here removes the
+        // ability to repeat guesses without adding a new attack.
+        let repo = &*state.repo;
+        #[cfg(test)]
+        let repo = tests::ObservedAuthCode(repo);
+        repo.mark_authorization_code_used(&auth_code).await?;
         return Err(QidError::Unauthorized {
             message: "invalid code_verifier".to_string(),
         });

@@ -162,3 +162,75 @@ async fn authorization_code_grant_observes_validated_owner_and_rejects_stale_wri
         );
     }
 }
+
+#[tokio::test]
+async fn failed_verifier_spends_the_authorization_code() {
+    let (state, repo) = setup_state().await;
+    let now = util::now_seconds();
+    let client = refresh_test_client(
+        "pkce-spend-id",
+        "pkce-spend-client",
+        ClientType::Public,
+        "none",
+    );
+    repo.create_client(&client).await.unwrap();
+    let user = refresh_test_user("pkce-spend-user");
+    repo.create_user(&user).await.unwrap();
+    let code = "pkce-spend-code";
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let auth_code = AuthorizationCode {
+        code_hash: util::sha256_base64url(code),
+        client_id: client.client_id.clone(),
+        user_id: user.id.clone(),
+        realm_id: "test".to_string(),
+        redirect_uri: "https://app.example.com/callback".to_string(),
+        state: None,
+        nonce: None,
+        auth_time: None,
+        acr: None,
+        amr: Vec::new(),
+        code_challenge: Some(util::sha256_base64url(verifier)),
+        code_challenge_method: Some("S256".to_string()),
+        scopes: vec!["openid".to_string()],
+        resource: Vec::new(),
+        authorization_details: None,
+        expires_at: now + 3600,
+        used: false,
+        created_at: now,
+        session_id: None,
+    };
+    repo.create_authorization_code(&auth_code).await.unwrap();
+
+    let request = TokenRequest {
+        grant_type: "authorization_code".to_string(),
+        code: Some(code.to_string()),
+        redirect_uri: Some("https://app.example.com/callback".to_string()),
+        code_verifier: Some("A".repeat(43)),
+        ..Default::default()
+    };
+    let result = authorization_code_grant(&state, &request, &client, None).await;
+    assert!(
+        matches!(&result, Err(QidError::Unauthorized { message }) if message == "invalid code_verifier"),
+        "wrong verifier must be refused: {result:?}"
+    );
+    let stored = repo
+        .get_authorization_code(&auth_code.code_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.used, "a failed guess must spend the code");
+    let replay = authorization_code_grant(
+        &state,
+        &TokenRequest {
+            code_verifier: Some(verifier.to_string()),
+            ..request
+        },
+        &client,
+        None,
+    )
+    .await;
+    assert!(
+        matches!(&replay, Err(QidError::Unauthorized { message }) if message == "invalid code"),
+        "spent code must not accept a later correct verifier: {replay:?}"
+    );
+}

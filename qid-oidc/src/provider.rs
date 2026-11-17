@@ -12,6 +12,7 @@ use qid_core::{
     error::{QidError, QidResult},
     jwt::{Audience, JwtClaims},
     models::{AuthorizationCode, Client},
+    pkce::valid_code_challenge,
     plan::RuntimeRealm,
     state::SharedState,
     tenant::RealmId,
@@ -1148,6 +1149,13 @@ fn validate_authorize_request<R: Repository>(
     let realm = state
         .realm(&client.realm_id)
         .ok_or_else(|| not_found(format!("realm {}", client.realm_id)))?;
+    if let (Some(challenge), Some("S256")) = (
+        req.code_challenge.as_deref(),
+        req.code_challenge_method.as_deref(),
+    ) && !valid_code_challenge(Some("S256"), challenge)
+    {
+        return Err(bad_request("invalid S256 PKCE challenge"));
+    }
     if realm.pkce_required
         && (req.code_challenge.as_deref().unwrap_or("").is_empty()
             || req.code_challenge_method.as_deref() != Some("S256"))

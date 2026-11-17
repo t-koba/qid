@@ -29,6 +29,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tower::ServiceExt;
 
+const PKCE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
 static SCHEMA_TEMPLATE: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
 
 struct TestDirectory(PathBuf);
@@ -887,7 +889,7 @@ async fn oidc_disabled_hides_openid_metadata_and_rejects_oidc_handlers() {
             "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256",
             state.paths.authorize,
             urlencoding::encode("https://app.example.com/callback"),
-            util::sha256_base64url("verifier")
+            util::sha256_base64url(PKCE_VERIFIER)
         ))
         .body(Body::empty())
         .unwrap();
@@ -935,7 +937,7 @@ async fn oidc_authorization_code_disabled_hides_authorize_metadata_and_rejects_a
             "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256",
             state.paths.authorize,
             urlencoding::encode("https://app.example.com/callback"),
-            util::sha256_base64url("verifier")
+            util::sha256_base64url(PKCE_VERIFIER)
         ))
         .body(Body::empty())
         .unwrap();
@@ -953,7 +955,7 @@ async fn authorize_get_uses_browser_session_cookie_to_issue_code() {
             "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid%20profile&state=session-state&nonce=session-nonce&code_challenge={}&code_challenge_method=S256",
             state.paths.authorize,
             urlencoding::encode("https://app.example.com/callback"),
-            util::sha256_base64url("verifier")
+            util::sha256_base64url(PKCE_VERIFIER)
         ),
         Some("__Host-qid=sid-authorize"),
     )
@@ -1120,7 +1122,7 @@ async fn authorize_get_prompt_login_ignores_browser_session_cookie() {
             "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=prompt-state&prompt=login&code_challenge={}&code_challenge_method=S256",
             state.paths.authorize,
             urlencoding::encode("https://app.example.com/callback"),
-            util::sha256_base64url("verifier")
+            util::sha256_base64url(PKCE_VERIFIER)
         ),
         Some("__Host-qid=sid-prompt-login"),
     )
@@ -1787,7 +1789,7 @@ async fn authorize_consumes_par_request_uri_once_after_successful_login() {
             "redirect_uri": "https://app.example.com/callback",
             "scope": "openid profile",
             "state": "state-from-par",
-            "code_challenge": util::sha256_base64url("verifier"),
+            "code_challenge": util::sha256_base64url(PKCE_VERIFIER),
             "code_challenge_method": "S256",
             "authorization_details": [
                 {
@@ -1829,7 +1831,8 @@ async fn authorize_consumes_par_request_uri_once_after_successful_login() {
     assert!(location.contains("state=state-from-par"));
     let code = extract_query_param(&location, "code").expect("redirect should include code");
 
-    let token_json = redeem_code(app.clone(), state.paths.token.clone(), &code, "verifier").await;
+    let token_json =
+        redeem_code(app.clone(), state.paths.token.clone(), &code, PKCE_VERIFIER).await;
     let access_token = token_json["access_token"].as_str().unwrap();
     let claims = state
         .signer
@@ -1921,7 +1924,7 @@ fn strict_authorize_query(state: &Arc<SharedState<SqlRepository>>) -> String {
         "{}?client_id=strict-client&response_type=code&redirect_uri={}&scope=openid&state=s&nonce=n&code_challenge={}&code_challenge_method=S256",
         state.paths.authorize,
         urlencoding::encode("https://strict.example.com/callback"),
-        util::sha256_base64url("verifier"),
+        util::sha256_base64url(PKCE_VERIFIER),
     )
 }
 
@@ -1964,7 +1967,7 @@ async fn a_pushed_authorization_request_satisfies_the_realm_requirement() {
                 "redirect_uri": "https://strict.example.com/callback",
                 "scope": "openid",
                 "state": "state-strict",
-                "code_challenge": util::sha256_base64url("verifier"),
+                "code_challenge": util::sha256_base64url(PKCE_VERIFIER),
                 "code_challenge_method": "S256"
             }),
             expires_at: util::now_seconds() + 60,
@@ -2087,7 +2090,7 @@ async fn authorize_rejects_invalid_authorization_details_from_par() {
             "redirect_uri": "https://app.example.com/callback",
             "scope": "openid profile",
             "state": "state-invalid-rar",
-            "code_challenge": util::sha256_base64url("verifier"),
+            "code_challenge": util::sha256_base64url(PKCE_VERIFIER),
             "code_challenge_method": "S256",
             "authorization_details": [
                 {
@@ -2134,7 +2137,7 @@ async fn authorize_accepts_signed_request_object() {
     extra.insert("state".to_string(), serde_json::json!("state-from-jar"));
     extra.insert(
         "code_challenge".to_string(),
-        serde_json::json!(util::sha256_base64url("jar-verifier")),
+        serde_json::json!(util::sha256_base64url(PKCE_VERIFIER)),
     );
     extra.insert(
         "code_challenge_method".to_string(),
@@ -2177,7 +2180,7 @@ async fn authorize_accepts_signed_request_object() {
     assert!(location.contains("state=state-from-jar"));
     let code = extract_query_param(&location, "code").expect("redirect should include code");
 
-    let token_json = redeem_code(app, state.paths.token.clone(), &code, "jar-verifier").await;
+    let token_json = redeem_code(app, state.paths.token.clone(), &code, PKCE_VERIFIER).await;
     let access_token = token_json["access_token"].as_str().unwrap();
     let claims = state
         .signer
@@ -2209,7 +2212,7 @@ async fn authorize_can_return_signed_jarm_response() {
     extra.insert("response_mode".to_string(), serde_json::json!("jwt"));
     extra.insert(
         "code_challenge".to_string(),
-        serde_json::json!(util::sha256_base64url("jarm-verifier")),
+        serde_json::json!(util::sha256_base64url(PKCE_VERIFIER)),
     );
     extra.insert(
         "code_challenge_method".to_string(),
@@ -2242,7 +2245,7 @@ async fn authorize_can_return_signed_jarm_response() {
     let code = response_claims.extra["code"].as_str().unwrap();
     assert!(code.starts_with("ac_"));
 
-    redeem_code(app, state.paths.token.clone(), code, "jarm-verifier").await;
+    redeem_code(app, state.paths.token.clone(), code, PKCE_VERIFIER).await;
 }
 
 #[tokio::test]
@@ -2703,7 +2706,7 @@ fn authorize_query(state: &Arc<SharedState<SqlRepository>>, extra: impl Into<Str
         "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=s&nonce=n&code_challenge={}&code_challenge_method=S256{}",
         state.paths.authorize,
         urlencoding::encode("https://app.example.com/callback"),
-        util::sha256_base64url("verifier"),
+        util::sha256_base64url(PKCE_VERIFIER),
         extra.into(),
     )
 }
@@ -3036,7 +3039,7 @@ async fn authorize_par_preserves_assurance_requirements() {
             "client_id": "par-client",
             "response_type": "code",
             "redirect_uri": "https://app.example.com/callback",
-            "code_challenge": util::sha256_base64url("verifier"),
+            "code_challenge": util::sha256_base64url(PKCE_VERIFIER),
             "code_challenge_method": "S256",
         });
         params[extra.0] = extra.1;
@@ -3082,7 +3085,7 @@ async fn authorize_signed_request_preserves_essential_acr() {
         ),
         (
             "code_challenge",
-            serde_json::json!(util::sha256_base64url("verifier")),
+            serde_json::json!(util::sha256_base64url(PKCE_VERIFIER)),
         ),
         ("code_challenge_method", serde_json::json!("S256")),
         (
@@ -3166,7 +3169,7 @@ async fn authorize_refuses_a_client_of_a_realm_the_deployment_does_not_configure
                 "{}?client_id=hidden-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256{prompt}",
                 state.paths.authorize,
                 urlencoding::encode("https://app.example.com/callback"),
-                util::sha256_base64url("verifier")
+                util::sha256_base64url(PKCE_VERIFIER)
             ),
             None,
         )
@@ -3237,7 +3240,7 @@ async fn authorize_refuses_a_client_id_that_names_two_configured_realms() {
             "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&code_challenge={}&code_challenge_method=S256",
             state.paths.authorize,
             urlencoding::encode("https://app.example.com/callback"),
-            util::sha256_base64url("verifier")
+            util::sha256_base64url(PKCE_VERIFIER)
         ),
         None,
     )
@@ -3309,7 +3312,7 @@ fn named_authorize_query(
         state.paths.authorize,
         client_id,
         urlencoding::encode(callback),
-        util::sha256_base64url("verifier"),
+        util::sha256_base64url(PKCE_VERIFIER),
     )
 }
 
@@ -3359,7 +3362,7 @@ async fn a_pushed_request_satisfies_the_per_client_par_flag() {
                 "redirect_uri": "https://flagged.example.com/callback",
                 "scope": "openid",
                 "state": "state-flagged",
-                "code_challenge": util::sha256_base64url("verifier"),
+                "code_challenge": util::sha256_base64url(PKCE_VERIFIER),
                 "code_challenge_method": "S256"
             }),
             expires_at: util::now_seconds() + 60,

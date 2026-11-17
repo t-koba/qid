@@ -486,19 +486,39 @@ pub async fn revoke_workload_certificate<R: Repository>(
         Ok(certificates) => certificates,
         Err(e) => return qid_http::error_response(e),
     };
-    if !caller_certificates.iter().any(|certificate| {
+    let Some(certificate) = caller_certificates.iter().find(|certificate| {
         certificate.id == certificate_id && certificate.spiffe_id == caller.spiffe_id
-    }) {
+    }) else {
         return qid_http::error_response(qid_core::error::QidError::Unauthorized {
             message: "caller workload cannot revoke a certificate for another workload".to_string(),
         });
-    }
-    match state
+    };
+    if let Err(err) = state
         .repo
-        .revoke_workload_certificate(&RealmId(realm), &certificate_id, req.revoked_at)
+        .revoke_workload_certificate(&RealmId(realm.clone()), &certificate_id, req.revoked_at)
         .await
     {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => qid_http::error_response(e),
+        return qid_http::error_response(err);
     }
+    let event = qid_core::models::AuditEvent {
+        id: format!("audit_{}", ulid::Ulid::new()),
+        realm_id: Some(realm),
+        actor: caller.id,
+        action: "workload_certificate.revoke".into(),
+        target_type: "workload_certificate".into(),
+        target_id: certificate_id,
+        reason: "Authenticated workload certificate revocation".into(),
+        metadata_json: serde_json::json!({
+            "spiffe_id": certificate.spiffe_id,
+            "public_key_sha256": certificate.public_key_sha256,
+            "x5t_s256": certificate.x5t_s256,
+        }),
+        created_at: qid_core::util::now_seconds(),
+        previous_hash: None,
+        event_hash: None,
+    };
+    if let Err(err) = state.repo.append_audit_event(&event).await {
+        return qid_http::error_response(err);
+    }
+    StatusCode::NO_CONTENT.into_response()
 }

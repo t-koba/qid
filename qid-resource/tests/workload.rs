@@ -659,6 +659,14 @@ async fn workload_certificate_access_does_not_follow_reused_record_id() {
         .await
         .unwrap();
     assert_eq!(retained, vec![certificate]);
+    assert!(
+        state
+            .repo
+            .list_audit_events(None, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -967,30 +975,113 @@ async fn csr_issuance_uses_only_authenticated_identity_and_policy() {
             .contains("CERTIFICATE REQUEST")
     );
 
-    // Repeated revocation retains the existing timestamp-update semantics.
+    state
+        .repo
+        .create_workload_identity(&WorkloadIdentity {
+            id: "workload-other".into(),
+            realm_id: "test".into(),
+            spiffe_id: "spiffe://prod.example/ns/default/sa/other".into(),
+            trust_domain: "prod.example".into(),
+            description: None,
+            authorities_json: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    let mut other_claims = state
+        .signer
+        .decode_with_aud(token.trim_start_matches("Bearer "), "qid-workload-api")
+        .unwrap()
+        .claims;
+    other_claims.sub = Some("spiffe://prod.example/ns/default/sa/other".into());
+    let other_token = format!("Bearer {}", state.signer.sign(&other_claims).unwrap());
+    for (realm, caller_token) in [("test", &other_token), ("second", &token)] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                &format!("/api/v1/{realm}/workload-certificates/{}/revoke", cert.id),
+                serde_json::json!({"revoked_at": cert.issued_at}).to_string(),
+                caller_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let events = state.repo.list_audit_events(None, 10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, event.id);
+        assert_eq!(
+            state
+                .repo
+                .list_workload_certificates(&"test".into(), Some("workload-api"))
+                .await
+                .unwrap(),
+            vec![cert.clone()]
+        );
+    }
+
+    // Each successful request is audited, including repeated timestamp updates.
     let now = qid_core::util::now_seconds();
-    let response = app
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            &format!("/api/v1/test/workload-certificates/{}/revoke", cert.id),
-            serde_json::json!({"revoked_at": now}).to_string(),
-            &token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    let response = app
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            &format!("/api/v1/test/workload-certificates/{}/revoke", cert.id),
-            serde_json::json!({"revoked_at": now + 1}).to_string(),
-            &token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let mut previous_hash = event.event_hash.clone();
+    for (index, revoked_at) in [now, now + 1].into_iter().enumerate() {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                &format!("/api/v1/test/workload-certificates/{}/revoke", cert.id),
+                serde_json::json!({"revoked_at": revoked_at}).to_string(),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let events = state.repo.list_audit_events(None, 10).await.unwrap();
+        assert_eq!(events.len(), index + 2);
+        let event = events
+            .iter()
+            .find(|event| event.previous_hash == previous_hash)
+            .unwrap();
+        assert_eq!(event.action, "workload_certificate.revoke");
+        assert_eq!(event.actor, "workload-api");
+        assert_eq!(event.realm_id.as_deref(), Some("test"));
+        assert_eq!(event.target_id, cert.id);
+        assert_eq!(event.target_type, "workload_certificate");
+        assert_eq!(
+            event.reason,
+            "Authenticated workload certificate revocation"
+        );
+        assert_eq!(
+            event.metadata_json,
+            serde_json::json!({
+                "spiffe_id": cert.spiffe_id,
+                "public_key_sha256": cert.public_key_sha256,
+                "x5t_s256": cert.x5t_s256,
+            })
+        );
+        assert!((now..=qid_core::util::now_seconds()).contains(&event.created_at));
+        assert!(event.event_hash.is_some());
+        previous_hash = event.event_hash.clone();
+        let serialized = serde_json::to_string(event).unwrap();
+        for secret in [
+            "-----BEGIN",
+            "private_key",
+            "csr_pem",
+            "certificate_pem",
+            "test-secret-for-tests",
+            token.as_str(),
+            pem.as_str(),
+            cert.certificate_pem.as_str(),
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+    }
+    assert!(
+        state
+            .repo
+            .verify_audit_chain(Some(&"test".into()))
+            .await
+            .unwrap()
+            .valid
+    );
     let mut revoked = state
         .repo
         .list_workload_certificates(&"test".into(), Some("workload-api"))

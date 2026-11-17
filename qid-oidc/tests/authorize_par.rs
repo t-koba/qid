@@ -3422,6 +3422,52 @@ async fn the_realm_wide_par_requirement_still_binds_unmarked_clients() {
     );
 }
 
+#[tokio::test]
+async fn authorize_rejects_malformed_s256_challenge_before_code_issue() {
+    let (app, state) = setup().await;
+    let response = get_uri(
+        app,
+        format!(
+            "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&code_challenge=short&code_challenge_method=S256",
+            state.paths.authorize,
+            urlencoding::encode("https://app.example.com/callback")
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn par_rejects_malformed_s256_challenge_before_code_issue() {
+    let (app, state) = setup().await;
+    let request_uri = "urn:ietf:params:oauth:request_uri:bad-pkce-challenge";
+    store_par_request(
+        &state,
+        request_uri,
+        serde_json::json!({
+            "client_id": "par-client",
+            "response_type": "code",
+            "redirect_uri": "https://app.example.com/callback",
+            "scope": "openid",
+            "code_challenge": "short",
+            "code_challenge_method": "S256",
+        }),
+    )
+    .await;
+    let response = get_uri(
+        app,
+        format!(
+            "{}?request_uri={}",
+            state.paths.authorize,
+            urlencoding::encode(request_uri)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 #[path = "authorize_par/push.rs"]
 mod push;
 

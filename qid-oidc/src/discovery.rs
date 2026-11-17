@@ -1179,7 +1179,7 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
     resp
 }
 
-fn escape_html_attr(value: &str) -> String {
+pub(crate) fn escape_html_attr(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")

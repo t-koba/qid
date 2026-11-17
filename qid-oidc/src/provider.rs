@@ -31,7 +31,7 @@ pub(crate) mod push;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::{bad_request, not_found, unauthorized};
+use crate::{bad_request, discovery::escape_html_attr, not_found, unauthorized};
 
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeRequest {
@@ -1266,10 +1266,17 @@ async fn issue_authorization_code<R: Repository>(
 fn form_post_response(redirect_uri: &str, params: &[(&str, &str)]) -> Response {
     let fields: String = params
         .iter()
-        .map(|(k, v)| format!(r#"<input type="hidden" name="{k}" value="{v}" />"#))
+        .map(|(k, v)| {
+            format!(
+                r#"<input type="hidden" name="{}" value="{}" />"#,
+                escape_html_attr(k),
+                escape_html_attr(v)
+            )
+        })
         .collect();
     let html = format!(
-        r#"<!doctype html><html><body><form method="POST" action="{redirect_uri}">{fields}</form><script>document.forms[0].submit();</script></body></html>"#
+        r#"<!doctype html><html><body><form method="POST" action="{}">{fields}</form><script>document.forms[0].submit();</script></body></html>"#,
+        escape_html_attr(redirect_uri)
     );
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }

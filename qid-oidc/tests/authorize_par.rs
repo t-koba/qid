@@ -2909,6 +2909,29 @@ async fn authorize_non_jarm_errors_include_discovery_issuer() {
 }
 
 #[tokio::test]
+async fn authorize_form_post_error_escapes_caller_state() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.passkeys.enabled = true;
+    config.realms[0].authentication.passwordless_only = true;
+    let (app, state) = setup_with_config(config).await;
+
+    let hostile = "\"><img src=x onerror=alert(1)>";
+    let query = authorize_query(&state, "&response_mode=form_post").replace(
+        "&state=s",
+        &format!("&state={}", urlencoding::encode(hostile)),
+    );
+    let response = post_form(app, query, LOGIN_FORM).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        html.contains("&quot;&gt;&lt;img src=x onerror=alert(1)&gt;"),
+        "{html}"
+    );
+    assert!(!html.contains("<img"), "{html}");
+}
+
+#[tokio::test]
 async fn authorize_post_refuses_password_login_for_passwordless_realm() {
     let mut config = test_helpers::test_config();
     // A passwordless realm must have passkeys enabled.

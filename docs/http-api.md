@@ -557,7 +557,7 @@ records with only the former `csr_sha256` key remain readable as public-key
 digests, while new records distinguish both fields. SQL migration adds a separate
 nullable CSR digest. A successful store is followed by an audit event attributed
 to the authenticated workload, containing the certificate ID and identity/digests,
-not CSR content. Listing and revocation use the existing authenticated lifecycle.
+not CSR content. Listing and revocation use the existing authenticated lifecycle. Revocation is terminal per certificate ID: storing the same ID with `revoked_at` cleared is refused, and reissue uses a fresh ID so revoked certificate history is preserved.
 This JSON endpoint remains separate from the opt-in EST resources below; it does
 not accept CMS, CRMF, PKCS#12 or delegated credentials.
 

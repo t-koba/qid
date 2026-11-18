@@ -1,4 +1,4 @@
-//! Strict TLS 1.3 ClientHello construction for certificate plus external PSK.
+//! Strict TLS 1.3 ClientHello construction for TLS-POK (RFC 9966).
 //!
 //! This is offline byte assembly: the caller supplies randomness, a key share,
 //! and an imported external PSK. No RNG, transport, or handshake state lives
@@ -10,6 +10,7 @@ use super::psk_extension::{
     CERT_WITH_EXTERN_PSK_TYPE, KEY_SHARE_TYPE, OfferedPsks, PRE_SHARED_KEY_TYPE,
     PSK_KEY_EXCHANGE_MODES_TYPE, PskIdentity, SUPPORTED_GROUPS_TYPE, encode_body,
 };
+use super::tls_pok::{CLIENT_CERTIFICATE_TYPE_TYPE, CONTEXT, RAW_PUBLIC_KEY};
 use super::transcript::encode_message;
 use std::fmt;
 
@@ -34,6 +35,7 @@ pub enum Error {
     InvalidKeyShare,
     InvalidImportedIdentity,
     InvalidImportedPsk,
+    InvalidTlsPokIdentity,
     VectorTooLong,
     BinderDerivation,
 }
@@ -46,6 +48,7 @@ impl fmt::Display for Error {
             Self::InvalidKeyShare => "key_exchange entry is empty or oversized",
             Self::InvalidImportedIdentity => "imported PSK identity is invalid",
             Self::InvalidImportedPsk => "imported PSK must be 32 bytes",
+            Self::InvalidTlsPokIdentity => "ImportedIdentity context must be tls13-bsk",
             Self::VectorTooLong => "ClientHello vector exceeds its wire limit",
             Self::BinderDerivation => "PSK binder derivation failed",
         })
@@ -129,6 +132,12 @@ fn extensions(params: &ClientHelloParams<'_>) -> Result<Vec<u8>, Error> {
         &key_share_body(params.key_share_group, params.key_exchange)?,
     )?;
     push_extension(&mut out, CERT_WITH_EXTERN_PSK_TYPE, &[])?;
+    // RFC 9966 §3.2: TLS-POK clients request RawPublicKey client certificates.
+    push_extension(
+        &mut out,
+        CLIENT_CERTIFICATE_TYPE_TYPE,
+        &[0x01, RAW_PUBLIC_KEY],
+    )?;
     // RFC 8446 §4.2.11 and RFC 9973 §4: pre_shared_key is always last.
     push_extension(
         &mut out,
@@ -145,6 +154,9 @@ fn extensions(params: &ClientHelloParams<'_>) -> Result<Vec<u8>, Error> {
 pub fn build_cert_with_extern_psk(params: &ClientHelloParams<'_>) -> Result<Vec<u8>, Error> {
     if params.legacy_session_id.len() > 32 {
         return Err(Error::InvalidSessionId);
+    }
+    if params.imported_identity.context != CONTEXT {
+        return Err(Error::InvalidTlsPokIdentity);
     }
     if params.imported_psk.len() != BINDER_LEN {
         return Err(Error::InvalidImportedPsk);
@@ -184,18 +196,17 @@ mod tests {
     use super::*;
     use crate::tls13::external_psk::{import_external_psk, parse_empty_extension};
     use crate::tls13::psk_extension::parse_extension;
+    use crate::tls13::tls_pok;
     use crate::tls13::transcript::split_message;
 
-    const EPSK: [u8; 32] = [
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
-        0x1e, 0x1f,
-    ];
-    const ENCODED_IDENTITY: &str =
-        "00107169642d696d706f727465642d70736b000c746573742d636f6e7465787403040001";
+    // RFC 9966 Appendix A, prime256v1 BSK SubjectPublicKeyInfo.
+    const BSK_SPKI: &str = "3039301306072a8648ce3d020106082a8648ce3d0301070322000232f2f2a0eca48fcb052714a865fcda7ee544bccfa43580b1a440ba2884cb6fd8";
+    const ENCODED_IDENTITY: &str = "002005dfa52e583f11176d61a71fcc37e1d4b8dd2f4f905894077585e84bb2434a400009746c7331332d62736b03040001";
 
-    fn fixture() -> ImportedIdentity {
-        ImportedIdentity::new(b"qid-imported-psk".to_vec(), b"test-context".to_vec()).unwrap()
+    fn fixture() -> (Vec<u8>, ImportedIdentity) {
+        let spki = hex::decode(BSK_SPKI).unwrap();
+        let identity = tls_pok::imported_identity(&spki).unwrap();
+        (spki, identity)
     }
 
     fn params<'a>(identity: &'a ImportedIdentity, psk: &'a [u8]) -> ClientHelloParams<'a> {
@@ -234,8 +245,8 @@ mod tests {
 
     #[test]
     fn builds_certificate_external_psk_client_hello() {
-        let identity = fixture();
-        let psk = import_external_psk(&EPSK, &identity).unwrap();
+        let (spki, identity) = fixture();
+        let psk = import_external_psk(&spki, &identity).unwrap();
         let message = build_cert_with_extern_psk(&params(&identity, &psk)).unwrap();
         let body = body(&message);
 
@@ -253,6 +264,7 @@ mod tests {
                 PSK_KEY_EXCHANGE_MODES_TYPE,
                 KEY_SHARE_TYPE,
                 CERT_WITH_EXTERN_PSK_TYPE,
+                CLIENT_CERTIFICATE_TYPE_TYPE,
                 PRE_SHARED_KEY_TYPE,
             ]
         );
@@ -308,16 +320,15 @@ mod tests {
 
     #[test]
     fn binder_depends_on_identity_and_transcript() {
-        let identity = fixture();
-        let psk = import_external_psk(&EPSK, &identity).unwrap();
+        let (spki, identity) = fixture();
+        let psk = import_external_psk(&spki, &identity).unwrap();
         let base = build_cert_with_extern_psk(&params(&identity, &psk)).unwrap();
         let mut other = params(&identity, &psk);
         other.random[0] ^= 1;
         assert_ne!(base, build_cert_with_extern_psk(&other).unwrap());
 
-        let other_identity =
-            ImportedIdentity::new(identity.external_identity.clone(), b"other".to_vec()).unwrap();
-        let other_psk = import_external_psk(&EPSK, &other_identity).unwrap();
+        let other_identity = ImportedIdentity::new(vec![0x33; 32], CONTEXT.to_vec()).unwrap();
+        let other_psk = import_external_psk(&spki, &other_identity).unwrap();
         assert_ne!(
             base,
             build_cert_with_extern_psk(&params(&other_identity, &other_psk)).unwrap()
@@ -326,8 +337,18 @@ mod tests {
 
     #[test]
     fn rejects_invalid_inputs() {
-        let identity = fixture();
-        let psk = import_external_psk(&EPSK, &identity).unwrap();
+        let (spki, identity) = fixture();
+        let psk = import_external_psk(&spki, &identity).unwrap();
+        let bad_identity = ImportedIdentity::new(
+            identity.external_identity.clone(),
+            b"wrong-context".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            build_cert_with_extern_psk(&params(&bad_identity, &psk)).unwrap_err(),
+            Error::InvalidTlsPokIdentity
+        );
+
         let mut p = params(&identity, &psk);
         p.legacy_session_id = &[0; 33];
         assert_eq!(

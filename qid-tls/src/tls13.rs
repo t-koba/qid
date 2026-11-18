@@ -6,6 +6,7 @@ pub mod external_psk;
 pub mod key_schedule;
 pub mod psk_extension;
 pub mod server_hello;
+pub mod tls_pok;
 pub mod transcript;
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};

@@ -7,6 +7,7 @@
 use super::psk_extension::{
     CERT_WITH_EXTERN_PSK_TYPE, EARLY_DATA_TYPE, PRE_SHARED_KEY_TYPE, PSK_KEY_EXCHANGE_MODES_TYPE,
 };
+use super::tls_pok::{CLIENT_CERTIFICATE_TYPE_TYPE, RAW_PUBLIC_KEY};
 use std::fmt;
 
 const KEY_SHARE_TYPE: u16 = 0x0033;
@@ -102,6 +103,10 @@ pub fn parse<'a>(body: &'a [u8], params: ParseParams<'_>) -> Result<Vec<Extensio
         if kind == EARLY_DATA_TYPE && !ext_body.is_empty() {
             return Err(Error::Malformed);
         }
+        // RFC 9966 §3.2: the TLS-POK server agrees to RawPublicKey here.
+        if kind == CLIENT_CERTIFICATE_TYPE_TYPE && ext_body != [RAW_PUBLIC_KEY] {
+            return Err(Error::Malformed);
+        }
         out.push(Extension {
             kind,
             body: ext_body,
@@ -168,6 +173,25 @@ mod tests {
                 Error::ForbiddenExtension
             );
         }
+    }
+
+    #[test]
+    fn accepts_raw_public_key_certificate_type_response() {
+        let response = extension(CLIENT_CERTIFICATE_TYPE_TYPE, &[RAW_PUBLIC_KEY]);
+        let wire = body(&[response]);
+        let parsed = parse(&wire, params(&[CLIENT_CERTIFICATE_TYPE_TYPE], true)).unwrap();
+        assert_eq!(parsed[0].kind, CLIENT_CERTIFICATE_TYPE_TYPE);
+        assert_eq!(parsed[0].body, &[RAW_PUBLIC_KEY]);
+
+        let wrong = extension(CLIENT_CERTIFICATE_TYPE_TYPE, &[0x01]);
+        assert_eq!(
+            parse(
+                &body(&[wrong]),
+                params(&[CLIENT_CERTIFICATE_TYPE_TYPE], true)
+            )
+            .unwrap_err(),
+            Error::Malformed
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ path = "src/main.rs"
 [features]
 default = ["tls-rustls"]
 tls-rustls = []
-tls-qid = []
+tls-qid = ["dep:qid-tls"]
 otel-otlp = ["qid-observability/otel-otlp"]
 quic = ["qid-network/quic"]
 
@@ -48,6 +48,7 @@ qid-saml = { workspace = true }
 qid-scim = { workspace = true }
 qid-session = { workspace = true }
 qid-storage = { workspace = true }
+qid-tls = { workspace = true, optional = true }
 qid-vc = { workspace = true }
 qid-worker = { workspace = true, features = ["smtp-transport"] }
 rcgen = { workspace = true }

@@ -3,6 +3,7 @@ members = [
     "qid-admin",
     "qid-core",
     "qid-crypto",
+    "qid-tls",
     "qid-storage",
     "qid-http",
     "qid-session",
@@ -117,6 +118,7 @@ time = "0.3"
 qid-admin = { version = "0.1.0", path = "qid-admin" }
 qid-core = { version = "0.1.0", path = "qid-core" }
 qid-crypto = { version = "0.1.0", path = "qid-crypto" }
+qid-tls = { version = "0.1.0", path = "qid-tls" }
 qid-http = { version = "0.1.0", path = "qid-http" }
 qid-observability = { version = "0.1.0", path = "qid-observability" }
 qid-mfa = { version = "0.1.0", path = "qid-mfa" }

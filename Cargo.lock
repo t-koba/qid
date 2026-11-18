@@ -4111,6 +4111,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qid-tls"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm 0.10.3",
+ "hkdf 0.12.4",
+ "sha2 0.10.9",
+ "zeroize",
+]
+
+[[package]]
 name = "qid-vc"
 version = "0.1.0"
 dependencies = [
@@ -4219,6 +4229,7 @@ dependencies = [
  "qid-scim",
  "qid-session",
  "qid-storage",
+ "qid-tls",
  "qid-vc",
  "qid-worker",
  "rcgen",

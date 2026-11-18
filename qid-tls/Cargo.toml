@@ -1,0 +1,20 @@
+[package]
+name = "qid-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "qid TLS protocol layer"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

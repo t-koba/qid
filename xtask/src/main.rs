@@ -7,8 +7,6 @@ use std::path::PathBuf;
 use std::process::Command as Shell;
 use walkdir::WalkDir;
 
-mod vendor_sync;
-
 #[derive(Parser)]
 #[command(name = "xtask")]
 #[command(about = "qid repository tasks")]
@@ -40,18 +38,6 @@ enum Command {
         #[arg(long, default_value_t = 50.0)]
         min_pct: f64,
     },
-    /// Synchronize vendor/rustls with an upstream release.
-    VendorSync {
-        /// Target upstream version (must stay on the vendored 0.x line).
-        #[arg(long)]
-        to: String,
-        /// Merge without touching the vendor tree.
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-        /// Run the vendored crate lib tests after synchronizing.
-        #[arg(long, default_value_t = false)]
-        run_vendor_tests: bool,
-    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -63,11 +49,6 @@ fn main() -> anyhow::Result<()> {
         Command::DocsRoutes => cmd_docs_routes()?,
         Command::Gate { suite, dry_run } => cmd_gate(suite, dry_run)?,
         Command::Coverage { min_pct } => cmd_coverage(min_pct)?,
-        Command::VendorSync {
-            to,
-            dry_run,
-            run_vendor_tests,
-        } => vendor_sync::cmd_vendor_sync(&to, dry_run, run_vendor_tests)?,
     }
 
     Ok(())

@@ -28,7 +28,6 @@ server:
       - "/etc/qid/tls/client-ca.crl.pem"
     ocsp_responses:
       - "/etc/qid/tls/id.example.com.ocsp.der"
-      - "/etc/qid/tls/intermediate-ca.ocsp.der"
 
 realms:
   - id: privileged

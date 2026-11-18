@@ -1124,8 +1124,8 @@ pub struct TlsConfig {
     /// PEM or DER certificate revocation lists enforced during client path validation.
     #[serde(default)]
     pub client_crls: Vec<String>,
-    /// DER-encoded OCSP responses in certificate-chain order for RFC 6961.
-    /// A null entry represents a certificate without a stored response.
+    /// DER OCSP response paths in certificate-chain order; only the leaf may have a response.
+    /// Later entries must be null.
     #[serde(default)]
     pub ocsp_responses: Vec<Option<String>>,
 }

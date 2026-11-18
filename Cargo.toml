@@ -35,7 +35,6 @@ members = [
     "xtask",
 ]
 resolver = "3"
-exclude = ["vendor/rustls"]
 
 [workspace.package]
 version = "0.1.0"
@@ -144,6 +143,3 @@ qid-storage = { version = "0.1.0", path = "qid-storage" }
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
-
-[patch.crates-io]
-rustls = { path = "vendor/rustls" }

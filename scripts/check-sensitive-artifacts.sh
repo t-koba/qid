@@ -5,32 +5,7 @@ echo "=== qid sensitive artifact check ==="
 
 fail=0
 
-is_allowed_rustls_test_ca_fixture() {
-    case "$1" in
-        ./vendor/test-ca/ecdsa-p256/* | \
-        ./vendor/test-ca/ecdsa-p384/* | \
-        ./vendor/test-ca/ecdsa-p521/* | \
-        ./vendor/test-ca/eddsa/* | \
-        ./vendor/test-ca/rsa-2048/* | \
-        ./vendor/test-ca/rsa-3072/* | \
-        ./vendor/test-ca/rsa-4096/*) ;;
-        *) return 1 ;;
-    esac
-
-    case "${1##*/}" in
-        ca.key | client.key | end.key | inter.key | \
-        client.expired.crl.pem | client.revoked.crl.pem | client.spki.pem | \
-        end.expired.crl.pem | end.revoked.crl.pem | end.spki.pem | \
-        inter.expired.crl.pem | inter.revoked.crl.pem) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 is_allowed_fixture() {
-    if is_allowed_rustls_test_ca_fixture "$1"; then
-        return 0
-    fi
-
     case "$1" in
         ./qid-oauth/tests/data/test-sp.key | \
         ./qid-oauth/tests/data/test-untrusted-saml.key) return 0 ;;

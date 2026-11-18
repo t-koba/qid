@@ -140,29 +140,25 @@ pub fn load_rustls_config(
                 certificates.len()
             );
         }
-        let mut responses = Vec::with_capacity(config.ocsp_responses.len());
-        for path in &config.ocsp_responses {
-            let Some(path) = path else {
-                responses.push(Vec::new());
-                continue;
-            };
-            let response = std::fs::read(path)
-                .with_context(|| format!("failed to read OCSP response {path}"))?;
-            if response.is_empty() {
-                bail!("OCSP response must not be empty: {path}");
-            }
-            responses.push(response);
+        if config.ocsp_responses.iter().skip(1).any(Option::is_some) {
+            bail!(
+                "Multiple OCSP responses or a non-leaf OCSP response require RFC 6961 \
+                 multi-stapling, which is not available with upstream rustls"
+            );
         }
-        builder
-            .with_single_cert_with_ocsp_multi(certificates, private_key, responses)
-            .context(
-                "server certificate chain, private key, or RFC 6961 OCSP responses are invalid",
-            )?
+        let path = config.ocsp_responses[0]
+            .as_deref()
+            .context("OCSP response list must contain a leaf response")?;
+        let leaf_response =
+            std::fs::read(path).with_context(|| format!("failed to read OCSP response {path}"))?;
+        if leaf_response.is_empty() {
+            bail!("OCSP response must not be empty: {path}");
+        }
+        builder.with_single_cert_with_ocsp(certificates, private_key, leaf_response)
     } else {
-        builder
-            .with_single_cert(certificates, private_key)
-            .context("server certificate chain or private key is invalid")?
-    };
+        builder.with_single_cert(certificates, private_key)
+    }
+    .context("server certificate chain or private key is invalid")?;
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(axum_server::tls_rustls::RustlsConfig::from_config(
         Arc::new(server_config),
@@ -315,6 +311,35 @@ mod tests {
 
     #[test]
     fn ocsp_response_list_cannot_exceed_server_certificate_chain() {
+        let (_directory, mut config) = ocsp_config(false);
+        config.ocsp_responses.push(None);
+        let error = load_rustls_config(&config).expect_err("oversized response list must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("2 entries but certificate chain has 1 certificates")
+        );
+    }
+
+    #[test]
+    fn ocsp_stapling_rejects_multiple_or_non_leaf_responses() {
+        let (_directory, mut config) = ocsp_config(true);
+        let leaf = config.ocsp_responses[0].clone();
+        config.ocsp_responses.push(None);
+        load_rustls_config(&config).expect("leaf-only stapling with a trailing null is supported");
+
+        for responses in [vec![leaf.clone(), leaf.clone()], vec![None, leaf]] {
+            config.ocsp_responses = responses;
+            let error = load_rustls_config(&config).expect_err("non-leaf entry must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("require RFC 6961 multi-stapling")
+            );
+        }
+    }
+
+    fn ocsp_config(include_ca: bool) -> (tempfile::TempDir, TlsConfig) {
         let (ca, ca_key) = certificate_authority("OCSP test CA");
         let (server, server_key) = signed_certificate(
             "localhost",
@@ -322,34 +347,27 @@ mod tests {
             &ca,
             &ca_key,
         );
+        let mut chain = server.pem();
+        if include_ca {
+            chain.push_str(&ca.pem());
+        }
 
         let directory = tempfile::tempdir().expect("temporary directory");
         let server_cert_path = directory.path().join("server.pem");
         let server_key_path = directory.path().join("server-key.pem");
-        let first_ocsp_path = directory.path().join("leaf.ocsp.der");
-        let second_ocsp_path = directory.path().join("extra.ocsp.der");
-        std::fs::write(&server_cert_path, server.pem()).expect("write server certificate");
+        let ocsp_path = directory.path().join("leaf.ocsp.der");
+        std::fs::write(&server_cert_path, chain).expect("write server certificate chain");
         std::fs::write(&server_key_path, server_key.serialize_pem()).expect("write server key");
-        std::fs::write(&first_ocsp_path, [0x30, 0x00]).expect("write leaf OCSP response");
-        std::fs::write(&second_ocsp_path, [0x30, 0x00]).expect("write extra OCSP response");
+        std::fs::write(&ocsp_path, [0x30, 0x00]).expect("write leaf OCSP response");
 
         let config = TlsConfig {
             cert: server_cert_path.to_string_lossy().into_owned(),
             key: server_key_path.to_string_lossy().into_owned(),
             client_ca: None,
             client_crls: Vec::new(),
-            ocsp_responses: vec![
-                Some(first_ocsp_path.to_string_lossy().into_owned()),
-                Some(second_ocsp_path.to_string_lossy().into_owned()),
-            ],
+            ocsp_responses: vec![Some(ocsp_path.to_string_lossy().into_owned())],
         };
-
-        let error = load_rustls_config(&config).expect_err("oversized response list must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("2 entries but certificate chain has 1 certificates")
-        );
+        (directory, config)
     }
 
     fn certificate_authority(name: &str) -> (Certificate, KeyPair) {

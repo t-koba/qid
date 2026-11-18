@@ -356,7 +356,7 @@ Important subkeys:
 - `tls.cert` and `tls.key`: enable TLS in `qidd`.
 - `tls.client_ca`: enables optional native client certificate authentication. Every presented client certificate is path-validated to this PEM trust-anchor bundle; requests without a client certificate remain available for public endpoints.
 - `tls.client_crls`: optional PEM or DER CRLs enforced by the client certificate path verifier. CRLs require `tls.client_ca`, and unknown revocation status fails closed.
-- `tls.ocsp_responses`: optional list of DER OCSP response paths in server certificate-chain order. Use `null` for a certificate without a stored response. The list cannot be longer than the configured chain and must contain at least one non-empty response. TLS 1.2 clients that explicitly support RFC 6961 receive `ocsp_multi`; the non-empty leaf entry is also available through RFC 6066. qid never fetches or silently substitutes OCSP responses.
+- `tls.ocsp_responses`: optional list in server certificate-chain order. Put one path to a non-empty DER OCSP response for the leaf certificate in the first entry; qid staples it via RFC 6066. Later entries may only be `null`, and the list cannot exceed the chain length. Multiple responses and responses for non-leaf certificates are rejected. Omit the list or leave it empty to disable stapling. qid never fetches or substitutes OCSP responses.
 - `http_message_signatures`: enables RFC 9421-style verification around signed back-channel routes.
 - `cors.allowed_origins`: absolute HTTP(S) origins or `*`.
 - `cors.allow_credentials`: cannot be combined with wildcard origin.

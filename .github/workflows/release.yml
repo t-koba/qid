@@ -37,6 +37,8 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
         run: bash ./scripts/check-config-samples.sh
+      - name: Verify release checksum sidecars
+        run: bash ./scripts/check-release-checksums.sh
       - name: Reject generated secrets and runtime artifacts
         run: bash ./scripts/check-sensitive-artifacts.sh
       - name: Cargo deny
@@ -127,11 +129,7 @@ jobs:
 
           archive="dist/qid-${target}.tar.gz"
           tar -czf "$archive" -C dist "qid-${target}"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$archive" > "${archive}.sha256"
-          else
-            shasum -a 256 "$archive" > "${archive}.sha256"
-          fi
+          bash ./scripts/release-checksum.sh "$archive"
       - name: Upload release target artifact
         uses: actions/upload-artifact@v7
         with:

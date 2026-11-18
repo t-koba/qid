@@ -139,7 +139,7 @@ jobs:
           javac -cp "$cp" -d "$dir/classes" ci/bctls/V2Client.java
           echo "QID_BCTLS_JARS=$cp" >> "$GITHUB_ENV"
           echo "QID_BCTLS_CLASSES=$dir/classes" >> "$GITHUB_ENV"
-          cargo test -p qid-tls --test bctls_v2_interop -- --ignored --exact --nocapture
+          cargo test -p qid-tls --locked --test bctls_v2_interop -- --ignored --exact --nocapture
       - name: Test the qid TLS backend skeleton
         env:
           RUSTFLAGS: "-D warnings"

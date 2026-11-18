@@ -295,8 +295,10 @@ listener is involved. The Java client uses Bouncy Castle's low-level TLS API
 (`bctls`, `bcprov`, `bcutil`) under its permissive Bouncy Castle licence.
 The `all-features` CI job pins jar version 1.84, compiles the client, and runs
 the ignored test with `QID_BCTLS_JARS` and `QID_BCTLS_CLASSES`; `JAVA` may
-override the runtime command. This is the independent-client evidence for
-RFC 6961 multi-response stapling; local `cargo test` only compiles it.
+override the runtime command. The ignored test fails rather than skips when
+those variables are absent, so a green CI run is real evidence. This is the
+independent-client evidence for RFC 6961 multi-response stapling; local
+`cargo test` only compiles it.
 
 ## Generated Artifacts
 

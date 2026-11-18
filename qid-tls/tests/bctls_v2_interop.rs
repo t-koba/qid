@@ -51,10 +51,8 @@ fn certificates() -> (rcgen::Certificate, rcgen::Certificate, rcgen::KeyPair) {
 #[test]
 #[ignore = "requires the pinned Bouncy Castle jars and Java in CI"]
 fn bouncy_castle_v2_client_receives_two_distinct_staples() {
-    let Some(jars) = std::env::var_os("QID_BCTLS_JARS") else {
-        eprintln!("QID_BCTLS_JARS is not set; skipping the Bouncy Castle interop test");
-        return;
-    };
+    let jars = std::env::var_os("QID_BCTLS_JARS")
+        .expect("QID_BCTLS_JARS must be set when running the ignored Bouncy Castle interop test");
     let classes = std::env::var_os("QID_BCTLS_CLASSES")
         .expect("QID_BCTLS_CLASSES must point at compiled V2Client classes");
     let java = std::env::var_os("JAVA").unwrap_or_else(|| "java".into());

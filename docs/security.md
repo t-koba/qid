@@ -405,7 +405,7 @@ Audit export and verification endpoints are admin surfaces. Treat audit archives
 
 qid follows the same primary backend policy as qpx: rustls is the default and security-critical TLS behavior remains in Rust. qid does not dynamically link OpenSSL and does not depend on wolfSSL or GnuTLS. NoxTLS is also excluded because its available licensing is GPL or commercial rather than the workspace's permissive dependency policy.
 
-qid uses unmodified upstream rustls from crates.io and maintains no in-repo TLS fork. TLS stapling is limited to an explicitly configured leaf OCSP response.
+qid uses unmodified upstream rustls from crates.io and maintains no in-repo TLS fork. TLS stapling is limited to an explicitly configured leaf OCSP response. RFC 6961 multi-stapling and RFC 9966 TLS-POK are unavailable in unmodified upstream rustls and remain unsupported under qid's no-GPL, no-paid, and no-native-fallback policy. qid is not reintroducing a TLS fork or adding a second production TLS stack; both capabilities are due for review on 2026-12-18.
 
 qidd's own listeners use the aws-lc-rs provider's default key-exchange group list, which prefers the hybrid `X25519MLKEM768` group. This protects TLS key exchange against a future quantum adversary that records traffic today, but it is a pre-standardization group and does not make the connection post-quantum secure: token and assertion signatures remain ES256/EdDSA, and qid publishes no post-quantum signing key or algorithm. The statement covers qidd's own listeners; other rustls users must be checked separately before extending it. Any provider switch or explicit `kx_groups` list must state whether it preserves this preference.
 

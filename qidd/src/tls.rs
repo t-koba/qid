@@ -210,8 +210,18 @@ mod tests {
         BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
         ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
     };
-    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
-    use std::io::Cursor;
+    use rustls::{
+        DigitallySignedStruct, Error, SignatureScheme,
+        client::{
+            WebPkiServerVerifier,
+            danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        },
+        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime},
+    };
+    use std::{io::Cursor, sync::Mutex};
+
+    // Wire round-trip stand-in, not a decoded or signed OCSP response: rustls staples opaque bytes.
+    const LEAF_OCSP_RESPONSE: &[u8] = b"qid-test: leaf OCSP staple\x00\xff";
 
     #[test]
     fn configured_client_ca_accepts_trusted_and_rejects_untrusted_client() {
@@ -311,7 +321,7 @@ mod tests {
 
     #[test]
     fn ocsp_response_list_cannot_exceed_server_certificate_chain() {
-        let (_directory, mut config) = ocsp_config(false);
+        let (_directory, mut config, _) = ocsp_config(false);
         config.ocsp_responses.push(None);
         let error = load_rustls_config(&config).expect_err("oversized response list must fail");
         assert!(
@@ -323,7 +333,7 @@ mod tests {
 
     #[test]
     fn ocsp_stapling_rejects_multiple_or_non_leaf_responses() {
-        let (_directory, mut config) = ocsp_config(true);
+        let (_directory, mut config, _) = ocsp_config(true);
         let leaf = config.ocsp_responses[0].clone();
         config.ocsp_responses.push(None);
         load_rustls_config(&config).expect("leaf-only stapling with a trailing null is supported");
@@ -339,7 +349,89 @@ mod tests {
         }
     }
 
-    fn ocsp_config(include_ca: bool) -> (tempfile::TempDir, TlsConfig) {
+    #[test]
+    fn configured_leaf_ocsp_response_is_stapled_byte_for_byte() {
+        let (_directory, config, ca) = ocsp_config(false);
+        let server_config = load_rustls_config(&config)
+            .expect("load TLS configuration with leaf staple")
+            .get_inner();
+
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(ca.der().clone())
+            .expect("add server CA trust anchor");
+        let webpki = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+            .build()
+            .expect("build WebPKI verifier");
+        let response = Arc::new(Mutex::new(Vec::new()));
+        let client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("select safe TLS protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(RecordingServerVerifier {
+                webpki,
+                response: response.clone(),
+            }))
+            .with_no_client_auth();
+
+        drive_handshake(server_config, Arc::new(client_config)).expect("complete TLS handshake");
+        assert_eq!(
+            response.lock().expect("read recorded staple").as_slice(),
+            LEAF_OCSP_RESPONSE
+        );
+    }
+
+    #[derive(Debug)]
+    struct RecordingServerVerifier {
+        webpki: Arc<WebPkiServerVerifier>,
+        response: Arc<Mutex<Vec<u8>>>,
+    }
+
+    // Upstream rustls 0.23 always sends status_request; there is no verifier hook to opt in.
+    impl ServerCertVerifier for RecordingServerVerifier {
+        fn verify_server_cert(
+            &self,
+            end_entity: &CertificateDer<'_>,
+            intermediates: &[CertificateDer<'_>],
+            server_name: &ServerName<'_>,
+            ocsp_response: &[u8],
+            now: UnixTime,
+        ) -> Result<ServerCertVerified, Error> {
+            *self.response.lock().expect("record received staple") = ocsp_response.to_vec();
+            self.webpki.verify_server_cert(
+                end_entity,
+                intermediates,
+                server_name,
+                ocsp_response,
+                now,
+            )
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
+            self.webpki.verify_tls12_signature(message, cert, dss)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
+            self.webpki.verify_tls13_signature(message, cert, dss)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            self.webpki.supported_verify_schemes()
+        }
+    }
+
+    fn ocsp_config(include_ca: bool) -> (tempfile::TempDir, TlsConfig, Certificate) {
         let (ca, ca_key) = certificate_authority("OCSP test CA");
         let (server, server_key) = signed_certificate(
             "localhost",
@@ -358,7 +450,7 @@ mod tests {
         let ocsp_path = directory.path().join("leaf.ocsp.der");
         std::fs::write(&server_cert_path, chain).expect("write server certificate chain");
         std::fs::write(&server_key_path, server_key.serialize_pem()).expect("write server key");
-        std::fs::write(&ocsp_path, [0x30, 0x00]).expect("write leaf OCSP response");
+        std::fs::write(&ocsp_path, LEAF_OCSP_RESPONSE).expect("write leaf OCSP response");
 
         let config = TlsConfig {
             cert: server_cert_path.to_string_lossy().into_owned(),
@@ -367,7 +459,7 @@ mod tests {
             client_crls: Vec::new(),
             ocsp_responses: vec![Some(ocsp_path.to_string_lossy().into_owned())],
         };
-        (directory, config)
+        (directory, config, ca)
     }
 
     fn certificate_authority(name: &str) -> (Certificate, KeyPair) {

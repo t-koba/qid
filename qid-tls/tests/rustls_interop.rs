@@ -179,7 +179,12 @@ fn opens_upstream_rustls_client_finished_record() {
     let key_log = Arc::new(RecordingKeyLog::default());
     client_config.key_log = key_log.clone();
 
-    let server_config = rustls::ServerConfig::builder()
+    let mut server_provider = rustls::crypto::aws_lc_rs::default_provider();
+    server_provider.cipher_suites =
+        vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256];
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(server_provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("configure TLS 1.3 only")
         .with_no_client_auth()
         .with_single_cert(
             vec![leaf.der().clone()],

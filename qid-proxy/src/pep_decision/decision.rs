@@ -322,6 +322,8 @@ pub fn pep_decision_cache_key(
     let identity = req.identity.as_ref();
     let material = serde_json::json!({
         "policy_revision": policy_revision,
+        "adapter_realm_id": req.adapter_realm_id,
+        "risk_score": req.risk_score,
         "proxy": {
             "proxy_name": req.proxy.proxy_name,
             "action": req.proxy.action,
@@ -339,8 +341,11 @@ pub fn pep_decision_cache_key(
             }
         },
         "identity": {
+            "present": identity.is_some(),
             "user": identity.and_then(|identity| identity.user.clone()),
             "groups": identity.map(|identity| identity.groups.clone()).unwrap_or_default(),
+            "roles": identity.map(|identity| identity.roles.clone()).unwrap_or_default(),
+            "entitlements": identity.map(|identity| identity.entitlements.clone()).unwrap_or_default(),
             "device_id": identity.and_then(|identity| identity.device_id.clone()),
             "posture": identity.map(|identity| identity.posture.clone()).unwrap_or_default(),
             "auth_strength": identity.and_then(|identity| identity.auth_strength.clone()),

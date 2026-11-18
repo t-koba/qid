@@ -251,6 +251,49 @@ fn pep_decision_cache_key_hashes_identity_material() {
 }
 
 #[test]
+fn pep_decision_cache_key_distinguishes_decision_inputs() {
+    let digest =
+        |req: &PepDecisionRequest| pep_decision_cache_key(req, "policy-rev-1").unwrap().digest;
+    let original = digest(&request());
+    assert_eq!(original, digest(&request()));
+
+    let mut req = request();
+    req.adapter_realm_id = Some("other-realm".to_string());
+    assert_ne!(original, digest(&req), "adapter realm");
+    req.adapter_realm_id = None;
+    assert_ne!(original, digest(&req), "absent adapter realm");
+
+    let mut req = request();
+    req.identity.as_mut().unwrap().roles.clear();
+    assert_ne!(original, digest(&req), "roles");
+
+    let mut req = request();
+    req.identity.as_mut().unwrap().entitlements.clear();
+    assert_ne!(original, digest(&req), "entitlements");
+
+    let mut req = request();
+    req.risk_score = Some(0);
+    let explicit_zero = digest(&req);
+    assert_ne!(original, explicit_zero, "explicit risk score");
+    req.risk_score = None;
+    assert_ne!(explicit_zero, digest(&req), "absent risk score");
+
+    // Identity presence affects the computed risk even when all fields are empty.
+    req.identity = Some(IdentityInfo {
+        user: None,
+        groups: vec![],
+        roles: vec![],
+        entitlements: vec![],
+        device_id: None,
+        posture: vec![],
+        auth_strength: None,
+    });
+    let empty_identity = digest(&req);
+    req.identity = None;
+    assert_ne!(empty_identity, digest(&req), "absent identity");
+}
+
+#[test]
 fn pep_decision_response_does_not_expose_qpx_effect_shape() {
     let mut response = response("allow", 30_000, true);
     response.obligations.push(qid_decision_obligation(

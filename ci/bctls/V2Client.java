@@ -31,7 +31,7 @@ import org.bouncycastle.tls.ProtocolVersion;
 import org.bouncycastle.tls.TlsAuthentication;
 import org.bouncycastle.tls.TlsClientProtocol;
 import org.bouncycastle.tls.TlsCredentials;
-import org.bouncycastle.tls.TlsCrypto;
+import org.bouncycastle.tls.crypto.TlsCrypto;
 import org.bouncycastle.tls.crypto.impl.jcajce.JcaTlsCryptoProvider;
 
 public final class V2Client {

@@ -10,6 +10,7 @@ cargo fuzz run policy -- -max_total_time=60
 cargo fuzz run radius -- -max_total_time=60
 cargo fuzz run tacacs -- -max_total_time=60
 cargo fuzz run eap -- -max_total_time=60
+cargo fuzz run tls13_record -- -max_total_time=60
 ```
 
 List available targets:

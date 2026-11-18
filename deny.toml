@@ -11,6 +11,19 @@ ignore = [
     # offline build environment, so replacement (e.g. a safe-Rust parser for
     # the figment YAML provider) is tracked as follow-up work, not done here.
     "RUSTSEC-2024-0449",
+    # RUSTSEC-2026-0543: chrono is flagged "unmaintained" (category INFO,
+    # no known vulnerability, no patched release; advisory published
+    # 2026-09-14). This is a maintenance notice, not a security defect, and no
+    # `cargo update` can clear it because all chrono versions are affected.
+    # It reaches qid only transitively: tsp-ltv 0.6.0 (a pinned direct
+    # dependency of qid-saml used for SAML long-term validation) and krb5
+    # 1.0.0 (a dev-only SPNEGO proof in qid-federation). Time-bounded waiver
+    # with a tracked replacement: move off chrono via a tsp-ltv or krb5
+    # release that drops it, or migrate date handling to jiff/time. Review
+    # this entry and its replacement plan by 2027-02-18 and remove the waiver
+    # once the dependency no longer pulls chrono. No vulnerability advisory
+    # is waived here; all other advisories remain enforced.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]

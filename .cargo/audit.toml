@@ -9,4 +9,13 @@ ignore = [
     # advisory RUSTSEC-2023-0075 is patched in 0.2.11. Kept in sync with
     # deny.toml; replacement with a maintained parser is tracked follow-up.
     "RUSTSEC-2024-0449",
+    # RUSTSEC-2026-0543: chrono is flagged "unmaintained" (category INFO,
+    # no known vulnerability, no patched release). Maintenance notice, not a
+    # security defect; all versions affected so no update clears it. Reaches
+    # qid transitively via tsp-ltv 0.6.0 (qid-saml SAML long-term validation)
+    # and dev-only krb5 1.0.0 (qid-federation SPNEGO proof). Time-bounded
+    # waiver tracked in deny.toml; replacement via a tsp-ltv/krb5 release
+    # without chrono or migration to jiff/time. Review by 2027-02-18. Kept in
+    # sync with deny.toml. No vulnerability advisory is waived here.
+    "RUSTSEC-2026-0543",
 ]

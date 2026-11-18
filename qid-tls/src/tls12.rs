@@ -1,11 +1,13 @@
 //! Strict TLS 1.2 wire groundwork and offline handshake derivation: handshake
 //! record reassembly, ClientHello parsing, RFC 6961 `status_request_v2`
 //! parsing and encoding, the TLS 1.2 key schedule, Finished messages and
-//! AES-GCM record protection.
+//! AES-GCM record protection, plus a pure byte-in/byte-out server handshake
+//! driver.
 //!
 //! All of this operates on caller-supplied bytes. It enables no listener,
-//! sockets or handshake state machine and does not change rustls defaults.
+//! sockets or transport and does not change rustls defaults.
 
+mod driver;
 mod finish;
 mod flight;
 mod prf;
@@ -13,6 +15,7 @@ mod record;
 mod status;
 mod wire;
 
+pub use driver::{ServerHandshake, ServerHandshakeConfig, ServerHandshakeState, plaintext_record};
 pub use finish::{
     FinishedResult, complete_server_handshake, ecdh_pre_master, parse_client_key_exchange,
 };

@@ -112,14 +112,11 @@ pub fn verify_data(master: &[u8; 48], transcript_sha256: &[u8; 32], label: &[u8]
     *out
 }
 
-/// RFC 7627 §5.1 session hash: SHA-256 over the raw ClientHello message
-/// (including its handshake header) followed by the framed ServerHello.
-/// No other handshake messages enter this hash.
-pub fn ems_session_hash(client_hello_message: &[u8], server_hello_message: &[u8]) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(client_hello_message);
-    hash.update(server_hello_message);
-    hash.finalize().into()
+/// RFC 7627 §5.1.1 full-handshake session hash: SHA-256 over the framed
+/// handshake transcript from ClientHello through ClientKeyExchange, inclusive.
+/// The caller supplies those exact bytes; this function only hashes them.
+pub fn ems_session_hash(handshake_messages_through_cke: &[u8]) -> [u8; 32] {
+    Sha256::digest(handshake_messages_through_cke).into()
 }
 
 #[cfg(test)]
@@ -197,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn ems_session_hash_covers_only_client_hello_and_framed_server_hello() {
+    fn ems_session_hash_hashes_the_supplied_transcript_through_cke() {
         let client_hello = [1u8, 0, 0, 2, 0x03, 0x03];
         let server_hello = HandshakeMessage {
             msg_type: 2,
@@ -207,7 +204,7 @@ mod tests {
         let expected: [u8; 32] =
             Sha256::digest([client_hello.as_slice(), framed.as_slice()].concat()).into();
         assert_eq!(
-            ems_session_hash(&client_hello, &framed).as_slice(),
+            ems_session_hash(&[client_hello.as_slice(), framed.as_slice()].concat()).as_slice(),
             expected.as_slice()
         );
 
@@ -217,6 +214,9 @@ mod tests {
         };
         let mut later = framed.clone();
         later.extend_from_slice(&wrap_handshake_message(other.msg_type, &other.body).unwrap());
-        assert_ne!(ems_session_hash(&client_hello, &later), expected);
+        assert_ne!(
+            ems_session_hash(&[client_hello.as_slice(), later.as_slice()].concat()),
+            expected
+        );
     }
 }

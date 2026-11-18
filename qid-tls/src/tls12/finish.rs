@@ -14,9 +14,9 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+const SERVER_HELLO: u8 = 2;
 const CLIENT_KEY_EXCHANGE: u8 = 16;
 const FINISHED: u8 = 20;
-const SERVER_HELLO: u8 = 2;
 const UNCOMPRESSED_POINT_LEN: usize = 65;
 
 /// RFC 4492 §5.10: the X coordinate of ECDHE shared point as the 32-byte
@@ -76,8 +76,8 @@ pub struct FinishedResult {
 /// `flight.transcript` holds the raw ClientHello plus the framed messages
 /// emitted in `flight.messages`; the two Finished hashes extend those exact
 /// bytes with the framed ClientKeyExchange and client Finished messages. When
-/// `ems_negotiated` is true, the RFC 7627 session hash uses the raw
-/// ClientHello and the framed ServerHello from the flight only.
+/// `ems_negotiated` is true, the RFC 7627 session hash covers the framed
+/// transcript through the client's ClientKeyExchange.
 ///
 /// The flight is never mutated. Callers send ChangeCipherSpec records and do
 /// any record encryption outside this function.
@@ -94,6 +94,11 @@ pub fn complete_server_handshake(
     server_random: &[u8; 32],
     ems_negotiated: bool,
 ) -> Result<FinishedResult, Tls12Error> {
+    if flight.messages.first().map(|message| message.msg_type) != Some(SERVER_HELLO)
+        || !flight.transcript.starts_with(client_hello_message)
+    {
+        return Err(Tls12Error::InvalidServerFirstFlight);
+    }
     let cke_body = framed_body(
         client_key_exchange_message,
         CLIENT_KEY_EXCHANGE,
@@ -103,13 +108,9 @@ pub fn complete_server_handshake(
     let pms = Zeroizing::new(ecdh_pre_master(ecdhe_secret, peer_point)?);
 
     let ems_seed = if ems_negotiated {
-        let first = flight
-            .messages
-            .first()
-            .filter(|message| message.msg_type == SERVER_HELLO)
-            .ok_or(Tls12Error::InvalidServerFirstFlight)?;
-        let server_hello = wrap_handshake_message(first.msg_type, &first.body)?;
-        Some(ems_session_hash(client_hello_message, &server_hello))
+        let mut transcript = flight.transcript.clone();
+        transcript.extend_from_slice(client_key_exchange_message);
+        Some(ems_session_hash(&transcript))
     } else {
         None
     };
@@ -241,13 +242,6 @@ mod tests {
             let ske = &flight.messages[3].body;
             assert_eq!(&ske[..4], &[0x03, 0x00, 0x17, UNCOMPRESSED_POINT_LEN as u8]);
             let pms = ecdh_pre_master(&client_secret, &ske[4..69]).unwrap();
-            let ems_seed = ems.then(|| {
-                let server_hello =
-                    wrap_handshake_message(flight.messages[0].msg_type, &flight.messages[0].body)
-                        .unwrap();
-                ems_session_hash(&client_hello, &server_hello)
-            });
-            let master = master_secret(&pms, &CLIENT_RANDOM, &SERVER_RANDOM, ems_seed.as_ref());
 
             let mut transcript = client_hello.clone();
             for message in &flight.messages {
@@ -256,6 +250,9 @@ mod tests {
                 );
             }
             assert_eq!(flight.transcript, transcript);
+            let ems_seed =
+                ems.then(|| ems_session_hash(&[transcript.as_slice(), cke.as_slice()].concat()));
+            let master = master_secret(&pms, &CLIENT_RANDOM, &SERVER_RANDOM, ems_seed.as_ref());
             assert_eq!(
                 flight.transcript_sha256.as_slice(),
                 Sha256::digest(&transcript).as_slice()

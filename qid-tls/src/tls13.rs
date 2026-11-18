@@ -3,6 +3,7 @@
 pub mod external_psk;
 pub mod key_schedule;
 pub mod psk_extension;
+pub mod transcript;
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes128Gcm, Tag};

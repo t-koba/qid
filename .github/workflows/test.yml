@@ -241,6 +241,9 @@ jobs:
       - name: Run qid-tls Certificate fuzz smoke
         working-directory: fuzz
         run: cargo fuzz run tls13_certificate -- -max_total_time=30
+      - name: Run qid-tls CertificateVerify fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run tls13_certificate_verify -- -max_total_time=30
 
   coverage:
     name: Coverage

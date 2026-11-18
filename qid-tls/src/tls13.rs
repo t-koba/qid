@@ -1,6 +1,7 @@
 //! TLS 1.3 protected-record reading and writing for `TLS_AES_128_GCM_SHA256`.
 
 pub mod certificate;
+pub mod certificate_verify;
 pub mod client_hello;
 pub mod encrypted_extensions;
 pub mod external_psk;

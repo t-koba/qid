@@ -1,13 +1,15 @@
 //! Strict TLS 1.2 wire groundwork and offline handshake derivation: handshake
 //! record reassembly, ClientHello parsing, RFC 6961 `status_request_v2`
-//! parsing and encoding, the TLS 1.2 key schedule and Finished messages.
+//! parsing and encoding, the TLS 1.2 key schedule, Finished messages and
+//! AES-GCM record protection.
 //!
-//! All of this operates on caller-supplied bytes. It does not encrypt records,
-//! enable a listener, or change rustls defaults.
+//! All of this operates on caller-supplied bytes. It enables no listener,
+//! sockets or handshake state machine and does not change rustls defaults.
 
 mod finish;
 mod flight;
 mod prf;
+mod record;
 mod status;
 mod wire;
 
@@ -16,6 +18,10 @@ pub use finish::{
 };
 pub use flight::{ServerFirstFlight, ServerFirstFlightInput, build_server_first_flight};
 pub use prf::{KeyBlock, ems_session_hash, key_block, master_secret, tls12_prf, verify_data};
+pub use record::{
+    ALERT, APPLICATION_DATA, CCS_RECORD, CHANGE_CIPHER_SPEC, HANDSHAKE, RECORD_VERSION,
+    RecordProtector, parse_ccs,
+};
 pub use status::{
     OcspResponse, StatusRequestItem, StatusRequestV2, StatusSelection,
     build_certificate_status_multi, parse_status_request_v2, select_status_request,
@@ -95,6 +101,12 @@ pub enum Tls12Error {
     InvalidFinishedMessage,
     FinishedVerifyFailed,
     InvalidServerFirstFlight,
+    InvalidChangeCipherSpec,
+    EmptyFragment,
+    SequenceExhausted,
+    InvalidCiphertext,
+    AuthenticationFailed,
+    RecordProtectionFailed,
 }
 
 impl std::fmt::Display for Tls12Error {
@@ -136,6 +148,12 @@ impl std::fmt::Display for Tls12Error {
             Self::InvalidFinishedMessage => "invalid TLS 1.2 Finished message",
             Self::FinishedVerifyFailed => "TLS 1.2 Finished verification failed",
             Self::InvalidServerFirstFlight => "invalid TLS 1.2 server first flight",
+            Self::InvalidChangeCipherSpec => "invalid TLS 1.2 ChangeCipherSpec record",
+            Self::EmptyFragment => "empty TLS 1.2 handshake fragment",
+            Self::SequenceExhausted => "TLS 1.2 record sequence number exhausted",
+            Self::InvalidCiphertext => "invalid TLS 1.2 AEAD ciphertext framing",
+            Self::AuthenticationFailed => "TLS 1.2 record authentication failed",
+            Self::RecordProtectionFailed => "TLS 1.2 record AEAD protection failed",
         })
     }
 }

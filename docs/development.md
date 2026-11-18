@@ -202,6 +202,7 @@ cargo fuzz run tacacs -- -max_total_time=60
 cargo fuzz run eap -- -max_total_time=60
 cargo fuzz run tls13_record -- -max_total_time=60
 cargo fuzz run tls12_client_hello -- -max_total_time=60
+cargo fuzz run tls12_record_protection -- -max_total_time=60
 ```
 
 ## Config Samples

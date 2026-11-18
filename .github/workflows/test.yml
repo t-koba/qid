@@ -207,6 +207,9 @@ jobs:
       - name: Run qid-tls ClientHello fuzz smoke
         working-directory: fuzz
         run: cargo fuzz run tls12_client_hello -- -max_total_time=30
+      - name: Run qid-tls TLS 1.2 record fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run tls12_record_protection -- -max_total_time=30
 
   coverage:
     name: Coverage

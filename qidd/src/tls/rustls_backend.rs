@@ -1,17 +1,45 @@
+use super::NativeTlsPeer;
 use anyhow::{Context, bail};
-use axum::http::Request;
+use axum::{Router, http::Request};
 use axum_server::{accept::Accept, tls_rustls::RustlsAcceptor};
 use qid_core::{config::TlsConfig, util::base64_url_encode};
 use rustls_pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use std::{future::Future, io, pin::Pin, sync::Arc};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpListener,
+};
 use tokio_rustls::server::TlsStream;
 use tower::Service;
+use tracing::info;
 
-#[derive(Clone, Debug)]
-pub struct NativeTlsPeer {
-    pub leaf_x5t_s256: String,
+pub(super) async fn serve_https(
+    config: &TlsConfig,
+    listener: TcpListener,
+    app: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let tls_config = load_rustls_config(config).context("failed to load TLS configuration")?;
+    let acceptor = NativeMtlsAcceptor::new(RustlsAcceptor::new(tls_config));
+    let std_listener = listener.into_std().context("failed to convert listener")?;
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        shutdown.await;
+        info!(target: "qidd", "initiating graceful shutdown (TLS)");
+        shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+    });
+    info!(target: "qidd", tls = true, "listening with TLS");
+    axum_server::from_tcp(std_listener)
+        .acceptor(acceptor)
+        .handle(handle)
+        .serve(app.into_make_service())
+        .await
+        .map_err(|e| qid_core::error::QidError::Internal {
+            message: format!("server error: {e}"),
+        })?;
+    Ok(())
 }
 
 #[derive(Clone, Debug)]

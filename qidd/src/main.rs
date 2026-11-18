@@ -181,6 +181,7 @@ fn log_and_reject_diagnostic_checks(checks: &[CheckItem], phase: &str) -> anyhow
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    tls::startup_guard()?;
 
     let config = QidConfig::from_files(&args.config).context("failed to load config")?;
     // Tonic uses the process default. Select the same provider as native TLS;
@@ -394,27 +395,7 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
     };
 
     if let Some(tls) = &config.server.tls {
-        let tls_config =
-            tls::load_rustls_config(tls).context("failed to load TLS configuration")?;
-        let acceptor =
-            tls::NativeMtlsAcceptor::new(axum_server::tls_rustls::RustlsAcceptor::new(tls_config));
-        let std_listener = listener.into_std().context("failed to convert listener")?;
-        let handle = axum_server::Handle::new();
-        let shutdown_handle = handle.clone();
-        tokio::spawn(async move {
-            shutdown.await;
-            info!("initiating graceful shutdown (TLS)");
-            shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
-        });
-        info!(tls = true, "listening with TLS");
-        axum_server::from_tcp(std_listener)
-            .acceptor(acceptor)
-            .handle(handle)
-            .serve(app.into_make_service())
-            .await
-            .map_err(|e| qid_core::error::QidError::Internal {
-                message: format!("server error: {e}"),
-            })?;
+        tls::serve_https(tls, listener, app, shutdown).await?;
     } else {
         info!(tls = false, "listening without TLS");
         axum::serve(listener, app)

@@ -15,7 +15,9 @@ name = "qidd"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["tls-rustls"]
+tls-rustls = []
+tls-qid = []
 otel-otlp = ["qid-observability/otel-otlp"]
 quic = ["qid-network/quic"]
 

@@ -335,7 +335,8 @@ fn next_record_len(wire: &[u8]) -> Result<Option<usize>, Tls12Error> {
 mod tests {
     use super::*;
     use crate::tls12::{
-        HandshakeMessage, ecdh_pre_master, ems_session_hash, key_block, master_secret, verify_data,
+        CERTIFICATE_STATUS, HandshakeMessage, build_certificate_status_multi, ecdh_pre_master,
+        ems_session_hash, key_block, master_secret, verify_data,
     };
     use p256::elliptic_curve::sec1::ToSec1Point;
     use sha2::{Digest, Sha256};
@@ -346,6 +347,17 @@ mod tests {
     const CLIENT_RANDOM: [u8; 32] = [0xA1; 32];
     const SERVER_RANDOM: [u8; 32] = [0xB2; 32];
     const CERT: &[u8] = &[0x30, 0x00];
+    const CERT2: &[u8] = &[0x30, 0x06, 0x02, 0x01, 0x02, 0x02, 0x01, 0x03];
+    // Hand-written test bytes, not real OCSP responses.
+    const STAPLE_A: &[u8] = &[0x30, 0x03, 0x02, 0x01, 0x01];
+    const STAPLE_B: &[u8] = &[0x30, 0x03, 0x02, 0x01, 0x02];
+    // RFC 6961 §2.2: extension 0x0011, length 9; list_len=7, status_type=2,
+    // request_len=4, empty ResponderID list and empty Extensions.
+    const V2_MULTI_BLOCK: &[u8] = &[
+        0x00, 0x11, 0x00, 0x09, 0x00, 0x07, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+    ];
+    // Legacy status_request(5) with status_type ocsp(1), offered on its own.
+    const LEGACY_STATUS_BLOCK: &[u8] = &[0x00, 0x05, 0x00, 0x01, 0x01];
 
     struct Fixture {
         client_secret: SecretKey,
@@ -365,11 +377,16 @@ mod tests {
         }
 
         fn hello(&self, ems: bool) -> Vec<u8> {
+            self.hello_with_extensions(ems, &[])
+        }
+
+        fn hello_with_extensions(&self, ems: bool, extra: &[u8]) -> Vec<u8> {
             let mut extensions = Vec::new();
             if ems {
                 extensions.extend_from_slice(&0x0017u16.to_be_bytes());
                 extensions.extend_from_slice(&0u16.to_be_bytes());
             }
+            extensions.extend_from_slice(extra);
             let mut body = vec![0x03, 0x03];
             body.extend_from_slice(&self.client_random);
             body.push(0);
@@ -415,12 +432,17 @@ mod tests {
     impl Script {
         fn new(fixture: &Fixture, hello: &[u8], first_flight: &[u8], ems: bool) -> Self {
             let messages = reassemble(first_flight);
-            assert_eq!(
-                messages.iter().map(|msg| msg.msg_type).collect::<Vec<_>>(),
-                vec![2, 11, 12, 14],
-                "no CertificateStatus without status_request_v2"
+            let types = messages.iter().map(|msg| msg.msg_type).collect::<Vec<_>>();
+            assert!(
+                types == vec![2, 11, 12, 14] || types == vec![2, 11, CERTIFICATE_STATUS, 12, 14],
+                "unexpected first-flight message types: {types:?}"
             );
-            let params = &messages[2].body;
+            let params = messages
+                .iter()
+                .find(|msg| msg.msg_type == 12)
+                .expect("ServerKeyExchange")
+                .body
+                .as_slice();
             assert_eq!(&params[..4], &[0x03, 0x00, 0x17, 65]);
             let pre_master =
                 ecdh_pre_master(&fixture.client_secret, &params[4..69]).expect("client ECDHE");
@@ -640,6 +662,106 @@ mod tests {
         assert_eq!(server.state(), &ServerHandshakeState::Complete);
         assert_eq!(
             open_server_finished(&mut script, &done),
+            script.expected_server_finished
+        );
+    }
+
+    // Self-consistency fixture: this drives the qid driver with a hand-built
+    // v2 client. It is a byte-level oracle, not independent-implementation
+    // evidence; the planned Bouncy Castle peer must still pass in CI.
+    #[test]
+    fn synthetic_v2_client_completes_handshake_with_two_distinct_staples() {
+        let fixture = Fixture::new();
+        let hello = fixture.hello_with_extensions(true, V2_MULTI_BLOCK);
+        let certificates: &[&[u8]] = &[CERT, CERT2];
+        let responses: &[OcspResponse<'_>] =
+            &[OcspResponse::Der(STAPLE_A), OcspResponse::Der(STAPLE_B)];
+        let mut server = ServerHandshake::new(ServerHandshakeConfig {
+            certificates,
+            ocsp_responses: responses,
+            signing_key: &fixture.signing_key,
+            ecdhe_secret: &fixture.server_secret,
+            server_random: SERVER_RANDOM,
+        });
+
+        let first = server
+            .push(&plaintext_record(HANDSHAKE, &hello).expect("v2 ClientHello record"))
+            .expect("server accepts v2 ClientHello");
+        assert_eq!(server.state(), &ServerHandshakeState::ExpectingClientCcs);
+        assert!(server.selected_ocsp_multi());
+
+        let messages = reassemble(&first);
+        assert_eq!(
+            messages.iter().map(|msg| msg.msg_type).collect::<Vec<_>>(),
+            vec![2, 11, CERTIFICATE_STATUS, 12, 14]
+        );
+        assert!(
+            messages[0]
+                .body
+                .windows(4)
+                .any(|window| window == [0x00, 0x11, 0x00, 0x00]),
+            "usable ocsp_multi must be acknowledged with empty extension 17"
+        );
+        let expected_status = build_certificate_status_multi(2, responses)
+            .expect("build two-response CertificateStatus");
+        assert_eq!(&messages[2].body, &expected_status);
+        assert_ne!(STAPLE_A, STAPLE_B, "the two staples must be distinct");
+        let first_at = expected_status
+            .windows(STAPLE_A.len())
+            .position(|window| window == STAPLE_A)
+            .expect("first staple appears");
+        let second_at = expected_status
+            .windows(STAPLE_B.len())
+            .position(|window| window == STAPLE_B)
+            .expect("second staple appears");
+        assert!(
+            first_at < second_at,
+            "staples must follow certificate order"
+        );
+
+        let mut script = Script::new(&fixture, &hello, &first, true);
+        let mut wire = plaintext_record(HANDSHAKE, &script.cke).expect("CKE record");
+        wire.extend_from_slice(&CCS_RECORD);
+        wire.extend_from_slice(&script.protected_finished());
+        let second = server.push(&wire).expect("v2 handshake completes");
+        assert_eq!(server.state(), &ServerHandshakeState::Complete);
+        assert_eq!(
+            open_server_finished(&mut script, &second),
+            script.expected_server_finished
+        );
+    }
+
+    #[test]
+    fn legacy_status_request_only_client_gets_no_status_acknowledgement() {
+        let fixture = Fixture::new();
+        let hello = fixture.hello_with_extensions(true, LEGACY_STATUS_BLOCK);
+        let mut server = ServerHandshake::new(fixture.config());
+
+        let first = server
+            .push(&plaintext_record(HANDSHAKE, &hello).expect("legacy ClientHello record"))
+            .expect("server accepts legacy ClientHello");
+        assert!(!server.selected_ocsp_multi());
+        let messages = reassemble(&first);
+        assert_eq!(
+            messages.iter().map(|msg| msg.msg_type).collect::<Vec<_>>(),
+            vec![2, 11, 12, 14]
+        );
+        assert!(
+            !messages[0]
+                .body
+                .windows(4)
+                .any(|window| window == [0x00, 0x11, 0x00, 0x00]),
+            "legacy status_request must never be acknowledged as v2"
+        );
+
+        let mut script = Script::new(&fixture, &hello, &first, true);
+        let mut wire = plaintext_record(HANDSHAKE, &script.cke).expect("CKE record");
+        wire.extend_from_slice(&CCS_RECORD);
+        wire.extend_from_slice(&script.protected_finished());
+        let second = server.push(&wire).expect("legacy-only handshake completes");
+        assert_eq!(server.state(), &ServerHandshakeState::Complete);
+        assert_eq!(
+            open_server_finished(&mut script, &second),
             script.expected_server_finished
         );
     }

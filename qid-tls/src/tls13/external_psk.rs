@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 pub const TARGET_PROTOCOL: u16 = 0x0304;
 /// Target KDF field of an RFC 9258 `ImportedIdentity`: HKDF-SHA256.
 pub const TARGET_KDF: u16 = 0x0001;
-/// RFC 9973 `tls_pok` extension type.
+/// RFC 9973 `tls_cert_with_extern_psk` extension type.
 pub const EXTENSION_TYPE: u16 = 0x0021;
 
 const SALT: [u8; 32] = [0; 32];
@@ -32,6 +32,7 @@ pub enum Error {
     FieldTooLong,
     Derivation,
     InvalidExtension,
+    UnsupportedTarget,
 }
 
 impl fmt::Display for Error {
@@ -41,6 +42,7 @@ impl fmt::Display for Error {
             Self::FieldTooLong => "imported identity field exceeds u16 length",
             Self::Derivation => "TLS 1.3 label expansion failed",
             Self::InvalidExtension => "invalid RFC 9973 empty extension",
+            Self::UnsupportedTarget => "imported identity target must be TLS 1.3 with HKDF-SHA256",
         })
     }
 }
@@ -71,6 +73,9 @@ impl ImportedIdentity {
     }
 
     fn validate(&self) -> Result<(), Error> {
+        if self.target_protocol != TARGET_PROTOCOL || self.target_kdf != TARGET_KDF {
+            return Err(Error::UnsupportedTarget);
+        }
         if self.external_identity.is_empty() {
             return Err(Error::EmptyExternalIdentity);
         }
@@ -165,7 +170,7 @@ fn binder_key(ipsk: &[u8], label: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, Err
     Ok(out)
 }
 
-/// Encode the RFC 9973 `tls_pok` extension as `extension_type || 0x0000 ||`
+/// Encode the RFC 9973 `tls_cert_with_extern_psk` extension as `extension_type || 0x0000 ||`
 /// empty `extension_data`; no handshake message is constructed here.
 pub fn encode_empty_extension() -> [u8; EXTENSION_HEADER_LEN] {
     EMPTY_EXTENSION
@@ -250,6 +255,29 @@ mod tests {
             target_kdf: TARGET_KDF,
         };
         assert_eq!(direct.encode().unwrap_err(), Error::EmptyExternalIdentity);
+    }
+
+    #[test]
+    fn identity_rejects_unsupported_or_empty_fields() {
+        assert_eq!(
+            ImportedIdentity::new(Vec::new(), CONTEXT.to_vec()).unwrap_err(),
+            Error::EmptyExternalIdentity
+        );
+        assert_eq!(
+            ImportedIdentity {
+                external_identity: EXTERNAL_IDENTITY.to_vec(),
+                context: CONTEXT.to_vec(),
+                target_protocol: 0x0303,
+                target_kdf: TARGET_KDF,
+            }
+            .encode()
+            .unwrap_err(),
+            Error::UnsupportedTarget
+        );
+        assert_eq!(
+            ImportedIdentity::new(vec![0; usize::from(u16::MAX) + 1], Vec::new()).unwrap_err(),
+            Error::FieldTooLong
+        );
     }
 
     #[test]

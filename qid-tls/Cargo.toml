@@ -13,6 +13,7 @@ rust-version.workspace = true
 [dependencies]
 aes-gcm.workspace = true
 hkdf.workspace = true
+p256 = { workspace = true, features = ["ecdh"] }
 sha2.workspace = true
 zeroize.workspace = true
 

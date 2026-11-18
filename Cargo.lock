@@ -4116,6 +4116,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "hkdf 0.12.4",
+ "p256",
  "rcgen",
  "rustls",
  "rustls-pki-types",

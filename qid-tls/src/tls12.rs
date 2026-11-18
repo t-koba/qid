@@ -4,9 +4,11 @@
 //! This is parsing/encoding groundwork only. It does not perform a handshake,
 //! enable a listener, or change rustls defaults.
 
+mod flight;
 mod status;
 mod wire;
 
+pub use flight::{ServerFirstFlight, ServerFirstFlightInput, build_server_first_flight};
 pub use status::{
     OcspResponse, StatusRequestItem, StatusRequestV2, StatusSelection,
     build_certificate_status_multi, parse_status_request_v2, select_status_request,
@@ -70,6 +72,18 @@ pub enum Tls12Error {
     InvalidCertificateStatus,
     TooManyResponses,
     EmptyResponse,
+    InvalidClientHelloMessage,
+    UnsupportedCipherSuite,
+    UnsupportedCompressionMethod,
+    InvalidSupportedGroups,
+    UnsupportedNamedCurve,
+    InvalidEcPointFormats,
+    UnsupportedPointFormat,
+    InvalidSignatureAlgorithms,
+    UnsupportedSignatureScheme,
+    InvalidCertificateList,
+    InvalidEcdhePoint,
+    InvalidSignature,
 }
 
 impl std::fmt::Display for Tls12Error {
@@ -95,6 +109,18 @@ impl std::fmt::Display for Tls12Error {
             Self::InvalidCertificateStatus => "invalid CertificateStatus encoding",
             Self::TooManyResponses => "more OCSP responses than certificates",
             Self::EmptyResponse => "empty DER OCSP response",
+            Self::InvalidClientHelloMessage => "invalid ClientHello handshake message",
+            Self::UnsupportedCipherSuite => "unsupported TLS 1.2 cipher suite",
+            Self::UnsupportedCompressionMethod => "unsupported TLS 1.2 compression method",
+            Self::InvalidSupportedGroups => "invalid supported_groups extension",
+            Self::UnsupportedNamedCurve => "unsupported named curve",
+            Self::InvalidEcPointFormats => "invalid ec_point_formats extension",
+            Self::UnsupportedPointFormat => "unsupported EC point format",
+            Self::InvalidSignatureAlgorithms => "invalid signature_algorithms extension",
+            Self::UnsupportedSignatureScheme => "unsupported signature scheme",
+            Self::InvalidCertificateList => "invalid TLS 1.2 certificate list",
+            Self::InvalidEcdhePoint => "invalid P-256 ECDHE public point",
+            Self::InvalidSignature => "invalid P-256 ECDSA signature encoding",
         })
     }
 }

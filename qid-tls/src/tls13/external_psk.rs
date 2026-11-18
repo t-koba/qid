@@ -18,7 +18,6 @@ pub const TARGET_KDF: u16 = 0x0001;
 pub const EXTENSION_TYPE: u16 = 0x0021;
 
 const SALT: [u8; 32] = [0; 32];
-const LABEL_PREFIX: &[u8] = b"tls13 ";
 const KEY_LEN: usize = 32;
 const EXTENSION_HEADER_LEN: usize = 4;
 
@@ -111,34 +110,6 @@ impl ImportedIdentity {
     }
 }
 
-/// RFC 8446 §7.1 `HKDF-Expand-Label(secret, label, context, out.len())`.
-fn expand_label(
-    hkdf: &Hkdf<Sha256>,
-    label: &[u8],
-    context: &[u8],
-    out: &mut [u8],
-) -> Result<(), Error> {
-    let full_label_len = LABEL_PREFIX
-        .len()
-        .checked_add(label.len())
-        .and_then(|len| u8::try_from(len).ok())
-        .ok_or(Error::Derivation)?;
-    let context_len = u8::try_from(context.len()).map_err(|_| Error::Derivation)?;
-    let output_len = u16::try_from(out.len()).map_err(|_| Error::Derivation)?;
-    hkdf.expand_multi_info(
-        &[
-            &output_len.to_be_bytes(),
-            &[full_label_len],
-            LABEL_PREFIX,
-            label,
-            &[context_len],
-            context,
-        ],
-        out,
-    )
-    .map_err(|_| Error::Derivation)
-}
-
 /// RFC 9258 §5.1: import an external PSK into a TLS 1.3 PSK.
 ///
 /// `epskx = HKDF-Extract(0, epsk)` and `ipsk = HKDF-Expand-Label(epskx,
@@ -151,7 +122,8 @@ pub fn import_external_psk(
     let hash = Zeroizing::new(<[u8; KEY_LEN]>::from(Sha256::digest(identity.encode()?)));
     let epskx = Hkdf::<Sha256>::new(Some(&SALT), epsk);
     let mut ipsk = Zeroizing::new(vec![0u8; KEY_LEN]);
-    expand_label(&epskx, b"derived psk", &hash[..], ipsk.as_mut())?;
+    super::expand_label(&epskx, b"derived psk", &hash[..], ipsk.as_mut())
+        .map_err(|_| Error::Derivation)?;
     Ok(ipsk)
 }
 
@@ -167,7 +139,8 @@ fn binder_key(ipsk: &[u8], label: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, Err
     let early_secret = Hkdf::<Sha256>::new(Some(&SALT), ipsk);
     let transcript_hash = Zeroizing::new(<[u8; KEY_LEN]>::from(Sha256::digest(b"")));
     let mut out = Zeroizing::new([0u8; KEY_LEN]);
-    expand_label(&early_secret, label, &transcript_hash[..], out.as_mut())?;
+    super::expand_label(&early_secret, label, &transcript_hash[..], out.as_mut())
+        .map_err(|_| Error::Derivation)?;
     Ok(out)
 }
 
@@ -184,7 +157,8 @@ pub fn psk_binder(
     let transcript_hash = Zeroizing::new(<[u8; KEY_LEN]>::from(Sha256::digest(transcript_prefix)));
     let prk = Hkdf::<Sha256>::from_prk(binder_key).map_err(|_| Error::Derivation)?;
     let mut finished_key = Zeroizing::new([0u8; KEY_LEN]);
-    expand_label(&prk, b"finished", b"", finished_key.as_mut())?;
+    super::expand_label(&prk, b"finished", b"", finished_key.as_mut())
+        .map_err(|_| Error::Derivation)?;
     let mut mac =
         Hmac::<Sha256>::new_from_slice(&finished_key[..]).map_err(|_| Error::Derivation)?;
     mac.update(&transcript_hash[..]);
@@ -377,7 +351,7 @@ mod tests {
 
         let prk = Hkdf::<Sha256>::from_prk(&binder_key[..]).unwrap();
         let mut finished_key = Zeroizing::new([0u8; KEY_LEN]);
-        expand_label(&prk, b"finished", b"", finished_key.as_mut()).unwrap();
+        crate::tls13::expand_label(&prk, b"finished", b"", finished_key.as_mut()).unwrap();
         assert_eq!(hex::encode(&finished_key[..]), RFC8448_FINISHED_KEY);
 
         assert_eq!(

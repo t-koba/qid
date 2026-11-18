@@ -4,7 +4,7 @@ pub mod external_psk;
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes128Gcm, Tag};
-use hkdf::Hkdf;
+use hkdf::{Hkdf, InvalidLength};
 use sha2::Sha256;
 use std::fmt;
 use zeroize::{Zeroize, Zeroizing};
@@ -143,26 +143,33 @@ fn derive_key_iv(traffic_secret: &[u8; 32]) -> Result<(RecordKey, RecordIv), Rec
     let hkdf = Hkdf::<Sha256>::from_prk(traffic_secret).map_err(|_| RecordError::KeyDerivation)?;
     let mut key = RecordKey::default();
     let mut iv = RecordIv::default();
-    expand_empty_label(&hkdf, b"key", key.as_mut())?;
-    expand_empty_label(&hkdf, b"iv", &mut iv)?;
+    expand_label(&hkdf, b"key", b"", key.as_mut()).map_err(|_| RecordError::KeyDerivation)?;
+    expand_label(&hkdf, b"iv", b"", &mut iv).map_err(|_| RecordError::KeyDerivation)?;
     Ok((key, iv))
 }
 
-// RFC 8446 §7.1: HKDF-Expand-Label with the TLS 1.3 prefix and an empty context.
-fn expand_empty_label(
+// RFC 8446 §7.1: the single HKDF-Expand-Label encoder for this crate.
+pub(crate) fn expand_label(
     hkdf: &Hkdf<Sha256>,
     label: &[u8],
+    context: &[u8],
     out: &mut [u8],
-) -> Result<(), RecordError> {
+) -> Result<(), InvalidLength> {
     const PREFIX: &[u8] = b"tls13 ";
-    let length = u16::try_from(out.len()).map_err(|_| RecordError::KeyDerivation)?;
-    let label_len =
-        u8::try_from(PREFIX.len() + label.len()).map_err(|_| RecordError::KeyDerivation)?;
+    let length = u16::try_from(out.len()).map_err(|_| InvalidLength)?;
+    let label_len = u8::try_from(PREFIX.len() + label.len()).map_err(|_| InvalidLength)?;
+    let context_len = u8::try_from(context.len()).map_err(|_| InvalidLength)?;
     hkdf.expand_multi_info(
-        &[&length.to_be_bytes(), &[label_len], PREFIX, label, &[0]],
+        &[
+            &length.to_be_bytes(),
+            &[label_len],
+            PREFIX,
+            label,
+            &[context_len],
+            context,
+        ],
         out,
     )
-    .map_err(|_| RecordError::KeyDerivation)
 }
 
 #[cfg(test)]

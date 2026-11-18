@@ -165,16 +165,18 @@ pub fn build_cert_with_extern_psk(params: &ClientHelloParams<'_>) -> Result<Vec<
     body.extend(vector(&ext)?);
 
     // With pre_shared_key last, the binder is the final 32 bytes of the body.
-    // RFC 8446 §4.2.11.2 hashes everything before those bytes.
+    // RFC 8446 §4.4.1 hashes the framed message, including its four-byte
+    // header and the final message length with the binder placeholder present.
     if body.len() < BINDER_LEN {
         return Err(Error::BinderDerivation);
     }
     let binder_offset = body.len() - BINDER_LEN;
-    let binder = imported_psk_binder(params.imported_psk, &body[..binder_offset])
+    let mut framed = encode_message(CLIENT_HELLO, &body).map_err(|_| Error::VectorTooLong)?;
+    let framed_binder_offset = 4 + binder_offset;
+    let binder = imported_psk_binder(params.imported_psk, &framed[..framed_binder_offset])
         .map_err(|_| Error::BinderDerivation)?;
-    body[binder_offset..].copy_from_slice(&binder[..]);
-
-    encode_message(CLIENT_HELLO, &body).map_err(|_| Error::VectorTooLong)
+    framed[framed_binder_offset..].copy_from_slice(&binder[..]);
+    Ok(framed)
 }
 
 #[cfg(test)]
@@ -267,7 +269,12 @@ mod tests {
 
         let binder_offset = body.len() - BINDER_LEN;
         assert_eq!(&body[binder_offset..], binder.as_slice());
-        let expected = imported_psk_binder(&psk, &body[..binder_offset]).unwrap();
+        let len = u32::try_from(body.len()).unwrap().to_be_bytes();
+        assert_eq!(&message[..4], &[0x01, len[1], len[2], len[3]]);
+        let framed_prefix = [&message[..4], &body[..binder_offset]].concat();
+        let headerless_prefix = &body[..binder_offset];
+        assert_ne!(framed_prefix, headerless_prefix);
+        let expected = imported_psk_binder(&psk, &framed_prefix).unwrap();
         assert_eq!(binder.as_slice(), &expected[..]);
 
         let cert_ext = extension_body(ext_bytes, CERT_WITH_EXTERN_PSK_TYPE).unwrap();

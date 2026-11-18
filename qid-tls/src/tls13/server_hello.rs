@@ -381,6 +381,16 @@ mod tests {
             .unwrap_err(),
             Error::InvalidSupportedVersions
         );
+        let tls12 = extension(SUPPORTED_VERSIONS_TYPE, &[0x03, 0x03]);
+        let version_list = extension(SUPPORTED_VERSIONS_TYPE, &[0x02, 0x00, 0x03, 0x04]);
+        assert_eq!(
+            parse(&body_with_extensions(&tls12)).unwrap_err(),
+            Error::InvalidSupportedVersions
+        );
+        assert_eq!(
+            parse(&body_with_extensions(&version_list)).unwrap_err(),
+            Error::InvalidSupportedVersions
+        );
     }
 
     #[test]

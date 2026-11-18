@@ -1,13 +1,15 @@
 //! DPoP and private_key_jwt tests.
 
 use base64::Engine;
+use qid_core::cache::SharedCache;
 use qid_core::dpop::DpopState;
+use qid_core::util::now_seconds;
 use qid_crypto::{Jwk, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header};
 use qid_ops::{
     CacheBackendConfig, CacheBackendKind, RedisLikeCache, RedisLikeCommand, RedisLikeTransport,
 };
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{
     extract_dpop_jkt, extract_private_key_jwt_at as extract_private_key_jwt, validate_dpop_proof,
@@ -84,8 +86,49 @@ fn private_key_jwt_jwks() -> serde_json::Value {
 }
 
 #[derive(Default)]
+struct RecordingReplayExpiry(Mutex<Option<u64>>);
+
+impl RecordingReplayExpiry {
+    fn record(&self, ttl_seconds: u64) {
+        *self.0.lock().unwrap() = Some(now_seconds() + ttl_seconds);
+    }
+
+    fn assert_covers(&self, iat: u64) {
+        let expires_at = self
+            .0
+            .lock()
+            .unwrap()
+            .expect("replay expiry was not recorded");
+        assert!(
+            expires_at > iat + 120,
+            "replay expiry {expires_at} must cover the last accepted second {}",
+            iat + 120
+        );
+    }
+}
+
+impl SharedCache for RecordingReplayExpiry {
+    fn get(&self, _: &str) -> Option<Vec<u8>> {
+        unreachable!()
+    }
+
+    fn set(&self, _: &str, _: Vec<u8>, _: u64) {
+        unreachable!()
+    }
+
+    fn set_if_absent(&self, _: &str, _: Vec<u8>, ttl_seconds: u64) -> qid_core::QidResult<bool> {
+        self.record(ttl_seconds);
+        Ok(true)
+    }
+
+    fn delete(&self, _: &str) {
+        unreachable!()
+    }
+}
+
 struct MemoryRedisLikeTransport {
     values: BTreeMap<String, Vec<u8>>,
+    replay_expiry: Arc<RecordingReplayExpiry>,
 }
 
 impl RedisLikeTransport for MemoryRedisLikeTransport {
@@ -99,9 +142,14 @@ impl RedisLikeTransport for MemoryRedisLikeTransport {
                 self.values.insert(key, value);
                 Ok(None)
             }
-            RedisLikeCommand::SetNxEx { key, value, .. } => {
+            RedisLikeCommand::SetNxEx {
+                key,
+                value,
+                ttl_seconds,
+            } => {
                 if let std::collections::btree_map::Entry::Vacant(entry) = self.values.entry(key) {
                     entry.insert(value);
+                    self.replay_expiry.record(ttl_seconds);
                     Ok(Some(b"OK".to_vec()))
                 } else {
                     Ok(None)
@@ -116,7 +164,9 @@ impl RedisLikeTransport for MemoryRedisLikeTransport {
     }
 }
 
-fn dpop_cache() -> RedisLikeCache<MemoryRedisLikeTransport> {
+fn dpop_cache(
+    replay_expiry: Arc<RecordingReplayExpiry>,
+) -> RedisLikeCache<MemoryRedisLikeTransport> {
     RedisLikeCache::new(
         CacheBackendConfig {
             kind: CacheBackendKind::Redis,
@@ -124,7 +174,10 @@ fn dpop_cache() -> RedisLikeCache<MemoryRedisLikeTransport> {
             key_prefix: "qid".to_string(),
             ttl_seconds: 120,
         },
-        MemoryRedisLikeTransport::default(),
+        MemoryRedisLikeTransport {
+            values: BTreeMap::new(),
+            replay_expiry,
+        },
     )
     .unwrap()
 }
@@ -157,6 +210,25 @@ fn valid_dpop_proof_succeeds() {
         result
     );
     assert_eq!(result.unwrap(), "unique-proof-id");
+}
+
+#[test]
+fn dpop_replay_expiry_covers_fresh_and_future_dated_proofs() {
+    let signer = test_signer();
+    let header = dpop_header();
+    let htu = "https://id.example.com/token";
+    for skew in [0, 60] {
+        let cache = Arc::new(RecordingReplayExpiry::default());
+        let state = DpopState::with_cache(cache.clone());
+        let iat = now_seconds() + skew;
+        let proof = build_jwt(
+            &header,
+            &serde_json::json!({"jti": "replay-window", "htm": "POST", "htu": htu, "iat": iat}),
+        );
+
+        validate_dpop_proof(&state, &proof, "POST", htu, None, &signer).unwrap();
+        cache.assert_covers(iat);
+    }
 }
 
 #[test]
@@ -496,16 +568,17 @@ fn dpop_required_nonce_mismatch_fails() {
 #[test]
 fn dpop_replay_detected_with_external_cache() {
     let signer = test_signer();
-    let now = qid_core::util::now_seconds();
+    let header = dpop_header();
+    let iat = now_seconds() + 60;
     let payload = serde_json::json!({
         "jti": "redis-replay-proof",
         "htm": "POST",
         "htu": "https://id.example.com/token",
-        "iat": now,
+        "iat": iat,
     });
-    let header = dpop_header();
     let proof = build_jwt(&header, &payload);
-    let mut cache = dpop_cache();
+    let replay_expiry = Arc::new(RecordingReplayExpiry::default());
+    let mut cache = dpop_cache(replay_expiry.clone());
 
     let first = validate_dpop_proof_with_cache(
         &mut cache,
@@ -516,6 +589,7 @@ fn dpop_replay_detected_with_external_cache() {
         &signer,
     );
     assert!(first.is_ok(), "first use should succeed");
+    replay_expiry.assert_covers(iat);
 
     let second = validate_dpop_proof_with_cache(
         &mut cache,

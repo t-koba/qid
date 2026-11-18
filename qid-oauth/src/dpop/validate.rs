@@ -15,6 +15,8 @@ const MAX_CLOCK_SKEW_SECS: u64 = 60;
 /// Maximum age in seconds for a DPoP proof.
 const MAX_PROOF_AGE_SECS: u64 = 120;
 
+const REPLAY_MESSAGE: &str = "DPoP proof jti already used (replay detected)";
+
 /// Validate a DPoP proof JWT.
 ///
 /// `dpop_proof` - the raw DPoP proof JWT string.
@@ -38,7 +40,12 @@ pub fn validate_dpop_proof(
         }
         dpop_state.consume_nonce(required_nonce, claims.now)?;
     }
-    dpop_state.record_jti(&claims.jti, claims.iat, claims.now)?;
+    dpop_state.record_replay_key(
+        &claims.jti,
+        claims.replay_expires_at(),
+        claims.now,
+        REPLAY_MESSAGE,
+    )?;
     Ok(claims.jti)
 }
 
@@ -63,14 +70,14 @@ pub fn validate_dpop_proof_with_cache<T: RedisLikeTransport>(
         "dpop_jti",
         format!("{}:{}:{}", expected_htm, expected_htu, claims.jti),
     )?;
-    let recorded = cache.put_if_absent(CachePut {
+    let recorded = cache.put_if_absent_with_exact_ttl(CachePut {
         key: cache_key,
         value: claims.iat.to_string().into_bytes(),
-        ttl_seconds: MAX_PROOF_AGE_SECS,
+        ttl_seconds: claims.replay_expires_at().saturating_sub(claims.now).max(1),
     })?;
     if !recorded {
         return Err(QidError::BadRequest {
-            message: "DPoP proof jti already used (replay detected)".to_string(),
+            message: REPLAY_MESSAGE.to_string(),
         });
     }
     Ok(claims.jti)
@@ -82,6 +89,13 @@ struct DpopProofClaims {
     iat: u64,
     now: u64,
     nonce: Option<String>,
+}
+
+impl DpopProofClaims {
+    fn replay_expires_at(&self) -> u64 {
+        // The age check accepts the entire second at iat + MAX_PROOF_AGE_SECS.
+        self.iat.saturating_add(MAX_PROOF_AGE_SECS + 1)
+    }
 }
 
 fn validate_dpop_proof_claims(
@@ -149,12 +163,12 @@ fn validate_dpop_proof_claims(
         })?;
 
     let now = now_seconds();
-    if iat > now + MAX_CLOCK_SKEW_SECS {
+    if iat > now.saturating_add(MAX_CLOCK_SKEW_SECS) {
         return Err(QidError::BadRequest {
             message: "DPoP proof iat is in the future (beyond clock skew)".to_string(),
         });
     }
-    if iat < now - MAX_PROOF_AGE_SECS {
+    if iat < now.saturating_sub(MAX_PROOF_AGE_SECS) {
         return Err(QidError::BadRequest {
             message: "DPoP proof has expired (iat too old)".to_string(),
         });

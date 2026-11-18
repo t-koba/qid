@@ -148,7 +148,14 @@ impl<T: RedisLikeTransport> RedisLikeCache<T> {
         Ok(())
     }
 
-    pub fn put_if_absent(&mut self, put: CachePut) -> QidResult<bool> {
+    pub fn put_if_absent(&mut self, mut put: CachePut) -> QidResult<bool> {
+        put.ttl_seconds = put.ttl_seconds.min(self.config.ttl_seconds);
+        self.put_if_absent_with_exact_ttl(put)
+    }
+
+    /// Insert atomically with the caller's TTL, without applying the cache TTL cap.
+    /// Use for replay records that must live until a protocol deadline.
+    pub fn put_if_absent_with_exact_ttl(&mut self, put: CachePut) -> QidResult<bool> {
         if put.ttl_seconds == 0 {
             return Err(bad_request("Cache put TTL must be greater than zero"));
         }
@@ -158,7 +165,7 @@ impl<T: RedisLikeTransport> RedisLikeCache<T> {
         let key = put.key.render(&self.config)?;
         let response = self.transport.execute(RedisLikeCommand::SetNxEx {
             key,
-            ttl_seconds: put.ttl_seconds.min(self.config.ttl_seconds),
+            ttl_seconds: put.ttl_seconds,
             value: put.value,
         })?;
         Ok(response.as_deref() == Some(b"OK"))

@@ -201,6 +201,9 @@ jobs:
       - name: Run EAP fuzz smoke
         working-directory: fuzz
         run: cargo fuzz run eap -- -max_total_time=30
+      - name: Run qid-tls record fuzz smoke
+        working-directory: fuzz
+        run: cargo fuzz run tls13_record -- -max_total_time=30
 
   coverage:
     name: Coverage

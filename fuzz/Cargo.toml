@@ -10,6 +10,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+aes-gcm = "0.10"
 libfuzzer-sys = "0.4"
 qid-crypto = { path = "../qid-crypto" }
 qid-core = { path = "../qid-core" }
@@ -17,6 +18,7 @@ qid-network = { path = "../qid-network" }
 qid-policy = { path = "../qid-policy" }
 qid-saml = { path = "../qid-saml" }
 qid-scim = { path = "../qid-scim" }
+qid-tls = { path = "../qid-tls" }
 serde_json = "1"
 
 [[bin]]
@@ -46,3 +48,7 @@ path = "fuzz_targets/tacacs.rs"
 [[bin]]
 name = "eap"
 path = "fuzz_targets/eap.rs"
+
+[[bin]]
+name = "tls13_record"
+path = "fuzz_targets/tls13_record.rs"

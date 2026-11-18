@@ -13,6 +13,7 @@ use std::fmt;
 const LEGACY_VERSION: u16 = 0x0303;
 const RANDOM_LEN: usize = 32;
 const EXTENSION_HEADER_LEN: usize = 4;
+const SUPPORTED_VERSIONS_TYPE: u16 = 0x002b;
 
 /// ServerHello handshake fields, excluding the four-byte handshake header.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +52,7 @@ pub enum Error {
     DuplicateExtension,
     InvalidSelectedIdentity,
     InvalidKeyShare,
+    InvalidSupportedVersions,
     InvalidNegotiation,
 }
 
@@ -64,6 +66,7 @@ impl fmt::Display for Error {
             Self::DuplicateExtension => "ServerHello extension appears more than once",
             Self::InvalidSelectedIdentity => "selected_identity must be exactly two bytes",
             Self::InvalidKeyShare => "key_share entry is malformed",
+            Self::InvalidSupportedVersions => "supported_versions must select TLS 1.3",
             Self::InvalidNegotiation => "certificate with external PSK negotiation is invalid",
         })
     }
@@ -91,7 +94,7 @@ fn parse_key_share(body: &[u8]) -> Result<KeyShare<'_>, Error> {
     let group = read_u16(&mut reader).map_err(|_| Error::InvalidKeyShare)?;
     let exchange_len = usize::from(read_u16(&mut reader).map_err(|_| Error::InvalidKeyShare)?);
     let key_exchange = take(&mut reader, exchange_len).map_err(|_| Error::InvalidKeyShare)?;
-    if !reader.is_empty() {
+    if !reader.is_empty() || key_exchange.is_empty() {
         return Err(Error::InvalidKeyShare);
     }
     Ok(KeyShare {
@@ -106,6 +109,9 @@ pub fn parse(body: &[u8]) -> Result<(ServerHello<'_>, Negotiated<'_>), Error> {
     let legacy_version = read_u16(&mut reader)?;
     let random = take(&mut reader, RANDOM_LEN)?;
     let session_id_len = usize::from(take(&mut reader, 1)?[0]);
+    if session_id_len > 32 {
+        return Err(Error::InvalidLegacyFields);
+    }
     let legacy_session_id_echo = take(&mut reader, session_id_len)?;
     let cipher_suite = read_u16(&mut reader)?;
     let legacy_compression_method = take(&mut reader, 1)?[0];
@@ -114,6 +120,9 @@ pub fn parse(body: &[u8]) -> Result<(ServerHello<'_>, Negotiated<'_>), Error> {
     }
 
     let extensions_len = usize::from(read_u16(&mut reader)?);
+    if extensions_len < 6 {
+        return Err(Error::MalformedExtensions);
+    }
     let extensions = take(&mut reader, extensions_len)?;
     if !reader.is_empty() {
         return Err(Error::TrailingBytes);
@@ -123,6 +132,7 @@ pub fn parse(body: &[u8]) -> Result<(ServerHello<'_>, Negotiated<'_>), Error> {
     let mut key_share = None;
     let mut cert_with_extern_psk = false;
     let mut early_data = false;
+    let mut supported_versions = false;
     let mut seen = Vec::new();
     let mut remaining = extensions;
     while !remaining.is_empty() {
@@ -157,8 +167,18 @@ pub fn parse(body: &[u8]) -> Result<(ServerHello<'_>, Negotiated<'_>), Error> {
                 }
                 early_data = true;
             }
+            SUPPORTED_VERSIONS_TYPE => {
+                if ext_body != [0x03, 0x04] {
+                    return Err(Error::InvalidSupportedVersions);
+                }
+                supported_versions = true;
+            }
             _ => {}
         }
+    }
+
+    if !supported_versions {
+        return Err(Error::InvalidSupportedVersions);
     }
 
     // RFC 9973 §4: the certificate extension requires both a selected PSK and
@@ -223,6 +243,10 @@ mod tests {
         parts.iter().flatten().copied().collect()
     }
 
+    fn supported_versions() -> Vec<u8> {
+        extension(SUPPORTED_VERSIONS_TYPE, &[0x03, 0x04])
+    }
+
     #[test]
     fn parses_rfc8448_server_hello() {
         let body = rfc8448_body();
@@ -246,6 +270,7 @@ mod tests {
     #[test]
     fn accepts_certificate_with_external_psk_negotiation() {
         let parts = [
+            supported_versions(),
             extension(KEY_SHARE_TYPE, &hex::decode(KEY_SHARE_BODY).unwrap()),
             extension(PRE_SHARED_KEY_TYPE, &[0x00, 0x07]),
             extension(CERT_WITH_EXTERN_PSK_TYPE, &[]),
@@ -269,10 +294,17 @@ mod tests {
         let psk = extension(PRE_SHARED_KEY_TYPE, &[0x00, 0x07]);
         let cert = extension(CERT_WITH_EXTERN_PSK_TYPE, &[]);
         let early_data = extension(EARLY_DATA_TYPE, &[]);
+        let version = supported_versions();
         for parts in [
-            vec![key_share.clone(), cert.clone()],
-            vec![psk.clone(), cert.clone()],
-            vec![key_share.clone(), psk.clone(), early_data, cert.clone()],
+            vec![version.clone(), key_share.clone(), cert.clone()],
+            vec![version.clone(), psk.clone(), cert.clone()],
+            vec![
+                version,
+                key_share.clone(),
+                psk.clone(),
+                early_data,
+                cert.clone(),
+            ],
         ] {
             let body = body_with_extensions(&extensions(&parts));
             assert_eq!(parse(&body).unwrap_err(), Error::InvalidNegotiation);
@@ -285,10 +317,21 @@ mod tests {
         let psk = extension(PRE_SHARED_KEY_TYPE, &[0x00, 0x07]);
         let cert = extension(CERT_WITH_EXTERN_PSK_TYPE, &[]);
         let nonempty_cert = extension(CERT_WITH_EXTERN_PSK_TYPE, &[0x00]);
-        let duplicate = extensions(&[key_share.clone(), psk.clone(), cert.clone(), cert]);
+        let version = supported_versions();
+        let duplicate = extensions(&[
+            version.clone(),
+            key_share.clone(),
+            psk.clone(),
+            cert.clone(),
+            cert,
+        ]);
 
-        let nonempty_cert_body =
-            body_with_extensions(&extensions(&[key_share, psk, nonempty_cert]));
+        let nonempty_cert_body = body_with_extensions(&extensions(&[
+            version.clone(),
+            key_share,
+            psk.clone(),
+            nonempty_cert,
+        ]));
         assert_eq!(
             parse(&nonempty_cert_body).unwrap_err(),
             Error::MalformedExtensions
@@ -310,8 +353,33 @@ mod tests {
 
         let bad_key_share = extension(KEY_SHARE_TYPE, &[0x00, 0x1d, 0x00, 0x20, 0x00]);
         assert_eq!(
-            parse(&body_with_extensions(&bad_key_share)).unwrap_err(),
+            parse(&body_with_extensions(&extensions(&[
+                version.clone(),
+                bad_key_share
+            ])))
+            .unwrap_err(),
             Error::InvalidKeyShare
+        );
+        let empty_key_share = extension(KEY_SHARE_TYPE, &[0x00, 0x1d, 0x00, 0x00]);
+        assert_eq!(
+            parse(&body_with_extensions(&extensions(&[
+                version.clone(),
+                empty_key_share
+            ])))
+            .unwrap_err(),
+            Error::InvalidKeyShare
+        );
+        assert_eq!(
+            parse(&body_with_extensions(&[])).unwrap_err(),
+            Error::MalformedExtensions
+        );
+        assert_eq!(
+            parse(&body_with_extensions(&extensions(&[
+                extension(KEY_SHARE_TYPE, &hex::decode(KEY_SHARE_BODY).unwrap()),
+                psk
+            ])))
+            .unwrap_err(),
+            Error::InvalidSupportedVersions
         );
     }
 
@@ -325,7 +393,22 @@ mod tests {
         body[FIXED_HEADER_LEN - 1] = 1;
         assert_eq!(parse(&body).unwrap_err(), Error::InvalidLegacyFields);
 
-        let body = body_with_extensions(&extension(PRE_SHARED_KEY_TYPE, &[0x00]));
+        let body = body_with_extensions(&extensions(&[
+            extension(PRE_SHARED_KEY_TYPE, &[0x00]),
+            supported_versions(),
+        ]));
         assert_eq!(parse(&body).unwrap_err(), Error::InvalidSelectedIdentity);
+
+        for (length, accepted) in [(32, true), (33, false), (255, false)] {
+            let mut session = rfc8448_body()[..FIXED_HEADER_LEN - 1 - 2 - 1].to_vec();
+            session.push(u8::try_from(length).unwrap());
+            session.extend(vec![0; length]);
+            session.extend_from_slice(&rfc8448_body()[FIXED_HEADER_LEN - 3..]);
+            let result = parse(&session);
+            assert_eq!(result.is_ok(), accepted, "session id length {length}");
+            if !accepted {
+                assert_eq!(result.unwrap_err(), Error::InvalidLegacyFields);
+            }
+        }
     }
 }

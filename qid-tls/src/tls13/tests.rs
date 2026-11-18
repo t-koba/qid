@@ -13,6 +13,23 @@ const FINISHED: [u8; 36] = *b"\x14\x00\x00\x20\
     \xa8\xec\x43\x6d\x67\x76\x34\xae\x52\x5a\xc1\xfc\xeb\xe1\x1a\x03\
     \x9e\xc1\x76\x94\xfa\xc6\xe9\x85\x27\xb6\x42\xf2\xed\xd5\xce\x61";
 
+// RFC 8448 §3, server application traffic secret and protected payload.
+const SERVER_APPLICATION_SECRET_HEX: &str =
+    "a11af9f05531f856ad47116b45a950328204b4f44bfb6b3a4b4f1f3fcb631643";
+const SERVER_APPLICATION_KEY_HEX: &str = "9f02283b6c9c07efc26bb9f2ac92e356";
+const SERVER_APPLICATION_IV_HEX: &str = "cf782b88dd83549aadf1e984";
+const APPLICATION_PAYLOAD_HEX: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f3031";
+const APPLICATION_RECORD_HEX: &str = "17030300432e937e11ef4ac740e538ad36005fc4a46932fc3225d05f82aa1b36e30efaf97d90e6dffc602dcb501a59a8fcc49c4bf2e5f0a21c0047c2abf332540dd032e167c2955d";
+
+fn from_hex<const N: usize>(digits: &str) -> [u8; N] {
+    hex::decode(digits).unwrap().try_into().unwrap()
+}
+
+fn server_application_epoch() -> WriteEpoch {
+    WriteEpoch::aes_128_gcm_sha256(&from_hex::<32>(SERVER_APPLICATION_SECRET_HEX))
+        .expect("initialize test write epoch")
+}
+
 fn epoch() -> ReadEpoch {
     ReadEpoch::aes_128_gcm_sha256(&SECRET).expect("initialize test read epoch")
 }
@@ -145,4 +162,98 @@ fn closes_at_sequence_exhaustion_without_wrap() {
             .is_empty()
     );
     assert_closed(&mut reader);
+}
+
+#[test]
+fn derives_rfc8448_server_application_key_and_iv() {
+    let secret = from_hex::<32>(SERVER_APPLICATION_SECRET_HEX);
+    let (key, iv) = derive_key_iv(&secret).expect("derive server application key and IV");
+    assert_eq!(hex::encode(&key[..]), SERVER_APPLICATION_KEY_HEX);
+    assert_eq!(hex::encode(iv), SERVER_APPLICATION_IV_HEX);
+}
+
+#[test]
+fn protects_rfc8448_server_application_record() {
+    let payload = hex::decode(APPLICATION_PAYLOAD_HEX).unwrap();
+    assert_eq!(payload.len(), 50);
+    let mut writer = server_application_epoch();
+    // RFC 8448 protects this payload as the second server application record,
+    // so its sequence number is one rather than zero.
+    writer.next_sequence = Some(1);
+    let mut out = Vec::new();
+    writer
+        .protect(APPLICATION_DATA, &payload, &mut out)
+        .expect("protect RFC 8448 application data");
+    assert_eq!(out.len(), 72);
+    assert_eq!(hex::encode(&out), APPLICATION_RECORD_HEX);
+}
+
+#[test]
+fn advances_write_sequence_without_reusing_a_nonce() {
+    let secret = from_hex::<32>(SERVER_APPLICATION_SECRET_HEX);
+    let payload = hex::decode(APPLICATION_PAYLOAD_HEX).unwrap();
+    let mut writer = server_application_epoch();
+    let mut first = Vec::new();
+    let mut second = Vec::new();
+    writer
+        .protect(APPLICATION_DATA, &payload, &mut first)
+        .expect("protect at sequence zero");
+    writer
+        .protect(APPLICATION_DATA, &payload, &mut second)
+        .expect("protect at sequence one");
+    assert_ne!(first[HEADER_LEN..], second[HEADER_LEN..]);
+
+    let mut reader =
+        ReadEpoch::aes_128_gcm_sha256(&secret).expect("initialize matching read epoch");
+    let first_inner = reader.open(&mut first).expect("open sequence zero");
+    let second_inner = reader.open(&mut second).expect("open sequence one");
+    assert_eq!(first_inner.content_type, APPLICATION_DATA);
+    assert_eq!(second_inner.content_type, APPLICATION_DATA);
+    assert_eq!(second_inner.content, payload);
+}
+
+#[test]
+fn rejects_invalid_write_inner_plaintext_without_changing_output() {
+    let payload = hex::decode(APPLICATION_PAYLOAD_HEX).unwrap();
+    let mut writer = server_application_epoch();
+    let mut out = vec![0xaa, 0xbb];
+    for content_type in [0x14, 0xff] {
+        assert_eq!(
+            writer.protect(content_type, &payload, &mut out),
+            Err(RecordError::InvalidInnerPlaintext)
+        );
+    }
+    for (content_type, content) in [
+        (ALERT, &[][..]),
+        (HANDSHAKE, &[][..]),
+        (APPLICATION_DATA, &[0; MAX_INNER_PLAINTEXT][..]),
+    ] {
+        assert_eq!(
+            writer.protect(content_type, content, &mut out),
+            Err(RecordError::InvalidInnerPlaintext)
+        );
+    }
+    assert_eq!(out, [0xaa, 0xbb]);
+
+    // Rejected input consumed no sequence, so the epoch still protects records.
+    writer
+        .protect(ALERT, b"\x02\x28", &mut out)
+        .expect("protect valid alert after rejections");
+    assert!(out.len() > 2);
+}
+
+#[test]
+fn closes_write_epoch_at_sequence_exhaustion() {
+    let payload = hex::decode(APPLICATION_PAYLOAD_HEX).unwrap();
+    let mut writer = server_application_epoch();
+    writer.next_sequence = Some(u64::MAX);
+    let mut out = Vec::new();
+    writer
+        .protect(APPLICATION_DATA, &payload, &mut out)
+        .expect("protect with final sequence");
+    assert_eq!(
+        writer.protect(APPLICATION_DATA, &payload, &mut out),
+        Err(RecordError::EpochClosed)
+    );
+    assert_eq!(out.len(), 72);
 }

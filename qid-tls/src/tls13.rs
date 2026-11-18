@@ -53,6 +53,9 @@ pub struct InnerPlaintext<'a> {
 ///
 /// The caller supplies a new traffic secret for each key change and must enforce the
 /// cipher suite's usage limits (RFC 8446 §5.5); sequence exhaustion is not a rekey policy.
+/// Epochs must be swapped only on a record boundary: messages immediately preceding a key
+/// change are aligned to a record boundary (RFC 8446 §5.1), so a read epoch is never
+/// changed in the middle of a record.
 pub struct ReadEpoch {
     cipher: Aes128Gcm,
     iv: RecordIv,

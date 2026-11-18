@@ -279,34 +279,6 @@ mod tests {
     }
 
     #[test]
-    fn identity_rejects_empty_and_oversize_fields() {
-        assert_eq!(
-            ImportedIdentity::new(Vec::new(), CONTEXT.to_vec()).unwrap_err(),
-            Error::EmptyExternalIdentity
-        );
-        assert_eq!(
-            ImportedIdentity::new(vec![1; usize::from(u16::MAX) + 1], CONTEXT.to_vec())
-                .unwrap_err(),
-            Error::FieldTooLong
-        );
-        assert_eq!(
-            ImportedIdentity::new(
-                EXTERNAL_IDENTITY.to_vec(),
-                vec![2; usize::from(u16::MAX) + 1]
-            )
-            .unwrap_err(),
-            Error::FieldTooLong
-        );
-        let direct = ImportedIdentity {
-            external_identity: Vec::new(),
-            context: Vec::new(),
-            target_protocol: TARGET_PROTOCOL,
-            target_kdf: TARGET_KDF,
-        };
-        assert_eq!(direct.encode().unwrap_err(), Error::EmptyExternalIdentity);
-    }
-
-    #[test]
     fn identity_rejects_unsupported_or_empty_fields() {
         assert_eq!(
             ImportedIdentity::new(Vec::new(), CONTEXT.to_vec()).unwrap_err(),
@@ -326,6 +298,25 @@ mod tests {
         assert_eq!(
             ImportedIdentity::new(vec![0; usize::from(u16::MAX) + 1], Vec::new()).unwrap_err(),
             Error::FieldTooLong
+        );
+        assert_eq!(
+            ImportedIdentity::new(
+                EXTERNAL_IDENTITY.to_vec(),
+                vec![0; usize::from(u16::MAX) + 1]
+            )
+            .unwrap_err(),
+            Error::FieldTooLong
+        );
+        assert_eq!(
+            ImportedIdentity {
+                external_identity: Vec::new(),
+                context: Vec::new(),
+                target_protocol: TARGET_PROTOCOL,
+                target_kdf: TARGET_KDF,
+            }
+            .encode()
+            .unwrap_err(),
+            Error::EmptyExternalIdentity
         );
     }
 
@@ -418,15 +409,6 @@ mod tests {
         assert_ne!(
             *imported_psk_binder(&ipsk, &prefix).unwrap(),
             *psk_binder(&binder_key(&ipsk, b"ext binder").unwrap(), &prefix).unwrap()
-        );
-    }
-
-    #[test]
-    fn imported_binder_differs_from_extended_binder() {
-        let ipsk = import_external_psk(&EPSK, &fixture()).unwrap();
-        assert_ne!(
-            *binder_key(&ipsk, b"imp binder").unwrap(),
-            *binder_key(&ipsk, b"ext binder").unwrap()
         );
     }
 

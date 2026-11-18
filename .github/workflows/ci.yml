@@ -69,3 +69,5 @@ jobs:
             echo "ERROR: blocking Client::new() without builder/timeout found"
             exit 1
           }
+      - name: Verify release checksum sidecars
+        run: bash ./scripts/check-release-checksums.sh

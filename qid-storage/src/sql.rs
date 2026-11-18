@@ -4,7 +4,7 @@ use qid_core::{
     models::*,
     tenant::{RealmId, TenantId},
 };
-use sqlx::AnyPool;
+use sqlx::{AnyPool, AssertSqlSafe, SqlSafeStr};
 use std::collections::BTreeMap;
 
 use crate::{
@@ -137,10 +137,13 @@ fn postgres_migrator() -> sqlx::migrate::Migrator {
         .iter()
         .cloned()
         .map(|mut migration| {
-            migration.sql = std::borrow::Cow::Owned(
+            // Only embedded migrations and fixed SQL replacements enter this statement.
+            migration.sql = AssertSqlSafe(
                 migration
                     .sql
-                    .replace("PRAGMA foreign_keys = off;", "").replace("\r\n", "\n")
+                    .as_str()
+                    .replace("PRAGMA foreign_keys = off;", "")
+                    .replace("\r\n", "\n")
                     .replace("PRAGMA foreign_keys = on;", "")
                     .replace("DATETIME", "BIGINT")
                     .replace("CURRENT_TIMESTAMP", POSTGRES_EPOCH_DEFAULT)
@@ -153,7 +156,8 @@ fn postgres_migrator() -> sqlx::migrate::Migrator {
                         "ON custom_domains (LOWER(hostname));",
                         "ON custom_domains (LOWER(hostname COLLATE \"C\"));",
                     ),
-            );
+            )
+            .into_sql_str();
             migration
         })
         .collect::<Vec<_>>();
@@ -162,6 +166,8 @@ fn postgres_migrator() -> sqlx::migrate::Migrator {
         ignore_missing: MIGRATOR.ignore_missing,
         locking: MIGRATOR.locking,
         no_tx: MIGRATOR.no_tx,
+        table_name: MIGRATOR.table_name.clone(),
+        create_schemas: MIGRATOR.create_schemas.clone(),
     }
 }
 

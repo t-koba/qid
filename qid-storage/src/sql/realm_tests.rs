@@ -12,7 +12,11 @@ async fn setup() -> IsolatedDb {
             .replace("https://realm.", "https://realm-peer.")
             .replace("'AQ=='", "'Ag=='"),
     ] {
-        sqlx::raw_sql(&sql).execute(&db.repo().pool).await.unwrap();
+        // Both seed variants come from the embedded fixture and fixed replacements.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+            .execute(&db.repo().pool)
+            .await
+            .unwrap();
     }
     sqlx::query("UPDATE audit_retention_configs SET stream_id = 'realm:' || realm_id")
         .execute(&db.repo().pool)
@@ -322,7 +326,10 @@ async fn realm_deletion_sql_rechecks_tenant_after_id_reuse() {
         {
             continue;
         }
-        sqlx::raw_sql(statement).execute(&repo.pool).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(statement))
+            .execute(&repo.pool)
+            .await
+            .unwrap();
     }
     let before = counts(repo, "realm").await;
     assert!(before.iter().all(|(_, count)| *count == 1));

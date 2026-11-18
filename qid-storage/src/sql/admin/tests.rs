@@ -3,9 +3,9 @@ use std::borrow::Cow;
 
 const INDEX_VERSION: i64 = 20261115000002;
 
-async fn plan(pool: &sqlx::SqlitePool, query: &str, args: &[i64]) -> Vec<String> {
+async fn plan(pool: &sqlx::SqlitePool, query: &'static str, args: &[i64]) -> Vec<String> {
     let sql = format!("EXPLAIN QUERY PLAN {query}");
-    let mut explain = sqlx::query_as::<_, (i64, i64, i64, String)>(&sql);
+    let mut explain = sqlx::query_as::<_, (i64, i64, i64, String)>(sqlx::AssertSqlSafe(sql));
     for arg in args {
         explain = explain.bind(*arg);
     }

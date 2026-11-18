@@ -669,31 +669,27 @@ async fn postgres_realm_creation_clears_legacy_non_fk_orphans() {
             .iter()
             .any(|table| s.starts_with(&format!("INSERT INTO {table} (")))
         }) {
-            sqlx::raw_sql(&statement.replace("'realm", &format!("'{scope}")))
-                .execute(&pool)
-                .await
-                .unwrap();
+            // Scope is a fixed prefix plus a generated ULID and optional peer suffix.
+            sqlx::raw_sql(sqlx::AssertSqlSafe(
+                statement.replace("'realm", &format!("'{scope}")),
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
         }
     }
     let counts_sql = format!(
         "{} ORDER BY resource",
         include_str!("fixtures/realm_counts.sql").replace('?', "$1")
     );
-    let before: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
-        .bind(&peer)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let counts_query = || sqlx::query_as(sqlx::AssertSqlSafe(counts_sql.as_str()));
+    let before: Vec<(String, i64)> = counts_query().bind(&peer).fetch_all(&pool).await.unwrap();
     sqlx::query("DELETE FROM realms WHERE id = $1")
         .bind(&realm)
         .execute(&pool)
         .await
         .unwrap();
-    let orphans: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
-        .bind(&realm)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let orphans: Vec<(String, i64)> = counts_query().bind(&realm).fetch_all(&pool).await.unwrap();
     for table in ["service_accounts", "ciam_brands"] {
         assert_eq!(orphans.iter().find(|(t, _)| t == table).unwrap().1, 1);
     }
@@ -706,17 +702,11 @@ async fn postgres_realm_creation_clears_legacy_non_fk_orphans() {
                 .await,
             Err(qid_core::QidError::Conflict { .. })
         ));
-        let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
-            .bind(&realm)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+        let remaining: Vec<(String, i64)> =
+            counts_query().bind(&realm).fetch_all(&pool).await.unwrap();
         assert_eq!(remaining, orphans);
-        let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
-            .bind(&peer)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+        let remaining: Vec<(String, i64)> =
+            counts_query().bind(&peer).fetch_all(&pool).await.unwrap();
         assert_eq!(remaining, before);
     }
     repo.create_realm(&"tenant-b".into(), &id, &issuer, None)
@@ -726,19 +716,11 @@ async fn postgres_realm_creation_clears_legacy_non_fk_orphans() {
         repo.get_realm_tenant(&id).await.unwrap().as_deref(),
         Some("tenant-b")
     );
-    let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
-        .bind(&realm)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let remaining: Vec<(String, i64)> = counts_query().bind(&realm).fetch_all(&pool).await.unwrap();
     for (table, count) in remaining {
         assert_eq!(count, i64::from(table == "realms"), "{table}");
     }
-    let remaining: Vec<(String, i64)> = sqlx::query_as(&counts_sql)
-        .bind(&peer)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let remaining: Vec<(String, i64)> = counts_query().bind(&peer).fetch_all(&pool).await.unwrap();
     assert_eq!(remaining, before);
     for scope in [&realm, &peer] {
         for statement in [

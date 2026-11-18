@@ -22,13 +22,14 @@ async fn postgres_cleanup_preserves_fresh_elevation_reusing_a_stale_id() {
     let mut issuer = PgConnection::connect_with(&options).await.unwrap();
     // Isolate the global cleanup from other PostgreSQL tests and remove all
     // fixture state at the end, including migration bookkeeping.
+    // The SQL identifier is a fixed prefix plus a generated lowercase ULID.
     let schema = format!("elevation_{}", ulid::Ulid::new().to_string().to_lowercase());
-    issuer
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&mut issuer)
         .await
         .unwrap();
-    issuer
-        .execute(format!("SET search_path TO {schema}").as_str())
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("SET search_path TO {schema}")))
+        .execute(&mut issuer)
         .await
         .unwrap();
     let mut repo_url = options.to_url_lossy();
@@ -78,8 +79,8 @@ async fn postgres_cleanup_preserves_fresh_elevation_reusing_a_stale_id() {
         1
     );
     repo.close().await;
-    issuer
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&mut issuer)
         .await
         .unwrap();
     issuer.close().await.unwrap();

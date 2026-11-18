@@ -245,7 +245,7 @@ async fn workload_certificate_digest_migration_preserves_legacy_spki_value() {
         } else {
             insert.to_string()
         };
-        sqlx::query(&insert)
+        sqlx::query(sqlx::AssertSqlSafe(insert))
             .bind(&digest)
             .execute(&pool)
             .await

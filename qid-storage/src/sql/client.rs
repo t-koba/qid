@@ -148,7 +148,8 @@ impl ClientRepository for SqlRepository {
         let sql = format!(
             "SELECT id, realm_id, client_id, client_type, token_endpoint_auth_method, client_secret_hash, mtls_certificate_thumbprints, jwks, redirect_uris, grant_types, client_name, client_uri, logo_uri, contacts, post_logout_redirect_uris, default_max_age, require_auth_time, sector_identifier_uri, subject_type, backchannel_logout_uri, frontchannel_logout_uri, backchannel_client_notification_endpoint, require_pushed_authorization_requests FROM clients WHERE client_id = $1 AND realm_id IN ({placeholders})"
         );
-        let mut query = sqlx::query_as::<_, ClientRow>(&sql).bind(client_id);
+        // Only numeric placeholders are interpolated; all values remain bound.
+        let mut query = sqlx::query_as::<_, ClientRow>(sqlx::AssertSqlSafe(sql)).bind(client_id);
         for realm_id in realm_ids {
             query = query.bind(realm_id.as_str());
         }

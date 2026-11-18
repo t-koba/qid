@@ -163,7 +163,13 @@ impl ScimRepository for SqlRepository {
         id: &str,
         mutation: ScimMutator<'_, ScimUser>,
     ) -> QidResult<Option<ScimUser>> {
-        let (mut tx, current) = self.lock_scim_row::<ScimUserRow>("scim_users", id).await?;
+        let (mut tx, current) = self
+            .lock_scim_row::<ScimUserRow>(
+                "SELECT * FROM scim_users WHERE id = $1",
+                "SELECT * FROM scim_users WHERE id = $1 FOR UPDATE",
+                id,
+            )
+            .await?;
         let Some(current) = current else {
             return Ok(None);
         };
@@ -191,7 +197,7 @@ impl ScimRepository for SqlRepository {
                 replacement
             }
             ScimMutation::Delete => {
-                delete_scim_row(&mut *tx, "scim_users", id).await?;
+                delete_scim_row(&mut *tx, "DELETE FROM scim_users WHERE id = $1", id).await?;
                 current
             }
         };
@@ -282,7 +288,11 @@ impl ScimRepository for SqlRepository {
         mutation: ScimMutator<'_, ScimGroup>,
     ) -> QidResult<Option<ScimGroup>> {
         let (mut tx, current) = self
-            .lock_scim_row::<ScimGroupRow>("scim_groups", id)
+            .lock_scim_row::<ScimGroupRow>(
+                "SELECT * FROM scim_groups WHERE id = $1",
+                "SELECT * FROM scim_groups WHERE id = $1 FOR UPDATE",
+                id,
+            )
             .await?;
         let Some(current) = current else {
             return Ok(None);
@@ -306,7 +316,7 @@ impl ScimRepository for SqlRepository {
                 replacement
             }
             ScimMutation::Delete => {
-                delete_scim_row(&mut *tx, "scim_groups", id).await?;
+                delete_scim_row(&mut *tx, "DELETE FROM scim_groups WHERE id = $1", id).await?;
                 current
             }
         };
@@ -437,33 +447,32 @@ impl SqlRepository {
     /// callback/conversion/query errors, panics and cancellation.
     async fn lock_scim_row<T>(
         &self,
-        table: &str,
+        sqlite_sql: &'static str,
+        postgres_sql: &'static str,
         id: &str,
     ) -> QidResult<(sqlx::Transaction<'_, sqlx::Any>, Option<T>)>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> + Send + Unpin,
     {
         let mut tx = self.begin_write("BEGIN").await?;
-        // Table names are internal constants, never request data.
-        let lock = match self.database_kind {
-            SqlDatabaseKind::Sqlite => "",
-            SqlDatabaseKind::Postgres => " FOR UPDATE",
-        };
-        let current = sqlx::query_as(&format!("SELECT * FROM {table} WHERE id = $1{lock}"))
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
+        let current = sqlx::query_as(match self.database_kind {
+            SqlDatabaseKind::Sqlite => sqlite_sql,
+            SqlDatabaseKind::Postgres => postgres_sql,
+        })
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage_to_qid_error)?;
         Ok((tx, current))
     }
 }
 
 async fn delete_scim_row<'e>(
     executor: impl sqlx::Executor<'e, Database = sqlx::Any>,
-    table: &str,
+    sql: &'static str,
     id: &str,
 ) -> QidResult<()> {
-    sqlx::query(&format!("DELETE FROM {table} WHERE id = $1"))
+    sqlx::query(sql)
         .bind(id)
         .execute(executor)
         .await

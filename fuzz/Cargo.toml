@@ -68,3 +68,7 @@ path = "fuzz_targets/tls13_psk_extension.rs"
 [[bin]]
 name = "tls13_encrypted_extensions"
 path = "fuzz_targets/tls13_encrypted_extensions.rs"
+
+[[bin]]
+name = "tls13_certificate"
+path = "fuzz_targets/tls13_certificate.rs"

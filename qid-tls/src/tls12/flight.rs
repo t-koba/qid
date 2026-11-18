@@ -51,10 +51,13 @@ pub struct ServerFirstFlightInput<'a> {
     pub signing_key: &'a SigningKey,
 }
 
-/// The encoded first flight and the SHA-256 transcript through ServerHelloDone.
+/// The encoded first flight and the transcript through ServerHelloDone.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerFirstFlight {
     pub messages: Vec<HandshakeMessage>,
+    /// Exact bytes hashed by `transcript_sha256`: the framed ClientHello
+    /// followed by the framed emitted messages in order.
+    pub transcript: Vec<u8>,
     pub transcript_sha256: [u8; 32],
     pub selected_ocsp_multi: bool,
 }
@@ -115,14 +118,15 @@ pub fn build_server_first_flight(
         body: Vec::new(),
     });
 
-    let mut transcript = Sha256::new();
-    transcript.update(input.client_hello_message);
+    let mut transcript = Vec::with_capacity(4 + input.client_hello_message.len());
+    transcript.extend_from_slice(input.client_hello_message);
     for message in &messages {
-        transcript.update(wrap_handshake_message(message.msg_type, &message.body)?);
+        transcript.extend_from_slice(&wrap_handshake_message(message.msg_type, &message.body)?);
     }
     Ok(ServerFirstFlight {
         messages,
-        transcript_sha256: transcript.finalize().into(),
+        transcript_sha256: Sha256::digest(&transcript).into(),
+        transcript,
         selected_ocsp_multi: status.ocsp_multi_usable,
     })
 }
@@ -633,6 +637,7 @@ mod tests {
         for emitted in &flight.messages {
             joined.extend_from_slice(&framed(emitted));
         }
+        assert_eq!(flight.transcript, joined);
         assert_eq!(
             flight.transcript_sha256.as_slice(),
             Sha256::digest(joined).as_slice()

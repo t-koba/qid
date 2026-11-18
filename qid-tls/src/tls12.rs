@@ -1,14 +1,21 @@
-//! Strict TLS 1.2 wire groundwork: handshake record reassembly, ClientHello
-//! parsing, and RFC 6961 `status_request_v2` parsing and status encoding.
+//! Strict TLS 1.2 wire groundwork and offline handshake derivation: handshake
+//! record reassembly, ClientHello parsing, RFC 6961 `status_request_v2`
+//! parsing and encoding, the TLS 1.2 key schedule and Finished messages.
 //!
-//! This is parsing/encoding groundwork only. It does not perform a handshake,
+//! All of this operates on caller-supplied bytes. It does not encrypt records,
 //! enable a listener, or change rustls defaults.
 
+mod finish;
 mod flight;
+mod prf;
 mod status;
 mod wire;
 
+pub use finish::{
+    FinishedResult, complete_server_handshake, ecdh_pre_master, parse_client_key_exchange,
+};
 pub use flight::{ServerFirstFlight, ServerFirstFlightInput, build_server_first_flight};
+pub use prf::{KeyBlock, ems_session_hash, key_block, master_secret, tls12_prf, verify_data};
 pub use status::{
     OcspResponse, StatusRequestItem, StatusRequestV2, StatusSelection,
     build_certificate_status_multi, parse_status_request_v2, select_status_request,
@@ -84,6 +91,10 @@ pub enum Tls12Error {
     InvalidCertificateList,
     InvalidEcdhePoint,
     InvalidSignature,
+    InvalidClientKeyExchange,
+    InvalidFinishedMessage,
+    FinishedVerifyFailed,
+    InvalidServerFirstFlight,
 }
 
 impl std::fmt::Display for Tls12Error {
@@ -121,6 +132,10 @@ impl std::fmt::Display for Tls12Error {
             Self::InvalidCertificateList => "invalid TLS 1.2 certificate list",
             Self::InvalidEcdhePoint => "invalid P-256 ECDHE public point",
             Self::InvalidSignature => "invalid P-256 ECDSA signature encoding",
+            Self::InvalidClientKeyExchange => "invalid TLS 1.2 ClientKeyExchange",
+            Self::InvalidFinishedMessage => "invalid TLS 1.2 Finished message",
+            Self::FinishedVerifyFailed => "TLS 1.2 Finished verification failed",
+            Self::InvalidServerFirstFlight => "invalid TLS 1.2 server first flight",
         })
     }
 }

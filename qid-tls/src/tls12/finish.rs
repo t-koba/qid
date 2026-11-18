@@ -60,6 +60,44 @@ fn framed_body(message: &[u8], msg_type: u8, error: Tls12Error) -> Result<&[u8],
     Ok(&message[4..])
 }
 
+/// Derive the master secret and key block shared by handshake completion
+/// and early read-key installation. The flight and the ClientKeyExchange are
+/// validated before any key material is returned.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn derive_handshake_keys(
+    flight: &ServerFirstFlight,
+    client_hello_message: &[u8],
+    client_key_exchange_message: &[u8],
+    client_key_exchange_body: &[u8],
+    ecdhe_secret: &SecretKey,
+    client_random: &[u8; 32],
+    server_random: &[u8; 32],
+    ems_negotiated: bool,
+) -> Result<(Zeroizing<[u8; 48]>, KeyBlock), Tls12Error> {
+    if flight.messages.first().map(|message| message.msg_type) != Some(SERVER_HELLO)
+        || !flight.transcript.starts_with(client_hello_message)
+    {
+        return Err(Tls12Error::InvalidServerFirstFlight);
+    }
+    let peer_point = parse_client_key_exchange(client_key_exchange_body)?;
+    let pms = Zeroizing::new(ecdh_pre_master(ecdhe_secret, peer_point)?);
+    let ems_seed = if ems_negotiated {
+        let mut transcript = flight.transcript.clone();
+        transcript.extend_from_slice(client_key_exchange_message);
+        Some(ems_session_hash(&transcript))
+    } else {
+        None
+    };
+    let master = Zeroizing::new(master_secret(
+        &pms,
+        client_random,
+        server_random,
+        ems_seed.as_ref(),
+    ));
+    let keys = key_block(&master, server_random, client_random);
+    Ok((master, keys))
+}
+
 /// The derived results of a completed offline server handshake.
 pub struct FinishedResult {
     /// Framed `Finished` handshake message (type 20, u24 length 12, verify_data).
@@ -94,33 +132,21 @@ pub fn complete_server_handshake(
     server_random: &[u8; 32],
     ems_negotiated: bool,
 ) -> Result<FinishedResult, Tls12Error> {
-    if flight.messages.first().map(|message| message.msg_type) != Some(SERVER_HELLO)
-        || !flight.transcript.starts_with(client_hello_message)
-    {
-        return Err(Tls12Error::InvalidServerFirstFlight);
-    }
     let cke_body = framed_body(
         client_key_exchange_message,
         CLIENT_KEY_EXCHANGE,
         Tls12Error::InvalidClientKeyExchange,
     )?;
-    let peer_point = parse_client_key_exchange(cke_body)?;
-    let pms = Zeroizing::new(ecdh_pre_master(ecdhe_secret, peer_point)?);
-
-    let ems_seed = if ems_negotiated {
-        let mut transcript = flight.transcript.clone();
-        transcript.extend_from_slice(client_key_exchange_message);
-        Some(ems_session_hash(&transcript))
-    } else {
-        None
-    };
-    let master = Zeroizing::new(master_secret(
-        &pms,
+    let (master, keys) = derive_handshake_keys(
+        flight,
+        client_hello_message,
+        client_key_exchange_message,
+        cke_body,
+        ecdhe_secret,
         client_random,
         server_random,
-        ems_seed.as_ref(),
-    ));
-    let keys = key_block(&master, server_random, client_random);
+        ems_negotiated,
+    )?;
 
     let finished_body = framed_body(
         client_finished_message,

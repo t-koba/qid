@@ -13,15 +13,14 @@
 //! protected record after the CCS.
 
 use super::HandshakeReassembler;
+use super::finish::derive_handshake_keys;
 use super::{
     ALERT, APPLICATION_DATA, CCS_RECORD, CHANGE_CIPHER_SPEC, HANDSHAKE, KeyBlock,
     MAX_RECORD_FRAGMENT, OcspResponse, RECORD_VERSION, RecordProtector, ServerFirstFlight,
     ServerFirstFlightInput, Tls12Error, build_server_first_flight, complete_server_handshake,
-    ecdh_pre_master, ems_session_hash, key_block, master_secret, parse_ccs, parse_client_hello,
-    parse_client_key_exchange, wrap_handshake_message,
+    parse_ccs, parse_client_hello, wrap_handshake_message,
 };
 use p256::{SecretKey, ecdsa::SigningKey};
-use zeroize::Zeroizing;
 
 const CLIENT_HELLO: u8 = 1;
 const CLIENT_KEY_EXCHANGE: u8 = 16;
@@ -223,22 +222,16 @@ impl<'a> ServerHandshake<'a> {
             .flight
             .as_ref()
             .ok_or(Tls12Error::InvalidServerFirstFlight)?;
-        let peer_point = parse_client_key_exchange(cke_body)?;
-        let pre_master = Zeroizing::new(ecdh_pre_master(self.config.ecdhe_secret, peer_point)?);
-        let ems_seed = if self.ems_negotiated {
-            let mut transcript = flight.transcript.clone();
-            transcript.extend_from_slice(cke_message);
-            Some(ems_session_hash(&transcript))
-        } else {
-            None
-        };
-        let master = Zeroizing::new(master_secret(
-            &pre_master,
+        let (_, keys) = derive_handshake_keys(
+            flight,
+            &self.client_hello_message,
+            cke_message,
+            cke_body,
+            self.config.ecdhe_secret,
             &self.client_random,
             &self.config.server_random,
-            ems_seed.as_ref(),
-        ));
-        let keys = key_block(&master, &self.config.server_random, &self.client_random);
+            self.ems_negotiated,
+        )?;
         self.protector = Some(RecordProtector::new(&keys));
         Ok(())
     }
@@ -341,7 +334,9 @@ fn next_record_len(wire: &[u8]) -> Result<Option<usize>, Tls12Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tls12::{HandshakeMessage, verify_data};
+    use crate::tls12::{
+        HandshakeMessage, ecdh_pre_master, ems_session_hash, key_block, master_secret, verify_data,
+    };
     use p256::elliptic_curve::sec1::ToSec1Point;
     use sha2::{Digest, Sha256};
 

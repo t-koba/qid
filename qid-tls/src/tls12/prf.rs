@@ -42,8 +42,10 @@ pub fn tls12_prf(out: &mut [u8], secret: &[u8], label: &[u8], seed: &[u8]) {
     }
 }
 
-/// RFC 5246 §7.4.9 master secret. With RFC 7627 EMS the seed is the session
-/// hash of ClientHello and ServerHello instead of the two random values.
+/// RFC 5246 §7.4.9 master secret. With RFC 7627 EMS the seed is the
+/// caller-supplied RFC 7627 §3 session hash of the framed transcript from
+/// ClientHello through ClientKeyExchange inclusive, not the two randoms and
+/// not just ClientHello and ServerHello.
 pub fn master_secret(
     pms: &[u8; 32],
     client_random: &[u8; 32],

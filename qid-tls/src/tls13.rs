@@ -1,6 +1,7 @@
 //! TLS 1.3 protected-record reading for `TLS_AES_128_GCM_SHA256`.
 
 pub mod external_psk;
+pub mod key_schedule;
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes128Gcm, Tag};

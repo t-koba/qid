@@ -213,6 +213,7 @@ delegate!(PolicyRepository {
 delegate!(AuditRepository {
     append_audit_event(&self, event: &qid_core::models::AuditEvent) -> QidResult<()>;
     list_audit_events(&self, realm_id: Option<&qid_core::tenant::RealmId>, limit: usize) -> QidResult<Vec<qid_core::models::AuditEvent>>;
+    audit_retention_snapshot(&self, realm_id: Option<&qid_core::tenant::RealmId>) -> QidResult<Vec<qid_core::models::AuditEvent>>;
     verify_audit_chain(&self, realm_id: Option<&qid_core::tenant::RealmId>) -> QidResult<qid_core::models::AuditChainVerification>;
     set_audit_retention_config(&self, config: &qid_core::models::AuditRetentionConfig) -> QidResult<()>;
     get_audit_retention_config(&self, realm_id: Option<&qid_core::tenant::RealmId>) -> QidResult<Option<qid_core::models::AuditRetentionConfig>>;

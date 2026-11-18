@@ -3,6 +3,15 @@ use async_trait::async_trait;
 use super::*;
 use crate::domain::audit_retention_stream_id;
 
+fn scoped_audit_events<'a>(
+    events: &'a [AuditEvent],
+    realm_id: Option<&'a RealmId>,
+) -> impl Iterator<Item = &'a AuditEvent> {
+    events.iter().filter(move |event| {
+        realm_id.is_none_or(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
+    })
+}
+
 #[async_trait]
 impl AuditRepository for FileRepository {
     async fn append_audit_event(&self, event: &AuditEvent) -> QidResult<()> {
@@ -28,16 +37,23 @@ impl AuditRepository for FileRepository {
         limit: usize,
     ) -> QidResult<Vec<AuditEvent>> {
         let store = self.store.read().await;
-        let mut events: Vec<_> = store
-            .audit_events
-            .iter()
-            .filter(|event| {
-                realm_id.is_none_or(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
-            })
+        let mut events: Vec<_> = scoped_audit_events(&store.audit_events, realm_id)
             .cloned()
             .collect();
         events.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
         events.truncate(limit);
+        Ok(events)
+    }
+
+    async fn audit_retention_snapshot(
+        &self,
+        realm_id: Option<&RealmId>,
+    ) -> QidResult<Vec<AuditEvent>> {
+        let store = self.store.read().await;
+        let mut events: Vec<_> = scoped_audit_events(&store.audit_events, realm_id)
+            .cloned()
+            .collect();
+        events.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         Ok(events)
     }
 
@@ -46,13 +62,7 @@ impl AuditRepository for FileRepository {
         realm_id: Option<&RealmId>,
     ) -> QidResult<AuditChainVerification> {
         let store = self.store.read().await;
-        let events: Vec<_> = store
-            .audit_events
-            .iter()
-            .filter(|event| {
-                realm_id.is_none_or(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
-            })
-            .collect();
+        let events: Vec<_> = scoped_audit_events(&store.audit_events, realm_id).collect();
         if realm_id.is_some() {
             Ok(verify_audit_chain_linked(events))
         } else {
@@ -89,13 +99,7 @@ impl AuditRepository for FileRepository {
         else {
             return Ok(None);
         };
-        let events: Vec<_> = store
-            .audit_events
-            .iter()
-            .filter(|event| {
-                realm_id.is_none_or(|realm| event.realm_id.as_deref() == Some(realm.as_str()))
-            })
-            .collect();
+        let events: Vec<_> = scoped_audit_events(&store.audit_events, realm_id).collect();
         Ok(Some(plan_audit_retention_enforcement(
             config, now_epoch, events,
         )))

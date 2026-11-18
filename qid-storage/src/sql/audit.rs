@@ -70,6 +70,27 @@ impl AuditRepository for SqlRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    async fn audit_retention_snapshot(
+        &self,
+        realm_id: Option<&RealmId>,
+    ) -> QidResult<Vec<AuditEvent>> {
+        let rows: Vec<AuditEventRow> = if let Some(realm_id) = realm_id {
+            sqlx::query_as(
+                "SELECT * FROM audit_events WHERE realm_id = $1 ORDER BY created_at ASC, id ASC",
+            )
+            .bind(realm_id.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?
+        } else {
+            sqlx::query_as("SELECT * FROM audit_events ORDER BY created_at ASC, id ASC")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(storage_to_qid_error)?
+        };
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     async fn verify_audit_chain(
         &self,
         realm_id: Option<&RealmId>,
@@ -136,21 +157,7 @@ impl AuditRepository for SqlRepository {
         let Some(config) = self.get_audit_retention_config(realm_id).await? else {
             return Ok(None);
         };
-        let rows: Vec<AuditEventRow> = if let Some(realm_id) = realm_id {
-            sqlx::query_as(
-                "SELECT * FROM audit_events WHERE realm_id = $1 ORDER BY created_at ASC, id ASC",
-            )
-            .bind(realm_id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(storage_to_qid_error)?
-        } else {
-            sqlx::query_as("SELECT * FROM audit_events ORDER BY created_at ASC, id ASC")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage_to_qid_error)?
-        };
-        let events: Vec<AuditEvent> = rows.into_iter().map(Into::into).collect();
+        let events = self.audit_retention_snapshot(realm_id).await?;
         Ok(Some(plan_audit_retention_enforcement(
             &config, now_epoch, &events,
         )))

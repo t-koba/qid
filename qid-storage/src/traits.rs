@@ -357,6 +357,12 @@ pub trait AuditRepository: Send + Sync + 'static {
         realm_id: Option<&RealmId>,
         limit: usize,
     ) -> QidResult<Vec<AuditEvent>>;
+    /// Return all events in the realm (or all realms for `None`), oldest first.
+    /// This uncapped snapshot is for retention archiving, not recent-event exports.
+    async fn audit_retention_snapshot(
+        &self,
+        realm_id: Option<&RealmId>,
+    ) -> QidResult<Vec<AuditEvent>>;
     async fn verify_audit_chain(
         &self,
         realm_id: Option<&RealmId>,

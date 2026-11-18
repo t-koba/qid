@@ -2,6 +2,7 @@ use qid_core::{
     error::{QidError, QidResult},
     models::{
         AuditChainVerification, AuditEvent, AuditRetentionEnforcementPlan, ComplianceEvidencePack,
+        plan_audit_retention_enforcement,
     },
     tenant::RealmId,
 };
@@ -857,6 +858,11 @@ where
     })
 }
 
+enum ArchiveEventOrder {
+    NewestFirst,
+    OldestFirst,
+}
+
 pub async fn run_audit_worm_archive_job<R, T>(
     repo: &R,
     transport: &T,
@@ -868,7 +874,28 @@ where
 {
     let realm = config.realm_id.as_ref().map(|id| RealmId(id.clone()));
     let events = repo.list_audit_events(realm.as_ref(), config.limit).await?;
-    if events.is_empty() {
+    write_audit_worm_archive(
+        repo,
+        transport,
+        config,
+        &events,
+        ArchiveEventOrder::NewestFirst,
+    )
+    .await
+}
+
+async fn write_audit_worm_archive<R, T>(
+    repo: &R,
+    transport: &T,
+    config: AuditWormArchiveConfig,
+    events: &[AuditEvent],
+    order: ArchiveEventOrder,
+) -> QidResult<AuditWormArchiveReport>
+where
+    R: Repository,
+    T: WormArchiveTransport,
+{
+    let Some((head, tail)) = events.first().zip(events.last()) else {
         return Ok(AuditWormArchiveReport {
             status: AuditWormArchiveStatus::SkippedNoEvents,
             realm_id: config.realm_id,
@@ -879,14 +906,18 @@ where
             manifest_object: None,
             audit_event_id: None,
         });
-    }
+    };
+    let (first, last) = match order {
+        ArchiveEventOrder::NewestFirst => (tail, head),
+        ArchiveEventOrder::OldestFirst => (head, tail),
+    };
 
     let export_options = AuditExportOptions {
         include_metadata: config.include_metadata,
         traceparent: None,
         audit_correlation_id: None,
     };
-    let body = export_jsonl(&events, &export_options)
+    let body = export_jsonl(events, &export_options)
         .map_err(|e| QidError::Internal {
             message: e.to_string(),
         })?
@@ -916,10 +947,10 @@ where
         realm_id: config.realm_id.clone(),
         generated_at: config.now_epoch,
         event_count: events.len(),
-        first_event_id: events.last().map(|event| event.id.clone()),
-        last_event_id: events.first().map(|event| event.id.clone()),
-        first_event_hash: events.last().and_then(|event| event.event_hash.clone()),
-        last_event_hash: events.first().and_then(|event| event.event_hash.clone()),
+        first_event_id: Some(first.id.clone()),
+        last_event_id: Some(last.id.clone()),
+        first_event_hash: first.event_hash.clone(),
+        last_event_hash: last.event_hash.clone(),
         body_sha256: hex_sha256(&body),
         body_key: body_key.clone(),
         timestamp: timestamp.as_ref().map(|(_, evidence)| evidence.clone()),
@@ -1023,10 +1054,7 @@ where
         });
     }
 
-    let Some(retention_plan) = repo
-        .plan_audit_retention(realm_ref, config.now_epoch)
-        .await?
-    else {
+    let Some(retention_config) = repo.get_audit_retention_config(realm_ref).await? else {
         return Ok(AuditRetentionExecutionReport {
             status: AuditRetentionExecutionStatus::SkippedNoPolicy,
             realm_id: config.realm_id,
@@ -1037,6 +1065,10 @@ where
             audit_event_id: None,
         });
     };
+
+    let events = repo.audit_retention_snapshot(realm_ref).await?;
+    let retention_plan =
+        plan_audit_retention_enforcement(&retention_config, config.now_epoch, &events);
 
     if retention_plan.legal_hold {
         return Ok(AuditRetentionExecutionReport {
@@ -1063,7 +1095,7 @@ where
     }
 
     let archive_report = if config.archive_required {
-        let archive_report = run_audit_worm_archive_job(
+        let archive_report = write_audit_worm_archive(
             repo,
             archive_transport,
             AuditWormArchiveConfig {
@@ -1076,6 +1108,8 @@ where
                 record_audit_event: true,
                 timestamp: config.timestamp.clone(),
             },
+            &events,
+            ArchiveEventOrder::OldestFirst,
         )
         .await?;
         if archive_report.status != AuditWormArchiveStatus::Archived {

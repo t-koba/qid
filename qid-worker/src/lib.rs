@@ -910,9 +910,27 @@ mod tests {
 
     #[tokio::test]
     async fn retention_execution_requires_archive_before_ready() {
-        crate::test_support::with_repo(async |repo, _dir| {
+        use sqlx::{Connection, SqliteConnection};
+
+        crate::test_support::with_repo(async |repo, dir| {
+            let mut fixture =
+                SqliteConnection::connect(&format!("sqlite:{}", dir.join("test.db").display()))
+                    .await
+                    .unwrap();
+            // Avoid repeated scans for the chain tip while seeding the large fixture.
+            sqlx::query("CREATE INDEX fixture_audit_previous_hash ON audit_events(previous_hash)")
+                .execute(&mut fixture)
+                .await
+                .unwrap();
             seed_audit_event(&repo, "old", 10).await;
-            seed_audit_event(&repo, "new", 200).await;
+            for i in 0..1_000 {
+                seed_audit_event(&repo, &format!("retained-{i:04}"), 200).await;
+            }
+            sqlx::query("DROP INDEX fixture_audit_previous_hash")
+                .execute(&mut fixture)
+                .await
+                .unwrap();
+            fixture.close().await.unwrap();
             repo.set_audit_retention_config(&AuditRetentionConfig {
                 realm_id: Some("corp".to_string()),
                 retention_days: 0,
@@ -944,7 +962,8 @@ mod tests {
 
             assert_eq!(report.status, AuditRetentionExecutionStatus::Ready);
             assert_eq!(report.purge_event_ids, vec!["old".to_string()]);
-            assert!(report.archive_report.is_some());
+            let archive_report = report.archive_report.unwrap();
+            assert_eq!(archive_report.event_count, 1_001);
             assert!(report.audit_event_id.is_some());
             assert!(
                 repo.verify_audit_chain(Some(&"corp".into()))
@@ -952,7 +971,15 @@ mod tests {
                     .unwrap()
                     .valid
             );
-            assert_eq!(archive.objects.borrow().len(), 2);
+            let objects = archive.objects.borrow();
+            assert_eq!(objects.len(), 2);
+            let body = &objects[&archive_report.body_object.unwrap().key].body;
+            assert!(std::str::from_utf8(body).unwrap().lines().any(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["id"] == "old"
+            }));
+            let verification =
+                verify_audit_evidence_archive(&archive_report.manifest.unwrap(), body);
+            assert!(verification.valid, "{verification:?}");
         })
         .await;
     }

@@ -8,6 +8,7 @@
  */
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
@@ -76,6 +77,11 @@ public final class V2Client {
         }
 
         @Override
+        public void notifySecureRenegotiation(boolean secureRenegotiation) {
+            // The Rust parent owns the SCSV/renegotiation policy for this fixture.
+        }
+
+        @Override
         public TlsAuthentication getAuthentication() {
             return new TlsAuthentication() {
                 public void notifyServerCertificate(
@@ -107,7 +113,7 @@ public final class V2Client {
 
     private static void run(PrintWriter out) throws Exception {
         Security.addProvider(new BouncyCastleProvider());
-        TlsCrypto crypto = new JcaTlsCryptoProvider().setProvider("BC").build();
+        TlsCrypto crypto = new JcaTlsCryptoProvider().setProvider("BC").create(null);
         StatusProtocol protocol = new StatusProtocol();
         protocol.connect(new V2TlsClient(crypto));
 

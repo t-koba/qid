@@ -15,7 +15,6 @@ aes-gcm.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
 p256 = { workspace = true, features = ["ecdh"] }
-rand.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 zeroize.workspace = true

@@ -14,7 +14,6 @@
 
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use rand::RngCore;
 use zeroize::Zeroizing;
 
 use super::{KeyBlock, Tls12Error};
@@ -98,11 +97,16 @@ impl RecordProtector {
         self.write_sequence = Some(0);
     }
 
-    /// Protect one fragment with a random 8-byte explicit nonce (RFC 5246
-    /// §6.2.3.3). The returned `TLSCiphertext` includes its five-byte header.
+    /// Protect one fragment with the 8-byte big-endian write sequence number
+    /// as explicit nonce (RFC 5246 §6.2.3.3). RFC 9325 §7.2.1 recommends
+    /// sequence-number nonces; random explicit nonces give only about a
+    /// 2^24.5-record confidentiality ceiling per key (RFC 9325 §4.4). That is
+    /// a documented bound, not a runtime cap. The returned `TLSCiphertext`
+    /// includes its five-byte header.
     pub fn protect(&mut self, content_type: u8, plaintext: &[u8]) -> Result<Vec<u8>, Tls12Error> {
+        let sequence = self.peek_write_sequence()?;
         let mut explicit_nonce = Zeroizing::new([0u8; EXPLICIT_NONCE_LEN]);
-        rand::rngs::OsRng.fill_bytes(&mut explicit_nonce[..]);
+        explicit_nonce.copy_from_slice(&sequence.to_be_bytes());
         self.protect_with_nonce(content_type, plaintext, &explicit_nonce)
     }
 
@@ -205,6 +209,17 @@ impl RecordProtector {
             Some(sequence) if sequence < u64::MAX => Ok(sequence),
             _ => {
                 self.read_sequence = None;
+                Err(Tls12Error::SequenceExhausted)
+            }
+        }
+    }
+
+    // Peek without consuming: `protect_with_nonce` performs the increment.
+    fn peek_write_sequence(&mut self) -> Result<u64, Tls12Error> {
+        match self.write_sequence {
+            Some(sequence) if sequence < u64::MAX => Ok(sequence),
+            _ => {
+                self.write_sequence = None;
                 Err(Tls12Error::SequenceExhausted)
             }
         }
@@ -350,6 +365,21 @@ mod tests {
             expected_sequence += 3;
             assert_eq!(receiver.read_sequence, Some(expected_sequence));
             assert_eq!(sender.write_sequence, Some(expected_sequence));
+        }
+    }
+
+    #[test]
+    fn protect_uses_write_sequence_as_explicit_nonce() {
+        let (mut sender, _) = paired_protectors();
+        for expected in 0..2u64 {
+            let record = sender
+                .protect(APPLICATION_DATA, b"payload")
+                .expect("protect");
+            assert_eq!(
+                &record[HEADER_LEN..HEADER_LEN + EXPLICIT_NONCE_LEN],
+                &expected.to_be_bytes(),
+                "explicit nonce must be the big-endian write sequence"
+            );
         }
     }
 

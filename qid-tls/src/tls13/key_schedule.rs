@@ -8,6 +8,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 const KEY_LEN: usize = 32;
@@ -20,6 +21,8 @@ pub enum Error {
     InvalidSecret,
     /// The shared HKDF-Expand-Label helper rejected the label inputs.
     LabelExpansion,
+    /// The peer's Finished verify_data did not match this transcript.
+    FinishedMismatch,
 }
 
 impl fmt::Display for Error {
@@ -27,6 +30,7 @@ impl fmt::Display for Error {
         f.write_str(match self {
             Self::InvalidSecret => "TLS 1.3 secret is shorter than the hash output",
             Self::LabelExpansion => "TLS 1.3 HKDF-Expand-Label failed",
+            Self::FinishedMismatch => "TLS 1.3 Finished verify_data mismatch",
         })
     }
 }
@@ -82,6 +86,23 @@ pub fn finished_verify_data(
     let mut verify_data = Zeroizing::new([0u8; KEY_LEN]);
     verify_data.copy_from_slice(&tag);
     Ok(verify_data)
+}
+
+/// Constant-time check of a peer's Finished `verify_data` (RFC 8446 §4.4.4).
+///
+/// `transcript_hash` must cover all messages before that Finished message.
+pub fn verify_finished(
+    finished_key: &[u8],
+    transcript_hash: &[u8],
+    expected: &[u8],
+) -> Result<(), Error> {
+    let expected: [u8; KEY_LEN] = expected.try_into().map_err(|_| Error::FinishedMismatch)?;
+    let actual = finished_verify_data(finished_key, transcript_hash)?;
+    if bool::from(actual.ct_eq(&expected)) {
+        Ok(())
+    } else {
+        Err(Error::FinishedMismatch)
+    }
 }
 
 /// Handshake secret and the two handshake traffic secrets for one transcript.
@@ -145,6 +166,11 @@ mod tests {
     const C_HS_TRAFFIC: &str = "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21";
     const C_HS_FINISHED_KEY: &str =
         "b80ad01015fb2f0bd65ff7d4da5d6bf83f84821d1f87fdc7d3c75b5a7b42d9c4";
+    const S_HS_FINISHED_KEY: &str =
+        "008d3b66f816ea559f96b537e885c31fc068bf492c652f01f288a1d8cdc19fc8";
+    const SERVER_FINISHED_TRANSCRIPT: &str =
+        "edb7725fa7a3473b031ec8ef65a2485493900138a2b91291407d7951a06110ed";
+    const S_FINISHED: &str = "9b9b141d906337fbd2cbdce71df4deda4ab42c309572cb7fffee5454b78f0718";
     const C_FINISHED: &str = "a8ec436d677634ae525ac1fcebe11a039ec17694fac6e98527b642f2edd5ce61";
     const S_HS_TRAFFIC: &str = "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38";
     const MASTER_DERIVED: &str = "43de77e0c77713859a944db9db2590b53190a65b3ee2e4f12dd7a0bb7ce254b4";
@@ -215,6 +241,23 @@ mod tests {
         // matching the application-transcript hash in the RFC 8448 trace.
         let verify_data = finished_verify_data(&key[..], &bytes(APPLICATION_HASH)).unwrap();
         assert_hex(&verify_data, C_FINISHED);
+    }
+
+    #[test]
+    fn rfc8448_verifies_server_finished() {
+        let traffic = bytes(S_HS_TRAFFIC);
+        let key = finished_key(&traffic).unwrap();
+        assert_hex(&key, S_HS_FINISHED_KEY);
+        let transcript = bytes(SERVER_FINISHED_TRANSCRIPT);
+        let expected = bytes(S_FINISHED);
+        assert_eq!(verify_finished(&key[..], &transcript, &expected), Ok(()));
+
+        let mut tampered = expected;
+        tampered[0] ^= 1;
+        assert_eq!(
+            verify_finished(&key[..], &transcript, &tampered),
+            Err(Error::FinishedMismatch)
+        );
     }
 
     #[test]

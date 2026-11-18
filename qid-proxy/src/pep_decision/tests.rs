@@ -294,6 +294,26 @@ fn pep_decision_cache_key_distinguishes_decision_inputs() {
 }
 
 #[test]
+fn pep_decision_cache_key_uses_only_the_local_capability_set() {
+    let digest =
+        |req: &PepDecisionRequest| pep_decision_cache_key(req, "policy-rev-1").unwrap().digest;
+    let mut req = request();
+    let mut capabilities: Vec<_> = req.adapter_capabilities.iter().cloned().collect();
+    capabilities.sort_unstable();
+    req.adapter_capabilities = capabilities.iter().cloned().collect();
+    let original = digest(&req);
+    req.adapter_capabilities = capabilities.into_iter().rev().collect();
+    assert_eq!(original, digest(&req), "capability insertion order");
+
+    let declared_capabilities = std::mem::take(&mut req.declared_capabilities);
+    assert_eq!(original, digest(&req), "request-declared capabilities");
+
+    req.declared_capabilities = declared_capabilities;
+    assert!(req.adapter_capabilities.remove("local_response"));
+    assert_ne!(original, digest(&req), "local registration capabilities");
+}
+
+#[test]
 fn pep_decision_response_does_not_expose_qpx_effect_shape() {
     let mut response = response("allow", 30_000, true);
     response.obligations.push(qid_decision_obligation(
@@ -1188,10 +1208,17 @@ async fn invalid_policy_bundle_stays_fail_closed_with_opt_in_allow() {
 #[tokio::test]
 async fn missing_mandatory_capability_stays_fail_closed_with_opt_in_allow() {
     let (state, path) = cache_ttl_state(fail_open_test_config("allow"), "deny").await;
-    // The deny decision needs the `local_response` capability; without any
-    // adapter capability the existing obligation path refuses fail-closed.
     let mut req = request();
-    req.adapter_capabilities = HashSet::new();
+    // Load the policy revision, then cache the decision for the capable adapter.
+    for _ in 0..2 {
+        let response = do_check(&state, &req).await.expect("decision");
+        assert_eq!(response.decision, "deny");
+    }
+    assert!(cached_lifetime(&state, &req).is_some());
+
+    // The same decision needs `local_response` and cannot be reused by an
+    // instance whose local registration lacks the capability.
+    req.adapter_capabilities.clear();
     let err = do_check(&state, &req)
         .await
         .expect_err("capability refusal");

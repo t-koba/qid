@@ -319,10 +319,14 @@ pub fn pep_decision_cache_key(
             message: "policy revision must not be empty".to_string(),
         });
     }
+    // The local registration supplies an already normalized, deduplicated set.
+    let mut adapter_capabilities: Vec<_> = req.adapter_capabilities.iter().collect();
+    adapter_capabilities.sort_unstable();
     let identity = req.identity.as_ref();
     let material = serde_json::json!({
         "policy_revision": policy_revision,
         "adapter_realm_id": req.adapter_realm_id,
+        "adapter_capabilities": adapter_capabilities,
         "risk_score": req.risk_score,
         "proxy": {
             "proxy_name": req.proxy.proxy_name,

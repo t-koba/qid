@@ -5,6 +5,7 @@
 
 use super::expand_label;
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use zeroize::{Zeroize, Zeroizing};
@@ -60,6 +61,27 @@ pub fn derive_secret(
 
 fn empty_hash() -> Zeroizing<[u8; KEY_LEN]> {
     Zeroizing::new(<[u8; KEY_LEN]>::from(Sha256::digest(b"")))
+}
+
+/// RFC 8446 §4.4.4: `finished_key = Derive-Secret(traffic_secret, "finished", "")`.
+pub fn finished_key(traffic_secret: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, Error> {
+    derive_secret(traffic_secret, b"finished", &[])
+}
+
+/// RFC 8446 §4.4.4: `verify_data = HMAC(finished_key, Hash(transcript))`.
+///
+/// `transcript_hash` is the 32-byte SHA-256 hash of the handshake transcript up
+/// to, but not including, the Finished message being produced or checked.
+pub fn finished_verify_data(
+    finished_key: &[u8],
+    transcript_hash: &[u8],
+) -> Result<Zeroizing<[u8; KEY_LEN]>, Error> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(finished_key).map_err(|_| Error::InvalidSecret)?;
+    mac.update(transcript_hash);
+    let tag = mac.finalize().into_bytes();
+    let mut verify_data = Zeroizing::new([0u8; KEY_LEN]);
+    verify_data.copy_from_slice(&tag);
+    Ok(verify_data)
 }
 
 /// Handshake secret and the two handshake traffic secrets for one transcript.
@@ -121,6 +143,9 @@ mod tests {
     const HANDSHAKE_SECRET: &str =
         "1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac";
     const C_HS_TRAFFIC: &str = "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21";
+    const C_HS_FINISHED_KEY: &str =
+        "b80ad01015fb2f0bd65ff7d4da5d6bf83f84821d1f87fdc7d3c75b5a7b42d9c4";
+    const C_FINISHED: &str = "a8ec436d677634ae525ac1fcebe11a039ec17694fac6e98527b642f2edd5ce61";
     const S_HS_TRAFFIC: &str = "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38";
     const MASTER_DERIVED: &str = "43de77e0c77713859a944db9db2590b53190a65b3ee2e4f12dd7a0bb7ce254b4";
     const MASTER_SECRET_VALUE: &str =
@@ -179,6 +204,17 @@ mod tests {
             &traffic_secret(&master[..], b"s ap traffic", &application_hash).unwrap(),
             S_AP_TRAFFIC,
         );
+    }
+
+    #[test]
+    fn rfc8448_finished_key_and_verify_data() {
+        let traffic = bytes(C_HS_TRAFFIC);
+        let key = finished_key(&traffic).unwrap();
+        assert_hex(&key, C_HS_FINISHED_KEY);
+        // The client Finished transcript runs through the server Finished,
+        // matching the application-transcript hash in the RFC 8448 trace.
+        let verify_data = finished_verify_data(&key[..], &bytes(APPLICATION_HASH)).unwrap();
+        assert_hex(&verify_data, C_FINISHED);
     }
 
     #[test]

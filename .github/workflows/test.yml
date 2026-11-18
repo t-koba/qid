@@ -117,6 +117,29 @@ jobs:
         run: python3 -m pip install -r qid-resource/tests/workload/requirements-est.txt
       - name: Verify workload EST with an independent client
         run: cargo test -p qid-resource --locked --test workload est::independent_python_est_client -- --ignored --exact --nocapture
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify RFC 6961 multi-staple with Bouncy Castle
+        shell: bash
+        env:
+          BC_VERSION: "1.84"
+          RUSTFLAGS: "-D warnings"
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/qid-bctls"
+          mkdir -p "$dir/classes"
+          base="https://repo1.maven.org/maven2/org/bouncycastle"
+          for artifact in bcprov-jdk18on bcutil-jdk18on bctls-jdk18on; do
+            curl -fsSL "$base/$artifact/$BC_VERSION/$artifact-$BC_VERSION.jar" \
+              -o "$dir/$artifact.jar"
+          done
+          cp="$dir/bcprov-jdk18on.jar:$dir/bcutil-jdk18on.jar:$dir/bctls-jdk18on.jar"
+          javac -cp "$cp" -d "$dir/classes" ci/bctls/V2Client.java
+          echo "QID_BCTLS_JARS=$cp" >> "$GITHUB_ENV"
+          echo "QID_BCTLS_CLASSES=$dir/classes" >> "$GITHUB_ENV"
+          cargo test -p qid-tls --test bctls_v2_interop -- --ignored --exact --nocapture
       - name: Test the qid TLS backend skeleton
         env:
           RUSTFLAGS: "-D warnings"

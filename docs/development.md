@@ -287,6 +287,17 @@ When adding a new HTTP route:
 4. Update [http-api.md](http-api.md).
 5. Update config samples if the route requires new config.
 
+## Independent Bouncy Castle TLS Client
+
+`qid-tls/tests/bctls_v2_interop.rs` drives `ci/bctls/V2Client.java` through
+`ServerHandshake` over line-oriented hex records on stdin/stdout; no socket or
+listener is involved. The Java client uses Bouncy Castle's low-level TLS API
+(`bctls`, `bcprov`, `bcutil`) under its permissive Bouncy Castle licence.
+The `all-features` CI job pins jar version 1.84, compiles the client, and runs
+the ignored test with `QID_BCTLS_JARS` and `QID_BCTLS_CLASSES`; `JAVA` may
+override the runtime command. This is the independent-client evidence for
+RFC 6961 multi-response stapling; local `cargo test` only compiles it.
+
 ## Generated Artifacts
 
 Do not treat `target/`, `mutants.out/`, local `qid-state/`, generated databases, or logs as source documentation. They can be large, environment-specific, and sensitive.

@@ -65,6 +65,7 @@ flowchart LR
 | `qid-core` | Canonical config, domain models, tenant/realm types, OAuth/JWT helpers, errors, runtime plan. |
 | `qid-storage` | Repository traits, file-backed JSON store, SQL store, migrations. |
 | `qid-crypto` | JWK/JWT, password hashing, TOTP/HOTP, AEAD, JWE, PKI, keyrings, signer readiness. |
+| `qid-tls` | TLS 1.3 protected-record primitives; RFC 8448-verified reader; not a handshake or transport. |
 | `qid-http` | Security headers, CORS, CSRF, HTTP Message Signatures, rate limiting. |
 | `qid-observability` | Logging, metrics, audit helpers, OpenMetrics/syslog helpers. |
 | `qid-diagnostics` | Config, profile, storage, ops, and network readiness checks. |

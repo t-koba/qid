@@ -62,7 +62,10 @@ pub fn parse(body: &[u8]) -> Result<CertificateVerify<'_>, Error> {
     if signature_len == 0 {
         return Err(Error::EmptySignature);
     }
-    if body.len() != 4 + signature_len {
+    if body.len() < 4 + signature_len {
+        return Err(Error::Truncated);
+    }
+    if body.len() > 4 + signature_len {
         return Err(Error::TrailingBytes);
     }
     Ok(CertificateVerify {
@@ -134,6 +137,8 @@ mod tests {
             parse(&[0x04, 0x03, 0x00, 0x00]).unwrap_err(),
             Error::EmptySignature
         );
+        let short_signature = vec![0x04, 0x03, 0x00, 0x05, 0x42, 0x43];
+        assert_eq!(parse(&short_signature).unwrap_err(), Error::Truncated);
         let trailing = vec![0x04, 0x03, 0x00, 0x01, 0x42, 0x00];
         assert_eq!(parse(&trailing).unwrap_err(), Error::TrailingBytes);
     }

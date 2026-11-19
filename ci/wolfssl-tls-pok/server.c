@@ -190,6 +190,7 @@ int main(int argc, char** argv)
     }
 
     ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
+    wolfSSL_Debugging_ON();
     if (ctx == NULL) {
         emit_error("cannot allocate TLS 1.3 server context");
         goto cleanup;

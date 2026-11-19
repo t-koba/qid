@@ -29,6 +29,7 @@ printf '%s\n' "$source_window_assignment"
 ./autogen.sh
 ./configure \
   --prefix="$prefix" \
+  --enable-debug \
   --enable-tls13 \
   --enable-psk \
   --enable-cert-with-extern-psk \

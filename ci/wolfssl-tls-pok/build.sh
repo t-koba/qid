@@ -51,6 +51,14 @@ for name in files:
 for name in files:
     print_window(Path(name), "TLSX_GetMinSize_Client(", 0, 170)
 for name in files:
+    print_window(Path(name), "Derive Binder Key", 70, 30)
+for name in files:
+    print_window(Path(name), "static int DoPreSharedKeys(", 0, 220)
+for name in files:
+    print_window(Path(name), "\"imp binder\"", 8, 8)
+for name in files:
+    print_window(Path(name), "\"ext binder\"", 8, 8)
+for name in files:
     print_window(Path(name), "TLSX_Parse(WOLFSSL", 0, 600)
 for name in files:
     print_window(Path(name), "TLSX_CertWithExternPsk_Parse", 20, 70)

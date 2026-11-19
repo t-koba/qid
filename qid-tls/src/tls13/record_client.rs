@@ -195,7 +195,11 @@ impl TlsPokClient {
     /// The whole buffer is zeroized on every error, including framing errors
     /// that the epoch itself does not classify as an authentication failure.
     pub fn receive_record(&mut self, record: &mut [u8]) -> Result<(), Error> {
-        if Self::is_change_cipher_spec(record) {
+        if matches!(
+            self.stage,
+            RecordStage::AwaitServerHello | RecordStage::AwaitServerFlight
+        ) && Self::is_change_cipher_spec(record)
+        {
             return Ok(());
         }
         match self.stage {
@@ -709,6 +713,25 @@ mod tests {
             Error::WrongRecordType
         );
         assert_zeroized(&malformed);
+    }
+
+    #[test]
+    fn rejects_change_cipher_spec_after_terminal_failure() {
+        let fx = fixture();
+        let mut client = client(&fx);
+        let flight = flight(&fx, &client);
+        let mut wrong = plaintext_record(&flight.server_hello);
+        wrong[0] = APPLICATION_DATA;
+        assert_eq!(
+            client.receive_record(&mut wrong).unwrap_err(),
+            Error::WrongRecordType
+        );
+        assert_eq!(client.stage(), RecordStage::Failed);
+
+        let mut ccs = vec![CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
+        assert_eq!(client.receive_record(&mut ccs).unwrap_err(), Error::State);
+        assert_zeroized(&ccs);
+        assert_eq!(client.stage(), RecordStage::Failed);
     }
 
     #[test]

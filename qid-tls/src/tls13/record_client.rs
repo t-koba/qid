@@ -581,7 +581,7 @@ mod tests {
     }
 
     fn certificate_request() -> Vec<u8> {
-        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x02, 0x04, 0x03, 0x08, 0x04];
+        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x04, 0x04, 0x03, 0x08, 0x04];
         let mut body = vec![0x00];
         body.extend_from_slice(&u16::try_from(extensions.len()).unwrap().to_be_bytes());
         body.extend_from_slice(&extensions);

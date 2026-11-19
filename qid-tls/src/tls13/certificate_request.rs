@@ -64,8 +64,9 @@ fn signature_algorithms_allows_p256(body: &[u8]) -> bool {
     if body.len() < 4 || !body.len().is_multiple_of(2) {
         return false;
     }
-    let count = usize::from(u16::from_be_bytes([body[0], body[1]]));
-    if count == 0 || count * 2 + 2 != body.len() {
+    // RFC 8446 §4.2.3: the SignatureSchemeList length counts bytes, not schemes.
+    let schemes_len = usize::from(u16::from_be_bytes([body[0], body[1]]));
+    if schemes_len == 0 || schemes_len + 2 != body.len() {
         return false;
     }
     body[2..]
@@ -78,10 +79,10 @@ fn offered_signature_schemes(body: &[u8]) -> Vec<u16> {
     if body.len() < 2 {
         return Vec::new();
     }
-    let count = usize::from(u16::from_be_bytes([body[0], body[1]]));
+    let schemes_len = usize::from(u16::from_be_bytes([body[0], body[1]]));
     body[2..]
         .chunks_exact(2)
-        .take(count)
+        .take(schemes_len / 2)
         .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
         .collect()
 }
@@ -165,8 +166,29 @@ mod tests {
     }
 
     fn signature_algorithms() -> Vec<u8> {
-        let ext = vec![0x00, 0x0d, 0x00, 0x06, 0x00, 0x02, 0x04, 0x03, 0x08, 0x04];
-        ext
+        // Extension length 6: a two-byte byte-length prefix (4) and two schemes.
+        vec![0x00, 0x0d, 0x00, 0x06, 0x00, 0x04, 0x04, 0x03, 0x08, 0x04]
+    }
+
+    #[test]
+    fn accepts_standard_signature_scheme_lists() {
+        let single = [0x00, 0x0d, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03];
+        let single_body = body(&[], &single);
+        let request = parse(&single_body).expect("single ECDSA scheme");
+        assert_eq!(request.extensions.len(), 1);
+
+        let two_body = body(&[], &signature_algorithms());
+        let request = parse(&two_body).expect("two schemes");
+        assert_eq!(request.extensions.len(), 1);
+    }
+
+    #[test]
+    fn rejects_mismatched_signature_scheme_lengths() {
+        let odd = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x03, 0x04, 0x03, 0x08, 0x04];
+        assert_eq!(
+            parse(&body(&[], &odd)).unwrap_err(),
+            Error::UnsupportedSignatureScheme(vec![0x0403])
+        );
     }
 
     #[test]

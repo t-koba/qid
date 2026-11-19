@@ -686,7 +686,7 @@ mod tests {
     }
 
     fn certificate_request_message() -> Vec<u8> {
-        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x02, 0x04, 0x03, 0x08, 0x04];
+        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x04, 0x04, 0x03, 0x08, 0x04];
         let mut body = vec![0x00];
         body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
         body.extend_from_slice(&extensions);
@@ -948,7 +948,7 @@ mod tests {
         client
             .receive_encrypted_extensions(&encrypted_extensions(true))
             .unwrap();
-        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x02, 0x04, 0x03, 0x08, 0x04];
+        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x04, 0x04, 0x03, 0x08, 0x04];
         let mut body = vec![3];
         body.extend_from_slice(b"ctx");
         body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());

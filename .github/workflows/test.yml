@@ -68,6 +68,25 @@ jobs:
           path: ${{ runner.temp }}/test-binary-timings.csv
           if-no-files-found: error
 
+  tls-pok-wolfssl-interop:
+    name: wolfSSL TLS-POK Interop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Fetch Rust dependencies for the offline test step
+        run: cargo fetch --locked
+      # wolfSSL is GPLv3 and is used only as a CI test peer: this repository
+      # ships no wolfSSL source, binaries, or product dependency on it.
+      - name: Build the pinned wolfSSL test peer
+        run: bash ./ci/wolfssl-tls-pok/build.sh
+      - name: Verify TLS-POK against wolfSSL
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo test -p qid-tls --all-features --locked --offline --test wolfssl_tls_pok_interop -- --ignored --nocapture
+
   postgres-push:
     name: PostgreSQL Push Storage
     runs-on: ubuntu-latest

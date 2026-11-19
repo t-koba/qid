@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Build the test-only wolfSSL TLS-POK peer outside the workspace.
+set -euo pipefail
+
+readonly WOLFSSL_TAG="v5.9.4-stable"
+readonly WOLFSSL_URL="https://github.com/wolfSSL/wolfssl.git"
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+runner_temp="${RUNNER_TEMP:-$(mktemp -d)}"
+mkdir -p "$runner_temp"
+work="$(mktemp -d "$runner_temp/qid-wolfssl-tls-pok.XXXXXX")"
+source_dir="$work/wolfssl"
+prefix="$work/prefix"
+binary="$work/server"
+
+# Only the build tree is disposable; the compiled helper stays for the test step.
+trap 'rm -rf "$source_dir" "$prefix"' EXIT
+
+git clone --depth 1 --branch "$WOLFSSL_TAG" "$WOLFSSL_URL" "$source_dir"
+cd "$source_dir"
+./autogen.sh
+./configure \
+  --prefix="$prefix" \
+  --enable-tls13 \
+  --enable-psk \
+  --enable-cert-with-extern-psk \
+  --enable-rpk \
+  --enable-ecc \
+  --enable-supportedcurves \
+  --disable-shared \
+  --disable-examples
+make -j"$(nproc)"
+make install
+
+cc -std=c11 -O2 -Wall -Wextra \
+  -I"$prefix/include" \
+  "$repo_root/ci/wolfssl-tls-pok/server.c" \
+  -o "$binary" -L"$prefix/lib" -lwolfssl -lm
+
+line="QID_WOLFSSL_SERVER_BIN=$binary"
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  printf '%s\n' "$line" >> "$GITHUB_ENV"
+fi
+printf '%s\n' "$line"

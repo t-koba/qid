@@ -56,21 +56,46 @@ int decode_hex(const char* hex, unsigned char** out, size_t* out_len)
     return 0;
 }
 
-/* The server callback sees only the imported identity bytes; all TLS-POK
+/* The server callbacks see only the imported identity bytes; all TLS-POK
  * peers in this test share the one fixed EPSK-derived PSK. */
+static unsigned int copy_imported_psk(unsigned char* psk,
+                                      unsigned int psk_max_len)
+{
+    if (psk == NULL || psk_max_len < imported_psk_len) {
+        return 0;
+    }
+    XMEMCPY(psk, imported_psk, imported_psk_len);
+    return imported_psk_len;
+}
+
 static unsigned int psk_server_cb(WOLFSSL* ssl, const char* identity,
                                   unsigned char* psk, unsigned int psk_max_len,
                                   const char** cipher_suite)
 {
+    unsigned int length;
+
     (void)ssl;
     (void)identity;
 
-    if (psk == NULL || cipher_suite == NULL || psk_max_len < imported_psk_len) {
+    if (cipher_suite == NULL) {
         return 0;
     }
-    XMEMCPY(psk, imported_psk, imported_psk_len);
-    *cipher_suite = psk_cipher_name;
-    return imported_psk_len;
+    length = copy_imported_psk(psk, psk_max_len);
+    if (length != 0) {
+        *cipher_suite = psk_cipher_name;
+    }
+    return length;
+}
+
+/* wolfSSL's legacy setter takes four arguments; the TLS 1.3 setter takes
+ * five. Keep the two callback signatures distinct. */
+static unsigned int psk_server_legacy_cb(WOLFSSL* ssl, const char* identity,
+                                         unsigned char* psk,
+                                         unsigned int psk_max_len)
+{
+    (void)ssl;
+    (void)identity;
+    return copy_imported_psk(psk, psk_max_len);
 }
 
 static char* read_line(FILE* stream)
@@ -183,7 +208,7 @@ int main(int argc, char** argv)
     }
     /* wolfSSL cert+PSK examples register both callbacks; the TLS 1.3
      * callback alone is not sufficient for all server paths. */
-    wolfSSL_CTX_set_psk_server_callback(ctx, psk_server_cb);
+    wolfSSL_CTX_set_psk_server_callback(ctx, psk_server_legacy_cb);
     wolfSSL_CTX_set_psk_server_tls13_callback(ctx, psk_server_cb);
     {
         const char rpk = (const char)RAW_PUBLIC_KEY;

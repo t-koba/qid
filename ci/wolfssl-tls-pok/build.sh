@@ -34,7 +34,7 @@ cd "$source_dir"
 make -j"$(nproc)"
 make install
 
-cc -std=c11 -O2 -Wall -Wextra \
+cc -std=c11 -O2 -Wall -Wextra -Werror \
   -I"$prefix/include" \
   "$repo_root/ci/wolfssl-tls-pok/server.c" \
   -o "$binary" -L"$prefix/lib" -lwolfssl -lm

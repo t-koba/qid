@@ -173,7 +173,7 @@ int main(int argc, char** argv)
     int status = 1;
 
     if (argc != 5) {
-        emit_error("usage: server <server_cert_der> <server_key_der> <imported_psk_hex> <client_spki_der_hex>");
+        emit_error("usage: server <server_cert_der> <server_key_der> <raw_epsk_hex> <client_spki_der_hex>");
         return 2;
     }
     if (decode_hex(argv[3], &psk_bytes, &psk_hex_len) != 0 ||

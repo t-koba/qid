@@ -22,8 +22,8 @@ cd "$source_dir"
 # wolfSSL 5.9.4 derives PSK binder keys with RFC 8446's "ext binder" label.
 # TLS-POK imports its PSK under RFC 9258, which mandates "imp binder" (the
 # same length). Adapt this CI-only peer so it verifies qid's imported-PSK
-# binder. The helper is given qid's imported PSK, so this checks binder and
-# transcript handling; it does not independently verify the PSK import itself.
+# binder. The helper receives the raw EPSK that qid imports, not an already-
+# imported key; this checks binder and transcript handling with a shared key.
 binder_file="$source_dir/src/tls13.c"
 python3 - "$binder_file" <<'PYEOF'
 import sys

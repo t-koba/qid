@@ -200,6 +200,14 @@ int main(int argc, char** argv)
         emit_error("cannot configure TLS 1.3 and P-256");
         goto cleanup;
     }
+    /* The client signs CertificateVerify with its P-256 key. Ask it for that
+     * scheme explicitly so the interop result does not depend on the peer's
+     * default signature-algorithm policy. */
+    if (wolfSSL_CTX_set1_sigalgs_list(ctx, "ECDSA+SHA256") != WOLFSSL_SUCCESS) {
+        emit_error("cannot select ECDSA+SHA256 signature scheme");
+        goto cleanup;
+    }
+
     if (wolfSSL_CTX_set_cipher_list(ctx, PSK_CIPHER_NAME) != WOLFSSL_SUCCESS) {
         if (wolfSSL_CTX_set_cipher_list(ctx, IANA_CIPHER_NAME) != WOLFSSL_SUCCESS) {
             emit_error("cannot configure AES-128-GCM");

@@ -461,8 +461,10 @@ pub fn validate_saml_bearer_assertion(
     }
     let auth_time = children_named(doc, assertion, ASSERTION_NS, "AuthnStatement")
         .first()
-        .and_then(|n| attribute(doc, *n, "AuthnInstant"))
-        .and_then(|s| s.parse::<u64>().ok());
+        .copied()
+        .map(|node| epoch(node, "AuthnInstant"))
+        .transpose()?
+        .flatten();
     Ok(SamlBearerAssertion {
         assertion_id,
         issuer,

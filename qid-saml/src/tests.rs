@@ -578,6 +578,27 @@ fn validates_saml_bearer_assertion_profile() {
 }
 
 #[test]
+fn rejects_malformed_saml_bearer_authn_instant() {
+    let now = 1_700_000_000;
+    let unsigned = include_str!("../tests/fixtures/bearer-assertion-profile-test.xml")
+        .replace(r#"AuthnInstant="{now}""#, r#"AuthnInstant="not-a-date""#)
+        .replace("{now}", &now.to_string());
+    let assertion = crate::test_support::sign_test_document(&unsigned, "assert-bearer-1");
+    let error = validate_saml_bearer_assertion(
+        &assertion,
+        "https://id.example.com/oauth2/token",
+        now,
+        60,
+        &[TEST_SP_CERT_PEM.to_string()],
+    )
+    .expect_err("SAML bearer assertion with malformed AuthnInstant should be rejected");
+    assert!(
+        matches!(&error, QidError::BadRequest { message } if message.contains("AuthnInstant")),
+        "expected BadRequest mentioning AuthnInstant, got {error:?}"
+    );
+}
+
+#[test]
 fn rejects_empty_saml_bearer_issuer_and_subject() {
     let assertion = unsigned_bearer_assertion();
     let unsigned_variants = [

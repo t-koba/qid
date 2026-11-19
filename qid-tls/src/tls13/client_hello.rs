@@ -181,6 +181,8 @@ pub fn build_cert_with_extern_psk(params: &ClientHelloParams<'_>) -> Result<Vec<
     body.push(u8::try_from(params.legacy_session_id.len()).map_err(|_| Error::InvalidSessionId)?);
     body.extend_from_slice(params.legacy_session_id);
     body.extend_from_slice(&vector(&params.cipher_suite.to_be_bytes())?);
+    // RFC 8446 §4.1.2: legacy_compression_methods is a one-byte-length vector.
+    body.push(0x01);
     body.push(LEGACY_COMPRESSION_NULL);
 
     let ext = extensions(params)?;
@@ -239,7 +241,8 @@ mod tests {
     }
 
     fn extension_types(body: &[u8]) -> Vec<u16> {
-        let mut reader = &body[2 + 32 + 1 + 2 + 2 + 1..];
+        // legacy_version + random + session_id + cipher_suites + compression_methods.
+        let mut reader = &body[41..];
         let len = usize::from(u16::from_be_bytes([reader[0], reader[1]]));
         reader = &reader[2..];
         let mut ext = &reader[..len];
@@ -264,7 +267,7 @@ mod tests {
         assert_eq!(&body[2..34], &[0x42; 32]);
         assert_eq!(body[34], 0);
         assert_eq!(&body[35..39], &[0x00, 0x02, 0x13, 0x01]);
-        assert_eq!(body[39], 0);
+        assert_eq!(&body[39..41], &[0x01, 0x00]);
         assert_eq!(
             extension_types(body),
             vec![
@@ -280,7 +283,7 @@ mod tests {
             ]
         );
 
-        let ext_bytes = &body[42..];
+        let ext_bytes = &body[43..];
         assert_eq!(
             extension_body(ext_bytes, SUPPORTED_VERSIONS_TYPE),
             Some(&[0x02, 0x03, 0x04][..])

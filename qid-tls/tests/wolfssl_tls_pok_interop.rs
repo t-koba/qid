@@ -140,8 +140,8 @@ fn wolfssl_server_completes_tls_pok_handshake() {
 
     let server_spki = server_key.public_key_der();
     let client_spki = client_key.public_key_der();
-    let server_epskid = epskid(&server_spki).expect("derive server EPSK identity");
-    let identity = ImportedIdentity::new(server_epskid.to_vec(), CONTEXT.to_vec())
+    let client_epskid = epskid(&client_spki).expect("derive client EPSK identity");
+    let identity = ImportedIdentity::new(client_epskid.to_vec(), CONTEXT.to_vec())
         .expect("build RFC 9258 imported identity");
     let imported_psk = import_external_psk(EPSK, &identity).expect("import fixed EPSK");
 

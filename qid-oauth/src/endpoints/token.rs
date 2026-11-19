@@ -1029,7 +1029,18 @@ fn validate_oauth_saml_bearer_assertion<R: Repository>(
             clock_skew_seconds,
             &provider.saml_signing_certificates,
         ) {
-            Ok(assertion) if assertion.issuer == provider.issuer => return Ok(assertion),
+            Ok(assertion) if assertion.issuer == provider.issuer => {
+                state.assertion_replay_cache.record_replay_key(
+                    &format!(
+                        "oauth-saml:{}:{}:{}",
+                        realm_id, provider.issuer, assertion.assertion_id
+                    ),
+                    assertion.expires_at.saturating_add(clock_skew_seconds),
+                    qid_core::util::now_seconds(),
+                    "SAML assertion ID already used (replay detected)",
+                )?;
+                return Ok(assertion);
+            }
             Ok(_) => {
                 last_error = Some(QidError::Unauthorized {
                     message: "verified SAML assertion issuer does not match configured provider"

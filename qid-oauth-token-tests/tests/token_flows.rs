@@ -790,6 +790,85 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
 }
 
 #[tokio::test]
+async fn saml_bearer_grant_rejects_assertion_replay() {
+    let issuer = "https://saml-idp.example.com";
+    let (app, token_path, _, db) = setup_with_saml_trust(
+        issuer,
+        include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+    )
+    .await;
+    let audience = format!("https://id.example.com{token_path}");
+    let assertion = build_saml_bearer_assertion_with_id(
+        "saml-replay-subject",
+        &audience,
+        util::now_seconds() + 300,
+        issuer,
+        include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+        include_str!("../../qid-oauth/tests/data/test-sp.key"),
+        "saml-bearer-replay-control",
+    );
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}&audience=api://saml&scope=saml",
+        urlencoding::encode(&assertion)
+    );
+
+    let first = post_form(app.clone(), &token_path, body.clone()).await;
+    let first_status = first.status();
+    let first_json = json_body(first).await;
+    assert_eq!(
+        first_status,
+        StatusCode::OK,
+        "first use of the signed assertion must be accepted: {first_json}"
+    );
+    assert!(first_json["access_token"].as_str().is_some());
+
+    let second = post_form(app.clone(), &token_path, body).await;
+    let second_status = second.status();
+    let second_json = json_body(second).await;
+    assert_eq!(
+        second_status,
+        StatusCode::BAD_REQUEST,
+        "replayed assertion must be rejected; status={second_status} body={second_json}"
+    );
+    assert!(
+        second_json.get("access_token").is_none(),
+        "replayed assertion must not issue another access token: {second_json}"
+    );
+    assert!(
+        second_json["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("replay detected")),
+        "replay rejection must be surfaced to the caller: {second_json}"
+    );
+
+    // Replay state is scoped to the assertion ID: a different signed assertion
+    // from the same issuer must still be accepted.
+    let fresh_assertion = build_saml_bearer_assertion_with_id(
+        "saml-replay-subject",
+        &audience,
+        util::now_seconds() + 300,
+        issuer,
+        include_str!("../../qid-oauth/tests/data/test-sp.crt"),
+        include_str!("../../qid-oauth/tests/data/test-sp.key"),
+        "saml-bearer-replay-fresh",
+    );
+    let fresh_body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:saml2-bearer&client_id=saml-bearer-client&client_secret=secret&assertion={}&audience=api://saml&scope=saml",
+        urlencoding::encode(&fresh_assertion)
+    );
+    let fresh = post_form(app, &token_path, fresh_body).await;
+    let fresh_status = fresh.status();
+    let fresh_json = json_body(fresh).await;
+    assert_eq!(
+        fresh_status,
+        StatusCode::OK,
+        "a fresh assertion ID must still be accepted: {fresh_json}"
+    );
+    assert!(fresh_json["access_token"].as_str().is_some());
+    db.close().await;
+}
+
+#[tokio::test]
 async fn saml_bearer_grant_rejects_default_config_without_inbound_trust() {
     let (app, token_path, _, db) = setup().await;
     let assertion = build_saml_bearer_assertion(

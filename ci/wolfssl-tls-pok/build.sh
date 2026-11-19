@@ -51,9 +51,13 @@ for name in files:
 for name in files:
     print_window(Path(name), "TLSX_GetMinSize_Client(", 0, 170)
 for name in files:
-    print_window(Path(name), "TLSX_Parse(WOLFSSL", 0, 250)
+    print_window(Path(name), "TLSX_Parse(WOLFSSL", 0, 600)
 for name in files:
     print_window(Path(name), "TLSX_CertWithExternPsk_Parse", 20, 70)
+for name in files:
+    print_window(Path(name), "static int TLSX_PreSharedKey_Parse", 5, 160)
+for name in files:
+    print_window(Path(name), "static int TLSX_ClientCertType_Parse", 5, 100)
 PYEOF
 source_window_assignment="QID_WOLFSSL_SOURCE_WINDOW=$source_window"
 if [[ -n "${GITHUB_ENV:-}" ]]; then

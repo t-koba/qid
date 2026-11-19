@@ -18,6 +18,8 @@ trap 'rm -rf "$source_dir" "$prefix"' EXIT
 
 git clone --depth 1 --branch "$WOLFSSL_TAG" "$WOLFSSL_URL" "$source_dir"
 cd "$source_dir"
+# Keep the parser rejection site visible in CI logs for protocol diagnosis.
+sed -n '26410,26435p' src/internal.c >&2
 ./autogen.sh
 ./configure \
   --prefix="$prefix" \

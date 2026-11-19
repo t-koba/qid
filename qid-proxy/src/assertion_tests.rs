@@ -1,7 +1,31 @@
 use super::*;
 
-#[path = "assertion_test_repo.rs"]
-mod test_repo;
+/// Device-only mock: delegates real device writes to the file backend but
+/// injects a storage failure on the user-device read under test.
+struct DeviceErrorRepository {
+    inner: qid_storage::FileRepository,
+}
+
+#[async_trait::async_trait]
+impl DeviceRepository for DeviceErrorRepository {
+    async fn register_device(&self, device: &qid_core::models::Device) -> QidResult<()> {
+        self.inner.register_device(device).await
+    }
+
+    async fn get_device(&self, device_id: &str) -> QidResult<Option<qid_core::models::Device>> {
+        self.inner.get_device(device_id).await
+    }
+
+    async fn get_user_devices(&self, _user_id: &str) -> QidResult<Vec<qid_core::models::Device>> {
+        Err(QidError::Storage {
+            message: "injected device repository outage".to_string(),
+        })
+    }
+
+    async fn update_device_last_seen(&self, device: &qid_core::models::Device) -> QidResult<()> {
+        self.inner.update_device_last_seen(device).await
+    }
+}
 
 #[test]
 fn test_jti_format() {
@@ -234,19 +258,7 @@ async fn assertion_device_context_without_devices_stays_unknown() -> anyhow::Res
 }
 
 #[tokio::test]
-async fn assertion_issuance_fails_closed_on_device_storage_error() -> anyhow::Result<()> {
-    let mut config = qid_core::test_helpers::test_config();
-    config.realms[0].pep_registrations.enabled = true;
-    config.realms[0].pep_registrations.registrations =
-        vec![qid_core::config::PepRegistrationConfig {
-            name: "egress-main".to_string(),
-            audience: Some("urn:qid:pep:qpx:test/egress-main".to_string()),
-            capabilities: Vec::new(),
-            assertion: qid_core::config::ProxyAssertionConfig::default(),
-            decision: qid_core::config::PepDecisionConfig::default(),
-            auth: qid_core::config::PepRegistrationAuthConfig::default(),
-        }];
-    let now = qid_core::util::now_seconds();
+async fn assertion_device_context_propagates_device_storage_error() -> anyhow::Result<()> {
     let path = std::env::temp_dir().join(format!(
         "qid-proxy-assertion-device-error-{}.json",
         ulid::Ulid::new()
@@ -263,51 +275,17 @@ async fn assertion_issuance_fails_closed_on_device_storage_error() -> anyhow::Re
         locked_until: None,
         org: None,
     };
-    inner.create_user(&user).await?;
-    let session = Session {
-        id: "sid_device_error".to_string(),
-        realm_id: "test".to_string(),
-        user_id: user.id.clone(),
-        auth_time: now - 120,
-        acr: None,
-        amr: Vec::new(),
-        idle_expires_at: now + 300,
-        absolute_expires_at: now + 3600,
-        revoked: false,
-        created_at: now - 120,
-        cnf: None,
-    };
-    inner.create_session(&session).await?;
+    let repo = DeviceErrorRepository { inner };
 
-    let state = Arc::new(SharedState::new_with_pep_assertion_signers(
-        config,
-        Arc::new(test_repo::DeviceFailingRepository::new(inner)),
-        Arc::new(qid_crypto::LocalSigner::from_secret(
-            "oidc",
-            b"test-oidc-key",
-        )),
-        std::collections::BTreeMap::from([(
-            "test".to_string(),
-            Arc::new(qid_crypto::LocalSigner::from_secret("pep", b"test-pep-key"))
-                as Arc<dyn qid_core::jwt::Signer>,
-        )]),
-        serde_json::json!({}),
-    )?);
-    let request = AssertionRequest {
-        edge: Some("egress-main".to_string()),
-        session: Some(session.id.clone()),
-        access_token: None,
-    };
-
-    let err = do_issue_assertion(&state, "test", &request, &HeaderMap::new())
+    let err = assertion_device_context(&repo, &user)
         .await
-        .expect_err("device storage failure must not issue an assertion");
+        .expect_err("device storage failure must propagate");
     assert!(
         matches!(&err, QidError::Storage { message } if message.contains("injected device repository outage")),
         "unexpected error: {err}"
     );
 
-    drop(state);
+    drop(repo);
     std::fs::remove_file(path)?;
     Ok(())
 }

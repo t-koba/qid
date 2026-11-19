@@ -318,7 +318,7 @@ struct AssertionDeviceContext {
     trust_level: String,
 }
 
-async fn assertion_device_context<R: Repository>(
+async fn assertion_device_context<R: DeviceRepository>(
     repo: &R,
     user: &User,
 ) -> QidResult<AssertionDeviceContext> {

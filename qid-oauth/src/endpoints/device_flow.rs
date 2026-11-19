@@ -424,7 +424,7 @@ pub(crate) async fn device_code_grant<R: Repository>(
             resource: Some(&grant.resource),
             authorization_details: None,
             cnf,
-            auth_time: Some(now),
+            auth_time: grant.approved_at,
             acr: None,
             amr: None,
             nonce: None,
@@ -561,6 +561,124 @@ mod tests {
                 .to_vec(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn device_token_auth_time_is_the_approval_time_not_redemption_time() {
+        let dir = std::env::temp_dir().join(format!("qid_device_authtime_{}", ulid::Ulid::new()));
+        let repo = Arc::new(
+            FileRepository::new(dir.join("store.json").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        repo.migrate().await.unwrap();
+        let mut config = test_helpers::test_config();
+        config.realms[0]
+            .protocols
+            .oauth
+            .device_authorization
+            .enabled = true;
+        repo.create_realm(
+            &"tenant".into(),
+            &"test".into(),
+            &config.realms[0].issuer,
+            None,
+        )
+        .await
+        .unwrap();
+        repo.create_user(&User {
+            id: "test-user".into(),
+            realm_id: "test".into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+        repo.create_client(&Client {
+            id: "device-client-id".into(),
+            realm_id: "test".into(),
+            client_id: "device-client".into(),
+            client_type: ClientType::Public,
+            token_endpoint_auth_method: "none".into(),
+            client_secret_hash: None,
+            mtls_certificate_thumbprints: Vec::new(),
+            jwks: serde_json::json!({"keys": []}),
+            redirect_uris: Vec::new(),
+            grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".into()],
+            client_name: None,
+            client_uri: None,
+            logo_uri: None,
+            contacts: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            default_max_age: None,
+            require_auth_time: false,
+            sector_identifier_uri: None,
+            subject_type: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            backchannel_client_notification_endpoint: None,
+            require_pushed_authorization_requests: false,
+        })
+        .await
+        .unwrap();
+        let state = Arc::new(
+            SharedState::new(
+                config,
+                repo.clone(),
+                Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests")),
+                serde_json::json!({"keys": []}),
+            )
+            .unwrap(),
+        );
+
+        let now = qid_core::util::now_seconds();
+        let approved_at = now - 600;
+        let device_code = "device-code-with-old-approval";
+        let grant = DeviceAuthorizationGrant {
+            device_code_hash: qid_core::util::sha256_base64url(device_code),
+            user_code: "ABCD-EFGH".into(),
+            client_id: "device-client".into(),
+            realm_id: "test".into(),
+            scopes: vec![],
+            resource: vec![],
+            audience: vec![],
+            user_id: Some("test-user".into()),
+            expires_at: now + 600,
+            approved_at: Some(approved_at),
+            consumed: false,
+            last_poll_at: None,
+            poll_interval_seconds: 5,
+            created_at: now - 1200,
+        };
+        repo.store_device_authorization_grant(&grant).await.unwrap();
+
+        let response = device_code_grant(
+            &state,
+            &TokenRequest {
+                grant_type: "urn:ietf:params:oauth:grant-type:device_code".into(),
+                client_id: Some("device-client".into()),
+                device_code: Some(device_code.into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let claims = state
+            .signer
+            .decode_signature_only(&response.access_token)
+            .unwrap()
+            .claims;
+        assert_eq!(
+            claims.extra["auth_time"],
+            serde_json::json!(approved_at),
+            "device token auth_time must be the approval time, not the redemption time"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

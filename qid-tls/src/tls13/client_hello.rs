@@ -19,7 +19,8 @@ use std::fmt;
 const CLIENT_HELLO: u8 = 0x01;
 const LEGACY_VERSION: u16 = 0x0303;
 const LEGACY_COMPRESSION_NULL: u8 = 0;
-const TLS13: [u8; 2] = [0x03, 0x04];
+// RFC 8446 §4.2.1: client_hello carries a one-byte-length versions vector.
+const TLS13_CLIENT_VERSIONS: [u8; 3] = [0x02, 0x03, 0x04];
 const SUPPORTED_VERSIONS_TYPE: u16 = 0x002b;
 const SIGNATURE_ALGORITHMS_TYPE: u16 = 0x000d;
 const BINDER_LEN: usize = 32;
@@ -112,7 +113,7 @@ fn extensions(params: &ClientHelloParams<'_>) -> Result<Vec<u8>, Error> {
     };
 
     let mut out = Vec::new();
-    push_extension(&mut out, SUPPORTED_VERSIONS_TYPE, &TLS13)?;
+    push_extension(&mut out, SUPPORTED_VERSIONS_TYPE, &TLS13_CLIENT_VERSIONS)?;
     push_extension(
         &mut out,
         SUPPORTED_GROUPS_TYPE,
@@ -280,6 +281,10 @@ mod tests {
         );
 
         let ext_bytes = &body[42..];
+        assert_eq!(
+            extension_body(ext_bytes, SUPPORTED_VERSIONS_TYPE),
+            Some(&[0x02, 0x03, 0x04][..])
+        );
         let offered = parse_psk_extension(ext_bytes);
         assert_eq!(
             offered.identities[0].identity,

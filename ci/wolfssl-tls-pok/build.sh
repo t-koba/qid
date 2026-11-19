@@ -48,6 +48,12 @@ for name in files:
     print_window(Path(name), "Supported Versions extension received", 30, 30)
 for name in files:
     print_window(Path(name), "int DoTls13ClientHello(", 5, 320)
+for name in files:
+    print_window(Path(name), "TLSX_GetMinSize_Client(", 0, 170)
+for name in files:
+    print_window(Path(name), "TLSX_Parse(WOLFSSL", 0, 250)
+for name in files:
+    print_window(Path(name), "TLSX_CertWithExternPsk_Parse", 20, 70)
 PYEOF
 source_window_assignment="QID_WOLFSSL_SOURCE_WINDOW=$source_window"
 if [[ -n "${GITHUB_ENV:-}" ]]; then

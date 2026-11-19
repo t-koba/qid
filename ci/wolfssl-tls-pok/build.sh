@@ -18,8 +18,10 @@ trap 'rm -rf "$source_dir" "$prefix"' EXIT
 
 git clone --depth 1 --branch "$WOLFSSL_TAG" "$WOLFSSL_URL" "$source_dir"
 cd "$source_dir"
-# Keep the parser rejection site visible in CI logs for protocol diagnosis.
-sed -n '26410,26435p' src/internal.c >&2
+# The Rust test prints this window beside its failure, where CI logs are not elided.
+source_window="$work/source_window.txt"
+sed -n '26410,26435p' src/internal.c > "$source_window"
+printf 'QID_WOLFSSL_SOURCE_WINDOW=%s\n' "$source_window" >> "$GITHUB_ENV"
 ./autogen.sh
 ./configure \
   --prefix="$prefix" \

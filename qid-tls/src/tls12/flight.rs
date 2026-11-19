@@ -72,21 +72,29 @@ pub fn build_server_first_flight(
     let client = parse_client_hello_message(input.client_hello_message)?;
     validate_client_profile(&client)?;
     let status = select_status_request(&client.extensions)?;
+    // Only acknowledge and emit RFC 6961 stapling when there is actually a
+    // staple to send. An empty response list (or one of only Missing slots)
+    // means stapling is disabled; acknowledging ocsp_multi then would commit
+    // us to a CertificateStatus message that the encoder rejects, failing an
+    // otherwise compatible handshake. Any Der slot counts as available data;
+    // build_certificate_status_multi still validates its bytes (empty Der
+    // fails closed) and chain ordering.
+    let ocsp_multi_selected = status.ocsp_multi_usable
+        && input
+            .ocsp_responses
+            .iter()
+            .any(|response| matches!(response, OcspResponse::Der(_)));
 
     let mut messages = Vec::with_capacity(5);
     messages.push(HandshakeMessage {
         msg_type: SERVER_HELLO,
-        body: build_server_hello(
-            &client.extensions,
-            input.server_random,
-            status.ocsp_multi_usable,
-        )?,
+        body: build_server_hello(&client.extensions, input.server_random, ocsp_multi_selected)?,
     });
     messages.push(HandshakeMessage {
         msg_type: CERTIFICATE,
         body: build_certificate(input.certificates)?,
     });
-    if status.ocsp_multi_usable {
+    if ocsp_multi_selected {
         let body = build_certificate_status_multi(input.certificates.len(), input.ocsp_responses)?;
         messages.push(HandshakeMessage {
             msg_type: CERTIFICATE_STATUS,
@@ -127,7 +135,7 @@ pub fn build_server_first_flight(
         messages,
         transcript_sha256: Sha256::digest(&transcript).into(),
         transcript,
-        selected_ocsp_multi: status.ocsp_multi_usable,
+        selected_ocsp_multi: ocsp_multi_selected,
     })
 }
 
@@ -645,6 +653,37 @@ mod tests {
     }
 
     #[test]
+    fn no_available_staple_declines_ocsp_multi_without_failing_handshake() {
+        let (ecdhe, signing) = keys();
+        let message = client_message(&v2_request());
+        let cert = [0x30, 0x00];
+        let certificates: &[&[u8]] = &[&cert];
+        let empty: &[OcspResponse<'_>] = &[];
+        let missing: &[OcspResponse<'_>] = &[OcspResponse::Missing];
+
+        for responses in [empty, missing] {
+            let flight = build_server_first_flight(&input(
+                &message,
+                &ecdhe,
+                &signing,
+                certificates,
+                responses,
+            ))
+            .expect("a usable request with no staple must not fail the handshake");
+            assert!(!flight.selected_ocsp_multi);
+            let types: Vec<u8> = flight.messages.iter().map(|m| m.msg_type).collect();
+            assert_eq!(types, [2, 11, 12, 14]);
+            assert!(
+                !flight.messages[0]
+                    .body
+                    .windows(4)
+                    .any(|w| w == STATUS_REQUEST_V2_ACK),
+                "ServerHello must not acknowledge ocsp_multi with no staple"
+            );
+        }
+    }
+
+    #[test]
     fn response_count_is_checked_by_the_existing_status_encoder() {
         let (ecdhe, signing) = keys();
         let message = client_message(&v2_request());
@@ -673,11 +712,13 @@ mod tests {
         .expect("empty certificate list");
         assert_eq!(flight.messages[1].body, [0x00, 0x00, 0x00]);
 
-        // With status selected, the existing encoder rejects empty responses.
-        assert_eq!(
+        // A usable request with no available staple declines selection rather
+        // than failing the handshake on an empty status message.
+        let flight =
             build_server_first_flight(&input(&message, &ecdhe, &signing, empty, no_responses))
-                .err(),
-            Some(Tls12Error::InvalidCertificateStatus)
-        );
+                .expect("no staple declines cleanly");
+        assert!(!flight.selected_ocsp_multi);
+        let types: Vec<u8> = flight.messages.iter().map(|m| m.msg_type).collect();
+        assert_eq!(types, [2, 11, 12, 14]);
     }
 }

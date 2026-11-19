@@ -12,6 +12,7 @@
 //! the client BSK signing key; this module only receives its DER signatures.
 
 use super::certificate;
+use super::certificate_request;
 use super::certificate_verify::{self, CertificateVerifySender, SignatureScheme};
 use super::client_hello::{self, ClientHelloParams};
 use super::encrypted_extensions;
@@ -30,6 +31,7 @@ use zeroize::Zeroizing;
 const SERVER_HELLO: u8 = 0x02;
 const ENCRYPTED_EXTENSIONS: u8 = 0x08;
 const CERTIFICATE: u8 = 0x0b;
+const CERTIFICATE_REQUEST: u8 = 0x0d;
 const CERTIFICATE_VERIFY: u8 = 0x0f;
 const FINISHED: u8 = 0x14;
 const P256_GROUP: u16 = 0x0017;
@@ -47,6 +49,7 @@ pub enum Error {
     ServerHello(server_hello::Error),
     EncryptedExtensions(encrypted_extensions::Error),
     Certificate(certificate::Error),
+    CertificateRequest(certificate_request::Error),
     CertificateVerify(certificate_verify::Error),
     KeySchedule(key_schedule::Error),
     Negotiation,
@@ -67,6 +70,7 @@ impl fmt::Display for Error {
             Self::ServerHello(_) => "invalid TLS 1.3 ServerHello",
             Self::EncryptedExtensions(_) => "invalid TLS 1.3 EncryptedExtensions",
             Self::Certificate(_) => "invalid TLS-POK raw public key Certificate",
+            Self::CertificateRequest(_) => "invalid TLS 1.3 CertificateRequest",
             Self::CertificateVerify(_) => "invalid TLS 1.3 CertificateVerify",
             Self::KeySchedule(_) => "TLS 1.3 key schedule or Finished check failed",
             Self::Negotiation => "TLS-POK negotiation was not accepted",
@@ -112,6 +116,12 @@ impl From<certificate::Error> for Error {
     }
 }
 
+impl From<certificate_request::Error> for Error {
+    fn from(error: certificate_request::Error) -> Self {
+        Self::CertificateRequest(error)
+    }
+}
+
 impl From<certificate_verify::Error> for Error {
     fn from(error: certificate_verify::Error) -> Self {
         Self::CertificateVerify(error)
@@ -128,6 +138,7 @@ impl From<key_schedule::Error> for Error {
 enum Stage {
     AwaitServerHello,
     AwaitEncryptedExtensions,
+    AwaitCertificateRequest,
     AwaitCertificate,
     AwaitCertificateVerify,
     AwaitFinished,
@@ -193,6 +204,7 @@ pub struct ClientHandshake {
     cipher_suite: u16,
     ecdhe_secret: SecretKey,
     client_spki: Vec<u8>,
+    certificate_request_context: Vec<u8>,
     client_verifying_key: p256::ecdsa::VerifyingKey,
     peer_spki: Vec<u8>,
     peer_verifying_key: p256::ecdsa::VerifyingKey,
@@ -263,6 +275,7 @@ impl ClientHandshake {
             cipher_suite: params.cipher_suite,
             ecdhe_secret,
             client_spki: params.client_spki.to_vec(),
+            certificate_request_context: Vec::new(),
             client_verifying_key: (&client_public).into(),
             peer_spki: peer_bsk_spki.to_vec(),
             peer_verifying_key: (&peer_public).into(),
@@ -377,6 +390,16 @@ impl ClientHandshake {
         {
             return Err(Error::Negotiation);
         }
+        self.append(encoded, Stage::AwaitCertificateRequest)
+    }
+
+    /// Accept the mandatory TLS-POK CertificateRequest and remember the
+    /// request context that the client Certificate must echo.
+    pub fn receive_certificate_request(&mut self, encoded: &[u8]) -> Result<(), Error> {
+        let message =
+            self.incoming(Stage::AwaitCertificateRequest, CERTIFICATE_REQUEST, encoded)?;
+        let request = certificate_request::parse(message.body)?;
+        self.certificate_request_context = request.certificate_request_context.to_vec();
         self.append(encoded, Stage::AwaitCertificate)
     }
 
@@ -429,7 +452,11 @@ impl ClientHandshake {
         let mut entry = u24(self.client_spki.len())?.to_vec();
         entry.extend_from_slice(&self.client_spki);
         entry.extend_from_slice(&[0x00, 0x00]);
-        let mut body = vec![0x00];
+        let mut body = vec![
+            u8::try_from(self.certificate_request_context.len())
+                .map_err(|_| Error::MessageTooLarge)?,
+        ];
+        body.extend_from_slice(&self.certificate_request_context);
         body.extend_from_slice(&u24(entry.len())?);
         body.extend_from_slice(&entry);
         let encoded = transcript::encode_message(CERTIFICATE, &body)?;
@@ -658,6 +685,14 @@ mod tests {
         transcript::encode_message(ENCRYPTED_EXTENSIONS, &body).unwrap()
     }
 
+    fn certificate_request_message() -> Vec<u8> {
+        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x02, 0x04, 0x03, 0x08, 0x04];
+        let mut body = vec![0x00];
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        body.extend_from_slice(&extensions);
+        transcript::encode_message(CERTIFICATE_REQUEST, &body).unwrap()
+    }
+
     fn raw_public_key_body(spki: &[u8]) -> Vec<u8> {
         let mut entry = u24(spki.len()).unwrap().to_vec();
         entry.extend_from_slice(spki);
@@ -714,6 +749,9 @@ mod tests {
             .receive_encrypted_extensions(&encrypted_extensions(true))
             .unwrap();
         client
+            .receive_certificate_request(&certificate_request_message())
+            .unwrap();
+        client
             .receive_certificate(&certificate_message(&fx.server_spki))
             .unwrap();
         let verify = certificate_verify_message(client, &fx.server_bsk);
@@ -751,6 +789,10 @@ mod tests {
 
         let extensions = encrypted_extensions(true);
         client.receive_encrypted_extensions(&extensions).unwrap();
+        let certificate_request = certificate_request_message();
+        client
+            .receive_certificate_request(&certificate_request)
+            .unwrap();
         let server_certificate = certificate_message(&fx.server_spki);
         client.receive_certificate(&server_certificate).unwrap();
         let server_verify = certificate_verify_message(&client, &fx.server_bsk);
@@ -800,7 +842,12 @@ mod tests {
         assert_eq!(&expected_handshake.server_traffic[..], &server_traffic[..]);
 
         let mut server_transcript = transcript.clone();
-        for message in [&extensions, &server_certificate, &server_verify] {
+        for message in [
+            &extensions,
+            &certificate_request,
+            &server_certificate,
+            &server_verify,
+        ] {
             server_transcript.update(message).unwrap();
         }
         let server_finished_key =
@@ -812,7 +859,12 @@ mod tests {
         )
         .expect("server Finished matches the independent transcript");
 
-        for message in [&extensions, &server_certificate, &server_verify] {
+        for message in [
+            &extensions,
+            &certificate_request,
+            &server_certificate,
+            &server_verify,
+        ] {
             transcript.update(message).unwrap();
         }
         transcript.update(&server_finished).unwrap();
@@ -887,6 +939,26 @@ mod tests {
     }
 
     #[test]
+    fn echoes_the_certificate_request_context() {
+        let fx = fixture();
+        let mut client = client(&fx);
+        client
+            .receive_server_hello(&server_hello(&fx, ServerHelloOptions::default()))
+            .unwrap();
+        client
+            .receive_encrypted_extensions(&encrypted_extensions(true))
+            .unwrap();
+        let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x02, 0x04, 0x03, 0x08, 0x04];
+        let mut body = vec![3];
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        body.extend_from_slice(b"ctx");
+        body.extend_from_slice(&extensions);
+        let request = transcript::encode_message(CERTIFICATE_REQUEST, &body).unwrap();
+        client.receive_certificate_request(&request).unwrap();
+        assert_eq!(client.certificate_request_context, b"ctx");
+    }
+
+    #[test]
     fn rejects_wrong_peer_key_bad_signature_and_bad_finished() {
         let fx = fixture();
         let mut client = client(&fx);
@@ -895,6 +967,9 @@ mod tests {
             .unwrap();
         client
             .receive_encrypted_extensions(&encrypted_extensions(true))
+            .unwrap();
+        client
+            .receive_certificate_request(&certificate_request_message())
             .unwrap();
 
         let wrong_key = spki(&secret(&[0x99; 32]));
@@ -961,6 +1036,9 @@ mod tests {
         );
         client
             .receive_encrypted_extensions(&encrypted_extensions(true))
+            .unwrap();
+        client
+            .receive_certificate_request(&certificate_request_message())
             .unwrap();
         assert_eq!(
             client.receive_finished(&finished_message(&client, false)),

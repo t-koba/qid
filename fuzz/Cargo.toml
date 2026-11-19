@@ -76,3 +76,7 @@ path = "fuzz_targets/tls13_certificate.rs"
 [[bin]]
 name = "tls13_certificate_verify"
 path = "fuzz_targets/tls13_certificate_verify.rs"
+
+[[bin]]
+name = "tls13_certificate_request"
+path = "fuzz_targets/tls13_certificate_request.rs"

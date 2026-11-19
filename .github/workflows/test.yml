@@ -154,7 +154,8 @@ jobs:
           mkdir -p "$dir/classes"
           base="https://repo1.maven.org/maven2/org/bouncycastle"
           for artifact in bcprov-jdk18on bcutil-jdk18on bctls-jdk18on; do
-            curl -fsSL "$base/$artifact/$BC_VERSION/$artifact-$BC_VERSION.jar" \
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+              "$base/$artifact/$BC_VERSION/$artifact-$BC_VERSION.jar" \
               -o "$dir/$artifact.jar"
           done
           cp="$dir/bcprov-jdk18on.jar:$dir/bcutil-jdk18on.jar:$dir/bctls-jdk18on.jar"

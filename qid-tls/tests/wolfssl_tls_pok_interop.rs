@@ -145,11 +145,14 @@ fn wolfssl_server_completes_tls_pok_handshake() {
     let (server_cert, server_key, client_cert, client_key) = certificates();
     let cert_path = temp.0.join("server.der");
     let key_path = temp.0.join("server.key.der");
-    fs::write(&cert_path, server_cert.der()).expect("write server certificate DER");
-    fs::write(&key_path, server_key.serialize_der()).expect("write server key DER");
 
     let server_spki = server_key.public_key_der();
     let client_spki = client_key.public_key_der();
+    // wolfSSL loads its own RawPublicKey as an SPKI-only DER certificate
+    // file. Loading the X.509 instead makes it send X.509 despite negotiating
+    // server_certificate_type=RawPublicKey.
+    fs::write(&cert_path, &server_spki).expect("write server raw public key DER");
+    fs::write(&key_path, server_key.serialize_der()).expect("write server key DER");
     let client_epskid = epskid(&client_spki).expect("derive client EPSK identity");
     let identity = ImportedIdentity::new(client_epskid.to_vec(), CONTEXT.to_vec())
         .expect("build RFC 9258 imported identity");

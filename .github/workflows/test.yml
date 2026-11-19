@@ -79,7 +79,10 @@ jobs:
       - name: Fetch Rust dependencies for the offline test step
         run: cargo fetch --locked
       # wolfSSL is GPLv3 and is used only as a CI test peer: this repository
-      # ships no wolfSSL source, binaries, or product dependency on it.
+      # ships no wolfSSL source, binaries, or product dependency on it. The
+      # peer's binder label is adapted in CI to RFC 9258's "imp binder", so
+      # this checks binder handling against an independent TLS stack; it does
+      # not independently verify qid's PSK import derivation.
       - name: Build the pinned wolfSSL test peer
         run: bash ./ci/wolfssl-tls-pok/build.sh
       - name: Verify TLS-POK against wolfSSL

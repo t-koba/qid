@@ -18,6 +18,26 @@ trap 'rm -rf "$source_dir" "$prefix"' EXIT
 
 git clone --depth 1 --branch "$WOLFSSL_TAG" "$WOLFSSL_URL" "$source_dir"
 cd "$source_dir"
+
+# wolfSSL 5.9.4 derives PSK binder keys with RFC 8446's "ext binder" label.
+# TLS-POK imports its PSK under RFC 9258, which mandates "imp binder" (the
+# same length). Adapt this CI-only peer so it verifies qid's imported-PSK
+# binder. The helper is given qid's imported PSK, so this checks binder and
+# transcript handling; it does not independently verify the PSK import itself.
+binder_file="$source_dir/src/tls13.c"
+python3 - "$binder_file" <<'PYEOF'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = 'static const byte binderKeyLabel[BINDER_KEY_LABEL_SZ + 1] = "ext binder";'
+new = 'static const byte binderKeyLabel[BINDER_KEY_LABEL_SZ + 1] = "imp binder";'
+if source.count(old) != 1:
+    raise SystemExit("pinned wolfSSL binder label not found exactly once")
+path.write_text(source.replace(old, new, 1), encoding="utf-8")
+PYEOF
+
 # The Rust test prints this window beside its failure, where CI logs are not elided.
 source_window="$work/source_window.txt"
 python3 - > "$source_window" <<'PYEOF'

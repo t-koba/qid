@@ -225,6 +225,21 @@ fn verify_dpop_proof_signature(dpop_proof: &str, header: &serde_json::Value) -> 
             message: "DPoP proof jwk alg does not match JWT alg".to_string(),
         });
     }
+    // The thumbprint bound to the access token is derived from the JWK members
+    // selected by `kty`, while signature verification selects members by `alg`.
+    // Reject a mismatch so a proof cannot present a victim's thumbprint while
+    // being signed by a key the attacker controls.
+    let key_type_matches_alg = match alg {
+        "ES256" => jwk.kty == "EC" && jwk.crv.as_deref() == Some("P-256"),
+        "RS256" => jwk.kty == "RSA",
+        "EdDSA" => jwk.kty == "OKP" && jwk.crv.as_deref() == Some("Ed25519"),
+        _ => false,
+    };
+    if !key_type_matches_alg {
+        return Err(QidError::BadRequest {
+            message: format!("DPoP proof jwk key type does not match alg {alg}"),
+        });
+    }
     verify_jwt_signature_with_jwk(dpop_proof, &jwk, alg).map_err(|e| QidError::BadRequest {
         message: format!("DPoP proof jwk cannot verify signature: {}", e.message()),
     })?;

@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{
-    extract_dpop_jkt, extract_private_key_jwt_at as extract_private_key_jwt, validate_dpop_proof,
-    validate_dpop_proof_with_cache,
+    dpop_jkt_from_proof, extract_dpop_jkt, extract_private_key_jwt_at as extract_private_key_jwt,
+    validate_dpop_proof, validate_dpop_proof_with_cache,
 };
 
 fn test_signer() -> LocalSigner {
@@ -210,6 +210,63 @@ fn valid_dpop_proof_succeeds() {
         result
     );
     assert_eq!(result.unwrap(), "unique-proof-id");
+}
+
+#[test]
+fn dpop_proof_with_jwk_key_type_mismatching_alg_is_rejected() {
+    use p256::{
+        ecdsa::{Signature, SigningKey, signature::Signer},
+        pkcs8::DecodePrivateKey,
+    };
+    let signer = test_signer();
+    let htu = "https://id.example.com/token";
+    let payload = serde_json::json!({
+        "jti": "mixed-kty-proof",
+        "htm": "POST",
+        "htu": htu,
+        "iat": now_seconds(),
+    });
+
+    // The attacker signs with their own P-256 key but presents an RSA-looking
+    // JWK carrying the victim's n/e and the attacker's x/y. The token jkt comes
+    // from kty members (n/e), while signature verification uses alg members
+    // (x/y), so the two can disagree without an explicit kty/alg check.
+    let attacker = generate_es256("attacker-dpop-key").expect("DPoP key generation failed");
+    let header = serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": "ES256",
+        "jwk": {
+            "kty": "RSA",
+            "n": "victim-rsa-modulus",
+            "e": "AQAB",
+            "x": attacker.public_jwk.x,
+            "y": attacker.public_jwk.y,
+            "alg": "ES256",
+        },
+    });
+    let input = format!("{}.{}", b64_encode_json(&header), b64_encode_json(&payload));
+    let signature: Signature = SigningKey::from_pkcs8_pem(&attacker.private_pem)
+        .unwrap()
+        .sign(input.as_bytes());
+    let mixed_proof = format!(
+        "{input}.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    );
+
+    // The thumbprint follows the RSA kty members, not the signing key.
+    let presented_jkt = dpop_jkt_from_proof(&mixed_proof).unwrap();
+    let genuine_jkt = dpop_jkt_from_proof(&build_jwt(&dpop_header(), &payload)).unwrap();
+    assert_ne!(
+        presented_jkt, genuine_jkt,
+        "mixed JWK must present a thumbprint derived from the RSA kty members"
+    );
+
+    let result = validate_dpop_proof(&DpopState::new(), &mixed_proof, "POST", htu, None, &signer);
+    assert!(
+        result.is_err(),
+        "JWK with kty mismatch must be rejected even when its signature verifies: {:?}",
+        result
+    );
 }
 
 #[test]

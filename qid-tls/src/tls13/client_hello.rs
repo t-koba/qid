@@ -24,6 +24,9 @@ const TLS13_CLIENT_VERSIONS: [u8; 3] = [0x02, 0x03, 0x04];
 const SUPPORTED_VERSIONS_TYPE: u16 = 0x002b;
 const SIGNATURE_ALGORITHMS_TYPE: u16 = 0x000d;
 const BINDER_LEN: usize = 32;
+// RFC 8446 §4.2.11: the OfferedPsks body frames the binder with a
+// two-byte binders vector length and a one-byte binder length.
+const BINDER_FRAMING_LEN: usize = 3;
 const OBFUSCATED_TICKET_AGE: u32 = 0;
 const MAX_VECTOR_LEN: usize = u16::MAX as usize;
 
@@ -192,16 +195,18 @@ pub fn build_cert_with_extern_psk(params: &ClientHelloParams<'_>) -> Result<Vec<
 
     // With pre_shared_key last, the binder is the final 32 bytes of the body.
     // RFC 8446 §4.4.1 hashes the framed message, including its four-byte
-    // header and the final message length with the binder placeholder present.
-    if body.len() < BINDER_LEN {
+    // header, up to and including the identities field. The binders vector
+    // length and the binder length are not part of the transcript, and the
+    // message length still includes the binder placeholder.
+    if body.len() < BINDER_LEN + BINDER_FRAMING_LEN {
         return Err(Error::BinderDerivation);
     }
     let binder_offset = body.len() - BINDER_LEN;
+    let transcript_end = binder_offset - BINDER_FRAMING_LEN;
     let mut framed = encode_message(CLIENT_HELLO, &body).map_err(|_| Error::VectorTooLong)?;
-    let framed_binder_offset = 4 + binder_offset;
-    let binder = imported_psk_binder(params.imported_psk, &framed[..framed_binder_offset])
+    let binder = imported_psk_binder(params.imported_psk, &framed[..4 + transcript_end])
         .map_err(|_| Error::BinderDerivation)?;
-    framed[framed_binder_offset..].copy_from_slice(&binder[..]);
+    framed[4 + binder_offset..].copy_from_slice(&binder[..]);
     Ok(framed)
 }
 
@@ -307,13 +312,24 @@ mod tests {
 
         let binder_offset = body.len() - BINDER_LEN;
         assert_eq!(&body[binder_offset..], binder.as_slice());
+        let transcript_end = binder_offset - BINDER_FRAMING_LEN;
+        // The three bytes after the identities field frame the binder; they
+        // are sent on the wire but are not hashed as part of its transcript.
+        assert_eq!(
+            &body[transcript_end..binder_offset],
+            &[0x00, (BINDER_LEN + 1) as u8, BINDER_LEN as u8]
+        );
         let len = u32::try_from(body.len()).unwrap().to_be_bytes();
         assert_eq!(&message[..4], &[0x01, len[1], len[2], len[3]]);
-        let framed_prefix = [&message[..4], &body[..binder_offset]].concat();
-        let headerless_prefix = &body[..binder_offset];
+        let framed_prefix = message[..4 + transcript_end].to_vec();
+        let headerless_prefix = &body[..transcript_end];
         assert_ne!(framed_prefix, headerless_prefix);
         let expected = imported_psk_binder(&psk, &framed_prefix).unwrap();
         assert_eq!(binder.as_slice(), &expected[..]);
+        assert_ne!(
+            *binder,
+            *imported_psk_binder(&psk, &message[..4 + binder_offset]).unwrap()
+        );
 
         let cert_ext = extension_body(ext_bytes, CERT_WITH_EXTERN_PSK_TYPE).unwrap();
         assert!(cert_ext.is_empty());

@@ -27,6 +27,8 @@ cd "$source_dir"
   --enable-rpk \
   --enable-ecc \
   --enable-supportedcurves \
+  --enable-opensslextra \
+  --enable-opensslall \
   --disable-shared \
   --disable-examples
 make -j"$(nproc)"

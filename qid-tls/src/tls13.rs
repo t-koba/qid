@@ -2,6 +2,7 @@
 
 pub mod certificate;
 pub mod certificate_verify;
+pub mod client;
 pub mod client_hello;
 pub mod encrypted_extensions;
 pub mod external_psk;

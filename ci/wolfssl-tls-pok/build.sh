@@ -24,18 +24,34 @@ cd "$source_dir"
 # same length). Adapt this CI-only peer so it verifies qid's imported-PSK
 # binder. The helper receives the raw EPSK that qid imports, not an already-
 # imported key; this checks binder and transcript handling with a shared key.
-binder_file="$source_dir/src/tls13.c"
-python3 - "$binder_file" <<'PYEOF'
+python3 - <<'PYEOF'
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
+# Match the label literal, not a full declaration: the pinned release's exact
+# declaration spelling can differ between tags. Fail closed if it is not unique.
+hits = []
+for name in ("src/tls13.c", "src/tls.c", "src/internal.c"):
+    path = Path(name)
+    if not path.is_file():
+        continue
+    for number, line in enumerate(
+        path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+    ):
+        if '"ext binder"' in line:
+            hits.append((path, number, line))
+
+if len(hits) != 1:
+    for path, number, line in hits:
+        print(f"binder candidate {path}:{number}: {line.strip()}", file=sys.stderr)
+    raise SystemExit(f'expected exactly one "ext binder" literal, found {len(hits)}')
+
+path, number, line = hits[0]
 source = path.read_text(encoding="utf-8")
-old = 'static const byte binderKeyLabel[BINDER_KEY_LABEL_SZ + 1] = "ext binder";'
-new = 'static const byte binderKeyLabel[BINDER_KEY_LABEL_SZ + 1] = "imp binder";'
-if source.count(old) != 1:
-    raise SystemExit("pinned wolfSSL binder label not found exactly once")
-path.write_text(source.replace(old, new, 1), encoding="utf-8")
+if source.count('"ext binder"') != 1:
+    raise SystemExit('"ext binder" occurs more than once in its file')
+path.write_text(source.replace('"ext binder"', '"imp binder"', 1), encoding="utf-8")
+print(f"adapted binder label at {path}:{number}: {line.strip()}")
 PYEOF
 
 # The Rust test prints this window beside its failure, where CI logs are not elided.

@@ -148,7 +148,7 @@ pub fn load_rustls_config(
             for path in &config.client_crls {
                 crls.extend(read_crls(path)?);
             }
-            verifier = verifier.with_crls(crls);
+            verifier = verifier.with_crls(crls).enforce_revocation_expiration();
         }
         builder.with_client_cert_verifier(
             verifier
@@ -235,8 +235,9 @@ fn read_crls(path: &str) -> anyhow::Result<Vec<CertificateRevocationListDer<'sta
 mod tests {
     use super::*;
     use rcgen::{
-        BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
-        ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+        BasicConstraints, Certificate, CertificateParams, CertificateRevocationListParams,
+        DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyIdMethod, KeyPair,
+        KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, SerialNumber, date_time_ymd,
     };
     use rustls::{
         DigitallySignedStruct, Error, SignatureScheme,
@@ -345,6 +346,55 @@ mod tests {
         let missing_intermediate =
             client_config_with_chain(&root, vec![client.der().clone()], &client_key);
         assert!(drive_handshake(server_config, missing_intermediate).is_err());
+    }
+
+    #[test]
+    fn expired_client_crl_is_rejected_fresh_client_crl_is_accepted() {
+        let (ca, ca_key) = certificate_authority("CRL expiry test CA");
+        let (server, server_key) = signed_certificate(
+            "localhost",
+            ExtendedKeyUsagePurpose::ServerAuth,
+            &ca,
+            &ca_key,
+        );
+        let (client, client_key) = signed_certificate(
+            "crl-client.example",
+            ExtendedKeyUsagePurpose::ClientAuth,
+            &ca,
+            &ca_key,
+        );
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let server_cert_path = directory.path().join("server.pem");
+        let server_key_path = directory.path().join("server-key.pem");
+        let client_ca_path = directory.path().join("client-ca.pem");
+        let expired_crl_path = directory.path().join("expired.crl.der");
+        let fresh_crl_path = directory.path().join("fresh.crl.der");
+        std::fs::write(&server_cert_path, server.pem()).expect("write server certificate");
+        std::fs::write(&server_key_path, server_key.serialize_pem()).expect("write server key");
+        std::fs::write(&client_ca_path, ca.pem()).expect("write client CA");
+        std::fs::write(&expired_crl_path, client_crl(&ca, &ca_key, 2020))
+            .expect("write expired CRL");
+        std::fs::write(&fresh_crl_path, client_crl(&ca, &ca_key, 2040)).expect("write fresh CRL");
+
+        let mut config = TlsConfig {
+            cert: server_cert_path.to_string_lossy().into_owned(),
+            key: server_key_path.to_string_lossy().into_owned(),
+            client_ca: Some(client_ca_path.to_string_lossy().into_owned()),
+            client_crls: vec![expired_crl_path.to_string_lossy().into_owned()],
+            ocsp_responses: Vec::new(),
+        };
+        let expired_server = load_rustls_config(&config)
+            .expect("load TLS configuration with expired CRL")
+            .get_inner();
+        let client_config = client_config(&ca, &client, &client_key);
+        assert!(drive_handshake(expired_server, client_config.clone()).is_err());
+
+        config.client_crls = vec![fresh_crl_path.to_string_lossy().into_owned()];
+        let fresh_server = load_rustls_config(&config)
+            .expect("load TLS configuration with fresh CRL")
+            .get_inner();
+        assert!(drive_handshake(fresh_server, client_config).is_ok());
     }
 
     #[test]
@@ -500,6 +550,23 @@ mod tests {
         params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
         let certificate = params.self_signed(&key).expect("generate CA certificate");
         (certificate, key)
+    }
+
+    // The CRL does not list the client serial: only nextUpdate distinguishes the two cases.
+    fn client_crl(issuer: &Certificate, issuer_key: &KeyPair, next_update_year: i32) -> Vec<u8> {
+        CertificateRevocationListParams {
+            this_update: date_time_ymd(2019, 1, 1),
+            next_update: date_time_ymd(next_update_year, 1, 1),
+            crl_number: SerialNumber::from(1u64),
+            issuing_distribution_point: None,
+            revoked_certs: Vec::new(),
+            key_identifier_method: KeyIdMethod::Sha256,
+        }
+        .signed_by(issuer, issuer_key)
+        .expect("sign client CRL")
+        .der()
+        .as_ref()
+        .to_vec()
     }
 
     fn intermediate_certificate_authority(

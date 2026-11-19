@@ -21,12 +21,33 @@ cd "$source_dir"
 # The Rust test prints this window beside its failure, where CI logs are not elided.
 source_window="$work/source_window.txt"
 python3 - > "$source_window" <<'PYEOF'
-lines = open("src/internal.c", encoding="utf-8", errors="replace").read().splitlines()
-anchor = next(i for i, line in enumerate(lines) if "Supported Versions extension received" in line)
-start = max(0, anchor - 180)
-end = min(len(lines), anchor + 60)
-for i in range(start, end):
-    print(f"{i + 1}: {lines[i]}")
+from pathlib import Path
+
+files = ("src/tls.c", "src/tls13.c", "src/internal.c")
+
+
+def print_window(path, needle, before, after):
+    if not path.is_file():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    for index, line in enumerate(lines):
+        if needle not in line:
+            continue
+        print(f"# {path}:{index + 1}")
+        start = max(0, index - before)
+        end = min(len(lines), index + after)
+        for number in range(start, end):
+            print(f"{number + 1}: {lines[number]}")
+        return
+
+
+for name in files:
+    print_window(Path(name), "Supported Versions extension received", 30, 30)
+for name in files:
+    print_window(Path(name), "int DoTls13ClientHello(", 5, 320)
 PYEOF
 source_window_assignment="QID_WOLFSSL_SOURCE_WINDOW=$source_window"
 if [[ -n "${GITHUB_ENV:-}" ]]; then

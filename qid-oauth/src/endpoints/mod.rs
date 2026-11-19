@@ -243,7 +243,8 @@ pub use device_flow::{
     device_authorization, device_authorization_approve, device_verification_page,
 };
 pub use introspect::{
-    decode_access_token, enforce_sender_constrained_access_token, extract_bearer_token, introspect,
+    DecodedAccessToken, decode_access_token, enforce_sender_constrained_access_token,
+    extract_bearer_token, introspect,
 };
 pub use revoke::revoke;
 pub use token::token;

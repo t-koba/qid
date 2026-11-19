@@ -97,7 +97,6 @@ pub fn enforce_sender_constrained_access_token<R: Repository>(
                 message: "DPoP proof key does not match access token cnf".to_string(),
             });
         }
-        return Ok(());
     }
     if let Some(expected_x5t) = mtls_x5t {
         let presented = crate::mtls::extract_mtls_x5t_s256(headers, state)?.ok_or_else(|| {

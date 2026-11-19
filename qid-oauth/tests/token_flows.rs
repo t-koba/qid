@@ -19,6 +19,7 @@ use qid_crypto::{
 };
 use qid_session::browser::SessionManager;
 use qid_storage::{SqlRepository, prelude::*};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -277,6 +278,22 @@ fn build_dpop_proof_with_nonce(jti: &str, nonce: Option<&str>) -> String {
     if let Some(nonce) = nonce {
         payload["nonce"] = serde_json::json!(nonce);
     }
+    sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "dpop+jwt", &payload)
+        .expect("DPoP proof signing failed")
+}
+
+fn build_dpop_proof_with_ath(jti: &str, access_token: &str) -> String {
+    let now = util::now_seconds();
+    let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(access_token.as_bytes()));
+    let (private_pem, jwk) = dpop_private_pem_and_jwk();
+    let payload = serde_json::json!({
+        "jti": jti,
+        "htm": "POST",
+        "htu": "https://id.example.com/oauth2/token",
+        "iat": now,
+        "ath": ath,
+    });
     sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "dpop+jwt", &payload)
         .expect("DPoP proof signing failed")
 }
@@ -5915,4 +5932,83 @@ async fn dynamic_client_registration_round_trips_logout_uris() {
             assert_eq!(metadata["frontchannel_logout_uri"], frontchannel);
         }
     }
+}
+
+#[tokio::test]
+async fn dual_dpop_and_mtls_cnf_requires_both_proofs() {
+    let (_app, _token_path, state) = setup().await;
+    let access_token = "dual-dpop-mtls-access-token";
+    let jti = format!("dual-dpop-mtls-{}", util::now_seconds());
+    let proof = build_dpop_proof_with_ath(&jti, access_token);
+    let jkt = qid_oauth::dpop::dpop_jkt_from_proof(&proof).unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("DPoP", proof.parse().unwrap());
+    let decoded = qid_oauth::endpoints::DecodedAccessToken {
+        user_id: "user".to_string(),
+        client_id: "test".to_string(),
+        realm_id: "test".to_string(),
+        exp: util::now_seconds() + 300,
+        scope: "read".to_string(),
+        cnf: Some(serde_json::json!({ "jkt": jkt, "x5t#S256": "expected-thumbprint" })),
+        aud: vec![],
+        resource: vec![],
+        auth_time: None,
+        acr: None,
+        amr: vec![],
+        nonce: None,
+        token_format: TokenFormat::Jwt,
+        act: None,
+    };
+
+    let error = qid_oauth::endpoints::enforce_sender_constrained_access_token(
+        &state,
+        &headers,
+        &Method::POST,
+        "https://id.example.com/oauth2/token",
+        access_token,
+        &decoded,
+    )
+    .expect_err("a dual-bound token must require both the DPoP proof and the client certificate");
+    assert!(matches!(
+        error,
+        qid_core::error::QidError::Unauthorized { .. }
+    ));
+    assert!(error.message().contains("mTLS thumbprint"));
+}
+
+#[tokio::test]
+async fn dpop_only_cnf_still_accepts_valid_proof() {
+    let (_app, _token_path, state) = setup().await;
+    let access_token = "dpop-only-access-token";
+    let jti = format!("dpop-only-{}", util::now_seconds());
+    let proof = build_dpop_proof_with_ath(&jti, access_token);
+    let jkt = qid_oauth::dpop::dpop_jkt_from_proof(&proof).unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("DPoP", proof.parse().unwrap());
+    let decoded = qid_oauth::endpoints::DecodedAccessToken {
+        user_id: "user".to_string(),
+        client_id: "test".to_string(),
+        realm_id: "test".to_string(),
+        exp: util::now_seconds() + 300,
+        scope: "read".to_string(),
+        cnf: Some(serde_json::json!({ "jkt": jkt })),
+        aud: vec![],
+        resource: vec![],
+        auth_time: None,
+        acr: None,
+        amr: vec![],
+        nonce: None,
+        token_format: TokenFormat::Jwt,
+        act: None,
+    };
+
+    qid_oauth::endpoints::enforce_sender_constrained_access_token(
+        &state,
+        &headers,
+        &Method::POST,
+        "https://id.example.com/oauth2/token",
+        access_token,
+        &decoded,
+    )
+    .expect("a DPoP-only token must still be accepted with a valid proof");
 }

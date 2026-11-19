@@ -137,11 +137,24 @@ fn resource_server_by_resource<'a>(
     })
 }
 
+/// A cnf claim only binds a token to a sender when it carries a key thumbprint
+/// the introspection endpoint can verify (RFC 7800 jkt or mTLS x5t#S256).
+fn cnf_has_usable_sender_key(cnf: &serde_json::Value) -> bool {
+    let non_empty_string = |key: &str| {
+        cnf.get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    non_empty_string("jkt") || non_empty_string("x5t#S256") || non_empty_string("x5t_s256")
+}
+
 fn require_sender_constraint(
     resource_server: &OAuthResourceServerConfig,
     cnf: Option<&serde_json::Value>,
 ) -> QidResult<()> {
-    if (resource_server.require_sender_constraint || resource_server.high_risk) && cnf.is_none() {
+    if (resource_server.require_sender_constraint || resource_server.high_risk)
+        && !cnf.is_some_and(cnf_has_usable_sender_key)
+    {
         return Err(QidError::Unauthorized {
             message: format!(
                 "sender-constrained token is required for audience {}",
@@ -264,6 +277,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_cnf_without_usable_sender_key() {
+        let mut target = server("api://workload", Vec::new());
+        target.require_sender_constraint = true;
+        let realm = realm_with_resource_servers(vec![target]);
+        let audience = vec!["api://workload".to_string()];
+        let resolve = |cnf: &serde_json::Value| {
+            super::resolve_token_audience(&realm, &audience, &[], &[], Some(cnf))
+        };
+
+        let empty = serde_json::json!({});
+        let unrelated = serde_json::json!({ "other": "value" });
+        let jkt = serde_json::json!({ "jkt": "thumbprint" });
+        let x5t = serde_json::json!({ "x5t#S256": "abc" });
+        assert!(resolve(&empty).is_err());
+        assert!(resolve(&unrelated).is_err());
+        assert_eq!(resolve(&jkt).unwrap(), audience);
+        assert_eq!(resolve(&x5t).unwrap(), audience);
     }
 
     fn server(audience: &str, scopes: Vec<&str>) -> OAuthResourceServerConfig {

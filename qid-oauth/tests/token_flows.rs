@@ -1314,6 +1314,57 @@ async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
 }
 
 #[tokio::test]
+async fn jwt_bearer_grant_rejects_empty_cnf_for_sender_constrained_audience() {
+    let (app, token_path, _) = setup_with_oauth(|oauth| {
+        let mut target = test_server("api://workload", &["workload"], "unused");
+        target.require_sender_constraint = true;
+        oauth.resource_servers = vec![target];
+    })
+    .await;
+
+    let assertion_for = |cnf: serde_json::Value, jti: &str| {
+        let now = util::now_seconds();
+        let token_url = format!("https://id.example.com{token_path}");
+        let (private_pem, jwk) = dpop_private_pem_and_jwk();
+        let payload = serde_json::json!({
+            "iss": "jwt-bearer-client",
+            "sub": "workload-123",
+            "aud": token_url,
+            "exp": now + 300,
+            "nbf": now - 1,
+            "iat": now,
+            "jti": jti,
+            "cnf": cnf,
+        });
+        sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "JWT", &payload).unwrap()
+    };
+    let form = |assertion: String| {
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&client_id=jwt-bearer-client&client_secret=secret&assertion={}&audience=api://workload&scope=workload",
+            urlencoding::encode(&assertion)
+        )
+    };
+
+    let empty_cnf = assertion_for(serde_json::json!({}), "jwt-bearer-empty-cnf");
+    let response = post_form(app.clone(), &token_path, form(empty_cnf)).await;
+    let status = response.status();
+    let body = json_body(response).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body["error"].as_str().is_some());
+    assert!(body.get("access_token").is_none());
+
+    let usable_cnf = assertion_for(
+        serde_json::json!({ "jkt": "workload-key-thumbprint" }),
+        "jwt-bearer-constrained-cnf",
+    );
+    let response = post_form(app, &token_path, form(usable_cnf)).await;
+    let status = response.status();
+    assert_eq!(status, StatusCode::OK);
+    let body = json_body(response).await;
+    assert!(body["access_token"].as_str().is_some());
+}
+
+#[tokio::test]
 async fn jwt_bearer_grant_rejects_wrong_audience() {
     let (app, token_path, state) = setup().await;
     let now = util::now_seconds();

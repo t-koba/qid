@@ -501,6 +501,14 @@ mod tests {
     use qid_storage::FileRepository;
     use tower::ServiceExt;
 
+    // Remove the file store and its lock even if an assertion fails.
+    struct TestDirectory(std::path::PathBuf);
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     // Parse the page's request literal and its fetch body expression, rather
     // than constructing an unrelated approval payload in the endpoint test.
     fn page_submission(html: &str) -> (String, String) {
@@ -565,9 +573,11 @@ mod tests {
 
     #[tokio::test]
     async fn device_token_auth_time_is_the_approval_time_not_redemption_time() {
-        let dir = std::env::temp_dir().join(format!("qid_device_authtime_{}", ulid::Ulid::new()));
+        let dir = TestDirectory(
+            std::env::temp_dir().join(format!("qid_device_authtime_{}", ulid::Ulid::new())),
+        );
         let repo = Arc::new(
-            FileRepository::new(dir.join("store.json").to_str().unwrap())
+            FileRepository::new(dir.0.join("store.json").to_str().unwrap())
                 .await
                 .unwrap(),
         );
@@ -678,18 +688,10 @@ mod tests {
             serde_json::json!(approved_at),
             "device token auth_time must be the approval time, not the redemption time"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn verification_payload_approves_authenticated_session_then_redeems_device_token() {
-        // Remove the file store and its lock even if an assertion fails.
-        struct TestDirectory(std::path::PathBuf);
-        impl Drop for TestDirectory {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
         let dir = TestDirectory(
             std::env::temp_dir().join(format!("qid_device_page_{}", ulid::Ulid::new())),
         );

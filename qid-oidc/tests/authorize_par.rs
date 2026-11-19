@@ -3214,6 +3214,39 @@ async fn authorize_par_preserves_assurance_requirements() {
 }
 
 #[tokio::test]
+async fn authorize_applies_registered_default_max_age_when_request_omits_it() {
+    let (app, state) = setup().await;
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&qid_core::tenant::RealmId("test".to_string()), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.default_max_age = Some(30);
+    state.repo.update_client(&client).await.unwrap();
+    create_browser_session(&state, "sid-default-age").await;
+
+    // A stale session must be challenged even though the request omits max_age:
+    // the client's registered default supplies it.
+    let no_max_age = get_uri(
+        app.clone(),
+        authorize_query(&state, ""),
+        Some("__Host-qid=sid-default-age"),
+    )
+    .await;
+    assert_login_challenge(no_max_age).await;
+
+    // An explicit max_age still overrides the registered default.
+    let overridden = get_uri(
+        app.clone(),
+        authorize_query(&state, "&max_age=3600"),
+        Some("__Host-qid=sid-default-age"),
+    )
+    .await;
+    assert_code_issued(&overridden);
+}
+
+#[tokio::test]
 async fn authorize_signed_request_preserves_essential_acr() {
     let (app, state) = setup().await;
     create_browser_session(&state, "sid-jar-acr").await;

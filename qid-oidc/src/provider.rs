@@ -502,7 +502,13 @@ async fn resolve_and_validate_authorize_request<R: Repository>(
     req: &AuthorizeRequest,
     consume_par: bool,
 ) -> QidResult<(AuthorizeParameters, Client)> {
-    let (resolved, client) = resolve_authorize_request(state, req, consume_par).await?;
+    let (mut resolved, client) = resolve_authorize_request(state, req, consume_par).await?;
+    // OIDC Core: the client's registered default max_age applies when the
+    // authorization request does not carry one. An explicit value (including
+    // 0) keeps precedence; both direct and PAR paths pass through here.
+    if resolved.max_age.is_none() {
+        resolved.max_age = client.default_max_age;
+    }
     validate_authorize_request(state, &resolved, &client)?;
     Ok((resolved, client))
 }

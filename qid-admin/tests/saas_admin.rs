@@ -1917,6 +1917,108 @@ async fn saas_admin_routes_enforce_approval_when_configured() {
 }
 
 #[tokio::test]
+async fn saas_admin_routes_reject_approval_older_than_max_age() {
+    let mut config = test_helpers::test_config();
+    config.admin.security.require_approval = true;
+    config.admin.security.max_approval_age_seconds = 10;
+    let (app, state, db) = setup_with_config_and_admins(config, &["approver@example.com"]).await;
+    seed_saas_realm_client(&state).await;
+
+    // approval-123 is pre-seeded as approved 30s ago and expiring in 90s: stale for the
+    // configured 10s maximum age, but still unexpired.
+    let stale_body = r#"{
+        "id":"app-stale-approval-age",
+        "tenant_id":"tenant-saas",
+        "realm_id":"realm-saas",
+        "display_name":"Stale Approval",
+        "category":"sales",
+        "oidc_client_id":"crm-client",
+        "saml_entity_id":null,
+        "scim_enabled":false,
+        "marketplace_connector_id":null
+    }"#;
+    let stale_response = app
+        .clone()
+        .oneshot(approval_json_request(
+            Method::POST,
+            "/admin/api/v1/tenants/tenant-saas/app-catalog",
+            stale_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(stale_response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        !state
+            .repo
+            .get_admin_approval("approval-123")
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed,
+        "a stale approval must not be consumed"
+    );
+
+    // Reuse the seeded approval's tenant/admin bindings with a fresh approved_at.
+    let seeded = state
+        .repo
+        .get_admin_approval("approval-123")
+        .await
+        .unwrap()
+        .unwrap();
+    let now = qid_core::util::now_seconds();
+    state
+        .repo
+        .store_admin_approval(&AdminApproval {
+            id: "approval-fresh".to_string(),
+            tenant_id: seeded.tenant_id.clone(),
+            approver_admin_id: seeded.approver_admin_id.clone(),
+            target_admin_id: seeded.target_admin_id.clone(),
+            reason: None,
+            approved_at: now,
+            expires_at: now + 90,
+            consumed: false,
+        })
+        .await
+        .unwrap();
+
+    let fresh_body = r#"{
+        "id":"app-fresh-approval-age",
+        "tenant_id":"tenant-saas",
+        "realm_id":"realm-saas",
+        "display_name":"Fresh Approval",
+        "category":"sales",
+        "oidc_client_id":"crm-client",
+        "saml_entity_id":null,
+        "scim_enabled":false,
+        "marketplace_connector_id":null
+    }"#;
+    let mut fresh_request = approval_json_request(
+        Method::POST,
+        "/admin/api/v1/tenants/tenant-saas/app-catalog",
+        fresh_body,
+    );
+    fresh_request
+        .headers_mut()
+        .insert("x-qid-admin-approval-id", "approval-fresh".parse().unwrap());
+    fresh_request
+        .headers_mut()
+        .insert("x-qid-admin-approved-at", now.to_string().parse().unwrap());
+    let fresh_response = app.oneshot(fresh_request).await.unwrap();
+    assert_eq!(fresh_response.status(), StatusCode::CREATED);
+    assert!(
+        state
+            .repo
+            .get_admin_approval("approval-fresh")
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed,
+        "a fresh approval must be consumed"
+    );
+    db.close().await;
+}
+
+#[tokio::test]
 async fn saas_admin_routes_reject_self_or_stale_approval() {
     let mut config = test_helpers::test_config();
     config.admin.security.require_approval = true;

@@ -539,6 +539,13 @@ pub(crate) async fn authorize_admin_mutation<R: Repository>(
                     message: "admin approval has expired".to_string(),
                 });
             }
+            if qid_core::util::now_seconds().saturating_sub(a.approved_at)
+                > security.max_approval_age_seconds
+            {
+                return Err(QidError::Unauthorized {
+                    message: "admin approval is older than the configured maximum age".to_string(),
+                });
+            }
         }
         None => {
             if security.require_approval {
@@ -610,6 +617,13 @@ pub(crate) async fn authorize_breakglass_mutation<R: Repository>(
             if a.expires_at <= qid_core::util::now_seconds() {
                 return Err(QidError::Unauthorized {
                     message: "admin approval has expired".to_string(),
+                });
+            }
+            if qid_core::util::now_seconds().saturating_sub(a.approved_at)
+                > security.max_approval_age_seconds
+            {
+                return Err(QidError::Unauthorized {
+                    message: "admin approval is older than the configured maximum age".to_string(),
                 });
             }
         }

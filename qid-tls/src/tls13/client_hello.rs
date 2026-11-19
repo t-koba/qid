@@ -94,9 +94,11 @@ fn key_share_body(group: u16, exchange: &[u8]) -> Result<Vec<u8>, Error> {
     if exchange.is_empty() {
         return Err(Error::InvalidKeyShare);
     }
-    let mut body = group.to_be_bytes().to_vec();
-    body.extend(vector(exchange)?);
-    Ok(body)
+    // RFC 8446 4.2.8: the extension body is a vector of KeyShareEntry
+    // values; each entry then carries its own key_exchange vector.
+    let mut entry = group.to_be_bytes().to_vec();
+    entry.extend(vector(exchange)?);
+    vector(&entry)
 }
 
 fn extensions(params: &ClientHelloParams<'_>) -> Result<Vec<u8>, Error> {
@@ -287,6 +289,12 @@ mod tests {
         assert_eq!(
             extension_body(ext_bytes, SUPPORTED_VERSIONS_TYPE),
             Some(&[0x02, 0x03, 0x04][..])
+        );
+        let mut expected_key_share = vec![0x00, 0x24, 0x00, 0x1d, 0x00, 0x20];
+        expected_key_share.extend_from_slice(&[0x11; 32]);
+        assert_eq!(
+            extension_body(ext_bytes, KEY_SHARE_TYPE),
+            Some(expected_key_share.as_slice())
         );
         let offered = parse_psk_extension(ext_bytes);
         assert_eq!(

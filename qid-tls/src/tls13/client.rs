@@ -765,13 +765,10 @@ mod tests {
         let fx = fixture();
         let mut client = client(&fx);
         assert_eq!(client.client_hello()[0], 0x01);
-        // RFC 8446 Appendix B.3.1: secp256r1 is group 0x0017, not X25519.
-        assert!(
-            client
-                .client_hello()
-                .windows(9)
-                .any(|window| window == [0x00, 0x33, 0x00, 0x45, 0x00, 0x17, 0x00, 0x41, 0x04])
-        );
+        // RFC 8446 4.2.8 and Appendix B.3.1: the extension body carries a
+        // KeyShareEntry vector, then secp256r1 group 0x0017 and its point.
+        assert!(client.client_hello().windows(10).any(|window| window
+            == [0x00, 0x33, 0x00, 0x47, 0x00, 0x45, 0x00, 0x17, 0x00, 0x41]));
         assert!(client.handshake_secrets().is_none());
         assert!(client.application_secrets().is_none());
 

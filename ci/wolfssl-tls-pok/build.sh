@@ -20,7 +20,14 @@ git clone --depth 1 --branch "$WOLFSSL_TAG" "$WOLFSSL_URL" "$source_dir"
 cd "$source_dir"
 # The Rust test prints this window beside its failure, where CI logs are not elided.
 source_window="$work/source_window.txt"
-sed -n '26410,26435p' src/internal.c > "$source_window"
+python3 - > "$source_window" <<'PYEOF'
+lines = open("src/internal.c", encoding="utf-8", errors="replace").read().splitlines()
+anchor = next(i for i, line in enumerate(lines) if "Supported Versions extension received" in line)
+start = max(0, anchor - 180)
+end = min(len(lines), anchor + 60)
+for i in range(start, end):
+    print(f"{i + 1}: {lines[i]}")
+PYEOF
 source_window_assignment="QID_WOLFSSL_SOURCE_WINDOW=$source_window"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf '%s\n' "$source_window_assignment" >> "$GITHUB_ENV"

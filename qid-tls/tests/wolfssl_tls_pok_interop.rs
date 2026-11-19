@@ -233,7 +233,7 @@ fn wolfssl_server_completes_tls_pok_handshake() {
                 let stage = client.stage();
                 client.receive_record(&mut record).unwrap_or_else(|error| {
                     panic!(
-                        "client in {stage:?} accepts wolfSSL server record {}: {error}",
+                        "client in {stage:?} accepts wolfSSL server record {}: {error:?}",
                         hex::encode(&raw_record)
                     )
                 });

@@ -7,9 +7,10 @@
 //! Independent-implementation evidence for RFC 9973 certificate-plus-external-PSK:
 //! wolfSSL's TLS 1.3 server completes a mutual RawPublicKey handshake against
 //! qid-tls's in-memory `TlsPokClient`. Its CI build adapts the peer's binder
-//! label to RFC 9258's `"imp binder"` and passes the peer the same raw EPSK
-//! that qid imports, so this checks binder and transcript handling with a
-//! shared key against an independent TLS stack.
+//! label to RFC 9258's `"imp binder"` and passes the peer the imported PSK qid
+//! derives from the raw EPSK and ImportedIdentity, so this checks binder and
+//! transcript handling with a shared key against an independent TLS stack. PSK
+//! import itself is covered by the RFC vector tests.
 //!
 //! This test is ignored by default because CI builds the wolfSSL peer first.
 //! A local `cargo test` still compiles the target.

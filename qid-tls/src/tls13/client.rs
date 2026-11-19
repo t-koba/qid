@@ -41,7 +41,7 @@ const UNCOMPRESSED_POINT_LEN: usize = 65;
 const MAX_U24: usize = 0x00ff_ffff;
 
 /// An invalid message, negotiation, key or signature during the handshake.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Error {
     UnexpectedMessage,
     Framing(transcript::Error),

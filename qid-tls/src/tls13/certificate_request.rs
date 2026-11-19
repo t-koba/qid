@@ -25,28 +25,36 @@ pub struct CertificateRequest<'a> {
 }
 
 /// Malformed CertificateRequest framing or an unusable signature_algorithms list.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Error {
     Truncated,
     TrailingBytes,
     MalformedExtensions,
     DuplicateExtension,
     MissingSignatureAlgorithms,
-    UnsupportedSignatureScheme,
+    /// The scheme list offered by the server, retained for diagnostics.
+    UnsupportedSignatureScheme(Vec<u16>),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Truncated => "CertificateRequest message is truncated",
-            Self::TrailingBytes => "CertificateRequest message has trailing bytes",
-            Self::MalformedExtensions => "CertificateRequest extensions are malformed",
-            Self::DuplicateExtension => "CertificateRequest repeats an extension type",
-            Self::MissingSignatureAlgorithms => "CertificateRequest omits signature_algorithms",
-            Self::UnsupportedSignatureScheme => {
-                "CertificateRequest does not offer ecdsa_secp256r1_sha256"
+        match self {
+            Self::UnsupportedSignatureScheme(offered) => {
+                f.write_str("CertificateRequest does not offer ecdsa_secp256r1_sha256 (offered:")?;
+                for scheme in offered {
+                    write!(f, " {scheme:04x}")?;
+                }
+                f.write_str(")")
             }
-        })
+            other => f.write_str(match other {
+                Self::Truncated => "CertificateRequest message is truncated",
+                Self::TrailingBytes => "CertificateRequest message has trailing bytes",
+                Self::MalformedExtensions => "CertificateRequest extensions are malformed",
+                Self::DuplicateExtension => "CertificateRequest repeats an extension type",
+                Self::MissingSignatureAlgorithms => "CertificateRequest omits signature_algorithms",
+                Self::UnsupportedSignatureScheme(_) => unreachable!(),
+            }),
+        }
     }
 }
 
@@ -63,6 +71,19 @@ fn signature_algorithms_allows_p256(body: &[u8]) -> bool {
     body[2..]
         .chunks_exact(2)
         .any(|scheme| u16::from_be_bytes([scheme[0], scheme[1]]) == ECDSA_SECP256R1_SHA256)
+}
+
+/// The schemes named by a signature_algorithms extension, for error reports.
+fn offered_signature_schemes(body: &[u8]) -> Vec<u16> {
+    if body.len() < 2 {
+        return Vec::new();
+    }
+    let count = usize::from(u16::from_be_bytes([body[0], body[1]]));
+    body[2..]
+        .chunks_exact(2)
+        .take(count)
+        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        .collect()
 }
 
 /// Parse an exact CertificateRequest handshake body.
@@ -111,7 +132,9 @@ pub fn parse(body: &[u8]) -> Result<CertificateRequest<'_>, Error> {
         if kind == SIGNATURE_ALGORITHMS {
             seen_signature_algorithms = true;
             if !signature_algorithms_allows_p256(ext_body) {
-                return Err(Error::UnsupportedSignatureScheme);
+                return Err(Error::UnsupportedSignatureScheme(
+                    offered_signature_schemes(ext_body),
+                ));
             }
         }
         extensions.push(Extension {
@@ -184,7 +207,7 @@ mod tests {
         wrong[7] = 0x04;
         assert_eq!(
             parse(&body(&[], &wrong)).unwrap_err(),
-            Error::UnsupportedSignatureScheme
+            Error::UnsupportedSignatureScheme(vec![0x0804, 0x0804])
         );
     }
 }

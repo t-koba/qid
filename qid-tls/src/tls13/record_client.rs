@@ -49,7 +49,7 @@ pub enum RecordStage {
 }
 
 /// An invalid record, handshake message or call order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Error {
     /// The record or method is not valid for the current stage.
     State,

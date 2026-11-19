@@ -67,18 +67,24 @@ fn signature_algorithms_allows_p256(body: &[u8]) -> bool {
 
 /// Parse an exact CertificateRequest handshake body.
 pub fn parse(body: &[u8]) -> Result<CertificateRequest<'_>, Error> {
-    if body.len() < 3 {
+    if body.is_empty() {
         return Err(Error::Truncated);
     }
     let context_len = usize::from(body[0]);
-    let extensions_len = usize::from(u16::from_be_bytes([body[1], body[2]]));
+    if body.len() < 3 + context_len {
+        return Err(Error::Truncated);
+    }
+    let context = &body[1..1 + context_len];
+    let extensions_len = usize::from(u16::from_be_bytes([
+        body[1 + context_len],
+        body[2 + context_len],
+    ]));
     if body.len() < 3 + context_len + extensions_len {
         return Err(Error::Truncated);
     }
     if body.len() != 3 + context_len + extensions_len {
         return Err(Error::TrailingBytes);
     }
-    let context = &body[3..3 + context_len];
     let mut remaining = &body[3 + context_len..];
     if extensions_len < 2 {
         return Err(Error::MalformedExtensions);
@@ -129,8 +135,8 @@ mod tests {
 
     fn body(context: &[u8], extensions: &[u8]) -> Vec<u8> {
         let mut out = vec![context.len() as u8];
-        out.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
         out.extend_from_slice(context);
+        out.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
         out.extend_from_slice(extensions);
         out
     }

@@ -950,8 +950,8 @@ mod tests {
             .unwrap();
         let extensions = [0x00, 0x0d, 0x00, 0x06, 0x00, 0x02, 0x04, 0x03, 0x08, 0x04];
         let mut body = vec![3];
-        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
         body.extend_from_slice(b"ctx");
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
         body.extend_from_slice(&extensions);
         let request = transcript::encode_message(CERTIFICATE_REQUEST, &body).unwrap();
         client.receive_certificate_request(&request).unwrap();

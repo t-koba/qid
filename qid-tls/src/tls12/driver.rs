@@ -105,6 +105,19 @@ impl<'a> ServerHandshake<'a> {
         self.key_block.as_ref()
     }
 
+    /// Take the connection's record protector after the handshake completes.
+    ///
+    /// The returned state has already consumed the server's ChangeCipherSpec
+    /// and Finished sequence numbers, so a listener can continue protecting
+    /// application records without reusing a nonce. Callers own the socket and
+    /// all post-handshake transport.
+    pub fn into_record_protector(self) -> Result<RecordProtector, Tls12Error> {
+        if self.state != ServerHandshakeState::Complete {
+            return Err(Tls12Error::InvalidFinishedMessage);
+        }
+        self.protector.ok_or(Tls12Error::InvalidFinishedMessage)
+    }
+
     /// Consume wire bytes and return every record the server must send now.
     /// A partial record is buffered until a later call completes it.
     pub fn push(&mut self, wire: &[u8]) -> Result<Vec<u8>, Tls12Error> {

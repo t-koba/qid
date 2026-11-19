@@ -24,6 +24,10 @@ const MAX_PLAINTEXT_FRAGMENT: usize = 1 << 14;
 const LEGACY_VERSION: [u8; 2] = [0x03, 0x03];
 const HANDSHAKE: u8 = 0x16;
 const APPLICATION_DATA: u8 = 0x17;
+// RFC 8446 Appendix D.4: a TLS 1.3 peer may send a dummy ChangeCipherSpec
+// for middlebox compatibility. It carries only 0x01 and is not part of the
+// handshake transcript, so the receiver must ignore it.
+const CHANGE_CIPHER_SPEC: u8 = 0x14;
 const SERVER_HELLO: u8 = 0x02;
 const ENCRYPTED_EXTENSIONS: u8 = 0x08;
 const CERTIFICATE: u8 = 0x0b;
@@ -172,11 +176,28 @@ impl TlsPokClient {
         Ok(record)
     }
 
+    /// A middlebox-compatibility ChangeCipherSpec has a TLS record header and a
+    /// single-byte 0x01 payload. Anything else is not ignored.
+    fn is_change_cipher_spec(record: &[u8]) -> bool {
+        record
+            == [
+                CHANGE_CIPHER_SPEC,
+                LEGACY_VERSION[0],
+                LEGACY_VERSION[1],
+                0x00,
+                0x01,
+                0x01,
+            ]
+    }
+
     /// Consume exactly one complete record from the server.
     ///
     /// The whole buffer is zeroized on every error, including framing errors
     /// that the epoch itself does not classify as an authentication failure.
     pub fn receive_record(&mut self, record: &mut [u8]) -> Result<(), Error> {
+        if Self::is_change_cipher_spec(record) {
+            return Ok(());
+        }
         match self.stage {
             RecordStage::AwaitServerHello => self.receive_server_hello_record(record),
             RecordStage::AwaitServerFlight => self.receive_server_flight_record(record),
@@ -672,6 +693,22 @@ mod tests {
 
     fn assert_zeroized(record: &[u8]) {
         assert!(record.iter().all(|&octet| octet == 0));
+    }
+
+    #[test]
+    fn ignores_middlebox_change_cipher_spec() {
+        let fx = fixture();
+        let mut client = client(&fx);
+        let mut ccs = vec![CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
+        client.receive_record(&mut ccs).unwrap();
+        assert_eq!(client.stage(), RecordStage::AwaitServerHello);
+
+        let mut malformed = vec![CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x00];
+        assert_eq!(
+            client.receive_record(&mut malformed).unwrap_err(),
+            Error::WrongRecordType
+        );
+        assert_zeroized(&malformed);
     }
 
     #[test]

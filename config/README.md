@@ -102,6 +102,7 @@ smallest interoperable OIDC authorization-code deployment, then move to
 - `kubernetes-service-account-token-exchange.yaml`: Kubernetes service account to workload credential exchange.
 - `cloud-workload-federation.yaml`: cloud workload identity federation into qid-issued SVIDs.
 - `cicd-deployment-bot.yaml`: short-lived deployment automation tokens.
+- `mcp-agent-workload.yaml`: MCP-type resource indicator pattern for a SPIFFE workload agent using token exchange (no MCP conformance claimed).
 
 ### 08-verifiable-credentials
 

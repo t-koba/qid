@@ -280,7 +280,7 @@ No lifetime-policy migration is needed: omitted settings, including partial
 overrides, retain their defaults, so old configurations preserve existing
 lifetime behavior.
 
-See the three examples in `config/usecases/07-workload-and-device-identity/`.
+See the examples in `config/usecases/07-workload-and-device-identity/`.
 
 **Upgrade impact:** older workload configurations without a deployment-level
 `oidc_token` keyring could have selected their first (workload-CA) keyring as the

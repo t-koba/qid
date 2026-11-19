@@ -1,0 +1,87 @@
+profile: workload
+
+storage:
+  primary:
+    type: file
+    url: "config/usecases/data/runtime/07-workload-and-device-identity/mcp-agent-workload.json"
+
+server:
+  listen: "0.0.0.0:8443"
+  public_base_url: "https://id.example.com"
+
+crypto:
+  # Set QID_KEY_PASSPHRASE at runtime (or configure key_passphrase_file).
+  default_alg: ES256
+  keyrings:
+    - name: deployment-jwt
+      purposes: [oidc_token]
+      signer:
+        type: local
+    - name: mcp-workload-ca
+      realm_id: mcp-agent
+      purposes:
+        - other:workload_ca
+      signer:
+        type: local
+
+realms:
+  - id: mcp-agent
+    issuer: "https://id.example.com/realms/mcp-agent"
+    display_name: "MCP Agent Workload Identity"
+    clients:
+      - client_id: "mcp-agent-workload"
+        client_type: confidential
+        token_endpoint_auth_method: private_key_jwt
+        jwks:
+          keys:
+            - kty: EC
+              crv: P-256
+              kid: "mcp-agent-workload-signing"
+              use: sig
+              alg: ES256
+              x: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              y: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        grant_types:
+          - client_credentials
+          - urn:ietf:params:oauth:grant-type:token-exchange
+    protocols:
+      workload:
+        spiffe_workload_api: true
+        x509_svid: true
+        jwt_svid: true
+        short_lived_credentials: true
+        rats_eat: true
+        token_exchange: true
+        workload_ca_key_ref: "mcp-workload-ca"
+      oauth:
+        # Config pattern only: qid reuses its default RFC 8414 AS metadata
+        # (/.well-known/oauth-authorization-server) and RFC 9728 RS metadata
+        # (/.well-known/oauth-protected-resource) endpoints; RFC 8707 resource
+        # indicators are configured below. NO MCP conformance claimed.
+        private_key_jwt:
+          enabled: true
+        mtls:
+          enabled: true
+        tokens:
+          access_token_format: jwt
+          access_token_ttl_seconds: 300
+          refresh_token_ttl_seconds: 3600
+          id_token_ttl_seconds: 300
+        resource_servers:
+          - audience: "api://mcp/agent-tools"
+            resources:
+              - "https://mcp.example.com/mcp"
+            scopes:
+              - mcp.tools.read
+              - mcp.tools.call
+              - workload.svid
+              - workload.exchange
+            introspection_client_ids:
+              - mcp-agent-workload
+            require_sender_constraint: true
+    policy:
+      default_decision: deny
+      bundles:
+        - name: authenticated-read
+          source: "file://../../policies/authenticated-read.json"
+          mode: enforce

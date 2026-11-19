@@ -1,7 +1,7 @@
 // clippy.toml's allow-expect-in-tests covers cfg(test) modules, not standalone
 // integration-test targets; this entire target is test code.
 #![allow(clippy::expect_used)]
-// The child is reaped on the success path; a panic leaves it to the guard's Drop.
+// The child is reaped by the driver on every path; a panic leaves it to the guard's Drop.
 #![allow(clippy::zombie_processes)]
 
 //! Independent-implementation evidence for RFC 9973 certificate-plus-external-PSK:
@@ -10,17 +10,20 @@
 //! label to RFC 9258's `"imp binder"` and passes the peer the imported PSK qid
 //! derives from the raw EPSK and ImportedIdentity, so this checks binder and
 //! transcript handling with a shared key against an independent TLS stack. PSK
-//! import itself is covered by the RFC vector tests.
+//! import itself is covered by the RFC vector tests. Two negative cases check
+//! that a mismatched pinned server key and a mismatched imported PSK are
+//! rejected.
 //!
-//! This test is ignored by default because CI builds the wolfSSL peer first.
+//! These tests are ignored by default because CI builds the wolfSSL peer first.
 //! A local `cargo test` still compiles the target.
 
 use p256::ecdsa::signature::Signer;
 use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::{SecretKey, ecdsa::SigningKey, pkcs8::DecodePrivateKey};
-use qid_tls::tls13::client::ClientHandshakeParams;
+use qid_tls::tls13::certificate;
+use qid_tls::tls13::client::{self, ClientHandshakeParams};
 use qid_tls::tls13::external_psk::{ImportedIdentity, import_external_psk};
-use qid_tls::tls13::record_client::{RecordStage, TlsPokClient};
+use qid_tls::tls13::record_client::{self, RecordStage, TlsPokClient};
 use qid_tls::tls13::tls_pok::{CONTEXT, epskid};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -122,160 +125,243 @@ fn send_record(stdin: &mut ChildStdin, record: &[u8]) {
     stdin.flush().expect("flush record to wolfSSL helper");
 }
 
+/// Generated inputs shared by every scenario; the temp-dir guard outlives all
+/// helper processes driven from this fixture.
+struct InteropFixture {
+    _temp: TempDir,
+    helper: PathBuf,
+    server_spki: Vec<u8>,
+    client_spki: Vec<u8>,
+    imported_psk: Vec<u8>,
+    identity: ImportedIdentity,
+    signing_key: SigningKey,
+    server_cert_der: Vec<u8>,
+    client_cert_der: Vec<u8>,
+}
+
+impl InteropFixture {
+    fn new() -> Self {
+        let helper = PathBuf::from(
+            std::env::var_os("QID_WOLFSSL_SERVER_BIN")
+                .expect("QID_WOLFSSL_SERVER_BIN must point at the built wolfSSL helper"),
+        );
+        if let Some(window) = std::env::var("QID_WOLFSSL_SOURCE_WINDOW")
+            .ok()
+            .and_then(|path| fs::read_to_string(path).ok())
+        {
+            eprintln!("wolfSSL parser source window:\n{window}");
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos();
+        let temp = TempDir(
+            std::env::temp_dir().join(format!("qid-tls-pok-{}-{unique}", std::process::id())),
+        );
+        fs::create_dir(&temp.0).expect("create temporary test directory");
+
+        let (server_cert, server_key, client_cert, client_key) = certificates();
+        let cert_path = temp.0.join("server.der");
+        let key_path = temp.0.join("server.key.der");
+
+        let server_spki = server_key.public_key_der();
+        let client_spki = client_key.public_key_der();
+        // wolfSSL loads its own RawPublicKey as an SPKI-only DER certificate
+        // file. Loading the X.509 instead makes it send X.509 despite negotiating
+        // server_certificate_type=RawPublicKey.
+        fs::write(&cert_path, &server_spki).expect("write server raw public key DER");
+        fs::write(&key_path, server_key.serialize_der()).expect("write server key DER");
+        let client_epskid = epskid(&client_spki).expect("derive client EPSK identity");
+        let identity = ImportedIdentity::new(client_epskid.to_vec(), CONTEXT.to_vec())
+            .expect("build RFC 9258 imported identity");
+        let imported_psk = import_external_psk(EPSK, &identity).expect("import fixed EPSK");
+
+        let client_secret = SecretKey::from_pkcs8_der(&client_key.serialize_der())
+            .expect("parse client P-256 signing key");
+        let signing_key = SigningKey::from(client_secret);
+        Self {
+            _temp: temp,
+            helper,
+            server_spki,
+            client_spki,
+            imported_psk: imported_psk.to_vec(),
+            identity,
+            signing_key,
+            server_cert_der: server_cert.der().to_vec(),
+            client_cert_der: client_cert.der().to_vec(),
+        }
+    }
+
+    /// Drive one handshake. `pinned_server_spki` is handed to `TlsPokClient`
+    /// and `helper_psk_hex` to the wolfSSL helper, so a scenario can break
+    /// either side of the shared-key trust without rebuilding the fixture.
+    fn drive(&self, pinned_server_spki: &[u8], helper_psk_hex: &str) -> InteropOutcome {
+        let ecdhe_secret =
+            SecretKey::from_slice(&ECDHE_SECRET).expect("fixed nonzero ECDHE scalar");
+        let key_share = ecdhe_secret
+            .public_key()
+            .to_sec1_point(false)
+            .as_bytes()
+            .to_vec();
+
+        let mut client = TlsPokClient::new(
+            ClientHandshakeParams {
+                random: CLIENT_RANDOM,
+                legacy_session_id: SESSION_ID,
+                cipher_suite: CIPHER_SUITE,
+                ecdhe_secret: &ECDHE_SECRET,
+                key_share: &key_share,
+                client_spki: &self.client_spki,
+                imported_identity: &self.identity,
+                imported_psk: &self.imported_psk,
+            },
+            pinned_server_spki,
+        )
+        .expect("create TLS-POK client");
+        let hello = client.client_hello_record().expect("frame ClientHello");
+        assert_no_early_data_extension(&hello);
+
+        let mut guard = ChildGuard(Some(
+            Command::new(&self.helper)
+                .arg(self._temp.0.join("server.der"))
+                .arg(self._temp.0.join("server.key.der"))
+                // The peer uses the supplied bytes directly as its TLS 1.3 PSK.
+                // The default hex is the RFC 9258 imported PSK derived above.
+                .arg(helper_psk_hex)
+                .arg(hex::encode(&self.client_spki))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("spawn wolfSSL helper"),
+        ));
+        let child = guard.0.as_mut().expect("child is running");
+        let mut stdin = Some(child.stdin.take().expect("helper stdin"));
+        let mut stdout = BufReader::new(child.stdout.take().expect("helper stdout"));
+        send_record(stdin.as_mut().expect("helper stdin"), &hello);
+
+        let mut helper = HelperReport::Incomplete;
+        let mut client_error = None;
+        let mut buffered = Vec::<u8>::new();
+        let mut line = String::new();
+        for _ in 0..MAX_ROUNDS {
+            line.clear();
+            let read = stdout.read_line(&mut line).expect("read helper line");
+            if read == 0 {
+                helper = HelperReport::Closed;
+                break;
+            }
+            let line = line.trim();
+            if let Some(payload) = line.strip_prefix("S ") {
+                let bytes = hex::decode(payload).expect("decode helper S line");
+                buffered.extend_from_slice(&bytes);
+                while buffered.len() >= TLS_RECORD_HEADER_LEN {
+                    let length = usize::from(u16::from_be_bytes([
+                        buffered[TLS_RECORD_HEADER_LEN - 2],
+                        buffered[TLS_RECORD_HEADER_LEN - 1],
+                    ]));
+                    let end = TLS_RECORD_HEADER_LEN + length;
+                    if buffered.len() < end {
+                        break;
+                    }
+                    let mut record: Vec<u8> = buffered.drain(..end).collect();
+                    if client_error.is_some() || client.stage() == RecordStage::Complete {
+                        // The minimal driver stops at completion; a rejection
+                        // stops client input. WolfSSL may send post-handshake
+                        // session tickets in the same drain; both are out of scope.
+                        continue;
+                    }
+                    if let Err(error) = client.receive_record(&mut record) {
+                        client_error = Some(error);
+                        // Let the helper finish its current read so it can
+                        // report its own failure before it is reaped.
+                        drop(stdin.take());
+                        continue;
+                    }
+                    if client.stage() == RecordStage::AwaitClientSignature {
+                        let content = client
+                            .pending_client_signature_content()
+                            .expect("frame client raw public key certificate");
+                        let signature: p256::ecdsa::Signature = self.signing_key.sign(&content);
+                        let flight = client
+                            .complete_client_flight(signature.to_der().as_bytes())
+                            .expect("complete client flight");
+                        if let Some(input) = stdin.as_mut() {
+                            for record in flight {
+                                send_record(input, &record);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if let Some(outcome) = line.strip_prefix("OK ") {
+                helper = HelperReport::Ok(
+                    outcome
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                );
+                break;
+            }
+            if let Some(error) = line.strip_prefix("ERR ") {
+                helper = HelperReport::Err(error.to_owned());
+                break;
+            }
+            panic!("unexpected wolfSSL helper line");
+        }
+
+        // Closing stdin is what lets an ERR-only helper exit; the guard is the
+        // fallback if anything above panics before this point.
+        drop(stdin);
+        let mut child = guard.0.take().expect("child is running");
+        let status = child.wait().expect("reap wolfSSL helper");
+        if matches!(&helper, HelperReport::Ok(_)) {
+            assert!(status.success(), "wolfSSL helper exited with {status}");
+        }
+        InteropOutcome {
+            helper,
+            client_error,
+            client_stage: client.stage(),
+        }
+    }
+}
+
+/// What the helper said, and what the qid client did, in one scenario.
+#[derive(Debug)]
+enum HelperReport {
+    Ok(Vec<String>),
+    Err(String),
+    Closed,
+    Incomplete,
+}
+
+#[derive(Debug)]
+struct InteropOutcome {
+    helper: HelperReport,
+    client_error: Option<record_client::Error>,
+    client_stage: RecordStage,
+}
+
 #[test]
 #[ignore = "requires the wolfSSL helper built by ci/wolfssl-tls-pok/build.sh"]
 fn wolfssl_server_completes_tls_pok_handshake() {
-    let helper = std::env::var_os("QID_WOLFSSL_SERVER_BIN")
-        .expect("QID_WOLFSSL_SERVER_BIN must point at the built wolfSSL helper");
-    if let Some(window) = std::env::var("QID_WOLFSSL_SOURCE_WINDOW")
-        .ok()
-        .and_then(|path| fs::read_to_string(path).ok())
-    {
-        eprintln!("wolfSSL parser source window:\n{window}");
-    }
+    let fixture = InteropFixture::new();
+    let InteropOutcome {
+        helper,
+        client_error,
+        client_stage,
+    } = fixture.drive(&fixture.server_spki, &hex::encode(&fixture.imported_psk));
 
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is after the epoch")
-        .as_nanos();
-    let temp =
-        TempDir(std::env::temp_dir().join(format!("qid-tls-pok-{}-{unique}", std::process::id())));
-    fs::create_dir(&temp.0).expect("create temporary test directory");
-
-    let (server_cert, server_key, client_cert, client_key) = certificates();
-    let cert_path = temp.0.join("server.der");
-    let key_path = temp.0.join("server.key.der");
-
-    let server_spki = server_key.public_key_der();
-    let client_spki = client_key.public_key_der();
-    // wolfSSL loads its own RawPublicKey as an SPKI-only DER certificate
-    // file. Loading the X.509 instead makes it send X.509 despite negotiating
-    // server_certificate_type=RawPublicKey.
-    fs::write(&cert_path, &server_spki).expect("write server raw public key DER");
-    fs::write(&key_path, server_key.serialize_der()).expect("write server key DER");
-    let client_epskid = epskid(&client_spki).expect("derive client EPSK identity");
-    let identity = ImportedIdentity::new(client_epskid.to_vec(), CONTEXT.to_vec())
-        .expect("build RFC 9258 imported identity");
-    let imported_psk = import_external_psk(EPSK, &identity).expect("import fixed EPSK");
-
-    let client_secret = SecretKey::from_pkcs8_der(&client_key.serialize_der())
-        .expect("parse client P-256 signing key");
-    let signing_key = SigningKey::from(client_secret);
-    let ecdhe_secret = SecretKey::from_slice(&ECDHE_SECRET).expect("fixed nonzero ECDHE scalar");
-    let key_share = ecdhe_secret
-        .public_key()
-        .to_sec1_point(false)
-        .as_bytes()
-        .to_vec();
-
-    let mut client = TlsPokClient::new(
-        ClientHandshakeParams {
-            random: CLIENT_RANDOM,
-            legacy_session_id: SESSION_ID,
-            cipher_suite: CIPHER_SUITE,
-            ecdhe_secret: &ECDHE_SECRET,
-            key_share: &key_share,
-            client_spki: &client_spki,
-            imported_identity: &identity,
-            imported_psk: &imported_psk,
-        },
-        &server_spki,
-    )
-    .expect("create TLS-POK client");
-    let hello = client.client_hello_record().expect("frame ClientHello");
-    assert_no_early_data_extension(&hello);
-
-    let mut guard = ChildGuard(Some(
-        Command::new(helper)
-            .arg(&cert_path)
-            .arg(&key_path)
-            // The peer uses the supplied bytes directly as its TLS 1.3 PSK,
-            // so it receives the RFC 9258 imported PSK derived above. This
-            // checks qid's binder and transcript against an independent stack.
-            .arg(hex::encode(&imported_psk))
-            .arg(hex::encode(&client_spki))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn wolfSSL helper"),
-    ));
-    let child = guard.0.as_mut().expect("child is running");
-    let mut stdin = child.stdin.take().expect("helper stdin");
-    let mut stdout = BufReader::new(child.stdout.take().expect("helper stdout"));
-    send_record(&mut stdin, &hello);
-
-    let mut buffered = Vec::<u8>::new();
-    let mut line = String::new();
-    let mut result = None;
-    for _ in 0..MAX_ROUNDS {
-        line.clear();
-        let read = stdout.read_line(&mut line).expect("read helper line");
-        assert!(read > 0, "wolfSSL helper closed stdout before OK");
-        let line = line.trim();
-        if let Some(payload) = line.strip_prefix("S ") {
-            let bytes = hex::decode(payload).expect("decode helper S line");
-            buffered.extend_from_slice(&bytes);
-            while buffered.len() >= TLS_RECORD_HEADER_LEN {
-                let length = usize::from(u16::from_be_bytes([
-                    buffered[TLS_RECORD_HEADER_LEN - 2],
-                    buffered[TLS_RECORD_HEADER_LEN - 1],
-                ]));
-                let end = TLS_RECORD_HEADER_LEN + length;
-                if buffered.len() < end {
-                    break;
-                }
-                let mut record: Vec<u8> = buffered.drain(..end).collect();
-                if client.stage() == RecordStage::Complete {
-                    // The minimal driver intentionally stops at handshake
-                    // completion. wolfSSL may send post-handshake session
-                    // tickets in the same drain; they are outside its scope.
-                    continue;
-                }
-                let raw_record = record.clone();
-                let stage = client.stage();
-                client.receive_record(&mut record).unwrap_or_else(|error| {
-                    panic!(
-                        "client in {stage:?} accepts wolfSSL server record {}: {error:?}",
-                        hex::encode(&raw_record)
-                    )
-                });
-                if client.stage() == RecordStage::AwaitClientSignature {
-                    let content = client
-                        .pending_client_signature_content()
-                        .expect("frame client raw public key certificate");
-                    let signature: p256::ecdsa::Signature = signing_key.sign(&content);
-                    let flight = client
-                        .complete_client_flight(signature.to_der().as_bytes())
-                        .expect("complete client flight");
-                    for record in flight {
-                        send_record(&mut stdin, &record);
-                    }
-                }
-            }
-            continue;
-        }
-        if let Some(outcome) = line.strip_prefix("OK ") {
-            result = Some(
-                outcome
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>(),
-            );
-            break;
-        }
-        if let Some(error) = line.strip_prefix("ERR ") {
-            panic!("wolfSSL helper failed: {error}");
-        }
-        panic!("unexpected wolfSSL helper line");
-    }
-
-    drop(stdin);
-    let mut child = guard.0.take().expect("child is running");
-    let status = child.wait().expect("reap wolfSSL helper");
-    assert!(status.success(), "wolfSSL helper exited with {status}");
-
-    let fields = result.expect("wolfSSL helper reported OK");
+    let fields = match helper {
+        HelperReport::Ok(fields) => fields,
+        other => panic!("wolfSSL helper did not report OK: {other:?}"),
+    };
+    assert_eq!(
+        client_error, None,
+        "qid client accepted every wolfSSL record"
+    );
     assert_eq!(fields.len(), 3, "OK cipher and certificate types");
     assert!(
         matches!(
@@ -286,10 +372,42 @@ fn wolfssl_server_completes_tls_pok_handshake() {
     );
     assert_eq!(fields[1], "2", "client certificate type is RawPublicKey");
     assert_eq!(fields[2], "2", "server certificate type is RawPublicKey");
-    assert_eq!(client.stage(), RecordStage::Complete);
+    assert_eq!(client_stage, RecordStage::Complete);
     assert_ne!(
-        client_cert.der(),
-        server_cert.der(),
+        fixture.client_cert_der, fixture.server_cert_der,
         "independent test certificates"
     );
+}
+
+#[test]
+#[ignore = "requires the wolfSSL helper built by ci/wolfssl-tls-pok/build.sh"]
+fn qid_client_rejects_wrong_pinned_server_key() {
+    let fixture = InteropFixture::new();
+    // The client SPKI is a valid P-256 key, but it is not the server's key.
+    let outcome = fixture.drive(&fixture.client_spki, &hex::encode(&fixture.imported_psk));
+
+    assert_eq!(
+        outcome.client_error,
+        Some(record_client::Error::Handshake(client::Error::Certificate(
+            certificate::Error::RawPublicKeyMismatch
+        )))
+    );
+    assert!(
+        !matches!(&outcome.helper, HelperReport::Ok(_)),
+        "helper reported OK despite a pinned-key mismatch"
+    );
+    assert_ne!(outcome.client_stage, RecordStage::Complete);
+}
+
+#[test]
+#[ignore = "requires the wolfSSL helper built by ci/wolfssl-tls-pok/build.sh"]
+fn wolfssl_server_rejects_wrong_imported_psk() {
+    let fixture = InteropFixture::new();
+    let outcome = fixture.drive(&fixture.server_spki, &hex::encode([0u8; 32]));
+
+    assert_ne!(outcome.client_stage, RecordStage::Complete);
+    match &outcome.helper {
+        HelperReport::Err(error) => eprintln!("wolfSSL helper rejected the wrong PSK: {error}"),
+        other => panic!("wolfSSL helper did not report an ERR: {other:?}"),
+    }
 }

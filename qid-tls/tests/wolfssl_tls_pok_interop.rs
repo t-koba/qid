@@ -185,9 +185,10 @@ fn wolfssl_server_completes_tls_pok_handshake() {
         Command::new(helper)
             .arg(&cert_path)
             .arg(&key_path)
-            // The peer receives the raw EPSK; both peers import it from the
-            // ImportedIdentity in the ClientHello as RFC 9966 requires.
-            .arg(hex::encode(EPSK))
+            // The peer uses the supplied bytes directly as its TLS 1.3 PSK,
+            // so it receives the RFC 9258 imported PSK derived above. This
+            // checks qid's binder and transcript against an independent stack.
+            .arg(hex::encode(&imported_psk))
             .arg(hex::encode(&client_spki))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

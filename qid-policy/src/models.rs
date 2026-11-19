@@ -524,7 +524,13 @@ pub(crate) fn condition_matches(condition: &Condition, ctx: &PolicyContext) -> O
         }),
         "in" | "member_of" => match &condition.value {
             Value::Array(arr) => value.iter().any(|v| arr.contains(v)),
-            Value::String(group) => ctx.in_group(group),
+            // Test the resolved field, like every other operator and the array
+            // branch above. Group membership has its own `Expression::InGroup`
+            // and is also reachable here when `field` is `group`/`groups`;
+            // unconditionally consulting `ctx.groups` here would make a rule
+            // written for `roles`, `posture` or `entitlements` match on an
+            // unrelated group instead (fail-open in the PDP).
+            Value::String(s) => value.iter().any(|v| v == &Value::String(s.clone())),
             _ => false,
         },
         "like" | "matches" => match (value.first(), &condition.value) {

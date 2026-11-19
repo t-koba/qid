@@ -330,6 +330,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_condition_with_string_value_checks_the_named_field() {
+        let mut engine = NativePolicyEngine::new();
+        let bundle = PolicyBundle {
+            version: "1".to_string(),
+            rules: vec![Rule {
+                name: "admin-role-access".to_string(),
+                rule_type: RuleType::Allow,
+                action: "*".to_string(),
+                resource_host: None,
+                conditions: vec![Condition {
+                    field: "roles".to_string(),
+                    op: "in".to_string(),
+                    value: Value::String("admin".to_string()),
+                }],
+                expression: None,
+                rate_limit_profile: None,
+                inject_headers: None,
+                pep: PepPolicyActions::default(),
+            }],
+            default_decision: Decision::Deny,
+        };
+        engine.load(bundle, "test".to_string());
+
+        // A matching group must not stand in for the required role.
+        let group_only = PolicyContext {
+            groups: vec!["admin".to_string()],
+            roles: vec![],
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&group_only).await.decision, Decision::Deny);
+
+        // The named field with the required value grants access.
+        let with_role = PolicyContext {
+            groups: vec![],
+            roles: vec!["admin".to_string()],
+            ..PolicyContext::default()
+        };
+        assert_eq!(engine.decide(&with_role).await.decision, Decision::Allow);
+    }
+
+    #[tokio::test]
     async fn test_action_specific_rule() {
         let mut engine = NativePolicyEngine::new();
         let bundle = PolicyBundle {

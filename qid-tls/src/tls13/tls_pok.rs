@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 pub const CONTEXT: &[u8] = b"tls13-bsk";
 pub const RAW_PUBLIC_KEY: u8 = 2;
 pub const CLIENT_CERTIFICATE_TYPE_TYPE: u16 = 0x0013;
+pub const SERVER_CERTIFICATE_TYPE_TYPE: u16 = 0x0014;
 const IDENTITY_LEN: usize = 32;
 const ZERO_SALT: [u8; IDENTITY_LEN] = [0; IDENTITY_LEN];
 const IDENTITY_INFO: &[u8] = b"tls13-bspsk-identity";

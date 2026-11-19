@@ -10,7 +10,9 @@ use super::psk_extension::{
     CERT_WITH_EXTERN_PSK_TYPE, KEY_SHARE_TYPE, OfferedPsks, PRE_SHARED_KEY_TYPE,
     PSK_KEY_EXCHANGE_MODES_TYPE, PskIdentity, SUPPORTED_GROUPS_TYPE, encode_body,
 };
-use super::tls_pok::{CLIENT_CERTIFICATE_TYPE_TYPE, CONTEXT, RAW_PUBLIC_KEY};
+use super::tls_pok::{
+    CLIENT_CERTIFICATE_TYPE_TYPE, CONTEXT, RAW_PUBLIC_KEY, SERVER_CERTIFICATE_TYPE_TYPE,
+};
 use super::transcript::encode_message;
 use std::fmt;
 
@@ -136,6 +138,13 @@ fn extensions(params: &ClientHelloParams<'_>) -> Result<Vec<u8>, Error> {
     push_extension(
         &mut out,
         CLIENT_CERTIFICATE_TYPE_TYPE,
+        &[0x01, RAW_PUBLIC_KEY],
+    )?;
+    // RFC 7250 also lets the client accept a RawPublicKey from the server;
+    // the TLS-POK interop peer authenticates with one.
+    push_extension(
+        &mut out,
+        SERVER_CERTIFICATE_TYPE_TYPE,
         &[0x01, RAW_PUBLIC_KEY],
     )?;
     // RFC 8446 §4.2.11 and RFC 9973 §4: pre_shared_key is always last.
@@ -265,6 +274,7 @@ mod tests {
                 KEY_SHARE_TYPE,
                 CERT_WITH_EXTERN_PSK_TYPE,
                 CLIENT_CERTIFICATE_TYPE_TYPE,
+                SERVER_CERTIFICATE_TYPE_TYPE,
                 PRE_SHARED_KEY_TYPE,
             ]
         );

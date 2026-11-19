@@ -216,9 +216,12 @@ fn wolfssl_server_completes_tls_pok_handshake() {
                     // tickets in the same drain; they are outside its scope.
                     continue;
                 }
-                client
-                    .receive_record(&mut record)
-                    .expect("client accepts wolfSSL server record");
+                client.receive_record(&mut record).unwrap_or_else(|error| {
+                    panic!(
+                        "client accepts wolfSSL server record {}: {error}",
+                        hex::encode(&record)
+                    )
+                });
                 if client.stage() == RecordStage::AwaitClientSignature {
                     let content = client
                         .pending_client_signature_content()

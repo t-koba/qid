@@ -19,7 +19,7 @@ use super::encrypted_extensions;
 use super::external_psk::ImportedIdentity;
 use super::key_schedule::{self, HandshakeSecrets};
 use super::server_hello;
-use super::tls_pok::{self, CLIENT_CERTIFICATE_TYPE_TYPE};
+use super::tls_pok::{self, CLIENT_CERTIFICATE_TYPE_TYPE, SERVER_CERTIFICATE_TYPE_TYPE};
 use super::transcript::{self, Transcript};
 use p256::ecdsa::signature::Verifier;
 use p256::elliptic_curve::sec1::ToSec1Point;
@@ -380,7 +380,7 @@ impl ClientHandshake {
         let extensions = encrypted_extensions::parse(
             message.body,
             encrypted_extensions::ParseParams {
-                offered_extensions: &[CLIENT_CERTIFICATE_TYPE_TYPE],
+                offered_extensions: &[CLIENT_CERTIFICATE_TYPE_TYPE, SERVER_CERTIFICATE_TYPE_TYPE],
                 cert_with_extern_psk: true,
             },
         )?;

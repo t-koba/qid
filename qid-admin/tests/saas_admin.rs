@@ -456,6 +456,39 @@ async fn breakglass_session_revoke_requires_breakglass_role_and_audits_incident(
 }
 
 #[tokio::test]
+async fn breakglass_role_cannot_write_global_audit_retention() {
+    let (app, state, db) = setup_with_admins(&["breakglass@example.com"]).await;
+
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri("/admin/api/v1/audit/retention")
+        .header("Content-Type", "application/json")
+        .header("x-qid-admin-reason", "emergency-session-containment")
+        .header("x-qid-admin-actor", "breakglass@example.com")
+        .header("x-qid-admin-roles", "breakglass")
+        .header("x-qid-admin-acr", "phr")
+        .header("x-qid-admin-amr", "webauthn")
+        .header(
+            "x-qid-admin-elevation-expires-at",
+            (qid_core::util::now_seconds() + 60).to_string(),
+        )
+        .header("x-qid-admin-session-id", "breakglass-admin-session")
+        .body(Body::from(r#"{"retention_days":36500,"legal_hold":true}"#))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        matches!(
+            state.repo.get_audit_retention_config(None).await,
+            Ok(None) | Err(_)
+        ),
+        "breakglass must not store a global audit retention config"
+    );
+    db.close().await;
+}
+
+#[tokio::test]
 async fn key_rotation_plan_route_requires_security_admin_and_audits_plan() {
     let (app, state, db) = setup_with_admins(&["security-admin@example.com"]).await;
     state

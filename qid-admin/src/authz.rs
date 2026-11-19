@@ -305,9 +305,6 @@ pub(crate) fn role_allows(
     if role == "tenant.owner" {
         return permission == AdminPermission::TenantAdmin;
     }
-    if security.breakglass_enabled && role == "breakglass" {
-        return true;
-    }
     match permission {
         AdminPermission::RealmAdmin => role == "realm.admin",
         AdminPermission::AppAdmin => role == "app.admin",
@@ -324,7 +321,7 @@ pub(crate) fn role_allows(
                 || role == "platform.security.admin"
                 || role == "platform.auditor"
         }
-        AdminPermission::BreakGlass => false,
+        AdminPermission::BreakGlass => security.breakglass_enabled && role == "breakglass",
     }
 }
 

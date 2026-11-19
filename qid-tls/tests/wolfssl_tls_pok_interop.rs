@@ -123,8 +123,9 @@ fn send_record(stdin: &mut ChildStdin, record: &[u8]) {
 fn wolfssl_server_completes_tls_pok_handshake() {
     let helper = std::env::var_os("QID_WOLFSSL_SERVER_BIN")
         .expect("QID_WOLFSSL_SERVER_BIN must point at the built wolfSSL helper");
-    if let Ok(window) =
-        std::env::var("QID_WOLFSSL_SOURCE_WINDOW").and_then(fs::read_to_string)
+    if let Some(window) = std::env::var("QID_WOLFSSL_SOURCE_WINDOW")
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
     {
         eprintln!("wolfSSL parser source window:\n{window}");
     }

@@ -181,6 +181,9 @@ int main(int argc, char** argv)
         }
         XMEMCPY(psk_cipher_name, IANA_CIPHER_NAME, sizeof(IANA_CIPHER_NAME));
     }
+    /* wolfSSL cert+PSK examples register both callbacks; the TLS 1.3
+     * callback alone is not sufficient for all server paths. */
+    wolfSSL_CTX_set_psk_server_callback(ctx, psk_server_cb);
     wolfSSL_CTX_set_psk_server_tls13_callback(ctx, psk_server_cb);
     {
         const char rpk = (const char)RAW_PUBLIC_KEY;
@@ -241,8 +244,12 @@ int main(int argc, char** argv)
 
         for (;;) {
             int result = wolfSSL_accept(ssl);
-            int error;
+            int error = wolfSSL_get_error(ssl, result);
 
+            fprintf(stderr,
+                    "accept result=%d error=%d state=%d pending=%d\n", result,
+                    error, (int)wolfSSL_get_state(ssl),
+                    wolfSSL_BIO_pending(peer_bio));
             drain_bio(peer_bio);
             if (result == WOLFSSL_SUCCESS) {
                 const char* cipher = wolfSSL_get_cipher_name(ssl);

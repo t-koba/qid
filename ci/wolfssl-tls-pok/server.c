@@ -29,7 +29,7 @@ static void emit_error(const char* message)
     fflush(stdout);
 }
 
-static int decode_hex(const char* hex, unsigned char** out, size_t* out_len)
+int decode_hex(const char* hex, unsigned char** out, size_t* out_len)
 {
     size_t length = strlen(hex);
     unsigned char* bytes;
@@ -45,7 +45,7 @@ static int decode_hex(const char* hex, unsigned char** out, size_t* out_len)
     for (i = 0; i < length / 2; ++i) {
         unsigned int high;
         unsigned int low;
-        if (sscanf(&hex[2 * i], "%2x%2x", &high, &low) != 2) {
+        if (sscanf(&hex[2 * i], "%1x%1x", &high, &low) != 2) {
             free(bytes);
             return -1;
         }
@@ -134,6 +134,7 @@ static int push_peer_record(WOLFSSL_BIO* bio, const char* line)
     return result;
 }
 
+#ifndef QID_WOLFSSL_HELPER_NO_MAIN
 int main(int argc, char** argv)
 {
     WOLFSSL_CTX* ctx = NULL;
@@ -186,6 +187,7 @@ int main(int argc, char** argv)
             wolfSSL_CTX_set_server_cert_type(ctx, &rpk, 1) != WOLFSSL_SUCCESS ||
             wolfSSL_CTX_set_expected_rpk(ctx, client_spki, (word32)client_spki_len) !=
                 WOLFSSL_SUCCESS ||
+            wolfSSL_CTX_set_cert_with_extern_psk(ctx, 1) != WOLFSSL_SUCCESS ||
             wolfSSL_CTX_require_psk(ctx) != WOLFSSL_SUCCESS) {
             emit_error("cannot require RPK authentication and an external PSK");
             goto cleanup;
@@ -269,3 +271,4 @@ cleanup:
     free(psk_bytes);
     return status;
 }
+#endif /* QID_WOLFSSL_HELPER_NO_MAIN */

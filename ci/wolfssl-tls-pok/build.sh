@@ -37,6 +37,13 @@ cc -std=c11 -O2 -Wall -Wextra \
   "$repo_root/ci/wolfssl-tls-pok/server.c" \
   -o "$binary" -L"$prefix/lib" -lwolfssl -lm
 
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function \
+  -DQID_WOLFSSL_HELPER_NO_MAIN -I"$prefix/include" \
+  "$repo_root/ci/wolfssl-tls-pok/server.c" \
+  "$repo_root/ci/wolfssl-tls-pok/test_decode_hex.c" \
+  -o "$work/decode_hex_test" -L"$prefix/lib" -lwolfssl -lm
+"$work/decode_hex_test"
+
 line="QID_WOLFSSL_SERVER_BIN=$binary"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf '%s\n' "$line" >> "$GITHUB_ENV"

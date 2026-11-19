@@ -361,6 +361,26 @@ mod tests {
     }
 
     #[test]
+    fn signature_algorithms_use_byte_length_framing() {
+        let (spki, identity) = fixture();
+        let psk = import_external_psk(&spki, &identity).unwrap();
+        let message = build_cert_with_extern_psk(&params(&identity, &psk)).unwrap();
+        let body = body(&message);
+        let offered = extension_body(&body[43..], SIGNATURE_ALGORITHMS_TYPE)
+            .expect("signature algorithms extension");
+        // RFC 8446 4.2.3: 0x0006 counts the six scheme bytes, not three schemes.
+        assert_eq!(offered, &[0x00, 0x06, 0x04, 0x03, 0x08, 0x04, 0x08, 0x07]);
+
+        let mut request = vec![0x00];
+        request.extend_from_slice(&((offered.len() + 4) as u16).to_be_bytes());
+        request.extend_from_slice(&SIGNATURE_ALGORITHMS_TYPE.to_be_bytes());
+        request.extend_from_slice(&(offered.len() as u16).to_be_bytes());
+        request.extend_from_slice(offered);
+        crate::tls13::certificate_request::parse(&request)
+            .expect("the ClientHello's own schemes are a valid CertificateRequest");
+    }
+
+    #[test]
     fn binder_depends_on_identity_and_transcript() {
         let (spki, identity) = fixture();
         let psk = import_external_psk(&spki, &identity).unwrap();

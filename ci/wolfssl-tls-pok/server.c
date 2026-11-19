@@ -270,11 +270,23 @@ int main(int argc, char** argv)
         for (;;) {
             int result = wolfSSL_accept(ssl);
             int error = wolfSSL_get_error(ssl, result);
+            char error_text[256] = {0};
+            const char* file = NULL;
+            const char* data = NULL;
+            int line = 0;
+            int flags = 0;
+            unsigned long queued =
+                wolfSSL_ERR_get_error_line_data(&file, &line, &data, &flags);
 
+            wolfSSL_ERR_error_string_n((unsigned long)error, error_text,
+                                       sizeof(error_text));
             fprintf(stderr,
-                    "accept result=%d error=%d state=%d pending=%d\n", result,
-                    error, (int)wolfSSL_get_state(ssl),
-                    wolfSSL_BIO_pending(peer_bio));
+                    "accept result=%d error=%d (%s) state=%d pending=%d "
+                    "queued=%lu file=%s line=%d data=%s\n",
+                    result, error, error_text, (int)wolfSSL_get_state(ssl),
+                    wolfSSL_BIO_pending(peer_bio), queued,
+                    file != NULL ? file : "none", line,
+                    data != NULL ? data : "none");
             drain_bio(peer_bio);
             if (result == WOLFSSL_SUCCESS) {
                 const char* cipher = wolfSSL_get_cipher_name(ssl);

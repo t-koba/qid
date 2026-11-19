@@ -204,7 +204,7 @@ async fn do_issue_assertion<R: Repository>(
     let audience = assertion_audience(edge_config, edge_name)?;
     let subject_context =
         assertion_subject_context(state.repo.as_ref(), realm_id, &user, now).await?;
-    let device_context = assertion_device_context(state.repo.as_ref(), &user).await;
+    let device_context = assertion_device_context(state.repo.as_ref(), &user).await?;
 
     let extra = assertion_extra_claims(realm_id, &user, &session, subject_context, device_context);
 
@@ -318,10 +318,13 @@ struct AssertionDeviceContext {
     trust_level: String,
 }
 
-async fn assertion_device_context<R: Repository>(repo: &R, user: &User) -> AssertionDeviceContext {
-    let devices = repo.get_user_devices(&user.id).await.unwrap_or_default();
+async fn assertion_device_context<R: Repository>(
+    repo: &R,
+    user: &User,
+) -> QidResult<AssertionDeviceContext> {
+    let devices = repo.get_user_devices(&user.id).await?;
     let device = devices.first();
-    AssertionDeviceContext {
+    Ok(AssertionDeviceContext {
         id: device.map(|d| d.id.clone()),
         posture: device.map(|d| d.posture.clone()).unwrap_or_default(),
         trust_level: device
@@ -333,7 +336,7 @@ async fn assertion_device_context<R: Repository>(repo: &R, user: &User) -> Asser
                 }
             })
             .unwrap_or_else(|| "unknown".to_string()),
-    }
+    })
 }
 
 fn assertion_extra_claims(

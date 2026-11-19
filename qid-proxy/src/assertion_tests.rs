@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "assertion_test_repo.rs"]
+mod test_repo;
+
 #[test]
 fn test_jti_format() {
     let jti = generate_jti();
@@ -198,6 +201,113 @@ async fn assertion_rejects_cached_session_after_regeneration_and_accepts_replace
     drop(state);
     drop(manager);
     drop(repo);
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn assertion_device_context_without_devices_stays_unknown() -> anyhow::Result<()> {
+    let path = std::env::temp_dir().join(format!(
+        "qid-proxy-assertion-no-devices-{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path")).await?;
+    repo.migrate().await?;
+    let user = User {
+        id: "usr_no_devices".to_string(),
+        realm_id: "test".to_string(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+
+    let context = assertion_device_context(&repo, &user).await?;
+    assert_eq!(context.id, None);
+    assert!(context.posture.is_empty());
+    assert_eq!(context.trust_level, "unknown");
+    drop(repo);
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn assertion_issuance_fails_closed_on_device_storage_error() -> anyhow::Result<()> {
+    let mut config = qid_core::test_helpers::test_config();
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations =
+        vec![qid_core::config::PepRegistrationConfig {
+            name: "egress-main".to_string(),
+            audience: Some("urn:qid:pep:qpx:test/egress-main".to_string()),
+            capabilities: Vec::new(),
+            assertion: qid_core::config::ProxyAssertionConfig::default(),
+            decision: qid_core::config::PepDecisionConfig::default(),
+            auth: qid_core::config::PepRegistrationAuthConfig::default(),
+        }];
+    let now = qid_core::util::now_seconds();
+    let path = std::env::temp_dir().join(format!(
+        "qid-proxy-assertion-device-error-{}.json",
+        ulid::Ulid::new()
+    ));
+    let inner = qid_storage::FileRepository::new(path.to_str().expect("valid temp path")).await?;
+    inner.migrate().await?;
+    let user = User {
+        id: "usr_device_error".to_string(),
+        realm_id: "test".to_string(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    inner.create_user(&user).await?;
+    let session = Session {
+        id: "sid_device_error".to_string(),
+        realm_id: "test".to_string(),
+        user_id: user.id.clone(),
+        auth_time: now - 120,
+        acr: None,
+        amr: Vec::new(),
+        idle_expires_at: now + 300,
+        absolute_expires_at: now + 3600,
+        revoked: false,
+        created_at: now - 120,
+        cnf: None,
+    };
+    inner.create_session(&session).await?;
+
+    let state = Arc::new(SharedState::new_with_pep_assertion_signers(
+        config,
+        Arc::new(test_repo::DeviceFailingRepository::new(inner)),
+        Arc::new(qid_crypto::LocalSigner::from_secret(
+            "oidc",
+            b"test-oidc-key",
+        )),
+        std::collections::BTreeMap::from([(
+            "test".to_string(),
+            Arc::new(qid_crypto::LocalSigner::from_secret("pep", b"test-pep-key"))
+                as Arc<dyn qid_core::jwt::Signer>,
+        )]),
+        serde_json::json!({}),
+    )?);
+    let request = AssertionRequest {
+        edge: Some("egress-main".to_string()),
+        session: Some(session.id.clone()),
+        access_token: None,
+    };
+
+    let err = do_issue_assertion(&state, "test", &request, &HeaderMap::new())
+        .await
+        .expect_err("device storage failure must not issue an assertion");
+    assert!(
+        matches!(&err, QidError::Storage { message } if message.contains("injected device repository outage")),
+        "unexpected error: {err}"
+    );
+
+    drop(state);
     std::fs::remove_file(path)?;
     Ok(())
 }

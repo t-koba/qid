@@ -21,7 +21,11 @@ cd "$source_dir"
 # The Rust test prints this window beside its failure, where CI logs are not elided.
 source_window="$work/source_window.txt"
 sed -n '26410,26435p' src/internal.c > "$source_window"
-printf 'QID_WOLFSSL_SOURCE_WINDOW=%s\n' "$source_window" >> "$GITHUB_ENV"
+source_window_assignment="QID_WOLFSSL_SOURCE_WINDOW=$source_window"
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  printf '%s\n' "$source_window_assignment" >> "$GITHUB_ENV"
+fi
+printf '%s\n' "$source_window_assignment"
 ./autogen.sh
 ./configure \
   --prefix="$prefix" \

@@ -201,7 +201,8 @@ int main(int argc, char** argv)
             emit_error("cannot enable certificate with external PSK");
             goto cleanup;
         }
-        if (wolfSSL_CTX_require_psk(ctx) != WOLFSSL_SUCCESS) {
+        /* This API reports success as 0, unlike the wolfSSL setters above. */
+        if (wolfSSL_CTX_require_psk(ctx) != 0) {
             emit_error("cannot require an external PSK");
             goto cleanup;
         }

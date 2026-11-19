@@ -181,19 +181,31 @@ int main(int argc, char** argv)
         }
         XMEMCPY(psk_cipher_name, IANA_CIPHER_NAME, sizeof(IANA_CIPHER_NAME));
     }
+    wolfSSL_CTX_set_psk_server_tls13_callback(ctx, psk_server_cb);
     {
         const char rpk = (const char)RAW_PUBLIC_KEY;
-        if (wolfSSL_CTX_set_client_cert_type(ctx, &rpk, 1) != WOLFSSL_SUCCESS ||
-            wolfSSL_CTX_set_server_cert_type(ctx, &rpk, 1) != WOLFSSL_SUCCESS ||
-            wolfSSL_CTX_set_expected_rpk(ctx, client_spki, (word32)client_spki_len) !=
-                WOLFSSL_SUCCESS ||
-            wolfSSL_CTX_set_cert_with_extern_psk(ctx, 1) != WOLFSSL_SUCCESS ||
-            wolfSSL_CTX_require_psk(ctx) != WOLFSSL_SUCCESS) {
-            emit_error("cannot require RPK authentication and an external PSK");
+        if (wolfSSL_CTX_set_client_cert_type(ctx, &rpk, 1) != WOLFSSL_SUCCESS) {
+            emit_error("cannot set client certificate type to RawPublicKey");
+            goto cleanup;
+        }
+        if (wolfSSL_CTX_set_server_cert_type(ctx, &rpk, 1) != WOLFSSL_SUCCESS) {
+            emit_error("cannot set server certificate type to RawPublicKey");
+            goto cleanup;
+        }
+        if (wolfSSL_CTX_set_expected_rpk(ctx, client_spki, (word32)client_spki_len) !=
+            WOLFSSL_SUCCESS) {
+            emit_error("cannot pin the client RawPublicKey");
+            goto cleanup;
+        }
+        if (wolfSSL_CTX_set_cert_with_extern_psk(ctx, 1) != WOLFSSL_SUCCESS) {
+            emit_error("cannot enable certificate with external PSK");
+            goto cleanup;
+        }
+        if (wolfSSL_CTX_require_psk(ctx) != WOLFSSL_SUCCESS) {
+            emit_error("cannot require an external PSK");
             goto cleanup;
         }
     }
-    wolfSSL_CTX_set_psk_server_tls13_callback(ctx, psk_server_cb);
     if (wolfSSL_CTX_use_certificate_file(ctx, argv[1], SSL_FILETYPE_ASN1) !=
             WOLFSSL_SUCCESS ||
         wolfSSL_CTX_use_PrivateKey_file(ctx, argv[2], SSL_FILETYPE_ASN1) !=

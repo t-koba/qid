@@ -29,6 +29,10 @@ const MAX_FRAGMENT: usize = 1 << 14;
 const MAX_CIPHERTEXT: usize = MAX_FRAGMENT + 2048;
 // Bound one poll_write's pending protected records; callers can write again.
 const MAX_PENDING_OUTBOUND: usize = MAX_FRAGMENT * 8;
+// A protected record adds a header, an explicit AES-GCM nonce and an AEAD tag
+// to its plaintext fragment. Used to check the pending bound before protecting,
+// since protection burns the write sequence number.
+const RECORD_OVERHEAD: usize = HEADER_LEN + 8 + 16;
 const READ_CHUNK: usize = 8192;
 
 /// The daemon calls the guard before reading configuration. Configuration
@@ -438,13 +442,13 @@ where
         }
         let mut written = 0;
         for fragment in data.chunks(MAX_FRAGMENT) {
+            if this.outbound.len() + fragment.len() + RECORD_OVERHEAD > MAX_PENDING_OUTBOUND {
+                break;
+            }
             let record = match this.protector.protect(APPLICATION_DATA, fragment) {
                 Ok(record) => record,
                 Err(error) => return Poll::Ready(Err(protocol_failure(error))),
             };
-            if this.outbound.len() + record.len() > MAX_PENDING_OUTBOUND {
-                break;
-            }
             this.outbound.extend_from_slice(&record);
             written += fragment.len();
         }
@@ -454,10 +458,13 @@ where
                 "TLS application record exceeds the pending write bound",
             )));
         }
+        // The accepted bytes already belong to `outbound`. Returning Pending
+        // here would make callers retry the same slice and protect it again
+        // with fresh sequence numbers; the waker is registered by the inner
+        // poll_write, and a later poll_write/poll_flush drains `outbound`.
         match this.flush_pending(context) {
-            Poll::Pending => Poll::Pending,
+            Poll::Pending | Poll::Ready(Ok(())) => Poll::Ready(Ok(written)),
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(written)),
         }
     }
 
@@ -505,6 +512,7 @@ mod tests {
         io::{BufRead, BufReader, Write},
         net::Ipv4Addr,
         process::{Command, Stdio},
+        sync::atomic::{AtomicBool, Ordering},
         time::Duration,
     };
     use tokio::{io::AsyncReadExt, net::TcpStream};
@@ -708,6 +716,134 @@ mod tests {
             assert_eq!(&response, b"world!");
         });
         tokio::try_join!(server, client).expect("both TLS tasks complete");
+    }
+
+    #[tokio::test]
+    async fn large_application_write_preserves_record_sequence() {
+        let fixture = fixture();
+        let config = Arc::new(load_server_config(&fixture.config).expect("load TLS config"));
+        let acceptor = QidAcceptor::new(config);
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let payload: Vec<u8> = (0..200_000).map(|index| (index % 251) as u8).collect();
+        let expected = payload.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, ()) = acceptor.accept(server_io, ()).await.expect("accept TLS");
+            stream
+                .write_all(&payload)
+                .await
+                .expect("write large payload");
+            stream.flush().await.expect("flush large payload");
+        });
+        let client = tokio::spawn(async move {
+            let connector = TlsConnector::from(client_config(&fixture.ca));
+            let mut stream = connector
+                .connect(server_name(), client_io)
+                .await
+                .expect("client handshake");
+            let mut received = vec![0u8; expected.len()];
+            stream
+                .read_exact(&mut received)
+                .await
+                .expect("read large payload");
+            assert_eq!(received, expected);
+        });
+        tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::try_join!(server, client)
+        })
+        .await
+        .expect("large write timeout")
+        .expect("both TLS tasks complete");
+    }
+
+    // Defers one transport write after being armed, so the buffered TLS
+    // record's first flush returns Pending while the caller still owns the
+    // application data.
+    struct PendingFirstWrite<S> {
+        inner: S,
+        armed: Arc<AtomicBool>,
+    }
+
+    impl<S> AsyncRead for PendingFirstWrite<S>
+    where
+        S: AsyncRead + Unpin,
+    {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            context: &mut TaskContext<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().inner).poll_read(context, buffer)
+        }
+    }
+
+    impl<S> AsyncWrite for PendingFirstWrite<S>
+    where
+        S: AsyncWrite + Unpin,
+    {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            context: &mut TaskContext<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let this = self.get_mut();
+            if this.armed.swap(false, Ordering::AcqRel) {
+                context.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Pin::new(&mut this.inner).poll_write(context, data)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().inner).poll_flush(context)
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            context: &mut TaskContext<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_transport_write_does_not_duplicate_application_data() {
+        let fixture = fixture();
+        let config = Arc::new(load_server_config(&fixture.config).expect("load TLS config"));
+        let acceptor = QidAcceptor::new(config);
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let armed = Arc::new(AtomicBool::new(false));
+        let server_io = PendingFirstWrite {
+            inner: server_io,
+            armed: Arc::clone(&armed),
+        };
+
+        let server = tokio::spawn(async move {
+            let (mut stream, ()) = acceptor.accept(server_io, ()).await.expect("accept TLS");
+            armed.store(true, Ordering::Release);
+            stream.write_all(b"hello").await.expect("write payload");
+            stream.flush().await.expect("flush payload");
+            stream.shutdown().await.expect("shutdown payload");
+        });
+        let client = tokio::spawn(async move {
+            let connector = TlsConnector::from(client_config(&fixture.ca));
+            let mut stream = connector
+                .connect(server_name(), client_io)
+                .await
+                .expect("client handshake");
+            let mut received = Vec::new();
+            stream
+                .read_to_end(&mut received)
+                .await
+                .expect("read payload");
+            assert_eq!(received, b"hello");
+        });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::try_join!(server, client)
+        })
+        .await
+        .expect("TLS write timeout")
+        .expect("both TLS tasks complete");
     }
 
     #[tokio::test]

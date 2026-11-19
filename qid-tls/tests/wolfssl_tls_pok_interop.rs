@@ -181,9 +181,6 @@ fn wolfssl_server_completes_tls_pok_handshake() {
     .expect("create TLS-POK client");
     let hello = client.client_hello_record().expect("frame ClientHello");
     assert_no_early_data_extension(&hello);
-    // Public wire bytes: on an interop failure these let the CI log be
-    // compared byte-for-byte with the peer's binder transcript input.
-    eprintln!("qid TLS-POK ClientHello record: {}", hex::encode(&hello));
 
     let mut guard = ChildGuard(Some(
         Command::new(helper)

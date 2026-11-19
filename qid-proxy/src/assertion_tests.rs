@@ -567,6 +567,88 @@ async fn assertion_issuance_requires_dedicated_pep_signer() {
 }
 
 #[tokio::test]
+async fn assertion_issuance_fails_closed_on_device_storage_error() -> anyhow::Result<()> {
+    let mut config = qid_core::test_helpers::test_config();
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations =
+        vec![qid_core::config::PepRegistrationConfig {
+            name: "egress-main".to_string(),
+            audience: Some("urn:qid:pep:qpx:test/egress-main".to_string()),
+            capabilities: Vec::new(),
+            assertion: qid_core::config::ProxyAssertionConfig::default(),
+            decision: qid_core::config::PepDecisionConfig::default(),
+            auth: qid_core::config::PepRegistrationAuthConfig::default(),
+        }];
+    let path = std::env::temp_dir().join(format!(
+        "qid-proxy-assertion-issuance-device-error-{}.json",
+        ulid::Ulid::new()
+    ));
+    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path")).await?;
+    repo.migrate().await?;
+    let user = User {
+        id: "usr_device_error".to_string(),
+        realm_id: "test".to_string(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user).await?;
+    let session = Session {
+        realm_id: user.realm_id.clone(),
+        user_id: user.id.clone(),
+        ..session(qid_core::util::now_seconds())
+    };
+    repo.create_session(&session).await?;
+    let device_repo = DeviceErrorRepository {
+        inner: repo.clone(),
+    };
+    let state = SharedState::new_with_pep_assertion_signers(
+        config,
+        Arc::new(repo),
+        Arc::new(qid_crypto::LocalSigner::from_secret(
+            "oidc",
+            b"test-oidc-key",
+        )),
+        std::collections::BTreeMap::from([(
+            "test".to_string(),
+            Arc::new(qid_crypto::LocalSigner::from_secret("pep", b"test-pep-key"))
+                as Arc<dyn qid_core::jwt::Signer>,
+        )]),
+        serde_json::json!({}),
+    )?;
+    let request = AssertionRequest {
+        edge: Some("egress-main".to_string()),
+        session: Some(session.id),
+        access_token: None,
+    };
+
+    let result = do_issue_assertion_with_device_repo(
+        &state,
+        "test",
+        &request,
+        &HeaderMap::new(),
+        &device_repo,
+    )
+    .await;
+    drop(state);
+    drop(device_repo);
+    std::fs::remove_file(path)?;
+
+    let err = match result {
+        Err(err) => err,
+        Ok(_) => panic!("assertion issued despite device storage failure"),
+    };
+    assert!(
+        matches!(&err, QidError::Storage { message } if message.contains("injected device repository outage")),
+        "unexpected error: {err}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_realm_that_disables_its_registrations_serves_no_assertion() {
     let mut config = qid_core::test_helpers::test_config();
     config.realms[0].pep_registrations.enabled = false;

@@ -56,6 +56,16 @@ async fn do_issue_assertion<R: Repository>(
     req: &AssertionRequest,
     headers: &HeaderMap,
 ) -> QidResult<AssertionResponse> {
+    do_issue_assertion_with_device_repo(state, realm_id, req, headers, state.repo.as_ref()).await
+}
+
+async fn do_issue_assertion_with_device_repo<R: Repository, D: DeviceRepository>(
+    state: &SharedState<R>,
+    realm_id: &str,
+    req: &AssertionRequest,
+    headers: &HeaderMap,
+    device_repo: &D,
+) -> QidResult<AssertionResponse> {
     let realm = state
         .config
         .realms
@@ -204,7 +214,7 @@ async fn do_issue_assertion<R: Repository>(
     let audience = assertion_audience(edge_config, edge_name)?;
     let subject_context =
         assertion_subject_context(state.repo.as_ref(), realm_id, &user, now).await?;
-    let device_context = assertion_device_context(state.repo.as_ref(), &user).await?;
+    let device_context = assertion_device_context(device_repo, &user).await?;
 
     let extra = assertion_extra_claims(realm_id, &user, &session, subject_context, device_context);
 

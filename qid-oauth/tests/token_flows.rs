@@ -2727,6 +2727,82 @@ async fn introspection_enforces_resource_server_policy() {
 }
 
 #[tokio::test]
+async fn introspection_unauthenticated_client_ids_do_not_consume_rate_limit() {
+    const CALLER: &str = "introspection-rl-authenticated-caller";
+    let (app, introspect_path, token) = setup_introspection_rate_limit_test(CALLER).await;
+
+    // Attacker-chosen ids never reach the limiter: each request fails client
+    // authentication, and no process-global key is allocated for any of them.
+    for attempt in 0..61 {
+        let body =
+            format!("token={token}&client_id=unauthenticated-rl-{attempt}&client_secret=wrong");
+        let response = post_form(app.clone(), &introspect_path, body).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "attempt {attempt}"
+        );
+    }
+
+    // Repeating a real client's id without its secret must not spend that
+    // client's budget either.
+    for attempt in 0..61 {
+        let body = format!("token={token}&client_id={CALLER}&client_secret=wrong");
+        let response = post_form(app.clone(), &introspect_path, body).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "attempt {attempt}"
+        );
+    }
+
+    let body = format!("token={token}&client_id={CALLER}&client_secret=secret");
+    let response = post_form(app, &introspect_path, body).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["active"], true);
+}
+
+#[tokio::test]
+async fn introspection_rate_limit_caps_authenticated_caller() {
+    // A caller identity no other test uses: the limiter is process-wide.
+    const CALLER: &str = "introspection-rl-capped-caller";
+    let (app, introspect_path, token) = setup_introspection_rate_limit_test(CALLER).await;
+    let body = format!("token={token}&client_id={CALLER}&client_secret=secret");
+
+    for call in 1..=60 {
+        let response = post_form(app.clone(), &introspect_path, body.clone()).await;
+        assert_eq!(response.status(), StatusCode::OK, "call {call}");
+        assert_eq!(json_body(response).await["active"], true, "call {call}");
+    }
+    let response = post_form(app, &introspect_path, body).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Build an introspection caller with a dedicated limiter identity plus a token.
+async fn setup_introspection_rate_limit_test(caller: &str) -> (Router, String, String) {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://default", &[], caller)];
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&client_credentials_client(caller, "client_secret_post"))
+        .await
+        .unwrap();
+    let access_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
+    )
+    .await;
+    (
+        app,
+        state.paths.introspect.clone(),
+        urlencoding::encode(&access_token).to_string(),
+    )
+}
+
+#[tokio::test]
 async fn authorization_code_grant_succeeds() {
     let (app, token_path, state) = setup().await;
 

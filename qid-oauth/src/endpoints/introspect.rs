@@ -145,13 +145,6 @@ pub async fn introspect<R: Repository>(
     headers: HeaderMap,
     Form(req): Form<IntrospectRequest>,
 ) -> Response {
-    let rate_limit_client_id = introspection_rate_limit_client_id(&headers, &req);
-    if !INTROSPECTION_RATE_LIMITER.check(rate_limit_client_id.as_deref(), None, None, None, None) {
-        return qid_http::error_response(QidError::TooManyRequests {
-            message: "introspection rate limit exceeded".to_string(),
-        });
-    }
-
     if !state
         .config
         .realms
@@ -169,6 +162,18 @@ pub async fn introspect<R: Repository>(
     let caller = super::error_response_or_return!(
         authenticate_introspection_client(&state, &headers, &req).await
     );
+
+    // Only authenticated callers get a limiter key: a key built from raw
+    // request input lets an unauthenticated caller evade the cap and exhaust
+    // the process-global key map. Failed secrets are deliberately not counted
+    // here -- secrets are high-entropy, this is a back-channel endpoint, and
+    // the former request-controlled key was trivially bypassable.
+    let rate_limit_key = format!("{}:{}", caller.realm_id, caller.client_id);
+    if !INTROSPECTION_RATE_LIMITER.check(Some(&rate_limit_key), None, None, None, None) {
+        return qid_http::error_response(QidError::TooManyRequests {
+            message: "introspection rate limit exceeded".to_string(),
+        });
+    }
 
     let result = decode_access_token(&state, &req.token).await;
     match result {
@@ -234,15 +239,6 @@ pub async fn introspect<R: Repository>(
         }
         Err(_) => inactive_response(),
     }
-}
-
-fn introspection_rate_limit_client_id(
-    headers: &HeaderMap,
-    req: &IntrospectRequest,
-) -> Option<String> {
-    extract_basic_client_auth(headers)
-        .map(|auth| auth.client_id)
-        .or_else(|| req.client_id.clone())
 }
 
 #[derive(Debug, Clone)]

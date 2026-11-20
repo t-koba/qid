@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 mod broker;
+pub mod kerberos_acceptor;
 pub mod kerberos_keytab;
 mod kerberos_replay;
 mod routes;

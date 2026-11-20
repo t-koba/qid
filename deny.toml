@@ -8,8 +8,8 @@ ignore = [
     # `cargo update` can clear it because all chrono versions are affected.
     # It reaches qid only transitively: tsp-ltv 0.6.0 (a pinned direct
     # dependency of qid-saml used for SAML long-term validation) and krb5
-    # 1.0.0 (a dev-only SPNEGO proof in qid-federation). Time-bounded waiver
-    # with a tracked replacement: move off chrono via a tsp-ltv or krb5
+    # 1.0.0 (a production SPNEGO acceptor in qid-federation). Time-bounded
+    # waiver with a tracked replacement: move off chrono via a tsp-ltv or krb5
     # release that drops it, or migrate date handling to jiff/time. Review
     # this entry and its replacement plan by 2027-02-18 and remove the waiver
     # once the dependency no longer pulls chrono. No vulnerability advisory

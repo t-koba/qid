@@ -27,10 +27,10 @@ ulid = { workspace = true }
 jsonwebtoken = { workspace = true }
 roxmltree = { workspace = true }
 zeroize = { workspace = true }
+# Pinned for the production SPNEGO acceptor and the MIT fixture.
+krb5 = "=1.0.0"
 
 [dev-dependencies]
-# Used only by the isolated MIT interoperability fixture, not at runtime.
-krb5 = "=1.0.0"
 bergshamra-dsig = { version = "=0.11.0", default-features = false }
 bergshamra-keys = { version = "=0.11.0", default-features = false }
 http-body-util = { workspace = true }

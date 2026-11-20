@@ -3632,3 +3632,62 @@ fn yaml_provider_preserves_serde_yaml_scalar_semantics() {
     assert_eq!(value["inf"], serde_json::Value::Null);
     assert_eq!(value["dup"], serde_json::json!(2));
 }
+
+#[test]
+fn inbound_provider_unknown_kind_is_rejected_at_config_load() {
+    fn config_with_provider_kind(kind: &str) -> QidConfig {
+        let mut config = minimal_config();
+        config.realms[0].protocols.federation.inbound_providers = vec![InboundProviderConfig {
+            id: "provider".to_string(),
+            kind: kind.to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            enabled: false,
+            domains: Vec::new(),
+            social_provider: None,
+            client_id: None,
+            client_secret: None,
+            token_url: None,
+            userinfo_url: None,
+            jit_provisioning: false,
+            account_linking: false,
+            claim_mappings: Vec::new(),
+            jwks_uri: None,
+            jwks: None,
+            saml_signing_certificates: Vec::new(),
+            trusted_audiences: Vec::new(),
+        }];
+        config
+    }
+
+    for kind in [
+        "oidc",
+        "saml",
+        "entra_id",
+        "entra",
+        "azure_ad",
+        "google_workspace",
+        "google",
+        "okta",
+        "ldap_ad_bind",
+        "ldap",
+        "social",
+    ] {
+        config_with_provider_kind(kind)
+            .validate()
+            .unwrap_or_else(|err| {
+                panic!(
+                    "known inbound provider kind {kind} must be accepted: {}",
+                    err.message()
+                )
+            });
+    }
+
+    for kind in ["kerberos", "kerberos_spnego", "bogus", ""] {
+        let err = config_with_provider_kind(kind).validate().unwrap_err();
+        assert!(
+            err.message().contains("unknown kind"),
+            "unexpected validation result for kind {kind}: {}",
+            err.message()
+        );
+    }
+}

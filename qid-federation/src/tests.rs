@@ -990,3 +990,40 @@ fn inbound_provider_runtime_rejects_audience_trust_for_non_oidc_provider() {
         "unsupported_trusted_audiences"
     );
 }
+
+#[test]
+fn inbound_provider_kind_mapping_matches_config_validation() {
+    let known = [
+        "oidc",
+        "saml",
+        "entra_id",
+        "entra",
+        "azure_ad",
+        "google_workspace",
+        "google",
+        "okta",
+        "ldap_ad_bind",
+        "ldap",
+        "social",
+    ];
+    for kind in known {
+        assert!(
+            InboundProviderKind::from_kind_str(kind).is_some(),
+            "runtime mapping lost known kind {kind}"
+        );
+        assert!(
+            qid_core::config::is_known_inbound_provider_kind(kind),
+            "config validation lost known kind {kind}"
+        );
+    }
+    for kind in ["kerberos", "kerberos_spnego", "bogus", "", "OIDC"] {
+        assert!(
+            InboundProviderKind::from_kind_str(kind).is_none(),
+            "runtime mapping gained unknown kind {kind}"
+        );
+        assert!(
+            !qid_core::config::is_known_inbound_provider_kind(kind),
+            "config validation gained unknown kind {kind}"
+        );
+    }
+}

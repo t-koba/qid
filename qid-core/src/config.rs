@@ -1298,6 +1298,28 @@ pub struct RealmConfig {
     pub policy: PolicyConfig,
 }
 
+/// Canonical set of inbound federation provider `kind` strings accepted at
+/// configuration load. An unrecognized kind is a configuration error rather
+/// than a silently dropped provider. Keep in sync with
+/// `qid_federation::InboundProviderKind::from_kind_str`; a cross-crate test
+/// guards that agreement.
+pub fn is_known_inbound_provider_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "oidc"
+            | "saml"
+            | "entra_id"
+            | "entra"
+            | "azure_ad"
+            | "google_workspace"
+            | "google"
+            | "okta"
+            | "ldap_ad_bind"
+            | "ldap"
+            | "social"
+    )
+}
+
 impl RealmConfig {
     pub(crate) fn validate_iga_access_request(&self) -> QidResult<()> {
         if let Some(target) = &self.protocols.iga.access_request_audience
@@ -1597,6 +1619,14 @@ impl RealmConfig {
             });
         }
         for provider in &self.protocols.federation.inbound_providers {
+            if !is_known_inbound_provider_kind(&provider.kind) {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} inbound provider {} has unknown kind '{}'",
+                        self.id, provider.id, provider.kind
+                    ),
+                });
+            }
             if provider.enabled
                 && provider.kind.eq_ignore_ascii_case("saml")
                 && provider.saml_signing_certificates.is_empty()

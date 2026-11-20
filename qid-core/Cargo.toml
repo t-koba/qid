@@ -28,6 +28,7 @@ p256 = { workspace = true }
 redis = { version = "0.27", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde-saphyr = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
 rsa = { workspace = true, features = ["sha2"] }

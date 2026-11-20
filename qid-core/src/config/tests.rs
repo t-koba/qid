@@ -3611,3 +3611,24 @@ fn callback_destinations_are_validated_when_loading_config() {
     }
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn yaml_provider_preserves_serde_yaml_scalar_semantics() {
+    // The YAML provider replaces serde_yaml 0.9. Operator configs must keep the
+    // same accepted semantics; pin the scalar forms that differ between YAML
+    // 1.1 defaults and serde_yaml's YAML 1.2-style inference.
+    let value: serde_json::Value = Figment::from(Yaml::string(
+        "word: yes\nneg: no\non: on\noff: off\nleading: 012\nunder: 1_000\nnan: .nan\ninf: .inf\ndup: 1\ndup: 2\n",
+    ))
+    .extract()
+    .expect("extract untyped yaml");
+    assert_eq!(value["word"], serde_json::json!("yes"));
+    assert_eq!(value["neg"], serde_json::json!("no"));
+    assert_eq!(value["on"], serde_json::json!("on"));
+    assert_eq!(value["off"], serde_json::json!("off"));
+    assert_eq!(value["leading"], serde_json::json!("012"));
+    assert_eq!(value["under"], serde_json::json!("1_000"));
+    assert_eq!(value["nan"], serde_json::Value::Null);
+    assert_eq!(value["inf"], serde_json::Value::Null);
+    assert_eq!(value["dup"], serde_json::json!(2));
+}

@@ -58,7 +58,8 @@ der = "0.7.10"
 axum = "0.7"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 clap = { version = "4", features = ["derive", "env"] }
-figment = { version = "0.10", features = ["env", "toml", "yaml"] }
+figment = { version = "0.10", features = ["env", "toml"] }
+serde-saphyr = { version = "2.2.0", features = ["figment"] }
 insta = { version = "1", features = ["json"] }
 jsonwebtoken = "9"
 metrics = "0.24"

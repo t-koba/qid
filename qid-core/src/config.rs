@@ -1,11 +1,36 @@
 use crate::models::{ClientType, TokenFormat};
 use figment::{
     Figment,
-    providers::{Env, Format, Toml, Yaml},
+    providers::{Env, Format, Toml},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// YAML provider backed by `serde-saphyr`, configured to preserve the scalar
+/// semantics of the `serde_yaml` parser it replaces (YAML 1.2 core booleans,
+/// plain leading-zero/underscored numbers kept as strings, and the same
+/// visitor-driven duplicate-key handling) so accepted configs load unchanged.
+struct Yaml;
+
+impl figment::providers::Format for Yaml {
+    type Error = serde_saphyr::Error;
+    const NAME: &'static str = "YAML";
+
+    fn from_str<T: serde::de::DeserializeOwned>(string: &str) -> Result<T, Self::Error> {
+        serde_saphyr::from_str_with_options(
+            string,
+            serde_saphyr::options! {
+                with_snippet: false,
+                strict_booleans: true,
+                leading_zero_numbers_as_strings: true,
+                underscored_numbers_as_strings: true,
+                duplicate_keys: serde_saphyr::DuplicateKeyPolicy::PassThrough,
+                non_finite_float_policy: serde_saphyr::NonFiniteFloatPolicy::PassThrough,
+            },
+        )
+    }
+}
 
 use crate::error::{QidError, QidResult};
 

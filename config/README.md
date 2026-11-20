@@ -106,9 +106,9 @@ smallest interoperable OIDC authorization-code deployment, then move to
 
 ### 08-verifiable-credentials
 
-- `oid4vci-haip.yaml`: VC profile with the qid-private credential issuance, status and presentation-verification routes.
-- `verifier-presentation-only.yaml`: verifier-oriented OID4VP / holder-bound presentation checks.
-- `issuance-revocation-status-list.yaml`: credential issuance, holder-only revocation, and status-list operations.
+- `oid4vci-haip.yaml`: VC profile with the qid-private credential issuance (`/vc/v1/credential`), per-credential status lookup and revocation (`/vc/v1/status/:credential_id`), and presentation verification (`/vc/v1/presentation/verify`) routes.
+- `verifier-presentation-only.yaml`: verifier-oriented qid-private presentation verification via `/vc/v1/presentation/verify`. OID4VP is not served.
+- `issuance-revocation-status-list.yaml`: qid-private credential issuance and per-credential status lookup/revocation (`/vc/v1/status/:credential_id`). No status-list endpoint is served; the bundled bitstring status-list helpers are not wired, as noted in `docs/standards.md`.
 
 ### 09-network-access
 

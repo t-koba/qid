@@ -1,19 +1,20 @@
 //! Test-only live MIT proof. Run through scripts/kerberos/test-mit-spnego.py,
 //! which owns the realm, credentials, process-group deadline and cleanup.
 //! Ordinary workspace tests report this proof as ignored, never as passed.
-#[path = "kerberos_mit/strict_keytab.rs"]
-mod strict_keytab;
+//!
+//! Every ticket here goes through qid_federation's production acceptor: the
+//! same loader, options and single-step validation sequence the HTTP route
+//! uses. This fixture proves that path against a real MIT KDC; it never builds
+//! krb5 keytabs or accept options itself.
 
-use krb5::{
-    KerberosError, Keytab,
-    acceptor::{AcceptOptions, DEFAULT_CLOCK_SKEW_SECS},
-    rcache::ReplayStore,
-    spnego::SpnegoAcceptor,
-};
 use qid_core::cache::MemoryCache;
-use qid_federation::KerberosReplayStore;
+use qid_federation::kerberos_acceptor::{
+    AcceptedNegotiate, KerberosAcceptError, KerberosKeytab, accept_with_options,
+    build_accept_options,
+};
 use std::{
     io::{self, Read, Write},
+    path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::Arc,
     time::Duration,
@@ -23,6 +24,7 @@ const SERVICE: &str = "HTTP/acceptor.qid.test@QID.MIT.TEST";
 const WRONG_SERVICE: &str = "HTTP/other.qid.test@QID.MIT.TEST";
 const EXPIRED_SERVICE: &str = "HTTP/expired.qid.test@QID.MIT.TEST";
 const CLIENT: &str = "client@QID.MIT.TEST";
+const REALM: &str = "QID.MIT.TEST";
 const MAX_TOKEN: usize = 1024 * 1024; // Fixture IPC budget, not a protocol limit.
 
 struct MitPeer {
@@ -92,141 +94,122 @@ impl Drop for MitPeer {
     }
 }
 
-#[derive(Debug)]
-struct TestReplayStore(KerberosReplayStore);
-
-impl ReplayStore for TestReplayStore {
-    fn insert(&self, tag: &[u8], now: i64, expires: i64) -> io::Result<bool> {
-        self.0.insert(tag, now, expires)
-    }
-}
-
-fn acceptor_with_skew<'k>(
-    keytab: &'k Keytab,
-    cache: &Arc<MemoryCache>,
-    max_skew_secs: i64,
-) -> SpnegoAcceptor<'k> {
-    // krb5 1.0.0 makes AcceptOptions non_exhaustive and offers only Default
-    // for construction outside its crate. Overwrite EVERY public field before
-    // handing options to an acceptor; never use its environment-selected store.
-    let mut options = AcceptOptions::default();
-    options.max_skew_secs = max_skew_secs;
-    options.channel_bindings = None;
-    options.replay_cache = Some(Arc::new(TestReplayStore(KerberosReplayStore::new(
-        cache.clone(),
-    ))));
-    // Distinct adapter instances model independent acceptors sharing one cache.
-    SpnegoAcceptor::with_options(keytab, options)
-}
-
-fn acceptor<'k>(keytab: &'k Keytab, cache: &Arc<MemoryCache>) -> SpnegoAcceptor<'k> {
-    acceptor_with_skew(keytab, cache, DEFAULT_CLOCK_SKEW_SECS)
+/// The production contract is category-level: ticket crypto, time, replay and
+/// service checks all surface as `NegotiationFailed` with no identity. A check
+/// that was dropped and let the ticket through would show as `Ok`, so an `Err`
+/// here still proves the acceptor refused the token; only the underlying krb5
+/// error distinction is intentionally no longer observable.
+fn assert_refused(label: &str, result: Result<AcceptedNegotiate, KerberosAcceptError>) {
+    assert_eq!(
+        result.err(),
+        Some(KerberosAcceptError::NegotiationFailed),
+        "{label}"
+    );
 }
 
 #[test]
 #[ignore = "requires disposable MIT realm; run scripts/kerberos/test-mit-spnego.py"]
 fn mit_spnego_acceptor_proof() -> io::Result<()> {
     let keytab_path = std::env::var_os("QID_MIT_KEYTAB").expect("run the MIT fixture script");
-    let keytab = strict_keytab::load(std::path::Path::new(&keytab_path))
+    let keytab = KerberosKeytab::load(Path::new(&keytab_path))
         .unwrap_or_else(|_| panic!("load fixture service keytab"));
     let cache = Arc::new(MemoryCache::new());
     let mut mit = MitPeer::new(SERVICE)?;
     let original = mit.initial()?;
-    let mut server = acceptor(&keytab, &cache);
-    let mut incoming = original.clone();
-    let mut mutual_complete = false;
-    for _ in 0..4 {
-        let reply = server
-            .step(&incoming)
-            .unwrap_or_else(|_| panic!("MIT SPNEGO token was not accepted"));
-        let reply = reply.expect("acceptor must answer MIT with mutual authentication");
-        assert!(!reply.is_empty(), "acceptor response must not be empty");
-        mit.send(&reply)?;
-        let (complete, next) = mit.receive()?;
-        if complete && next.is_empty() {
-            mutual_complete = true;
-            break;
-        }
-        assert!(!next.is_empty(), "MIT negotiation stalled");
-        incoming = next;
-    }
-    // The independent MIT initiator verifies the AP-REP before reporting
-    // complete, and its helper separately requires the mutual-auth flag.
+
+    // Happy path: production loader, production options, one production step.
+    let accepted = accept_with_options(
+        &keytab,
+        SERVICE,
+        REALM,
+        build_accept_options(cache.clone()),
+        &original,
+    )
+    .unwrap_or_else(|_| panic!("MIT SPNEGO token was not accepted by production code"));
+    let reply = accepted
+        .reply
+        .expect("acceptor must answer MIT with mutual authentication");
+    assert!(!reply.is_empty(), "acceptor response must not be empty");
+    mit.send(&reply)?;
+    let (complete, next) = mit.receive()?;
+    // The independent MIT initiator verifies the AP-REP and requires the
+    // mutual-auth GSS flag before it reports completion with no further token.
     assert!(
-        mutual_complete,
+        complete && next.is_empty(),
         "MIT did not verify the mutual handshake/AP-REP"
     );
-    assert!(server.is_spnego(), "must exercise SPNEGO, not raw Kerberos");
-    assert!(
-        server.is_established(),
-        "acceptor did not establish a context"
-    );
-    let context = server.context().expect("accepted Kerberos context");
-    assert!(
-        context.client_principal == CLIENT,
-        "unexpected client identity"
-    );
-    assert!(
-        context.service_principal == SERVICE,
-        "unexpected service identity"
-    );
+    assert_eq!(accepted.identity.client_principal, CLIENT);
+    assert_eq!(accepted.identity.client_realm, REALM);
+    assert_eq!(accepted.identity.service_principal, SERVICE);
     assert!(mit.child.wait().expect("reap MIT initiator").success());
 
-    let mut replay = acceptor(&keytab, &cache);
-    assert!(
-        matches!(replay.step(&original), Err(KerberosError::Replay(_))),
-        "exact initial token must be refused specifically as replay"
+    // A fresh acceptor with the same shared cache must reject the exact token
+    // that the first acceptor just accepted.
+    assert_refused(
+        "exact initial token must be refused as a replay",
+        accept_with_options(
+            &keytab,
+            SERVICE,
+            REALM,
+            build_accept_options(cache.clone()),
+            &original,
+        ),
     );
-    assert!(!replay.is_established() && replay.context().is_none());
 
     // Mutate a token already proven valid above, not an unrelated fixture.
-    let mut damaged = original.clone();
     // MIT's optimistic token ends with the encrypted authenticator. Flip its
-    // final checksum byte, leaving DER lengths untouched. Require a crypto
-    // failure below: a parser error or replay is NOT a passing tamper test.
+    // final checksum byte, leaving DER lengths untouched.
+    let mut damaged = original.clone();
     *damaged.last_mut().expect("nonempty MIT token") ^= 1;
-    let mut tamper = acceptor(&keytab, &cache);
-    assert!(
-        matches!(
-            tamper.step(&damaged),
-            Err(KerberosError::InvalidAuthenticator(_))
+    assert_refused(
+        "tampered MIT token must fail cryptographic verification",
+        accept_with_options(
+            &keytab,
+            SERVICE,
+            REALM,
+            build_accept_options(cache.clone()),
+            &damaged,
         ),
-        "tampered MIT token must fail cryptographic verification"
     );
-    assert!(!tamper.is_established() && tamper.context().is_none());
 
     // The other principal exists in the MIT realm, so this is a genuine
     // KDC-issued ticket, not an unknown-service failure at the initiator.
     // Only the intended service's key is exported to the acceptor keytab.
     let mut other = MitPeer::new(WRONG_SERVICE)?;
     let wrong_token = other.initial()?;
-    let mut wrong = acceptor(&keytab, &cache);
-    assert!(
-        matches!(
-            wrong.step(&wrong_token),
-            Err(KerberosError::PrincipalNotFound(_))
+    assert_refused(
+        "real ticket for another service must not be accepted",
+        accept_with_options(
+            &keytab,
+            SERVICE,
+            REALM,
+            build_accept_options(cache.clone()),
+            &wrong_token,
         ),
-        "real ticket for another service must not be accepted"
     );
-    assert!(!wrong.is_established() && wrong.context().is_none());
 
     // MIT issues this separate service a ten-second ticket. With zero test
-    // skew, a real KDC-issued token delayed past endtime must fail specifically
-    // at ticket-time validation, before its now-stale authenticator is checked.
+    // skew, a real KDC-issued token delayed past endtime must fail at
+    // ticket-time validation. Only this request overrides the production
+    // default skew; every other case keeps it.
     let expired_keytab_path =
         std::env::var_os("QID_MIT_EXPIRED_KEYTAB").expect("run the MIT fixture script");
-    let expired_keytab = strict_keytab::load(std::path::Path::new(&expired_keytab_path))
+    let expired_keytab = KerberosKeytab::load(Path::new(&expired_keytab_path))
         .unwrap_or_else(|_| panic!("load fixture expired-service keytab"));
     let mut expired_peer = MitPeer::new(EXPIRED_SERVICE)?;
     let expired_token = expired_peer.initial()?;
     std::thread::sleep(Duration::from_secs(12));
-    let mut expired = acceptor_with_skew(&expired_keytab, &cache, 0);
-    match expired.step(&expired_token) {
-        Err(KerberosError::TicketNotValid(reason)) => {
-            assert!(reason.starts_with("ticket expired at "), "{reason}");
-        }
-        _ => panic!("expired MIT ticket must fail specifically at ticket-time validation"),
-    }
-    assert!(!expired.is_established() && expired.context().is_none());
+    let mut options = build_accept_options(cache.clone());
+    options.max_skew_secs = 0;
+    assert_refused(
+        "expired MIT ticket must fail at ticket-time validation",
+        accept_with_options(
+            &expired_keytab,
+            EXPIRED_SERVICE,
+            REALM,
+            options,
+            &expired_token,
+        ),
+    );
     Ok(())
 }

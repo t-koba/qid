@@ -6,6 +6,21 @@
 //! after cryptographic establishment and an explicit service/realm check.
 //! Live-KDC interoperability remains the authority for ticket crypto and is
 //! proven by the isolated MIT fixture, not by locally fabricated tickets.
+//!
+//! # Key lifetime and replay residual
+//!
+//! The strict parser holds file bytes and extracted keys in zeroizing buffers,
+//! but krb5 1.0.0's `ServiceKey::new` and `Keytab::from_keys` copy those keys
+//! into ordinary `Vec<u8>` storage with no wiping `Drop`. [`KerberosKeytab`]
+//! keeps that storage private and exposes neither `Debug` nor `Clone`, which
+//! prevents accidental disclosure through diagnostics or copies but cannot
+//! wipe the bytes when the owner is dropped. Wiping them is not achievable
+//! through the public krb5 1.0.0 API; it would require a maintained fork,
+//! which the accepted scope and key-safety assessment decline. This is a
+//! documented residual, not a claim of full key zeroization. Replay protection
+//! is likewise only as durable as the caller-supplied `SharedCache`: a
+//! process-local backend loses replay state on restart, while a shared durable
+//! backend retains it for its configured TTL.
 
 use crate::{
     KerberosReplayStore,
@@ -80,10 +95,14 @@ impl ReplayStore for QidReplay {
     }
 }
 
-/// Keeps krb5's non-zeroizing `Keytab` private, non-debuggable and uncloned.
-struct KeytabOwner(Keytab);
+/// A strict-parsed service keytab owned by the acceptor.
+///
+/// The inner krb5 keytab has ordinary non-zeroizing key storage. This wrapper
+/// implements neither `Debug` nor `Clone`; see the module docs for the exact
+/// residual that this ownership boundary does not remove.
+pub struct KerberosKeytab(Keytab);
 
-impl Deref for KeytabOwner {
+impl Deref for KerberosKeytab {
     type Target = Keytab;
 
     fn deref(&self) -> &Self::Target {
@@ -91,27 +110,52 @@ impl Deref for KeytabOwner {
     }
 }
 
-fn load_keytab_owner(path: &Path) -> Result<KeytabOwner, KerberosAcceptError> {
-    let parsed = load_keytab(path).map_err(|error| match error {
-        KeytabError::Unavailable => KerberosAcceptError::KeytabUnavailable,
-        _ => KerberosAcceptError::KeytabMalformed,
-    })?;
-    let keys = parsed
-        .keys()
-        .iter()
-        .map(|key| {
-            let enctype = EncType::from_i32(key.enctype.rfc_number())
-                .ok_or(KerberosAcceptError::UnsupportedKeyType)?;
-            Ok(ServiceKey::new(
-                key.principal.clone(),
-                key.realm.clone(),
-                key.kvno,
-                enctype,
-                key.key().to_vec(),
-            ))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(KeytabOwner(Keytab::from_keys(keys)))
+impl KerberosKeytab {
+    /// Load service keys through the strict parser, with path-free errors.
+    pub fn load(path: &Path) -> Result<Self, KerberosAcceptError> {
+        let parsed = load_keytab(path).map_err(|error| match error {
+            KeytabError::Unavailable => KerberosAcceptError::KeytabUnavailable,
+            _ => KerberosAcceptError::KeytabMalformed,
+        })?;
+        let keys = parsed
+            .keys()
+            .iter()
+            .map(|key| {
+                let enctype = EncType::from_i32(key.enctype.rfc_number())
+                    .ok_or(KerberosAcceptError::UnsupportedKeyType)?;
+                Ok(ServiceKey::new(
+                    key.principal.clone(),
+                    key.realm.clone(),
+                    key.kvno,
+                    enctype,
+                    key.key().to_vec(),
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self(Keytab::from_keys(keys)))
+    }
+}
+
+/// An established identity and the opaque final SPNEGO reply, when present.
+///
+/// The reply is the AP-REP the initiator needs to verify mutual completion.
+/// Neither field carries key material, and its `Debug` reports only the reply
+/// length so a token cannot be disclosed through diagnostics.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AcceptedNegotiate {
+    /// The validated client and service names.
+    pub identity: KerberosIdentity,
+    /// The final Negotiate token, if the exchange produced one.
+    pub reply: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for AcceptedNegotiate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AcceptedNegotiate")
+            .field("identity", &self.identity)
+            .field("reply_len", &self.reply.as_ref().map(Vec::len))
+            .finish()
+    }
 }
 
 fn authorize_context(
@@ -127,31 +171,32 @@ fn authorize_context(
     }
 }
 
-/// Cryptographically validate one Negotiate token and return its identity.
+/// Wire the acceptor's replay protection to the caller's cache.
 ///
-/// `replay_cache` must be atomic and shared by every acceptor for the service;
-/// its durability is whatever the backend provides. The reply token, if any,
-/// is intentionally discarded here so this core stays independent of HTTP.
-pub fn accept_negotiate_token(
-    keytab_path: &Path,
-    expected_service_principal: &str,
-    expected_realm: &str,
-    replay_cache: Arc<dyn SharedCache>,
-    token: &[u8],
-) -> Result<KerberosIdentity, KerberosAcceptError> {
-    if token.is_empty() {
-        return Err(KerberosAcceptError::TokenDecode);
-    }
-    let owner = load_keytab_owner(keytab_path)?;
-
+/// Clock skew stays at the krb5 default; shortening it is per-request policy.
+/// The environment's replay store is never selected.
+pub fn build_accept_options(replay_cache: Arc<dyn SharedCache>) -> AcceptOptions {
     let mut options = AcceptOptions::default();
     options.channel_bindings = None;
     options.replay_cache = Some(Arc::new(QidReplay(KerberosReplayStore::new(replay_cache))));
-    // max_skew_secs stays at the krb5 default; shortening it is policy, not
-    // something this cryptographic core decides.
+    options
+}
 
-    let mut acceptor = SpnegoAcceptor::with_options(&owner, options);
-    let _reply = acceptor
+/// The one production validation sequence, reusable with explicit options.
+///
+/// One step is deliberate: multi-leg SPNEGO is unsupported and fails closed.
+pub fn accept_with_options(
+    keytab: &KerberosKeytab,
+    expected_service_principal: &str,
+    expected_realm: &str,
+    options: AcceptOptions,
+    token: &[u8],
+) -> Result<AcceptedNegotiate, KerberosAcceptError> {
+    if token.is_empty() {
+        return Err(KerberosAcceptError::TokenDecode);
+    }
+    let mut acceptor = SpnegoAcceptor::with_options(keytab, options);
+    let reply = acceptor
         .step(token)
         .map_err(|_| KerberosAcceptError::NegotiationFailed)?;
     // A multi-leg token is not an identity: fail closed until negotiation is
@@ -168,19 +213,48 @@ pub fn accept_negotiate_token(
         expected_service_principal,
         expected_realm,
     )?;
-    Ok(KerberosIdentity {
-        client_principal: context.client_principal,
-        client_realm: context.client_realm,
-        service_principal: context.service_principal,
+    Ok(AcceptedNegotiate {
+        identity: KerberosIdentity {
+            client_principal: context.client_principal,
+            client_realm: context.client_realm,
+            service_principal: context.service_principal,
+        },
+        reply,
     })
+}
+
+/// Cryptographically validate one Negotiate token and return identity and reply.
+///
+/// `replay_cache` must be atomic and shared by every acceptor for the service;
+/// its durability is whatever the backend provides. This core stays
+/// independent of HTTP: callers decide how to deliver the mutual-auth reply.
+pub fn accept_negotiate_token(
+    keytab_path: &Path,
+    expected_service_principal: &str,
+    expected_realm: &str,
+    replay_cache: Arc<dyn SharedCache>,
+    token: &[u8],
+) -> Result<AcceptedNegotiate, KerberosAcceptError> {
+    let keytab = KerberosKeytab::load(keytab_path)?;
+    let options = build_accept_options(replay_cache);
+    accept_with_options(
+        &keytab,
+        expected_service_principal,
+        expected_realm,
+        options,
+        token,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{KerberosAcceptError, KerberosIdentity, accept_negotiate_token, authorize_context};
+    use super::{
+        AcceptedNegotiate, KerberosAcceptError, KerberosIdentity, KerberosKeytab,
+        accept_negotiate_token, accept_with_options, authorize_context, build_accept_options,
+    };
     use krb5::{
         Keytab,
-        acceptor::{EncType, ServiceKey},
+        acceptor::{DEFAULT_CLOCK_SKEW_SECS, EncType, ServiceKey},
     };
     use qid_core::cache::MemoryCache;
     use std::{
@@ -257,6 +331,46 @@ mod tests {
             b"not a negotiate token",
         );
         assert_eq!(garbage.err(), Some(KerberosAcceptError::NegotiationFailed));
+
+        // The layered API used by the MIT fixture rejects through the very
+        // same sequence without loading a keytab from a path again.
+        let owner = KerberosKeytab::load(keytab.path()).expect("load synthetic keytab");
+        let direct =
+            accept_with_options(&owner, SERVICE, REALM, build_accept_options(cache()), &[]);
+        assert_eq!(direct.err(), Some(KerberosAcceptError::TokenDecode));
+    }
+
+    #[test]
+    fn accept_options_use_the_callers_cache_and_default_skew() {
+        let options = build_accept_options(cache());
+        assert_eq!(options.max_skew_secs, DEFAULT_CLOCK_SKEW_SECS);
+        assert!(options.channel_bindings.is_none());
+        assert!(options.replay_cache.is_some());
+    }
+
+    #[test]
+    fn accepted_negotiate_debug_never_exposes_key_bytes() {
+        let keytab = KeytabFile::new();
+        // The owner has neither Debug nor Clone; only the opaque accepted
+        // value below can be formatted, and it holds no key material.
+        let _owner = KerberosKeytab::load(keytab.path()).expect("load synthetic keytab");
+        // Key-shaped reply bytes prove that even a token-looking value is
+        // never printed by the accepted value's Debug implementation.
+        let accepted = AcceptedNegotiate {
+            identity: KerberosIdentity {
+                client_principal: "client@QID.MIT.TEST".to_owned(),
+                client_realm: REALM.to_owned(),
+                service_principal: SERVICE.to_owned(),
+            },
+            reply: Some(TEST_KEY.to_vec()),
+        };
+        let debug = format!("{accepted:?}");
+        assert_clean(&debug, keytab.path());
+        assert!(
+            !debug.contains("165"),
+            "opaque reply bytes leaked via Debug"
+        );
+        assert_clean(&format!("{:?}", accepted.identity), keytab.path());
     }
 
     #[test]

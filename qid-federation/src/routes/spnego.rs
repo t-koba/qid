@@ -57,6 +57,20 @@ fn reject(error: &'static str) -> Response {
     response
 }
 
+/// Add the acceptor's AP-REP so the client can verify mutual completion.
+fn with_mutual_reply(mut response: Response, reply: Option<Vec<u8>>) -> Response {
+    if let Some(reply) = reply {
+        let value = format!("Negotiate {}", NEGOTIATE_BASE64.encode(reply));
+        // The scheme and standard base64 are visible ASCII, so an acceptor
+        // reply always yields a valid header; skip it if that invariant breaks
+        // rather than emitting an unchecked value.
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            response.headers_mut().insert(WWW_AUTHENTICATE, value);
+        }
+    }
+    response
+}
+
 fn negotiate_token(headers: &HeaderMap) -> Result<Vec<u8>, &'static str> {
     let mut values = headers.get_all(AUTHORIZATION).iter();
     let Some(value) = values.next() else {
@@ -90,7 +104,8 @@ fn negotiate_token(headers: &HeaderMap) -> Result<Vec<u8>, &'static str> {
 
 /// Validate one inbound Negotiate token and feed its identity through the
 /// federation broker. Multi-leg SPNEGO is not supported: an incomplete
-/// exchange fails closed, and no negotiation state is kept.
+/// exchange fails closed, and no negotiation state is kept. On success the
+/// acceptor's AP-REP is returned so the client can verify mutual completion.
 pub async fn spnego_negotiate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
@@ -129,16 +144,17 @@ pub async fn spnego_negotiate<R: Repository>(
     };
     // The acceptor checks ticket, authenticator, time, replay, service and
     // client realm; its errors never leave this module.
-    let identity = match accept_negotiate_token(
+    let accepted = match accept_negotiate_token(
         FsPath::new(&kerberos.keytab_path),
         &kerberos.service_principal,
         &kerberos.realm,
         Arc::clone(&state.shared_cache),
         &token,
     ) {
-        Ok(identity) => identity,
+        Ok(accepted) => accepted,
         Err(_) => return reject("ticket_rejected"),
     };
+    let identity = accepted.identity;
 
     let claims = ExternalIdentityClaims {
         issuer: provider.issuer.clone(),
@@ -174,13 +190,16 @@ pub async fn spnego_negotiate<R: Repository>(
     };
 
     match exec_broker_login_plan(state.repo.as_ref(), &realm, &provider.id, &claims, &plan).await {
-        Ok(uid) => Json(serde_json::json!({
-            "status": "linked",
-            "provider": provider.id,
-            "provider_kind": provider.kind.as_str(),
-            "local_user_id": uid,
-        }))
-        .into_response(),
+        Ok(uid) => with_mutual_reply(
+            Json(serde_json::json!({
+                "status": "linked",
+                "provider": provider.id,
+                "provider_kind": provider.kind.as_str(),
+                "local_user_id": uid,
+            }))
+            .into_response(),
+            accepted.reply,
+        ),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -320,6 +339,20 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    #[test]
+    fn success_reply_is_standard_base64_and_omitted_when_absent() {
+        let body = Json(serde_json::json!({ "status": "linked" })).into_response();
+        let with_reply = with_mutual_reply(body, Some(vec![0x01, 0x02, 0x03]));
+        assert_eq!(with_reply.headers()[WWW_AUTHENTICATE], "Negotiate AQID");
+        assert_eq!(with_reply.status(), StatusCode::OK);
+
+        let without_reply = with_mutual_reply(
+            Json(serde_json::json!({ "status": "linked" })).into_response(),
+            None,
+        );
+        assert!(!without_reply.headers().contains_key(WWW_AUTHENTICATE));
     }
 
     #[tokio::test]

@@ -566,7 +566,7 @@ Validation rules:
 | `saml` | SAML IdP routes, metadata signing, assertion signing/encryption, SP registration, clock skew. SP signing certificates accept PEM or bare standard base64 DER; encryption certificates require a compact bare standard base64 DER value. |
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. The `enabled` switch decides whether a realm serves the FedCM routes and appears in the FedCM discovery documents; it is off unless the configuration sets it. |
-| `federation` | Inbound OIDC/SAML/social providers, claim mappings, and per-provider `trusted_audiences`. |
+| `federation` | Inbound OIDC/SAML/social/Kerberos providers, claim mappings, and per-provider `trusted_audiences`. |
 | `directory` | LDAP, Active Directory, CSV HR pulls, and inbound HR webhook bindings; sync filters and attribute mapping apply only to pulls. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
 | `vc` | Dedicated issuer key reference and credential lifetime ceiling; the deployment serves the qid-private VC routes under the `vc` profile. |
@@ -581,9 +581,30 @@ only the `client_id`. After signature/issuer/expiry validation every `aud`
 member must equal the expected audience or a `trusted_audiences` entry, so a
 token that pairs the `client_id` with an unlisted audience is rejected.
 Entries must be nonempty and unique, and malformed `aud` values fail closed.
-Setting this option on SAML or LDAP/AD providers is a configuration
+Setting this option on SAML, LDAP/AD, or Kerberos providers is a configuration
 error because those providers do not verify OIDC ID tokens.
 
+### Inbound Kerberos/SPNEGO providers
+
+A realm with federation enabled can configure an inbound provider with `kind:
+kerberos_spnego` (or the `kerberos` alias). It requires an `issuer` and a
+`kerberos_spnego` block with `realm`, `service_principal`, and `keytab_path`.
+`keytab_path` is a filesystem path to a keytab that QID reads; inline key
+material is not accepted. Configuration loading rejects a provider missing
+this block or any required field.
+
+Clients authenticate by sending `POST /federation/:realm/spnego/negotiate`
+with `Authorization: Negotiate <base64>` (standard base64, padded or
+unpadded). An optional `idp` query parameter selects the provider by id;
+without it the realm must have exactly one enabled Kerberos provider. Failures
+carry generic errors and a `WWW-Authenticate: Negotiate` challenge.
+
+Validation is cryptographic: the acceptor checks the ticket and authenticator,
+time, replay through the shared cache, and the configured service principal
+and client realm. The verified `principal` and `realm` flow into claim
+mappings and the account-link/JIT path. Multi-leg SPNEGO is not supported; an
+incomplete exchange fails closed. Live-KDC interoperability is proven by the
+ignored MIT fixture and its CI workflow, not by local tests.
 
 An LDAP or Active Directory provider's `connection` holds:
 

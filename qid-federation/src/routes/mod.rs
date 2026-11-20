@@ -23,6 +23,7 @@ pub mod discovery;
 pub mod oidc;
 pub mod saml;
 pub mod social;
+pub mod spnego;
 pub mod trust_chain;
 
 pub use oidc::{exchange_code_for_tokens, fetch_userinfo};
@@ -301,6 +302,10 @@ pub fn federation_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
         .route(
             "/federation/:realm/saml/acs",
             post(saml::saml_inbound_acs::<R>),
+        )
+        .route(
+            "/federation/:realm/spnego/negotiate",
+            post(spnego::spnego_negotiate::<R>),
         )
         .route(
             "/federation/:realm/social/:provider/callback",

@@ -61,6 +61,13 @@ pub fn providers_from_config(
                 jwks: cfg.jwks.clone(),
                 saml_signing_certificates: cfg.saml_signing_certificates.clone(),
                 trusted_audiences: cfg.trusted_audiences.clone(),
+                kerberos_spnego: cfg.kerberos_spnego.as_ref().map(|kerberos| {
+                    crate::KerberosSpnegoConfig {
+                        realm: kerberos.realm.clone(),
+                        service_principal: kerberos.service_principal.clone(),
+                        keytab_path: kerberos.keytab_path.clone(),
+                    }
+                }),
             })
         })
         .collect()
@@ -359,6 +366,7 @@ mod login_tests {
             jwks: None,
             saml_signing_certificates: Vec::new(),
             trusted_audiences: Vec::new(),
+            kerberos_spnego: None,
             claim_mappings: vec![
                 ClaimMapping {
                     source: "email".to_string(),

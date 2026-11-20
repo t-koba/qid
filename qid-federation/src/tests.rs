@@ -98,6 +98,7 @@ fn inbound_providers() -> Vec<InboundIdentityProvider> {
             jwks: None,
             saml_signing_certificates: Vec::new(),
             trusted_audiences: Vec::new(),
+            kerberos_spnego: None,
             claim_mappings: vec![
                 ClaimMapping {
                     source: "email".to_string(),
@@ -128,6 +129,7 @@ fn inbound_providers() -> Vec<InboundIdentityProvider> {
             jwks: None,
             saml_signing_certificates: Vec::new(),
             trusted_audiences: Vec::new(),
+            kerberos_spnego: None,
             claim_mappings: vec![ClaimMapping {
                 source: "NameID".to_string(),
                 target: "name_id".to_string(),
@@ -151,6 +153,7 @@ fn inbound_providers() -> Vec<InboundIdentityProvider> {
             jwks: None,
             saml_signing_certificates: Vec::new(),
             trusted_audiences: Vec::new(),
+            kerberos_spnego: None,
             claim_mappings: vec![ClaimMapping {
                 source: "email".to_string(),
                 target: "email".to_string(),
@@ -409,6 +412,7 @@ fn inbound_broker_rejects_ambiguous_domains_and_unknown_routes() {
         jwks: None,
         saml_signing_certificates: Vec::new(),
         trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
         claim_mappings: Vec::new(),
     });
 
@@ -748,6 +752,7 @@ fn inbound_jwks_ignores_unknown_kty_and_still_verifies_classical_key() {
         jwks: Some(mixed),
         saml_signing_certificates: Vec::new(),
         trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
         claim_mappings: Vec::new(),
     };
     let verified = verify_inbound_idp_token(
@@ -808,6 +813,7 @@ fn inbound_idp_token_rejects_hmac_alg_fail_closed() {
         jwks: Some(serde_json::json!({"keys": []})),
         saml_signing_certificates: Vec::new(),
         trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
         claim_mappings: Vec::new(),
     };
     let err = verify_inbound_idp_token(
@@ -852,6 +858,7 @@ fn inbound_idp_token_enforces_explicit_audience_trust() {
             jwks: Some(jwks),
             saml_signing_certificates: Vec::new(),
             trusted_audiences: trusted,
+            kerberos_spnego: None,
             claim_mappings: Vec::new(),
         }
     }
@@ -1005,6 +1012,8 @@ fn inbound_provider_kind_mapping_matches_config_validation() {
         "ldap_ad_bind",
         "ldap",
         "social",
+        "kerberos",
+        "kerberos_spnego",
     ];
     for kind in known {
         assert!(
@@ -1016,7 +1025,7 @@ fn inbound_provider_kind_mapping_matches_config_validation() {
             "config validation lost known kind {kind}"
         );
     }
-    for kind in ["kerberos", "kerberos_spnego", "bogus", "", "OIDC"] {
+    for kind in ["bogus", "", "OIDC"] {
         assert!(
             InboundProviderKind::from_kind_str(kind).is_none(),
             "runtime mapping gained unknown kind {kind}"
@@ -1026,4 +1035,35 @@ fn inbound_provider_kind_mapping_matches_config_validation() {
             "config validation gained unknown kind {kind}"
         );
     }
+}
+
+#[test]
+fn inbound_kerberos_provider_conversion_carries_keytab_reference() {
+    let config: qid_core::config::InboundProviderConfig =
+        serde_json::from_value(serde_json::json!({
+            "id": "corp-kerberos",
+            "kind": "kerberos_spnego",
+            "issuer": "https://idp.example.com",
+            "enabled": true,
+            "kerberos_spnego": {
+                "realm": "CORP.EXAMPLE",
+                "service_principal": "HTTP/id.example.com@CORP.EXAMPLE",
+                "keytab_path": "/etc/qid/corp.keytab"
+            }
+        }))
+        .expect("kerberos provider config must deserialize");
+
+    let providers = providers_from_config(&[config]);
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0].kind, InboundProviderKind::KerberosSpnego);
+    let kerberos = providers[0]
+        .kerberos_spnego
+        .as_ref()
+        .expect("kerberos settings must survive config conversion");
+    assert_eq!(kerberos.realm, "CORP.EXAMPLE");
+    assert_eq!(
+        kerberos.service_principal,
+        "HTTP/id.example.com@CORP.EXAMPLE"
+    );
+    assert_eq!(kerberos.keytab_path, "/etc/qid/corp.keytab");
 }

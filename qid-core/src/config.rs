@@ -1317,6 +1317,8 @@ pub fn is_known_inbound_provider_kind(kind: &str) -> bool {
             | "ldap_ad_bind"
             | "ldap"
             | "social"
+            | "kerberos_spnego"
+            | "kerberos"
     )
 }
 
@@ -1637,6 +1639,43 @@ impl RealmConfig {
                         self.id, provider.id
                     ),
                 });
+            }
+            if provider.enabled
+                && (provider.kind.eq_ignore_ascii_case("kerberos_spnego")
+                    || provider.kind.eq_ignore_ascii_case("kerberos"))
+            {
+                let Some(kerberos) = &provider.kerberos_spnego else {
+                    return Err(QidError::Config {
+                        message: format!(
+                            "realm {} inbound Kerberos provider {} requires kerberos_spnego configuration",
+                            self.id, provider.id
+                        ),
+                    });
+                };
+                if kerberos.realm.trim().is_empty() {
+                    return Err(QidError::Config {
+                        message: format!(
+                            "realm {} inbound Kerberos provider {} requires a non-empty realm",
+                            self.id, provider.id
+                        ),
+                    });
+                }
+                if kerberos.service_principal.trim().is_empty() {
+                    return Err(QidError::Config {
+                        message: format!(
+                            "realm {} inbound Kerberos provider {} requires a non-empty service principal",
+                            self.id, provider.id
+                        ),
+                    });
+                }
+                if kerberos.keytab_path.trim().is_empty() {
+                    return Err(QidError::Config {
+                        message: format!(
+                            "realm {} inbound Kerberos provider {} requires a non-empty keytab_path",
+                            self.id, provider.id
+                        ),
+                    });
+                }
             }
             if provider.kind.eq_ignore_ascii_case("saml") {
                 for certificate in &provider.saml_signing_certificates {

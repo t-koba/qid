@@ -797,6 +797,16 @@ pub struct FederationProtocolConfig {
     pub inbound_providers: Vec<InboundProviderConfig>,
 }
 
+/// Kerberos/SPNEGO inbound provider settings. Key material is referenced by a
+/// keytab file path only; inline keys are deliberately not accepted.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KerberosSpnegoConfig {
+    pub realm: String,
+    pub service_principal: String,
+    pub keytab_path: String,
+}
+
 /// Configures an inbound identity provider (OIDC, SAML, Social, etc).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -839,6 +849,8 @@ pub struct InboundProviderConfig {
     /// these entries.
     #[serde(default)]
     pub trusted_audiences: Vec<String>,
+    #[serde(default)]
+    pub kerberos_spnego: Option<KerberosSpnegoConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -14,6 +14,7 @@ pub enum InboundProviderKind {
     Okta,
     LdapAdBind,
     Social,
+    KerberosSpnego,
 }
 
 impl InboundProviderKind {
@@ -26,6 +27,7 @@ impl InboundProviderKind {
             "okta" => Some(Self::Okta),
             "ldap_ad_bind" | "ldap" => Some(Self::LdapAdBind),
             "social" => Some(Self::Social),
+            "kerberos_spnego" | "kerberos" => Some(Self::KerberosSpnego),
             _ => None,
         }
     }
@@ -39,6 +41,7 @@ impl InboundProviderKind {
             Self::Okta => "okta",
             Self::LdapAdBind => "ldap_ad_bind",
             Self::Social => "social",
+            Self::KerberosSpnego => "kerberos_spnego",
         }
     }
 }
@@ -49,6 +52,15 @@ pub struct ClaimMapping {
     pub target: String,
     #[serde(default)]
     pub required: bool,
+}
+
+/// Kerberos/SPNEGO inbound provider settings. The service key is referenced by
+/// a keytab path only; inline key material is deliberately not accepted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KerberosSpnegoConfig {
+    pub realm: String,
+    pub service_principal: String,
+    pub keytab_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +102,8 @@ pub struct InboundIdentityProvider {
     /// callbacks) is always trusted; an omitted or empty list trusts only it.
     #[serde(default)]
     pub trusted_audiences: Vec<String>,
+    #[serde(default)]
+    pub kerberos_spnego: Option<KerberosSpnegoConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -287,6 +301,7 @@ pub fn azure_ad_provider(
         jwks: None,
         saml_signing_certificates: Vec::new(),
         trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
         claim_mappings: vec![
             ClaimMapping {
                 source: "oid".to_owned(),
@@ -346,6 +361,7 @@ pub fn google_workspace_provider(client_id: &str, client_secret: &str) -> Inboun
         jwks: None,
         saml_signing_certificates: Vec::new(),
         trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
         claim_mappings: vec![
             ClaimMapping {
                 source: "sub".to_owned(),
@@ -417,6 +433,7 @@ pub fn okta_provider(
         jwks: None,
         saml_signing_certificates: Vec::new(),
         trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
         claim_mappings: vec![
             ClaimMapping {
                 source: "sub".to_owned(),

@@ -1013,6 +1013,7 @@ fn deployment_profiles_enforce_required_capabilities() {
         jwks: None,
         saml_signing_certificates: Vec::new(),
         trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
     }];
     assert!(ciam_config.realms[0].has_ciam_compatible_inbound_provider());
     let mut incomplete_ciam_realm = ciam_config.realms[0].clone();
@@ -3633,32 +3634,49 @@ fn yaml_provider_preserves_serde_yaml_scalar_semantics() {
     assert_eq!(value["dup"], serde_json::json!(2));
 }
 
+fn config_with_provider_kind(kind: &str) -> QidConfig {
+    let mut config = minimal_config();
+    config.realms[0].protocols.federation.inbound_providers = vec![InboundProviderConfig {
+        id: "provider".to_string(),
+        kind: kind.to_string(),
+        issuer: "https://idp.example.com".to_string(),
+        enabled: false,
+        domains: Vec::new(),
+        social_provider: None,
+        client_id: None,
+        client_secret: None,
+        token_url: None,
+        userinfo_url: None,
+        jit_provisioning: false,
+        account_linking: false,
+        claim_mappings: Vec::new(),
+        jwks_uri: None,
+        jwks: None,
+        saml_signing_certificates: Vec::new(),
+        trusted_audiences: Vec::new(),
+        kerberos_spnego: None,
+    }];
+    config
+}
+
+fn config_with_kerberos_provider(kind: &str, kerberos: Option<KerberosSpnegoConfig>) -> QidConfig {
+    let mut config = config_with_provider_kind(kind);
+    let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+    provider.enabled = true;
+    provider.kerberos_spnego = kerberos;
+    config
+}
+
+fn kerberos_spnego_config() -> KerberosSpnegoConfig {
+    KerberosSpnegoConfig {
+        realm: "CORP.EXAMPLE".to_string(),
+        service_principal: "HTTP/id.example.com@CORP.EXAMPLE".to_string(),
+        keytab_path: "/etc/qid/corp.keytab".to_string(),
+    }
+}
+
 #[test]
 fn inbound_provider_unknown_kind_is_rejected_at_config_load() {
-    fn config_with_provider_kind(kind: &str) -> QidConfig {
-        let mut config = minimal_config();
-        config.realms[0].protocols.federation.inbound_providers = vec![InboundProviderConfig {
-            id: "provider".to_string(),
-            kind: kind.to_string(),
-            issuer: "https://idp.example.com".to_string(),
-            enabled: false,
-            domains: Vec::new(),
-            social_provider: None,
-            client_id: None,
-            client_secret: None,
-            token_url: None,
-            userinfo_url: None,
-            jit_provisioning: false,
-            account_linking: false,
-            claim_mappings: Vec::new(),
-            jwks_uri: None,
-            jwks: None,
-            saml_signing_certificates: Vec::new(),
-            trusted_audiences: Vec::new(),
-        }];
-        config
-    }
-
     for kind in [
         "oidc",
         "saml",
@@ -3671,6 +3689,8 @@ fn inbound_provider_unknown_kind_is_rejected_at_config_load() {
         "ldap_ad_bind",
         "ldap",
         "social",
+        "kerberos",
+        "kerberos_spnego",
     ] {
         config_with_provider_kind(kind)
             .validate()
@@ -3682,12 +3702,104 @@ fn inbound_provider_unknown_kind_is_rejected_at_config_load() {
             });
     }
 
-    for kind in ["kerberos", "kerberos_spnego", "bogus", ""] {
+    for kind in ["bogus", ""] {
         let err = config_with_provider_kind(kind).validate().unwrap_err();
         assert!(
             err.message().contains("unknown kind"),
             "unexpected validation result for kind {kind}: {}",
             err.message()
+        );
+    }
+}
+
+#[test]
+fn inbound_kerberos_provider_accepts_keytab_path_reference() {
+    for kind in ["kerberos_spnego", "kerberos"] {
+        config_with_kerberos_provider(kind, Some(kerberos_spnego_config()))
+            .validate()
+            .unwrap_or_else(|err| {
+                panic!(
+                    "enabled inbound Kerberos provider must be accepted: {}",
+                    err.message()
+                )
+            });
+    }
+}
+
+#[test]
+fn inbound_kerberos_provider_rejects_missing_or_blank_settings_at_config_load() {
+    let cases = [
+        (None, "requires kerberos_spnego configuration"),
+        (
+            Some(KerberosSpnegoConfig {
+                realm: " ".to_string(),
+                ..kerberos_spnego_config()
+            }),
+            "requires a non-empty realm",
+        ),
+        (
+            Some(KerberosSpnegoConfig {
+                service_principal: "\t".to_string(),
+                ..kerberos_spnego_config()
+            }),
+            "requires a non-empty service principal",
+        ),
+        (
+            Some(KerberosSpnegoConfig {
+                keytab_path: String::new(),
+                ..kerberos_spnego_config()
+            }),
+            "requires a non-empty keytab_path",
+        ),
+    ];
+    for (kerberos, expected) in cases {
+        let err = config_with_kerberos_provider("kerberos_spnego", kerberos)
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.message().contains("inbound Kerberos provider") && err.message().contains(expected),
+            "unexpected validation result: {}",
+            err.message()
+        );
+    }
+}
+
+#[test]
+fn inbound_kerberos_provider_rejects_trusted_audiences() {
+    let mut config =
+        config_with_kerberos_provider("kerberos_spnego", Some(kerberos_spnego_config()));
+    config.realms[0].protocols.federation.inbound_providers[0].trusted_audiences =
+        vec!["legacy-audience".to_string()];
+    let err = config.validate().unwrap_err();
+    assert!(
+        err.message()
+            .contains("trusted_audiences only for OIDC ID-token providers"),
+        "unexpected validation result: {}",
+        err.message()
+    );
+}
+
+#[test]
+fn inbound_kerberos_provider_rejects_inline_key_material() {
+    for key_field in ["service_key", "service_key_b64"] {
+        let mut kerberos = serde_json::json!({
+            "realm": "CORP.EXAMPLE",
+            "service_principal": "HTTP/id.example.com@CORP.EXAMPLE",
+            "keytab_path": "/etc/qid/corp.keytab",
+        });
+        kerberos
+            .as_object_mut()
+            .unwrap()
+            .insert(key_field.to_string(), serde_json::json!("placeholder"));
+        let result: Result<InboundProviderConfig, _> = serde_json::from_value(serde_json::json!({
+            "id": "corp-kerberos",
+            "kind": "kerberos_spnego",
+            "issuer": "https://idp.example.com",
+            "kerberos_spnego": kerberos,
+        }));
+        assert!(
+            result.is_err(),
+            "inline key field {key_field} must be rejected by the keytab-reference config"
         );
     }
 }

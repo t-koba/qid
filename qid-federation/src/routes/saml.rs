@@ -734,6 +734,7 @@ mod tests {
             jwks: None,
             saml_signing_certificates: vec![TEST_CERT.to_string()],
             trusted_audiences: Vec::new(),
+            kerberos_spnego: None,
         }
     }
 

@@ -1,5 +1,15 @@
 use super::*;
 
+/// Scoped store path for a file-repository fixture: dropping the returned
+/// directory removes both the JSON store and its process-lock sidecar.
+fn test_store() -> anyhow::Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let dir = tempfile::tempdir()?;
+    let path = dir
+        .path()
+        .join(format!("qid-proxy-assertion-{}.json", ulid::Ulid::new()));
+    Ok((dir, path))
+}
+
 /// Device-only mock: delegates real device writes to the file backend but
 /// injects a storage failure on the user-device read under test.
 struct DeviceErrorRepository {
@@ -127,10 +137,7 @@ async fn assertion_rejects_cached_session_after_regeneration_and_accepts_replace
     cost.parallelism = 1;
     let cookie_name = config.realms[0].sessions.browser.cookie_name.clone();
     let login_path = config.server.paths.auth_password.replace(":realm", "test");
-    let path = std::env::temp_dir().join(format!(
-        "qid-proxy-assertion-regeneration-{}.json",
-        ulid::Ulid::new()
-    ));
+    let (_temp_dir, path) = test_store()?;
     let repo = Arc::new(qid_storage::FileRepository::new(path.to_str().unwrap()).await?);
     repo.migrate().await?;
     let user = User {
@@ -222,19 +229,12 @@ async fn assertion_rejects_cached_session_after_regeneration_and_accepts_replace
         .claims;
     assert_eq!(claims.extra["sid"], replacement_id);
     assert_eq!(claims.sub.as_deref(), Some(user.id.as_str()));
-    drop(state);
-    drop(manager);
-    drop(repo);
-    std::fs::remove_file(path)?;
     Ok(())
 }
 
 #[tokio::test]
 async fn assertion_device_context_without_devices_stays_unknown() -> anyhow::Result<()> {
-    let path = std::env::temp_dir().join(format!(
-        "qid-proxy-assertion-no-devices-{}.json",
-        ulid::Ulid::new()
-    ));
+    let (_temp_dir, path) = test_store()?;
     let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path")).await?;
     repo.migrate().await?;
     let user = User {
@@ -252,17 +252,12 @@ async fn assertion_device_context_without_devices_stays_unknown() -> anyhow::Res
     assert_eq!(context.id, None);
     assert!(context.posture.is_empty());
     assert_eq!(context.trust_level, "unknown");
-    drop(repo);
-    std::fs::remove_file(path)?;
     Ok(())
 }
 
 #[tokio::test]
 async fn assertion_device_context_propagates_device_storage_error() -> anyhow::Result<()> {
-    let path = std::env::temp_dir().join(format!(
-        "qid-proxy-assertion-device-error-{}.json",
-        ulid::Ulid::new()
-    ));
+    let (_temp_dir, path) = test_store()?;
     let inner = qid_storage::FileRepository::new(path.to_str().expect("valid temp path")).await?;
     inner.migrate().await?;
     let user = User {
@@ -285,8 +280,6 @@ async fn assertion_device_context_propagates_device_storage_error() -> anyhow::R
         "unexpected error: {err}"
     );
 
-    drop(repo);
-    std::fs::remove_file(path)?;
     Ok(())
 }
 
@@ -343,10 +336,7 @@ fn assertion_extra_claims_use_authoritative_session_auth() {
 #[tokio::test]
 async fn assertion_subject_context_scopes_iga_to_tenant_and_scim_to_realm() {
     let now = 1_800_000_000;
-    let path = std::env::temp_dir().join(format!(
-        "qid-proxy-assertion-tenant-{}.json",
-        ulid::Ulid::new()
-    ));
+    let (_temp_dir, path) = test_store().expect("test store");
     let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
         .await
         .expect("file repository");
@@ -420,8 +410,6 @@ async fn assertion_subject_context_scopes_iga_to_tenant_and_scim_to_realm() {
     assert_eq!(context.groups, vec!["finance"]);
     assert_eq!(context.entitlements, vec!["app:erp:read", "role:admin"]);
     assert_eq!(context.roles, vec!["admin"]);
-    drop(repo);
-    std::fs::remove_file(path).expect("remove test repository");
 }
 
 #[test]
@@ -505,7 +493,7 @@ async fn assertion_issuance_requires_dedicated_pep_signer() {
             decision: qid_core::config::PepDecisionConfig::default(),
             auth: qid_core::config::PepRegistrationAuthConfig::default(),
         }];
-    let path = std::env::temp_dir().join(format!("qid-proxy-assertion-{}.json", ulid::Ulid::new()));
+    let (_temp_dir, path) = test_store().expect("test store");
     let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
         .await
         .expect("file repository");
@@ -563,7 +551,6 @@ async fn assertion_issuance_requires_dedicated_pep_signer() {
         "unexpected error: {}",
         err.message()
     );
-    std::fs::remove_file(path).ok();
 }
 
 #[tokio::test]
@@ -579,10 +566,7 @@ async fn assertion_issuance_fails_closed_on_device_storage_error() -> anyhow::Re
             decision: qid_core::config::PepDecisionConfig::default(),
             auth: qid_core::config::PepRegistrationAuthConfig::default(),
         }];
-    let path = std::env::temp_dir().join(format!(
-        "qid-proxy-assertion-issuance-device-error-{}.json",
-        ulid::Ulid::new()
-    ));
+    let (_temp_dir, path) = test_store()?;
     let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path")).await?;
     repo.migrate().await?;
     let user = User {
@@ -635,7 +619,6 @@ async fn assertion_issuance_fails_closed_on_device_storage_error() -> anyhow::Re
     .await;
     drop(state);
     drop(device_repo);
-    std::fs::remove_file(path)?;
 
     let err = match result {
         Err(err) => err,
@@ -661,7 +644,7 @@ async fn a_realm_that_disables_its_registrations_serves_no_assertion() {
             decision: qid_core::config::PepDecisionConfig::default(),
             auth: qid_core::config::PepRegistrationAuthConfig::default(),
         }];
-    let path = std::env::temp_dir().join(format!("qid-proxy-assertion-{}.json", ulid::Ulid::new()));
+    let (_temp_dir, path) = test_store().expect("test store");
     let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
         .await
         .expect("file repository");
@@ -719,7 +702,6 @@ async fn a_realm_that_disables_its_registrations_serves_no_assertion() {
         "unexpected error: {}",
         err.message()
     );
-    std::fs::remove_file(path).ok();
 }
 
 fn session(now: u64) -> Session {

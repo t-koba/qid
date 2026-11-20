@@ -26,6 +26,7 @@ time = { workspace = true }
 ulid = { workspace = true }
 jsonwebtoken = { workspace = true }
 roxmltree = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 # Used only by the isolated MIT interoperability fixture, not at runtime.

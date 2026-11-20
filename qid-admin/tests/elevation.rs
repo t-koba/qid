@@ -1,5 +1,8 @@
 #![cfg(test)]
 
+#[path = "support/webauthn_login.rs"]
+mod webauthn_login;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -8,12 +11,12 @@ use axum::{
 use qid_admin::admin_routes;
 use qid_core::{
     config::QidConfig,
-    models::{Admin, AdminApproval, Session, User},
+    models::{Admin, AdminApproval, PasswordCredential, Session, User},
     state::SharedState,
     test_helpers::test_config,
     util::now_seconds,
 };
-use qid_crypto::LocalSigner;
+use qid_crypto::{ARGON2ID_ALGORITHM, Argon2idParams, LocalSigner, hash_password_with_params};
 use qid_storage::{AnyRepository, prelude::*};
 use serde_json::{Value, json};
 use sqlx::{Connection, SqliteConnection};
@@ -610,4 +613,110 @@ async fn fail_closed_audit_failure_precedes_elevation_persistence() {
     assert_eq!(f.exchange(SOURCE).await.status(), StatusCode::OK);
     assert_eq!(f.elevation_count().await, 1);
     f.close().await;
+}
+
+#[tokio::test]
+async fn real_webauthn_login_can_obtain_elevation_but_weaker_login_cannot() {
+    for sqlite in [false, true] {
+        let mut config = test_config();
+        config.realms[0].authentication.passkeys.enabled = true;
+        // Keep synthetic credential creation fast without changing production defaults.
+        config.realms[0].authentication.password.argon2id.memory_kib = 8;
+        config.realms[0].authentication.password.argon2id.time_cost = 1;
+        config.realms[0]
+            .authentication
+            .password
+            .argon2id
+            .parallelism = 1;
+        let f = Fixture::new(sqlite, config, Some("tenant")).await;
+        let mut user = f
+            .state
+            .repo
+            .get_user_by_id("operator")
+            .await
+            .unwrap()
+            .unwrap();
+        let email = "operator@example.com".to_string();
+        user.email = Some(email.clone());
+        user.email_verified = true;
+        f.state.repo.update_user(&user, None).await.unwrap();
+        f.state
+            .repo
+            .store_password_credential(&PasswordCredential {
+                user_id: user.id.clone(),
+                hash: hash_password_with_params(
+                    "correct horse battery staple",
+                    &Argon2idParams::new(8, 1, 1),
+                )
+                .unwrap(),
+                algorithm: ARGON2ID_ALGORITHM.into(),
+            })
+            .await
+            .unwrap();
+
+        // The weak login is a real password authentication through qid-session,
+        // not a hand-built Session; it also supplies the login session WebAuthn
+        // enrollment requires. Both logins use the admin router's repository.
+        let auth = webauthn_login::auth_router(&f.state);
+        let (weak_cookie, weak_id) =
+            webauthn_login::password_login(&auth, "correct horse battery staple").await;
+        let weak = f.state.repo.get_session(&weak_id).await.unwrap().unwrap();
+        assert_eq!(weak.acr.as_deref(), Some("urn:qid:acr:password"));
+        assert_eq!(weak.amr, ["pwd"]);
+        webauthn_login::register(&auth, &weak_cookie).await;
+        let (strong_cookie, strong_id) = webauthn_login::webauthn_login(&auth).await;
+        drop(auth);
+        let strong = f.state.repo.get_session(&strong_id).await.unwrap().unwrap();
+        assert_eq!(strong.acr.as_deref(), Some("phr"));
+        assert_eq!(strong.amr, ["webauthn"]);
+        assert_ne!(strong_id, weak_id);
+
+        // No caller-supplied assurance headers: only the production cookies
+        // reach the exchange, under the same admin security configuration.
+        let exchange = |cookie: String| async {
+            let request = Request::builder()
+                .method("POST")
+                .uri(EXCHANGE)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .header("x-qid-admin-reason", "real-login")
+                .body(Body::from("{}"))
+                .unwrap();
+            admin_routes(&f.state.paths)
+                .with_state(f.state.clone())
+                .oneshot(request)
+                .await
+                .unwrap()
+        };
+        let response = exchange(weak_cookie).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        no_store(&response);
+        assert_eq!(f.elevation_count().await, 0);
+
+        let response = exchange(strong_cookie).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a real configured strong-auth login must obtain elevation"
+        );
+        no_store(&response);
+        let json = body(response).await;
+        let bearer = json["admin_session_id"].as_str().unwrap();
+        let stored = f
+            .state
+            .repo
+            .get_admin_elevation(bearer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.source_session_id.as_deref(),
+            Some(strong_id.as_str())
+        );
+        assert_eq!(stored.admin_id, f.admin.id);
+        assert_eq!(stored.acr.as_deref(), Some("phr"));
+        assert_eq!(stored.amr, ["webauthn"]);
+        assert_eq!(f.elevation_count().await, 1);
+        f.close().await;
+    }
 }

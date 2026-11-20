@@ -3471,8 +3471,11 @@ name = "qid-admin"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
+ "ciborium",
  "http-body-util",
  "metrics",
+ "p256",
  "qid-core",
  "qid-crypto",
  "qid-http",
@@ -3480,9 +3483,11 @@ dependencies = [
  "qid-ops",
  "qid-policy",
  "qid-risk",
+ "qid-session",
  "qid-storage",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tempfile",
  "tokio",

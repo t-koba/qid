@@ -125,7 +125,10 @@ jobs:
           for bin in qidd qidc qid-agent qid-migrate qid-sync qid-worker; do
             cp "${out_dir}/${bin}${exe}" "$package_dir/"
           done
-          cp README.md LICENSE* "$package_dir/" 2>/dev/null || true
+          cp scripts/release/quickstart.yaml "$package_dir/quickstart.yaml"
+          cp LICENSE* "$package_dir/" 2>/dev/null || true
+          sed "s|__QID_RELEASE_REF__|${{ github.ref_name }}|g" \
+            scripts/release/README-binary.md > "$package_dir/README.md"
 
           archive="dist/qid-${target}.tar.gz"
           tar -czf "$archive" -C dist "qid-${target}"

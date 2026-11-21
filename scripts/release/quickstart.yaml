@@ -1,0 +1,39 @@
+# Self-contained local profile shipped in binary release archives.
+# For local inspection only; see README.md before any real deployment.
+profile: oidc
+
+server:
+  listen: "127.0.0.1:8080"
+  public_base_url: "http://localhost:8080"
+
+storage:
+  primary:
+    type: file
+    url: "qid-data.json"
+  file:
+    flush_mode: immediate
+
+crypto:
+  default_alg: ES256
+  keyrings:
+    - name: quickstart-token
+      realm_id: dev
+      purposes: [oidc_token]
+      signer:
+        type: local
+      rotation:
+        overlap_days: 14
+        max_age_days: 90
+
+realms:
+  - id: dev
+    issuer: "http://localhost:8080/realms/dev"
+    display_name: "Quickstart"
+    clients:
+      - client_id: "quickstart-spa"
+        client_type: public
+        token_endpoint_auth_method: none
+        redirect_uris: ["http://localhost:3000/callback"]
+        grant_types: [authorization_code]
+    policy:
+      default_decision: deny

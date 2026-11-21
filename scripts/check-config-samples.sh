@@ -32,7 +32,7 @@ if [ ! -x "${QIDC}" ]; then
   exit 1
 fi
 
-samples=("${ROOT_DIR}/config/qid.example.yaml")
+samples=("${ROOT_DIR}/config/qid.example.yaml" "${ROOT_DIR}/scripts/release/quickstart.yaml")
 while IFS= read -r sample; do
   samples+=("${sample}")
 done < <(find "${ROOT_DIR}/config/usecases" -type f -name '*.yaml' | sort)

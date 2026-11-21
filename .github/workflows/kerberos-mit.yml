@@ -43,7 +43,7 @@ jobs:
         run: |
           sudo -E apt-get update -qq
           sudo -E apt-get install -y --no-install-recommends krb5-kdc krb5-admin-server krb5-user libkrb5-dev python3-gssapi
-      - name: Prove the candidate acceptor with the QID replay store
+      - name: Prove the HTTP Negotiate route, JIT/account-link/audit and mutual AP-REP with direct acceptor refusals
         run: /usr/bin/python3 scripts/kerberos/test-mit-spnego.py
 
   redis-replay-qualification:

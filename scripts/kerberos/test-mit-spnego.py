@@ -183,7 +183,7 @@ def main():
                 env, "MIT client login")
             run(test + ["--", "--ignored", "--exact", "mit_spnego_acceptor_proof"],
                 env, "MIT SPNEGO proof", timeout=60, visible=True)
-            print("MIT SPNEGO: mutual handshake, replay, tamper, wrong-service and expired-ticket checks passed")
+            print("MIT SPNEGO: HTTP Negotiate route, local-subject/audit and mutual-reply checks passed; replay, tamper, wrong-service and expired-ticket direct acceptor refusals passed")
             print("Expired-ticket case: 10-second MIT ticket delayed 12 seconds; test skew 0 seconds")
         finally:
             stop(kdc)

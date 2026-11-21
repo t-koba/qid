@@ -603,8 +603,17 @@ Validation is cryptographic: the acceptor checks the ticket and authenticator,
 time, replay through the shared cache, and the configured service principal
 and client realm. The verified `principal` and `realm` flow into claim
 mappings and the account-link/JIT path. Multi-leg SPNEGO is not supported; an
-incomplete exchange fails closed. Live-KDC interoperability is proven by the
-ignored MIT fixture and its CI workflow, not by local tests.
+incomplete exchange fails closed. Live-KDC interoperability is covered by the
+ignored MIT fixture at [../scripts/kerberos/test-mit-spnego.py](../scripts/kerberos/test-mit-spnego.py)
+and the [../.github/workflows/kerberos-mit.yml](../.github/workflows/kerberos-mit.yml)
+workflow; the fixture is runnable locally with `/usr/bin/python3 scripts/kerberos/test-mit-spnego.py`
+against its own disposable loopback KDC. On Linux, install krb5-kdc, krb5-admin-server,
+krb5-user, libkrb5-dev and python3-gssapi (the workflow's install step can be reused).
+The happy path sends a real KDC-issued ticket through `POST /federation/:realm/spnego/negotiate`,
+checking local-subject JIT creation, the CIAM identity link and audit events, and the mutual
+AP-REP in the success `WWW-Authenticate` header; replay, tamper, wrong-service and
+expired-ticket cases exercise the production acceptor directly. Redis replay retention
+is a separate qualification job in that workflow.
 
 An LDAP or Active Directory provider's `connection` holds:
 

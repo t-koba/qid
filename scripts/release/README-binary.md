@@ -6,12 +6,12 @@ a configuration and start the daemon is included.
 
 ## Documentation
 
-Full documentation for this release (`__QID_RELEASE_REF__`):
+Full documentation for this build (`__QID_BUILD_SHA__`):
 
-- Documentation index: https://github.com/t-koba/qid/tree/__QID_RELEASE_REF__/docs
-- Configuration reference: https://github.com/t-koba/qid/blob/__QID_RELEASE_REF__/docs/configuration.md
-- CLI reference: https://github.com/t-koba/qid/blob/__QID_RELEASE_REF__/docs/cli.md
-- Operations guide: https://github.com/t-koba/qid/blob/__QID_RELEASE_REF__/docs/operations.md
+- Documentation index: https://github.com/t-koba/qid/tree/__QID_BUILD_SHA__/docs
+- Configuration reference: https://github.com/t-koba/qid/blob/__QID_BUILD_SHA__/docs/configuration.md
+- CLI reference: https://github.com/t-koba/qid/blob/__QID_BUILD_SHA__/docs/cli.md
+- Operations guide: https://github.com/t-koba/qid/blob/__QID_BUILD_SHA__/docs/operations.md
 
 ## Included executables
 

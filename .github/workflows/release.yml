@@ -111,6 +111,8 @@ jobs:
           fi
       - name: Package release binaries
         shell: bash
+        env:
+          QID_BUILD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
@@ -127,7 +129,8 @@ jobs:
           done
           cp scripts/release/quickstart.yaml "$package_dir/quickstart.yaml"
           cp LICENSE* "$package_dir/" 2>/dev/null || true
-          sed "s|__QID_RELEASE_REF__|${{ github.ref_name }}|g" \
+          # The build commit is data: pass it through the environment, not into shell source.
+          sed "s|__QID_BUILD_SHA__|${QID_BUILD_SHA}|g" \
             scripts/release/README-binary.md > "$package_dir/README.md"
 
           archive="dist/qid-${target}.tar.gz"

@@ -57,6 +57,13 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
         self.assert_rejected("on:\n  'push':\n    branches: [mizu]\n")
 
     def test_indentless_on_sequence_with_push(self):
+        # Bare push in sequence form must be rejected by the push-in-sequence
+        # check itself, not incidentally by nested-content parsing.
+        verdict = problem("on:\n- push\n")
+        self.assertIsNotNone(verdict)
+        self.assertIn("sequence includes push", verdict)
+
+    def test_nested_content_in_on_sequence(self):
         self.assert_rejected("on:\n- push\n  branches:\n    - mizu\n")
 
     def test_indented_on_sequence_with_push(self):
@@ -158,6 +165,11 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
 
     def test_on_sequence_without_push(self):
         self.assert_allowed("on:\n  - workflow_dispatch\n  - pull_request\n")
+
+    def test_indentless_on_sequence_without_push(self):
+        # The following top-level jobs: key shares the items' indent; it ends
+        # the on: block rather than being unclassifiable sequence content.
+        self.assert_allowed("on:\n- workflow_dispatch\n- pull_request\n")
 
     # check_file()/child_block() structural layer: YAML comments are
     # transparent to structure regardless of column.

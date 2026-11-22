@@ -235,10 +235,14 @@ def on_events(lines, on_index):
             if not meaningful(lines[i]):
                 continue
             ind = indent(lines[i])
-            if ind < level:
-                break
             item_text = strip_comment(lines[i].strip())
-            if ind > level or not (item_text == "-" or item_text.startswith("- ")):
+            is_entry = item_text == "-" or item_text.startswith("- ")
+            # A sibling top-level key ends the on: block. In the indentless
+            # form level == base, so that key shares the items' indent and the
+            # usual `ind < level` dedent test cannot see it.
+            if ind <= base and not is_entry:
+                break
+            if ind != level or not is_entry:
                 raise UnclassifiableValue(
                     f"unclassifiable content in on: sequence {item_text!r}"
                 )

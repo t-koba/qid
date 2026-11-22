@@ -11,6 +11,7 @@ on:
       - 'scripts/kerberos/**'
       - '.github/workflows/kerberos-mit.yml'
   push:
+    branches: [main]
     paths:
       - 'qid-federation/**'
       - 'qid-core/src/cache.rs'

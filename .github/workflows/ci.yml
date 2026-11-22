@@ -71,3 +71,5 @@ jobs:
           }
       - name: Verify release checksum sidecars
         run: bash ./scripts/check-release-checksums.sh
+      - name: Check workflow push triggers exclude mizu
+        run: python3 ./scripts/check-workflow-triggers.py

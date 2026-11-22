@@ -213,6 +213,70 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
         )
         self.assertIsNone(file_verdict(workflow), workflow)
 
+    # Root trigger discovery is part of the supported grammar. A file the
+    # guard cannot establish a readable root on: key for must fail closed.
+    def test_no_root_on_key_rejected(self):
+        workflow = (
+            "name: demo\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNotNone(file_verdict(workflow), workflow)
+
+    def test_nested_on_key_cannot_substitute(self):
+        workflow = (
+            "name: demo\n"
+            "jobs:\n"
+            "  build:\n"
+            "    on:\n"
+            "      push:\n"
+            "        branches: [main]\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNotNone(file_verdict(workflow), workflow)
+
+    def test_nested_on_key_with_mizu_cannot_substitute(self):
+        workflow = (
+            "name: demo\n"
+            "jobs:\n"
+            "  build:\n"
+            "    on:\n"
+            "      push:\n"
+            "        branches: [mizu]\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNotNone(file_verdict(workflow), workflow)
+
+    def test_empty_file_rejected(self):
+        self.assertIsNotNone(file_verdict(""), "empty file")
+
+    def test_comment_only_file_rejected(self):
+        self.assertIsNotNone(file_verdict("# just a comment\n"), "comment-only file")
+
+    def test_root_dispatch_only_still_allowed(self):
+        workflow = (
+            "name: demo\n"
+            "on:\n"
+            "  workflow_dispatch:\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNone(file_verdict(workflow), workflow)
+
+    def test_root_indentless_sequence_still_allowed(self):
+        workflow = (
+            "name: demo\n"
+            "on:\n"
+            "- workflow_dispatch\n"
+            "- pull_request\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNone(file_verdict(workflow), workflow)
+
     # The real repository workflows are all compliant after the fix.
     def test_repository_workflows_are_compliant(self):
         files = sorted([*guard.WORKFLOWS.glob("*.yml"), *guard.WORKFLOWS.glob("*.yaml")])

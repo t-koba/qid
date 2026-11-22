@@ -288,13 +288,22 @@ def analyze_on(lines, on_index):
 
 def check_file(path):
     lines = path.read_text(encoding="utf-8").splitlines()
-    # Locate the shallowest top-level ``on:``. YAML 1.1 reads bare 'on' as a
-    # bool, but GitHub Actions treats it as the string key; quoting is also
-    # accepted and normalised by key_name().
-    top = [i for i in range(len(lines)) if is_key(lines[i], "on")]
+    # Trigger discovery is part of the supported grammar: a workflow must
+    # declare a readable root-level ``on:`` key. Derive the root indent from
+    # the shallowest significant line (comments and blanks are transparent),
+    # then accept only ``on:`` keys at that level. A nested ``on:`` (e.g. under
+    # ``jobs``) is not a workflow trigger and cannot stand in for the root key.
+    significant = [i for i in range(len(lines)) if meaningful(lines[i])]
+    if not significant:
+        return "on: structure cannot be verified (no readable root on: key)"
+    root_level = min(indent(lines[i]) for i in significant)
+    top = [
+        i for i in significant
+        if indent(lines[i]) == root_level and is_key(lines[i], "on")
+    ]
     if not top:
-        return None
-    on_index = min(top, key=lambda i: indent(lines[i]))
+        return "on: structure cannot be verified (no readable root on: key)"
+    on_index = top[0]
     inline = strip_comment(lines[on_index].strip().split(":", 1)[1]).strip()
     if inline:
         # Inline flow form (e.g. ``on: [push]`` or ``on: *events``) is outside

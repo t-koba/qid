@@ -1,8 +1,9 @@
 """Regression tests for the workflow push-trigger guard.
 
-These run in the CI Structure job alongside the other scripts tests. The
-reported fail-open shapes are covered explicitly: a reformat of a branches
-list must not be able to silently reintroduce a push on the integration branch.
+These run in the CI Structure job alongside the other scripts tests. Every
+case goes through check_file() so the whole structural layer is covered: a
+reformat of the on: block or a branches list must not silently reintroduce a
+push on the integration branch.
 """
 
 import importlib.util
@@ -16,14 +17,6 @@ guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 
 
-def problem(on_block):
-    """Return the guard verdict for a workflow's ``on:`` block text."""
-    lines = on_block.strip("\n").splitlines()
-    top = [i for i, line in enumerate(lines) if guard.is_key(line, "on")]
-    on_index = min(top, key=lambda i: guard.indent(lines[i]))
-    return guard.push_problem(lines, guard.child_block(lines, on_index))
-
-
 def file_verdict(workflow_text):
     """Return the guard verdict end-to-end through check_file() on a temp file."""
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as handle:
@@ -33,6 +26,11 @@ def file_verdict(workflow_text):
         return guard.check_file(path)
     finally:
         path.unlink()
+
+
+def problem(on_block):
+    """Verdict for an ``on:`` block, wrapped in a minimal full workflow."""
+    return file_verdict("name: demo\n" + on_block.strip("\n") + "\njobs:\n  build:\n    runs-on: ubuntu-latest\n")
 
 
 class WorkflowTriggerGuardTests(unittest.TestCase):
@@ -51,6 +49,18 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
 
     def test_inline_list_with_trailing_comment(self):
         self.assert_rejected("on:\n  push:\n    branches: [main, mizu] # testing\n")
+
+    def test_quoted_push_key_double(self):
+        self.assert_rejected('on:\n  "push":\n    branches: [mizu]\n')
+
+    def test_quoted_push_key_single(self):
+        self.assert_rejected("on:\n  'push':\n    branches: [mizu]\n")
+
+    def test_indentless_on_sequence_with_push(self):
+        self.assert_rejected("on:\n- push\n  branches:\n    - mizu\n")
+
+    def test_indented_on_sequence_with_push(self):
+        self.assert_rejected("on:\n  - push\n  - pull_request\n")
 
     # Previously working rejection controls stay rejected.
     def test_normal_block_sequence_mizu(self):
@@ -71,7 +81,7 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
     def test_branches_ignore_not_excluding_mizu(self):
         self.assert_rejected("on:\n  push:\n    branches-ignore: [main]\n")
 
-    # Unclassifiable values fail closed.
+    # Unclassifiable structures and values fail closed.
     def test_empty_branches(self):
         self.assert_rejected("on:\n  push:\n    branches:\n")
 
@@ -86,6 +96,12 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
 
     def test_unterminated_flow_list(self):
         self.assert_rejected("on:\n  push:\n    branches: [main, mizu\n")
+
+    def test_inline_on_value(self):
+        self.assert_rejected("on: [push]\n")
+
+    def test_mixed_on_sequence_and_mapping(self):
+        self.assert_rejected("on:\n  - push\n  pull_request:\n")
 
     # Safe shapes stay allowed.
     def test_inline_list_main(self):
@@ -111,6 +127,15 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
 
     def test_no_push_trigger(self):
         self.assert_allowed("on:\n  pull_request:\n")
+
+    def test_dispatch_only(self):
+        self.assert_allowed("on:\n  workflow_dispatch:\n")
+
+    def test_quoted_non_push_event(self):
+        self.assert_allowed('on:\n  "pull_request":\n    branches: [mizu]\n')
+
+    def test_on_sequence_without_push(self):
+        self.assert_allowed("on:\n  - workflow_dispatch\n  - pull_request\n")
 
     # check_file()/child_block() structural layer: YAML comments are
     # transparent to structure regardless of column.

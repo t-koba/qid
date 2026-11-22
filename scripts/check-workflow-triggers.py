@@ -6,10 +6,16 @@ start any workflow. Each workflow's top-level ``on.push`` is therefore required
 to be absent, tag-only, or restricted to branches that do not include `mizu`.
 
 This check is deliberately dependency-free so it can run in the CI Structure
-job (and locally) without PyYAML. It parses only the small, fixed shape of the
-repository's workflow ``on:`` blocks. Any value it cannot classify with
-confidence is treated as unsafe (the workflow is rejected), so a reformatting
-edit cannot silently reintroduce a ``mizu`` push trigger.
+job (and locally) without PyYAML. It recognises two explicit ``on:`` shapes:
+
+* a mapping of event keys (``on:\\n  push:`` ...), where keys may be quoted;
+* a sequence of event names (``on:\\n  - push``), indented or indentless.
+
+Anything else -- an inline value, a flow map, an alias, mixed forms, an
+unreadable key, or deeper content attached to a sequence event -- is rejected
+rather than guessed. A ``push`` in sequence form has no verifiable branch or
+tag filter (it fires on every branch) and is rejected. This keeps the guard
+fail-closed: inability to establish the event structure can never mean "safe".
 """
 
 import fnmatch
@@ -25,40 +31,68 @@ INTEGRATION_BRANCH = "mizu"
 # glob characters GitHub accepts. Anything else (YAML aliases, flow maps,
 # block scalars, embedded comments) is rejected rather than guessed.
 PATTERN_RE = re.compile(r"^[A-Za-z0-9_./+*?!-]+$")
+# A mapping/event key: identifier-like, so quoting can be normalised safely.
+EVENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 COMMENT_RE = re.compile(r"(?:^|\s)#.*$")
 
 
 class UnclassifiableValue(ValueError):
-    """A branches/tags value whose meaning this parser cannot determine."""
+    """A structure this parser cannot classify with confidence."""
 
 
 def indent(line):
     return len(line) - len(line.lstrip(" "))
 
 
+def strip_comment(text):
+    return COMMENT_RE.sub("", text).rstrip()
+
+
+def meaningful(line):
+    return bool(line.strip()) and not line.lstrip().startswith("#")
+
+
+def unquote(token):
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"":
+        return token[1:-1]
+    return token
+
+
+def key_name(line):
+    """Normalised mapping key of a ``name:`` line, or None if not a plain key."""
+    text = strip_comment(line.strip())
+    name, sep, rest = text.partition(":")
+    if not sep:
+        return None
+    name = unquote(name)
+    if not EVENT_RE.fullmatch(name):
+        return None
+    # The remainder is empty for ``name:`` or a value for ``name: value``;
+    # a colon without a separating space is not this grammar.
+    return name if (not rest or rest.startswith(" ")) else None
+
+
+def is_key(line, key):
+    """Whether the line is a mapping key equal to ``key`` after unquoting."""
+    return key_name(line) == key
+
+
 def child_block(lines, key_index):
-    """Indices of lines strictly more indented than the key, until dedent."""
+    """Indices of lines strictly more indented than the key, until dedent.
+
+    Comments are transparent to YAML structure regardless of column, so they
+    are skipped rather than treated as a dedent.
+    """
     base = indent(lines[key_index])
     out = []
     for i in range(key_index + 1, len(lines)):
-        # YAML comments are transparent to structure regardless of their
-        # column; a column-0 comment must not terminate the block early.
-        if not lines[i].strip() or lines[i].lstrip().startswith("#"):
+        if not meaningful(lines[i]):
             continue
         if indent(lines[i]) <= base:
             break
         out.append(i)
     return out
-
-
-def is_key(line, key):
-    """Whether the stripped line is ``key:`` or ``key: <inline value>``."""
-    text = line.strip()
-    prefix = key + ":"
-    if not text.startswith(prefix):
-        return False
-    rest = text[len(prefix):]
-    return rest == "" or rest.startswith(" ")
 
 
 def find_key(lines, indices, key):
@@ -78,33 +112,23 @@ def clean_token(text):
     return token
 
 
-def strip_comment(text):
-    return COMMENT_RE.sub("", text).rstrip()
-
-
 def block_sequence_items(lines, key_index):
     """Read a YAML block sequence, including deeper and indentless forms."""
     base = indent(lines[key_index])
     items = []
     for i in range(key_index + 1, len(lines)):
         raw = lines[i]
-        if not raw.strip() or raw.lstrip().startswith("#"):
+        if not meaningful(raw):
             continue
         ind = indent(raw)
         text = strip_comment(raw.strip())
         if text.startswith("- ") or text == "-":
-            # A sequence item may be deeper than the key, or at the same
-            # indent (YAML's indentless-sequence form). A shallower one is a
-            # separate list and does not belong to this key.
             if ind < base:
                 break
-            value = text[2:].strip() if text.startswith("- ") else ""
-            items.append(clean_token(value))
+            items.append(clean_token(text[2:].strip() if text.startswith("- ") else ""))
             continue
         if ind > base:
-            # A nested mapping/scalar we did not expect inside the value.
             raise UnclassifiableValue(f"unexpected nested line {raw.strip()!r}")
-        # A sibling key (or dedent) ends this sequence.
         break
     if not items:
         raise UnclassifiableValue("empty or missing block sequence")
@@ -112,11 +136,7 @@ def block_sequence_items(lines, key_index):
 
 
 def scalar_items(lines, key_index):
-    """Parse a branches/branches-ignore/tags value into pattern strings.
-
-    Raises UnclassifiableValue for any shape that is not confidently readable,
-    so callers never mistake an unparsed value for a safe (empty) list.
-    """
+    """Parse a branches/branches-ignore/tags value into pattern strings."""
     after = strip_comment(lines[key_index].strip().split(":", 1)[1]).strip()
     if not after:
         return block_sequence_items(lines, key_index)
@@ -134,24 +154,20 @@ def scalar_items(lines, key_index):
 
 def matches_integration(pattern):
     """Whether a branch glob could match the integration branch."""
-    # Negation patterns (``!name``) invert a list and are outside this simple
-    # positive matcher; callers fail closed on them.
+    # Negation patterns invert a list and are outside this positive matcher;
+    # callers fail closed on them.
     return not pattern.startswith("!") and fnmatch.fnmatchcase(INTEGRATION_BRANCH, pattern)
 
 
 def patterns_or_error(lines, key_index, label):
-    """Return (patterns, error); error is set when the value is unreadable."""
     try:
         return scalar_items(lines, key_index), None
     except UnclassifiableValue as exc:
         return [], f"push.{label} cannot be read ({exc})"
 
 
-def push_problem(lines, on_children):
-    """Return an error string if ``on.push`` can fire on the integration branch."""
-    push_index = find_key(lines, on_children, "push")
-    if push_index is None:
-        return None
+def push_problem(lines, push_index):
+    """Return an error string if this ``push`` event can fire on mizu."""
     push_children = child_block(lines, push_index)
 
     branches = find_key(lines, push_children, "branches")
@@ -189,21 +205,95 @@ def push_problem(lines, on_children):
     return f"push has no branch/tag restriction, so it fires on {INTEGRATION_BRANCH}"
 
 
+def on_events(lines, on_index):
+    """Return (form, entries) for the value of ``on:``.
+
+    form is "mapping" (entries are ``(event_name, key_line_index)``) or
+    "sequence" (entries are ``(None, event_name)``). Raises
+    UnclassifiableValue for any shape outside the two explicit forms.
+    """
+    base = indent(lines[on_index])
+    first = next((i for i in range(on_index + 1, len(lines)) if meaningful(lines[i])), None)
+    if first is None:
+        raise UnclassifiableValue("on: has no value")
+    level = indent(lines[first])
+    text = strip_comment(lines[first].strip())
+    is_item = text == "-" or text.startswith("- ")
+
+    if level < base or (level == base and not is_item):
+        raise UnclassifiableValue("on: has no readable value")
+
+    if is_item:
+        entries = []
+        for i in range(first, len(lines)):
+            if not meaningful(lines[i]):
+                continue
+            ind = indent(lines[i])
+            if ind < level:
+                break
+            item_text = strip_comment(lines[i].strip())
+            if ind > level or not (item_text == "-" or item_text.startswith("- ")):
+                raise UnclassifiableValue(
+                    f"unclassifiable content in on: sequence {item_text!r}"
+                )
+            name = unquote(item_text[1:].strip()) if item_text != "-" else ""
+            if not EVENT_RE.fullmatch(name):
+                raise UnclassifiableValue(f"unreadable on: event {item_text!r}")
+            entries.append((None, name))
+        if not entries:
+            raise UnclassifiableValue("empty on: sequence")
+        return "sequence", entries
+
+    entries = []
+    for i in range(first, len(lines)):
+        if not meaningful(lines[i]):
+            continue
+        ind = indent(lines[i])
+        if ind < level:
+            break
+        if ind > level:  # config nested under the preceding event key
+            continue
+        name = key_name(lines[i])
+        if name is None:
+            raise UnclassifiableValue(f"unreadable on: event key {lines[i].strip()!r}")
+        entries.append((name, i))
+    if not entries:
+        raise UnclassifiableValue("empty on: mapping")
+    return "mapping", entries
+
+
+def analyze_on(lines, on_index):
+    """Return an error string if ``on:`` can start a push on mizu, else None."""
+    form, entries = on_events(lines, on_index)
+    if form == "sequence":
+        # A bare push event has no branch/tag filter we can verify.
+        if any(name == "push" for _, name in entries):
+            return "on: sequence includes push with no verifiable branch/tag restriction"
+        return None
+    for name, index in entries:
+        if name == "push":
+            return push_problem(lines, index)
+    return None
+
+
 def check_file(path):
     lines = path.read_text(encoding="utf-8").splitlines()
-    # Locate the shallowest top-level ``on:`` (YAML 1.1 reads bare 'on' as a
-    # bool, but GitHub Actions treats it as the string key).
-    on_keys = ("on", "'on'", '"on"')
-    top = [i for i in range(len(lines)) if any(is_key(lines[i], k) for k in on_keys)]
+    # Locate the shallowest top-level ``on:``. YAML 1.1 reads bare 'on' as a
+    # bool, but GitHub Actions treats it as the string key; quoting is also
+    # accepted and normalised by key_name().
+    top = [i for i in range(len(lines)) if is_key(lines[i], "on")]
     if not top:
         return None
     on_index = min(top, key=lambda i: indent(lines[i]))
-    inline = lines[on_index].strip().split(":", 1)[1].strip()
+    inline = strip_comment(lines[on_index].strip().split(":", 1)[1]).strip()
     if inline:
-        # Inline flow form (e.g. ``on: [push]``) is outside this parser's
-        # scope; fail closed rather than risk missing a push trigger.
+        # Inline flow form (e.g. ``on: [push]`` or ``on: *events``) is outside
+        # this parser's scope; fail closed rather than risk missing a trigger.
         return f"inline on: value cannot be verified: {inline}"
-    return push_problem(lines, child_block(lines, on_index))
+    try:
+        return analyze_on(lines, on_index)
+    except UnclassifiableValue as exc:
+        return f"on: structure cannot be verified ({exc})"
 
 
 def main():

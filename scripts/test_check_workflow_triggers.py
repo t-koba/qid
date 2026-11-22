@@ -6,6 +6,7 @@ list must not be able to silently reintroduce a push on the integration branch.
 """
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,6 +22,17 @@ def problem(on_block):
     top = [i for i, line in enumerate(lines) if guard.is_key(line, "on")]
     on_index = min(top, key=lambda i: guard.indent(lines[i]))
     return guard.push_problem(lines, guard.child_block(lines, on_index))
+
+
+def file_verdict(workflow_text):
+    """Return the guard verdict end-to-end through check_file() on a temp file."""
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as handle:
+        handle.write(workflow_text)
+        path = Path(handle.name)
+    try:
+        return guard.check_file(path)
+    finally:
+        path.unlink()
 
 
 class WorkflowTriggerGuardTests(unittest.TestCase):
@@ -99,6 +111,48 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
 
     def test_no_push_trigger(self):
         self.assert_allowed("on:\n  pull_request:\n")
+
+    # check_file()/child_block() structural layer: YAML comments are
+    # transparent to structure regardless of column.
+    def test_column_zero_comment_in_on_block(self):
+        workflow = (
+            "name: demo\n"
+            "on:\n"
+            "# integration CI is request only\n"
+            "  push:\n"
+            "    branches: [mizu]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNotNone(file_verdict(workflow), workflow)
+
+    def test_column_zero_comment_in_push_block(self):
+        workflow = (
+            "name: demo\n"
+            "on:\n"
+            "  push:\n"
+            "# integration CI is request only\n"
+            "    branches: [mizu]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNotNone(file_verdict(workflow), workflow)
+
+    def test_column_zero_comment_safe_branches(self):
+        workflow = (
+            "name: demo\n"
+            "on:\n"
+            "# note\n"
+            "  push:\n"
+            "# note\n"
+            "    branches: [main]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        self.assertIsNone(file_verdict(workflow), workflow)
 
     # The real repository workflows are all compliant after the fix.
     def test_repository_workflows_are_compliant(self):

@@ -41,7 +41,9 @@ def child_block(lines, key_index):
     base = indent(lines[key_index])
     out = []
     for i in range(key_index + 1, len(lines)):
-        if not lines[i].strip():
+        # YAML comments are transparent to structure regardless of their
+        # column; a column-0 comment must not terminate the block early.
+        if not lines[i].strip() or lines[i].lstrip().startswith("#"):
             continue
         if indent(lines[i]) <= base:
             break

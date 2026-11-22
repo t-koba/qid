@@ -195,11 +195,17 @@ def push_problem(lines, push_index):
             return f"push.branches-ignore does not exclude {INTEGRATION_BRANCH}: {patterns}"
         return None
 
-    # Tag-only pushes never fire for a branch push, so they cannot start on mizu.
-    if find_key(lines, push_children, "tags") is not None:
-        return None
-    if find_key(lines, push_children, "tags-ignore") is not None:
-        return None
+    # Tag-only pushes never fire for a branch push, so they cannot start on
+    # mizu -- but only once the filter value is known to be readable. Merely
+    # seeing a tags key must not certify a restriction we have not established.
+    tags = find_key(lines, push_children, "tags")
+    if tags is not None:
+        _, error = patterns_or_error(lines, tags, "tags")
+        return error
+    ignore_tags = find_key(lines, push_children, "tags-ignore")
+    if ignore_tags is not None:
+        _, error = patterns_or_error(lines, ignore_tags, "tags-ignore")
+        return error
 
     # A push with no branch/tag restriction fires on every branch, including mizu.
     return f"push has no branch/tag restriction, so it fires on {INTEGRATION_BRANCH}"

@@ -97,6 +97,22 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
     def test_unterminated_flow_list(self):
         self.assert_rejected("on:\n  push:\n    branches: [main, mizu\n")
 
+    # Tag filters must be validated before a push is accepted as tag-only.
+    def test_empty_tags_list(self):
+        self.assert_rejected("on:\n  push:\n    tags: []\n")
+
+    def test_flow_map_tags(self):
+        self.assert_rejected("on:\n  push:\n    tags: {x: y}\n")
+
+    def test_alias_tags(self):
+        self.assert_rejected("on:\n  push:\n    tags: *anchor\n")
+
+    def test_empty_tags_ignore_list(self):
+        self.assert_rejected("on:\n  push:\n    tags-ignore: []\n")
+
+    def test_block_scalar_tags(self):
+        self.assert_rejected("on:\n  push:\n    tags: |\n      v*\n")
+
     def test_inline_on_value(self):
         self.assert_rejected("on: [push]\n")
 
@@ -124,6 +140,12 @@ class WorkflowTriggerGuardTests(unittest.TestCase):
 
     def test_tag_only_push(self):
         self.assert_allowed("on:\n  push:\n    tags: [v*]\n")
+
+    def test_release_style_tag_filter(self):
+        self.assert_allowed('on:\n  push:\n    tags:\n      - "v*"\n')
+
+    def test_tags_ignore_readable(self):
+        self.assert_allowed("on:\n  push:\n    tags-ignore: [v*]\n")
 
     def test_no_push_trigger(self):
         self.assert_allowed("on:\n  pull_request:\n")

@@ -165,6 +165,11 @@ impl OpsCacheConfig {
                         message: format!("ops.cache.kind={} requires endpoints", self.kind),
                     });
                 }
+                if self.endpoints.iter().any(|e| e.trim().is_empty()) {
+                    return Err(QidError::Config {
+                        message: "ops.cache.endpoints must not contain blank entries".to_string(),
+                    });
+                }
                 if self.key_prefix.trim().is_empty() {
                     return Err(QidError::Config {
                         message: "ops.cache.key_prefix must not be empty".to_string(),

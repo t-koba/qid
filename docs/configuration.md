@@ -496,7 +496,7 @@ Backend selection:
 - `sqlite:*` and `postgres:*` use SQL.
 - Other values use file-backed JSON.
 
-Redis/Valkey-style cache settings require endpoints, a non-empty key prefix, and a positive TTL when enabled. When `storage.cache.endpoints` is omitted, `storage.cache.url_env` supplies a single endpoint; an unset, non-Unicode, or blank variable fails the cache check instead of producing an empty endpoint list. Explicit endpoints take precedence over `url_env`.
+Redis/Valkey-style cache settings require endpoints, a non-empty key prefix, and a positive TTL when enabled. When `storage.cache.endpoints` is omitted, `storage.cache.url_env` supplies a single endpoint; an unset, non-Unicode, or blank variable fails the cache check instead of producing an empty endpoint list. Explicit endpoints take precedence over `url_env`, are trimmed, and must not be blank.
 
 ## Crypto
 

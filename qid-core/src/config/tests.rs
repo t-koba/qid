@@ -603,6 +603,20 @@ fn ops_config_rejects_incomplete_cache_and_multi_region() {
 }
 
 #[test]
+fn ops_cache_rejects_blank_endpoints_and_accepts_valid_ones() {
+    let mut ops = OpsConfig::default();
+    ops.cache.kind = "valkey".to_string();
+    ops.cache.endpoints = vec![" valkey://cache:6379 ".to_string()];
+    assert!(ops.validate().is_ok());
+
+    ops.cache.endpoints = vec!["valkey://cache:6379".to_string(), " \t ".to_string()];
+    let err = ops.validate().unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }));
+    assert!(err.message().contains("ops.cache.endpoints"));
+    assert!(err.message().contains("blank"));
+}
+
+#[test]
 fn server_paths_default_values() {
     let p = ServerPaths::default();
     assert_eq!(p.health, "/health");

@@ -174,7 +174,18 @@ impl StorageCacheConfig {
     /// environment source fails instead of yielding an empty endpoint list.
     pub fn resolve_endpoints(&self) -> QidResult<Vec<String>> {
         if !self.endpoints.is_empty() {
-            return Ok(self.endpoints.clone());
+            let mut resolved = Vec::with_capacity(self.endpoints.len());
+            for endpoint in &self.endpoints {
+                let endpoint = endpoint.trim();
+                if endpoint.is_empty() {
+                    return Err(QidError::Config {
+                        message: "storage.cache.endpoints must not contain blank entries"
+                            .to_string(),
+                    });
+                }
+                resolved.push(endpoint.to_string());
+            }
+            return Ok(resolved);
         }
         match &self.url_env {
             Some(env) => Ok(vec![read_url_env(env, "storage.cache")?]),

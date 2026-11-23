@@ -230,6 +230,34 @@ fn cache_explicit_endpoints_take_precedence_over_url_env() {
 }
 
 #[test]
+fn cache_blank_explicit_endpoint_is_rejected_even_with_a_valid_url_env() {
+    const NAME: &str = "QID_TEST_CACHE_BLANK_EXPLICIT";
+    let _guard = EnvGuard::set(NAME, "redis://env-cache:6379");
+    let config = cache(Some(NAME), &["redis://explicit-cache:6379", " \t "]);
+    let err = config.resolve_endpoints().unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }));
+    assert!(err.message().contains("storage.cache.endpoints"));
+    assert!(err.message().contains("blank"));
+}
+
+#[test]
+fn cache_explicit_endpoints_are_trimmed_and_take_precedence_over_url_env() {
+    const NAME: &str = "QID_TEST_CACHE_TRIM_EXPLICIT";
+    let _guard = EnvGuard::set(NAME, "redis://env-cache:6379");
+    let config = cache(
+        Some(NAME),
+        &[
+            " redis://explicit-cache:6379 ",
+            " redis://second-cache:6379\t",
+        ],
+    );
+    assert_eq!(
+        config.resolve_endpoints().unwrap(),
+        vec!["redis://explicit-cache:6379", "redis://second-cache:6379"]
+    );
+}
+
+#[test]
 fn cache_missing_url_env_is_rejected_and_names_the_variable() {
     const NAME: &str = "QID_TEST_CACHE_URL_MISSING";
     let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());

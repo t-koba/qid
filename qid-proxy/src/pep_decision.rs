@@ -48,10 +48,8 @@ pub struct AuthZenEvaluationRequest {
 /// AuthZEN subject/resource entity. Unknown fields are ignored per §10.
 #[derive(Debug, Deserialize)]
 pub struct AuthZenEntity {
-    #[serde(default)]
-    pub r#type: Option<String>,
-    #[serde(default)]
-    pub id: Option<String>,
+    pub r#type: String,
+    pub id: String,
     #[serde(default)]
     pub properties: HashMap<String, serde_json::Value>,
 }

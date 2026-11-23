@@ -59,8 +59,8 @@ fn request() -> PepDecisionRequest {
 fn authzen_request() -> AuthZenEvaluationRequest {
     AuthZenEvaluationRequest {
         subject: AuthZenEntity {
-            r#type: Some("user".to_string()),
-            id: Some("alice@example.com".to_string()),
+            r#type: "user".to_string(),
+            id: "alice@example.com".to_string(),
             properties: HashMap::from([
                 (
                     "groups".to_string(),
@@ -74,8 +74,8 @@ fn authzen_request() -> AuthZenEvaluationRequest {
             properties: HashMap::new(),
         },
         resource: AuthZenEntity {
-            r#type: Some("document".to_string()),
-            id: Some("finance.example.com".to_string()),
+            r#type: "document".to_string(),
+            id: "finance.example.com".to_string(),
             properties: HashMap::from([(
                 "host".to_string(),
                 serde_json::json!("finance.example.com"),
@@ -1338,7 +1338,7 @@ async fn authzen_evaluation_error_responses() {
     };
     use tower::ServiceExt;
 
-    let (state, path) = pep_adapter_state(true).await;
+    let (state, path) = cache_ttl_state(authzen_route_config(), "allow").await;
     let state = Arc::new(state);
     let app = pep_decision_routes(&state.config.server.paths)
         .layer(axum::middleware::from_fn(
@@ -1350,7 +1350,7 @@ async fn authzen_evaluation_error_responses() {
         (
             "non-JSON content type",
             "text/plain",
-            r#"{"subject":{},"action":{"name":"read"},"resource":{}}"#,
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":"read"},"resource":{"type":"document","id":"doc-1"}}"#,
             "Content-Type",
         ),
         ("empty body", "application/json", "", "not valid JSON"),
@@ -1373,6 +1373,54 @@ async fn authzen_evaluation_error_responses() {
             r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":7},"resource":{"type":"document","id":"doc-1"}}"#,
             "expected shape",
         ),
+        (
+            "missing subject.type",
+            "application/json",
+            r#"{"subject":{"id":"alice@example.com"},"action":{"name":"read"},"resource":{"type":"document","id":"doc-1"}}"#,
+            "expected shape",
+        ),
+        (
+            "missing subject.id",
+            "application/json",
+            r#"{"subject":{"type":"user"},"action":{"name":"read"},"resource":{"type":"document","id":"doc-1"}}"#,
+            "expected shape",
+        ),
+        (
+            "missing resource.type",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":"read"},"resource":{"id":"doc-1"}}"#,
+            "expected shape",
+        ),
+        (
+            "missing resource.id",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":"read"},"resource":{"type":"document"}}"#,
+            "expected shape",
+        ),
+        (
+            "blank subject.type",
+            "application/json",
+            r#"{"subject":{"type":"  ","id":"alice@example.com"},"action":{"name":"read"},"resource":{"type":"document","id":"doc-1"}}"#,
+            "subject.type",
+        ),
+        (
+            "blank subject.id",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"  "},"action":{"name":"read"},"resource":{"type":"document","id":"doc-1"}}"#,
+            "subject.id",
+        ),
+        (
+            "blank resource.type",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":"read"},"resource":{"type":"  ","id":"doc-1"}}"#,
+            "resource.type",
+        ),
+        (
+            "blank resource.id",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":"read"},"resource":{"type":"document","id":"  "}}"#,
+            "resource.id",
+        ),
     ];
 
     for (case, content_type, body, fragment) in cases {
@@ -1381,6 +1429,10 @@ async fn authzen_evaluation_error_responses() {
             .uri("/access/v1/evaluation")
             .header(CONTENT_TYPE, content_type)
             .header("x-request-id", "req.authzen-errors")
+            .header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {}", pep_adapter_token(&state)),
+            )
             .body(Body::from(body))
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();

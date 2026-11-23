@@ -119,15 +119,22 @@ pub(crate) fn authzen_policy_context(req: &AuthZenEvaluationRequest) -> QidResul
             message: "AuthZEN action.name must not be empty".to_string(),
         });
     }
-    let subject_id = req
-        .subject
-        .id
-        .clone()
-        .or_else(|| string_property(&req.subject.properties, "sub"))
-        .or_else(|| string_property(&req.subject.properties, "user"));
+    for (field, value) in [
+        ("subject.type", req.subject.r#type.trim()),
+        ("subject.id", req.subject.id.trim()),
+        ("resource.type", req.resource.r#type.trim()),
+        ("resource.id", req.resource.id.trim()),
+    ] {
+        if value.is_empty() {
+            return Err(QidError::BadRequest {
+                message: format!("AuthZEN {field} must not be empty"),
+            });
+        }
+    }
+    let subject_id = Some(req.subject.id.clone());
     let resource_host = string_property(&req.resource.properties, "host")
         .or_else(|| string_property(&req.resource.properties, "hostname"))
-        .or_else(|| req.resource.id.clone());
+        .or(Some(req.resource.id.clone()));
 
     Ok(PolicyContext {
         subject_id,

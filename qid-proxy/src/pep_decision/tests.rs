@@ -3,6 +3,39 @@ use qid_core::config::DecisionCacheClass;
 use qid_ops::{CacheBackendConfig, CacheBackendKind};
 use qid_policy::{DecisionDetails, PepPolicyActions};
 
+/// A temporary store: the repository holds the `.lock` file in the directory,
+/// so fields drop in declaration order to release it before Windows removes the
+/// directory.
+struct TempRepo {
+    repo: qid_storage::FileRepository,
+    _dir: tempfile::TempDir,
+}
+
+async fn temp_file_repository() -> TempRepo {
+    let dir = tempfile::tempdir().expect("test repository directory");
+    let path = dir.path().join("store.json");
+    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
+        .await
+        .expect("file repository");
+    repo.migrate().await.expect("file repository migration");
+    TempRepo { repo, _dir: dir }
+}
+
+/// Owns a shared state and the store behind it. State and router handles
+/// obtained from `state()` must be released before this fixture goes out of
+/// scope; field order then guarantees the repository closes before its files
+/// are removed.
+struct StateFixture {
+    state: Arc<SharedState<qid_storage::FileRepository>>,
+    _repo: TempRepo,
+}
+
+impl StateFixture {
+    fn state(&self) -> Arc<SharedState<qid_storage::FileRepository>> {
+        Arc::clone(&self.state)
+    }
+}
+
 fn request() -> PepDecisionRequest {
     PepDecisionRequest {
         schema_id: PEP_DECISION_REQUEST_SCHEMA_ID.to_string(),
@@ -506,14 +539,8 @@ fn fallback_bundle_uses_realm_default_decision() {
 #[tokio::test]
 async fn rebac_tenant_tuples_drive_pep_decisions_without_cross_tenant_leak() {
     let config = rebac_test_config();
-    let path = std::env::temp_dir().join(format!(
-        "qid-pep-rebac-isolation-{}.json",
-        ulid::Ulid::new()
-    ));
-    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
-        .await
-        .expect("file repository");
-    repo.migrate().await.expect("file repository migration");
+    let store = temp_file_repository().await;
+    let repo = store.repo.clone();
 
     // Tuple as stored by the tenant-scoped admin API (`{tenant}::{namespace}`).
     qid_iga::write_tuples(
@@ -591,8 +618,6 @@ async fn rebac_tenant_tuples_drive_pep_decisions_without_cross_tenant_leak() {
             );
         }
     }
-
-    std::fs::remove_file(path).ok();
 }
 
 fn pep_adapter_config(enabled: bool) -> QidConfig {
@@ -617,27 +642,25 @@ fn pep_adapter_config(enabled: bool) -> QidConfig {
     .expect("test config must deserialize")
 }
 
-async fn pep_adapter_state(
-    enabled: bool,
-) -> (SharedState<qid_storage::FileRepository>, std::path::PathBuf) {
-    let path =
-        std::env::temp_dir().join(format!("qid-pep-registration-{}.json", ulid::Ulid::new()));
-    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
-        .await
-        .expect("file repository");
-    repo.migrate().await.expect("file repository migration");
+async fn pep_adapter_state(enabled: bool) -> StateFixture {
+    let store = temp_file_repository().await;
     let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
         "test",
         b"test-secret-for-disabled-pep-registrations",
     ));
-    let state = SharedState::new(
-        pep_adapter_config(enabled),
-        Arc::new(repo),
-        signer,
-        serde_json::json!({}),
-    )
-    .expect("shared state");
-    (state, path)
+    let state = Arc::new(
+        SharedState::new(
+            pep_adapter_config(enabled),
+            Arc::new(store.repo.clone()),
+            signer,
+            serde_json::json!({}),
+        )
+        .expect("shared state"),
+    );
+    StateFixture {
+        state,
+        _repo: store,
+    }
 }
 
 fn pep_adapter_token(state: &SharedState<qid_storage::FileRepository>) -> String {
@@ -666,7 +689,8 @@ fn pep_adapter_token(state: &SharedState<qid_storage::FileRepository>) -> String
 
 #[tokio::test]
 async fn a_realm_that_disables_its_registrations_serves_no_pep() {
-    let (enabled_state, enabled_path) = pep_adapter_state(true).await;
+    let enabled = pep_adapter_state(true).await;
+    let enabled_state = enabled.state();
     let token = pep_adapter_token(&enabled_state);
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -681,16 +705,14 @@ async fn a_realm_that_disables_its_registrations_serves_no_pep() {
         .expect("the enabled realm serves its registration");
     assert_eq!(auth.realm_id, "test");
 
-    let (disabled_state, disabled_path) = pep_adapter_state(false).await;
+    let disabled = pep_adapter_state(false).await;
+    let disabled_state = disabled.state();
     let err = authenticate_pep_decision_adapter(&headers, &disabled_state, &req)
         .expect_err("a realm that disables its registrations serves no PEP");
     assert!(
         err.message()
             .contains("invalid PEP registration authentication token")
     );
-
-    std::fs::remove_file(enabled_path).ok();
-    std::fs::remove_file(disabled_path).ok();
 }
 
 fn cache_ttl_test_config(cache: Option<(u64, u64)>) -> QidConfig {
@@ -720,37 +742,42 @@ fn cache_ttl_test_config(cache: Option<(u64, u64)>) -> QidConfig {
     .expect("test config must deserialize")
 }
 
-async fn cache_ttl_state(
-    config: QidConfig,
-    default_decision: &str,
-) -> (SharedState<qid_storage::FileRepository>, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!("qid-pep-cache-ttl-{}.json", ulid::Ulid::new()));
-    let repo = qid_storage::FileRepository::new(path.to_str().expect("valid temp path"))
+async fn cache_ttl_state(config: QidConfig, default_decision: &str) -> StateFixture {
+    let store = temp_file_repository().await;
+    store
+        .repo
+        .create_policy_bundle(&qid_core::models::PolicyBundle {
+            id: "bundle-test".to_string(),
+            realm_id: "test".to_string(),
+            name: "bundle-test".to_string(),
+            source_hash: "sha256:test".to_string(),
+            compiled_json: serde_json::json!({
+                "version": "1",
+                "default_decision": default_decision,
+                "rules": []
+            }),
+            version: 1,
+            active: true,
+        })
         .await
-        .expect("file repository");
-    repo.migrate().await.expect("file repository migration");
-    repo.create_policy_bundle(&qid_core::models::PolicyBundle {
-        id: "bundle-test".to_string(),
-        realm_id: "test".to_string(),
-        name: "bundle-test".to_string(),
-        source_hash: "sha256:test".to_string(),
-        compiled_json: serde_json::json!({
-            "version": "1",
-            "default_decision": default_decision,
-            "rules": []
-        }),
-        version: 1,
-        active: true,
-    })
-    .await
-    .expect("policy bundle stored");
+        .expect("policy bundle stored");
     let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
         "test",
         b"test-secret-for-pep-decision-cache-ttl",
     ));
-    let state = SharedState::new(config, Arc::new(repo), signer, serde_json::json!({}))
-        .expect("shared state");
-    (state, path)
+    let state = Arc::new(
+        SharedState::new(
+            config,
+            Arc::new(store.repo.clone()),
+            signer,
+            serde_json::json!({}),
+        )
+        .expect("shared state"),
+    );
+    StateFixture {
+        state,
+        _repo: store,
+    }
 }
 
 /// How long the cached decision still lives, or `None` when the decision is
@@ -772,7 +799,8 @@ fn cached_lifetime(
 
 #[tokio::test]
 async fn the_registration_lifetime_bounds_the_cached_negative_decision() {
-    let (state, path) = cache_ttl_state(cache_ttl_test_config(Some((2, 7))), "deny").await;
+    let fixture = cache_ttl_state(cache_ttl_test_config(Some((2, 7))), "deny").await;
+    let state = fixture.state();
     let req = request();
     // The first decision loads the policy bundle, so the second one can key the cache.
     for _ in 0..2 {
@@ -792,12 +820,12 @@ async fn the_registration_lifetime_bounds_the_cached_negative_decision() {
         remaining > std::time::Duration::from_millis(500),
         "the negative decision is still cached: {remaining:?}"
     );
-    std::fs::remove_file(path).ok();
 }
 
 #[tokio::test]
 async fn a_zero_negative_lifetime_keeps_the_negative_decision_out_of_the_cache() {
-    let (state, path) = cache_ttl_state(cache_ttl_test_config(Some((0, 7))), "deny").await;
+    let fixture = cache_ttl_state(cache_ttl_test_config(Some((0, 7))), "deny").await;
+    let state = fixture.state();
     let req = request();
     for _ in 0..2 {
         let response = do_check(&state, &req).await.expect("decision");
@@ -809,12 +837,12 @@ async fn a_zero_negative_lifetime_keeps_the_negative_decision_out_of_the_cache()
         cached_lifetime(&state, &req).is_none(),
         "a registration that names no negative lifetime keeps negative decisions out of the cache"
     );
-    std::fs::remove_file(path).ok();
 }
 
 #[tokio::test]
 async fn the_registration_lifetime_bounds_the_cached_positive_decision() {
-    let (state, path) = cache_ttl_state(cache_ttl_test_config(Some((2, 7))), "allow").await;
+    let fixture = cache_ttl_state(cache_ttl_test_config(Some((2, 7))), "allow").await;
+    let state = fixture.state();
     let req = request();
     for _ in 0..2 {
         let response = do_check(&state, &req).await.expect("decision");
@@ -829,23 +857,22 @@ async fn the_registration_lifetime_bounds_the_cached_positive_decision() {
         remaining <= std::time::Duration::from_secs(7),
         "the positive decision lives for the registration's positive lifetime, not longer: {remaining:?}"
     );
-    std::fs::remove_file(path).ok();
 }
 
 #[tokio::test]
 async fn a_registration_without_a_lifetime_keeps_the_product_defaults() {
-    let (state, path) = cache_ttl_state(cache_ttl_test_config(None), "allow").await;
+    let fixture = cache_ttl_state(cache_ttl_test_config(None), "allow").await;
+    let state = fixture.state();
     let req = request();
     let response = do_check(&state, &req).await.expect("decision");
     assert_eq!(response.decision, "allow");
     assert_eq!(response.ttl_ms, 30_000);
-    std::fs::remove_file(path).ok();
 
-    let (state, path) = cache_ttl_state(cache_ttl_test_config(None), "deny").await;
+    let fixture = cache_ttl_state(cache_ttl_test_config(None), "deny").await;
+    let state = fixture.state();
     let response = do_check(&state, &req).await.expect("decision");
     assert_eq!(response.decision, "deny");
     assert_eq!(response.ttl_ms, 5_000);
-    std::fs::remove_file(path).ok();
 }
 
 fn fail_open_test_config(fail_policy: &str) -> QidConfig {
@@ -861,10 +888,7 @@ fn fail_open_test_config(fail_policy: &str) -> QidConfig {
     config
 }
 
-fn fail_open_state(
-    config: QidConfig,
-    default_decision: &str,
-) -> (SharedState<qid_storage::FileRepository>, std::path::PathBuf) {
+fn fail_open_state(config: QidConfig, default_decision: &str) -> StateFixture {
     // Reuse the cache TTL fixture shape: one stored bundle, file repository.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -875,7 +899,8 @@ fn fail_open_state(
 
 #[test]
 fn fail_open_eligible_covers_only_internal_and_storage_errors() {
-    let (state, path) = fail_open_state(fail_open_test_config("allow"), "deny");
+    let fixture = fail_open_state(fail_open_test_config("allow"), "deny");
+    let state = fixture.state();
     let req = request();
     for err in [
         QidError::Internal {
@@ -924,12 +949,12 @@ fn fail_open_eligible_covers_only_internal_and_storage_errors() {
             "non-system error must stay fail-closed: {err:?}"
         );
     }
-    std::fs::remove_file(path).ok();
 }
 
 #[test]
 fn fail_open_defaults_to_deny_for_system_errors() {
-    let (state, path) = fail_open_state(fail_open_test_config("deny"), "deny");
+    let fixture = fail_open_state(fail_open_test_config("deny"), "deny");
+    let state = fixture.state();
     let req = request();
     for err in [
         QidError::Internal {
@@ -944,12 +969,12 @@ fn fail_open_defaults_to_deny_for_system_errors() {
             "the default deny registration must stay fail-closed: {err:?}"
         );
     }
-    std::fs::remove_file(path).ok();
 }
 
 #[test]
 fn fail_open_allow_answers_only_internal_or_storage_errors() {
-    let (state, path) = fail_open_state(fail_open_test_config("allow"), "deny");
+    let fixture = fail_open_state(fail_open_test_config("allow"), "deny");
+    let state = fixture.state();
     let req = request();
     for err in [
         QidError::Internal {
@@ -996,12 +1021,12 @@ fn fail_open_allow_answers_only_internal_or_storage_errors() {
             "non-system errors must stay fail-closed even with allow: {err:?}"
         );
     }
-    std::fs::remove_file(path).ok();
 }
 
 #[test]
 fn fail_open_needs_the_authenticated_registration() {
-    let (state, path) = fail_open_state(fail_open_test_config("allow"), "deny");
+    let fixture = fail_open_state(fail_open_test_config("allow"), "deny");
+    let state = fixture.state();
     let err = QidError::Internal {
         message: "boom".to_string(),
     };
@@ -1016,7 +1041,6 @@ fn fail_open_needs_the_authenticated_registration() {
         pep_decision_fail_open(&state, &req, "other-realm", &err).is_none(),
         "another realm must stay fail-closed"
     );
-    std::fs::remove_file(path).ok();
 }
 
 #[tokio::test]
@@ -1035,8 +1059,8 @@ async fn check_routes_only_authenticated_opt_in_system_failures_to_fail_open() {
                 "deny"
             );
         }
-        let (state, path) = cache_ttl_state(config, "deny").await;
-        let state = Arc::new(state);
+        let fixture = cache_ttl_state(config, "deny").await;
+        let state = fixture.state();
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
@@ -1144,14 +1168,13 @@ async fn check_routes_only_authenticated_opt_in_system_failures_to_fail_open() {
             assert_eq!(response.decision, "deny");
             assert_eq!(response.decision_id, "fail-closed");
         }
-        drop(state);
-        std::fs::remove_file(path).expect("remove test repository");
     }
 }
 
 #[tokio::test]
 async fn invalid_policy_bundle_stays_fail_closed_with_opt_in_allow() {
-    let (state, path) = cache_ttl_state(fail_open_test_config("allow"), "deny").await;
+    let fixture = cache_ttl_state(fail_open_test_config("allow"), "deny").await;
+    let state = fixture.state();
     // Replace the stored bundle with one that cannot deserialize: a genuine
     // configuration error out of the existing bundle load path.
     state
@@ -1183,7 +1206,6 @@ async fn invalid_policy_bundle_stays_fail_closed_with_opt_in_allow() {
         matches!(err, QidError::Config { .. }),
         "a broken bundle must surface a config error: {err:?}"
     );
-    let state = Arc::new(state);
     let mut headers = HeaderMap::new();
     headers.insert(
         axum::http::header::AUTHORIZATION,
@@ -1201,13 +1223,12 @@ async fn invalid_policy_bundle_stays_fail_closed_with_opt_in_allow() {
     let response: PepDecisionResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(response.decision, "deny");
     assert_eq!(response.decision_id, "fail-closed");
-    drop(state);
-    std::fs::remove_file(path).expect("remove test repository");
 }
 
 #[tokio::test]
 async fn missing_mandatory_capability_stays_fail_closed_with_opt_in_allow() {
-    let (state, path) = cache_ttl_state(fail_open_test_config("allow"), "deny").await;
+    let fixture = cache_ttl_state(fail_open_test_config("allow"), "deny").await;
+    let state = fixture.state();
     let mut req = request();
     // Load the policy revision, then cache the decision for the capable adapter.
     for _ in 0..2 {
@@ -1230,7 +1251,6 @@ async fn missing_mandatory_capability_stays_fail_closed_with_opt_in_allow() {
         pep_decision_fail_open(&state, &req, "test", &err).is_none(),
         "capability refusals must stay fail-closed even with allow"
     );
-    std::fs::remove_file(path).ok();
 }
 
 #[test]
@@ -1300,8 +1320,8 @@ async fn authzen_evaluation_echoes_request_id_on_extractor_rejection() {
     };
     use tower::ServiceExt;
 
-    let (state, path) = pep_adapter_state(true).await;
-    let state = Arc::new(state);
+    let fixture = pep_adapter_state(true).await;
+    let state = fixture.state();
     let app = pep_decision_routes(&state.config.server.paths)
         .layer(axum::middleware::from_fn(
             qid_http::middleware::request_id_layer,
@@ -1326,8 +1346,6 @@ async fn authzen_evaluation_echoes_request_id_on_extractor_rejection() {
             .and_then(|value| value.to_str().ok()),
         Some("req+abc/def")
     );
-
-    drop(path);
 }
 
 #[tokio::test]
@@ -1338,8 +1356,8 @@ async fn authzen_evaluation_error_responses() {
     };
     use tower::ServiceExt;
 
-    let (state, path) = cache_ttl_state(authzen_route_config(), "allow").await;
-    let state = Arc::new(state);
+    let fixture = cache_ttl_state(authzen_route_config(), "allow").await;
+    let state = fixture.state();
     let app = pep_decision_routes(&state.config.server.paths)
         .layer(axum::middleware::from_fn(
             qid_http::middleware::request_id_layer,
@@ -1462,8 +1480,6 @@ async fn authzen_evaluation_error_responses() {
             "{case}: unexpected error: {message}"
         );
     }
-
-    drop(path);
 }
 
 fn authzen_route_config() -> QidConfig {
@@ -1486,8 +1502,8 @@ async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
     };
     use tower::ServiceExt;
 
-    let (state, path) = cache_ttl_state(authzen_route_config(), "allow").await;
-    let state = Arc::new(state);
+    let fixture = cache_ttl_state(authzen_route_config(), "allow").await;
+    let state = fixture.state();
     let app = pep_decision_routes(&state.config.server.paths)
         .layer(axum::middleware::from_fn(
             qid_http::middleware::request_id_layer,
@@ -1551,6 +1567,4 @@ async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
         decisions.push(json["decision"].clone());
     }
     assert_eq!(decisions[0], decisions[1]);
-
-    drop(path);
 }

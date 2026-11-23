@@ -230,10 +230,10 @@ fn rsa_sha256_algorithm_path_and_all_target_types_smoke() {
         .collect::<String>();
     let public = crate::cert_pem_to_public_key_pem_from_pem(cert).unwrap();
     assert!(
-        RsaPublicKey::from_public_key_pem(&public)
+        PublicKey::from_public_key_pem(&public)
             .unwrap()
             .n()
-            .bits()
+            .bit_width()
             >= 2048
     );
     for kind in [
@@ -278,9 +278,9 @@ fn rsa_sha256_rejects_ephemeral_1024_bit_selected_key_before_verification() {
     use rsa::pkcs8::{EncodePublicKey, LineEnding};
 
     // Generate only in memory: never commit an undersized private-key fixture.
-    let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 1024).unwrap();
+    let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 1024).unwrap();
     let public = private.to_public_key();
-    assert_eq!(public.n().bits(), 1024);
+    assert_eq!(public.n().bit_width(), 1024);
     let public_pem = public.to_public_key_pem(LineEnding::LF).unwrap();
     let xml = format!(
         r#"<s:Assertion xmlns:s="{ASSERTION_NS}" ID="weak-rsa"><!--SIGNATURE--></s:Assertion>"#

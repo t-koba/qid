@@ -3,9 +3,8 @@ use base64::Engine;
 use qid_core::error::{QidError, QidResult};
 use rand::Rng;
 use rsa::pkcs8::DecodePrivateKey;
-use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
+use rsa::{Oaep, PrivateKey, PublicKey, sha2::Sha256};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 
 use crate::{
     SamlIssuedResponse, SamlServiceProviderMetadata, close_tag_len, find_close_tag,
@@ -71,12 +70,9 @@ pub fn encrypt_assertion_xml(
         })?
         .1;
     let spki_der = cert.tbs_certificate.subject_pki.raw.to_vec();
-    let pub_key =
-        RsaPublicKey::from_public_key_der(&spki_der).map_err(|e| QidError::BadRequest {
-            message: format!(
-                "SP encryption certificate does not contain a valid RSA public key: {e}"
-            ),
-        })?;
+    let pub_key = PublicKey::from_public_key_der(&spki_der).map_err(|e| QidError::BadRequest {
+        message: format!("SP encryption certificate does not contain a valid RSA public key: {e}"),
+    })?;
     let mut gen_rng = rand::thread_rng();
     let cek: [u8; 32] = gen_rng.r#gen();
     let nonce_bytes: [u8; 12] = gen_rng.r#gen();
@@ -88,9 +84,9 @@ pub fn encrypt_assertion_xml(
         .map_err(|e| QidError::Crypto {
             message: format!("AES-GCM encryption failed: {e}"),
         })?;
-    let mut rng = rand::thread_rng();
+    let mut rng = getrandom::SysRng;
     let encrypted_cek = pub_key
-        .encrypt(&mut rng, Oaep::new::<Sha256>(), &cek)
+        .encrypt(&mut rng, Oaep::<Sha256>::new(), &cek)
         .map_err(|e| QidError::Crypto {
             message: format!("RSA-OAEP key encryption failed: {e}"),
         })?;
@@ -266,7 +262,7 @@ pub fn decrypt_assertion_xml(
 
     // Decrypt the CEK using the private key (RSA-OAEP with SHA-256)
     let private_key =
-        RsaPrivateKey::from_pkcs8_pem(std::str::from_utf8(private_key_pem).map_err(|_| {
+        PrivateKey::from_pkcs8_pem(std::str::from_utf8(private_key_pem).map_err(|_| {
             QidError::BadRequest {
                 message: "private key is not valid UTF-8".to_string(),
             }
@@ -276,7 +272,7 @@ pub fn decrypt_assertion_xml(
         })?;
 
     let cek = private_key
-        .decrypt(Oaep::new::<Sha256>(), &encrypted_cek)
+        .decrypt(Oaep::<Sha256>::new(), &encrypted_cek)
         .map_err(|e| QidError::Crypto {
             message: format!("RSA-OAEP key decryption failed: {e}",),
         })?;

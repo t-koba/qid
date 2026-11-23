@@ -5,10 +5,7 @@ use bergshamra_keys::{KeysManager, loader};
 use p256::pkcs8::{
     DecodePrivateKey as P256DecodePrivateKey, EncodePublicKey as P256EncodePublicKey,
 };
-use rsa::pkcs8::{
-    DecodePrivateKey as RsaDecodePrivateKey, EncodePrivateKey as RsaEncodePrivateKey,
-    EncodePublicKey as RsaEncodePublicKey,
-};
+use rsa::pkcs8::EncodePrivateKey as RsaEncodePrivateKey;
 #[allow(dead_code)]
 mod common;
 
@@ -34,7 +31,7 @@ fn profiles() -> [(SamlXmlSignatureAlgorithm, &'static [u8]); 2] {
 fn public_key(algorithm: SamlXmlSignatureAlgorithm) -> String {
     match algorithm {
         SamlXmlSignatureAlgorithm::RsaSha256 => {
-            rsa::RsaPrivateKey::from_pkcs8_pem(std::str::from_utf8(RSA).unwrap())
+            rsa::PrivateKey::from_pkcs8_pem(std::str::from_utf8(RSA).unwrap())
                 .unwrap()
                 .to_public_key()
                 .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
@@ -415,7 +412,7 @@ fn target_binding_rejects_wrong_names_ids_and_alias_ambiguities() {
 
 #[test]
 fn local_signing_keys_must_match_the_profile_and_rsa_size_floor() {
-    let weak = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 1024)
+    let weak = rsa::PrivateKey::new(&mut getrandom::SysRng, 1024)
         .unwrap()
         .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
         .unwrap();

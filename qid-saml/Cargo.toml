@@ -21,6 +21,7 @@ bergshamra-pkcs12 = { version = "=0.11.0", default-features = false, features = 
 tsp-ltv = { version = "=0.6.0", default-features = false, features = ["rustcrypto"] }
 uppsala = "=0.12.0"
 flate2 = { workspace = true }
+getrandom = { version = "0.4", features = ["sys_rng"] }
 hex = { workspace = true }
 metrics = { workspace = true }
 p256 = { workspace = true }
@@ -28,7 +29,7 @@ qid-core = { workspace = true }
 qid-storage = { workspace = true }
 rand = { workspace = true }
 roxmltree = { workspace = true }
-rsa = { workspace = true, features = ["sha2"] }
+rsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha1.workspace = true

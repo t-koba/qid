@@ -1,7 +1,6 @@
 [advisories]
 ignore = [
     "RUSTSEC-2025-0134",
-    "RUSTSEC-2023-0071",
     # RUSTSEC-2026-0543: chrono is flagged "unmaintained" (category INFO,
     # no known vulnerability, no patched release; advisory published
     # 2026-09-14). This is a maintenance notice, not a security defect, and no

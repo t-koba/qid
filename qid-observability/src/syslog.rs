@@ -65,16 +65,21 @@ pub fn init_syslog_logging(config: SyslogConfig) -> QidResult<()> {
 
 pub fn signed_syslog_message(message: &str, private_key_pem: &[u8]) -> QidResult<String> {
     use rsa::pkcs8::DecodePrivateKey;
+    use rsa::sha2::Sha256 as RsaSha256;
     use rsa::signature::{RandomizedSigner, SignatureEncoding};
     let pem = std::str::from_utf8(private_key_pem).map_err(|_| QidError::BadRequest {
         message: "PEM is not valid UTF-8".to_string(),
     })?;
-    let key = rsa::RsaPrivateKey::from_pkcs8_pem(pem).map_err(|e| QidError::Crypto {
+    let key = rsa::PrivateKey::from_pkcs8_pem(pem).map_err(|e| QidError::Crypto {
         message: format!("RSA key parse failed: {e}"),
     })?;
-    let sig_signing_key = rsa::pkcs1v15::SigningKey::<Sha256>::new(key);
-    let mut rng = rand::thread_rng();
-    let signature = sig_signing_key.sign_with_rng(&mut rng, message.as_bytes());
+    let sig_signing_key = rsa::pkcs1v15::SigningKey::<RsaSha256>::new(key);
+    let mut rng = getrandom::SysRng;
+    let signature = sig_signing_key
+        .try_sign_with_rng(&mut rng, message.as_bytes())
+        .map_err(|e| QidError::Crypto {
+            message: format!("RSA signing failed: {e}"),
+        })?;
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
     Ok(format!("{message} ::SIGNED::{sig_b64}"))
 }
@@ -117,5 +122,25 @@ mod tests {
             format_syslog_message(&config, "test message"),
             "<4>1 test message"
         );
+    }
+
+    #[test]
+    fn signed_syslog_message_verifies_with_rsa_pkcs1v15_sha256() {
+        use rsa::pkcs8::EncodePrivateKey;
+        use rsa::sha2::Sha256 as RsaSha256;
+        use rsa::signature::Verifier;
+
+        let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
+        let pem = private.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let signed = signed_syslog_message("test message", pem.as_bytes()).unwrap();
+        let (message, signature_b64) = signed.split_once(" ::SIGNED::").unwrap();
+        let signature_bytes = base64::engine::general_purpose::STANDARD
+            .decode(signature_b64)
+            .unwrap();
+        let signature = rsa::pkcs1v15::Signature::try_from(signature_bytes.as_slice()).unwrap();
+        let verifying_key = rsa::pkcs1v15::VerifyingKey::<RsaSha256>::new(private.to_public_key());
+        verifying_key
+            .verify(message.as_bytes(), &signature)
+            .unwrap();
     }
 }

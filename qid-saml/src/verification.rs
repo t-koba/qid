@@ -2,7 +2,7 @@
 use bergshamra_dsig::{DsigContext, VerifyResult};
 use bergshamra_keys::{KeysManager, loader};
 use qid_core::error::{QidError, QidResult};
-use rsa::{RsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
+use rsa::{PublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
 use std::collections::BTreeSet;
 use uppsala::{Document, NodeId};
 
@@ -462,9 +462,9 @@ pub fn verify_saml_xml_signature_for<'a>(
     if inputs.profile == SamlXmlSignatureAlgorithm::RsaSha256 {
         let pem = std::str::from_utf8(inputs.public_key_pem)
             .map_err(|e| bad(format!("SAML selected RSA public key: {e}")))?;
-        let public_key = RsaPublicKey::from_public_key_pem(pem)
+        let public_key = PublicKey::from_public_key_pem(pem)
             .map_err(|e| bad(format!("SAML selected RSA public key: {e}")))?;
-        if public_key.n().bits() < 2048 {
+        if public_key.n().bit_width() < 2048 {
             return Err(bad("SAML RSA public key must be at least 2048 bits"));
         }
     }

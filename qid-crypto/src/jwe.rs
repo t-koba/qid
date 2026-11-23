@@ -7,11 +7,11 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use qid_core::error::{QidError, QidResult};
 use rand::RngCore;
 use rsa::{
-    Oaep, RsaPrivateKey, RsaPublicKey,
+    Oaep, PrivateKey, PublicKey,
     pkcs8::{DecodePrivateKey, DecodePublicKey},
+    sha2::Sha256,
 };
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use std::str;
 
 /// JWE protected header (RFC 7516 Section 4.1).
@@ -108,12 +108,12 @@ pub fn decrypt_jwe(jwe: &str, private_key_pem: &[u8]) -> QidResult<Vec<u8>> {
     let pem_str = str::from_utf8(private_key_pem).map_err(|_| QidError::BadRequest {
         message: "private key PEM is not valid UTF-8".to_string(),
     })?;
-    let private_key = RsaPrivateKey::from_pkcs8_pem(pem_str).map_err(|e| QidError::Crypto {
+    let private_key = PrivateKey::from_pkcs8_pem(pem_str).map_err(|e| QidError::Crypto {
         message: format!("failed to parse RSA private key: {e}"),
     })?;
 
     let cek = private_key
-        .decrypt(Oaep::new::<Sha256>(), &payload.encrypted_key)
+        .decrypt(Oaep::<Sha256>::new(), &payload.encrypted_key)
         .map_err(|e| QidError::Unauthorized {
             message: format!("RSA-OAEP decryption failed: {e}"),
         })?;
@@ -158,7 +158,7 @@ pub fn encrypt_jwe(
     let pem_str = str::from_utf8(public_key_pem).map_err(|_| QidError::BadRequest {
         message: "public key PEM is not valid UTF-8".to_string(),
     })?;
-    let public_key = RsaPublicKey::from_public_key_pem(pem_str).map_err(|e| QidError::Crypto {
+    let public_key = PublicKey::from_public_key_pem(pem_str).map_err(|e| QidError::Crypto {
         message: format!("failed to parse RSA public key: {e}"),
     })?;
 
@@ -181,9 +181,9 @@ pub fn encrypt_jwe(
     let ciphertext = ct_with_tag[..tag_start].to_vec();
     let auth_tag = ct_with_tag[tag_start..].to_vec();
 
-    let mut rng = rand::thread_rng();
+    let mut rng = getrandom::SysRng;
     let encrypted_key = public_key
-        .encrypt(&mut rng, Oaep::new::<Sha256>(), &cek)
+        .encrypt(&mut rng, Oaep::<Sha256>::new(), &cek)
         .map_err(|e| QidError::Crypto {
             message: format!("RSA-OAEP encryption failed: {e}"),
         })?;

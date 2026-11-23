@@ -26,12 +26,13 @@ base64 = { workspace = true }
 hex = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
+getrandom = { version = "0.4", features = ["sys_rng"] }
 opentelemetry = { version = "0.28", optional = true, default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.28", optional = true, default-features = false, features = ["trace", "rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
 opentelemetry-otlp = { version = "0.28", optional = true, default-features = false, features = ["trace", "grpc-tonic", "tls-roots"] }
 qid-core = { workspace = true }
 rand = { workspace = true }
-rsa = { workspace = true, features = ["sha2"] }
+rsa = { workspace = true, features = ["pkcs1v15"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

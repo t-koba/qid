@@ -235,9 +235,9 @@ pub fn sign_saml_document_with_key(
         .map_err(|_| bad("invalid private key PEM encoding"))?;
     let key = match algorithm {
         SamlXmlSignatureAlgorithm::RsaSha256 => {
-            let local = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
+            let local = rsa::PrivateKey::from_pkcs8_pem(pem)
                 .map_err(|_| bad("SAML signing requires a PKCS#8 RSA private key"))?;
-            if local.n().bits() < 2048 {
+            if local.n().bit_width() < 2048 {
                 return Err(bad("SAML signing requires RSA >=2048 bits"));
             }
             loader::load_rsa_private_pem(private_key_pem)

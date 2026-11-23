@@ -1436,7 +1436,12 @@ async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
 
     let (state, path) = cache_ttl_state(authzen_route_config(), "allow").await;
     let state = Arc::new(state);
-    let app = pep_decision_routes(&state.config.server.paths).with_state(state.clone());
+    let app = pep_decision_routes(&state.config.server.paths)
+        .layer(axum::middleware::from_fn(
+            qid_http::middleware::request_id_layer,
+        ))
+        .with_state(state.clone());
+    let request_id = "req+authzen/success";
     let body = serde_json::json!({
         "subject": {
             "type": "user",
@@ -1458,6 +1463,7 @@ async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
             .method("POST")
             .uri("/access/v1/evaluation")
             .header(CONTENT_TYPE, "application/json")
+            .header("x-request-id", request_id)
             .header(
                 AUTHORIZATION,
                 format!("Bearer {}", pep_adapter_token(&state)),
@@ -1466,6 +1472,12 @@ async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
+        assert_eq!(
+            res.headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some(request_id)
+        );
         let bytes = axum::body::to_bytes(res.into_body(), 16_384).await.unwrap();
         assert_eq!(
             status,

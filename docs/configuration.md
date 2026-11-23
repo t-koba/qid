@@ -362,6 +362,7 @@ Important subkeys:
 - `cors.allow_credentials`: cannot be combined with wildcard origin.
 - `paths`: configurable canonical paths for health, discovery, OAuth, session auth, WebAuthn, PEP, logout, CAPPORT details, and related endpoints.
 - `quic`: opt-in QUIC listener, disabled by default. When `enabled`, `bind` (default `[::]:4433`) must be a valid socket address, `certificate_path` and `private_key_path` must point at readable certificate/key material, and `max_bidi_streams` must be positive. `qidd` only serves QUIC when built with its `quic` cargo feature; otherwise enabling `server.quic` fails startup. This remains a helper-level transport: it accepts and drains bidirectional streams and makes no mdoc/OID4VP interoperability claim.
+- `hsts`: controls the `Strict-Transport-Security` response header. Defaults are `enabled: true`, `max_age_seconds: 31536000` (one year), `include_subdomains: true`, and `preload: false`. The header carries `max-age=<seconds>` plus `includeSubDomains` and `preload` when those flags are set. qid sends it only when `server.public_base_url` uses `https`; an `http` public URL disables it regardless of `enabled`. `preload` is an operator opt-in that still requires submission to browser preload lists.
 
 ### Notification delivery
 

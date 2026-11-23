@@ -44,6 +44,7 @@ jobs:
         uses: actions-rust-lang/audit@v1
         with:
           file: fuzz/Cargo.lock
+          createIssues: false
 
   package-policy:
     name: Package Policy

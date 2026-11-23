@@ -1291,3 +1291,41 @@ fn authzen_request_rejects_missing_or_mistyped_required_fields() {
     mistyped["action"]["name"] = serde_json::json!("read");
     serde_json::from_value::<AuthZenEvaluationRequest>(mistyped).expect("valid request");
 }
+
+#[tokio::test]
+async fn authzen_evaluation_echoes_request_id_on_extractor_rejection() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header::CONTENT_TYPE},
+    };
+    use tower::ServiceExt;
+
+    let (state, path) = pep_adapter_state(true).await;
+    let state = Arc::new(state);
+    let app = pep_decision_routes(&state.config.server.paths)
+        .layer(axum::middleware::from_fn(
+            qid_http::middleware::request_id_layer,
+        ))
+        .with_state(state.clone());
+
+    // Malformed JSON is rejected by JsonObject before the handler runs; the
+    // shared request-ID layer still wraps that rejection and echoes §10.1.3's
+    // arbitrary identifier verbatim.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/access/v1/evaluation")
+        .header(CONTENT_TYPE, "application/json")
+        .header("x-request-id", "req+abc/def")
+        .body(Body::from("{"))
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        res.headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("req+abc/def")
+    );
+
+    drop(path);
+}

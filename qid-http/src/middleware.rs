@@ -51,11 +51,10 @@ fn new_request_id() -> String {
 }
 
 fn valid_request_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+    // Authorization API 1.0 §10.1.3 defines the identifier as an arbitrary
+    // string and requires echoing it verbatim. Only header-unsafe control
+    // characters and unbounded values are rejected; shape is not policy.
+    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
 }
 
 pub fn cors_layer(config: &CorsConfig) -> CorsLayer {
@@ -931,20 +930,22 @@ mod tests {
     }
 
     #[test]
-    fn request_id_accepts_safe_client_value() {
-        let headers = headers(&[("x-request-id", "req-01HZZZZZZZZZZZZZZZZZZZZZZZ")]);
-
-        assert_eq!(
-            request_id_from_headers(&headers).as_deref(),
-            Some("req-01HZZZZZZZZZZZZZZZZZZZZZZZ")
-        );
+    fn request_id_accepts_arbitrary_header_safe_value() {
+        for value in [
+            "req-01HZZZZZZZZZZZZZZZZZZZZZZZ",
+            "req+abc/def with spaces",
+            "req+abc/def",
+        ] {
+            let headers = headers(&[("x-request-id", value)]);
+            assert_eq!(request_id_from_headers(&headers).as_deref(), Some(value));
+        }
     }
 
     #[test]
-    fn request_id_rejects_unsafe_client_value() {
-        let headers = headers(&[("x-request-id", "bad value with spaces")]);
-
-        assert!(request_id_from_headers(&headers).is_none());
+    fn request_id_rejects_control_characters_and_unbounded_values() {
+        assert!(!valid_request_id("bad\nvalue"));
+        assert!(!valid_request_id("bad\u{7f}value"));
+        assert!(!valid_request_id(&"x".repeat(129)));
     }
 
     #[test]

@@ -225,7 +225,7 @@ qid only authenticates the PEP through credential-bound registration. Request bo
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | configurable `authzen_evaluation`, default `/access/v1/evaluation` | AuthZEN-style evaluation; requires `Content-Type: application/json`. |
+| `POST` | configurable `authzen_evaluation`, default `/access/v1/evaluation` | AuthZEN-style evaluation; requires `Content-Type: application/json` and echoes a header-safe `X-Request-ID` unchanged. |
 | `POST` | configurable `pep_decision`, default `/pep/decision/v1/evaluate` | Generic PEP decision API. |
 | `GET` | configurable `assertion`, default `/pep/:realm/assertion` | Issue short-lived PEP assertion. |
 | `POST` | `/api/v1/:realm/captive-portal/bind` | Bind captive portal session. |

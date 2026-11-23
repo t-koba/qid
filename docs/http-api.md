@@ -223,6 +223,8 @@ AuthZEN-style evaluation is the generic subject/resource/action access surface. 
 
 qid only authenticates the PEP through credential-bound registration. Request body fields are verified against that registration and policy; they are not trusted identity by themselves. qid response semantics remain qid-owned. A PEP maps the response to its own enforceable effect schema and must validate capabilities fail-closed before enforcement.
 
+Repeating the same evaluation inputs with freshly authenticated requests returns the same decision. A byte-for-byte HTTP retry that reuses an already consumed PEP credential is different; registration-token replay protection remains enabled by default and rejects the reused token with `401`. `X-Request-ID` correlates a request with its response and is not an idempotency key.
+
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | configurable `authzen_evaluation`, default `/access/v1/evaluation` | AuthZEN-style evaluation; requires `Content-Type: application/json` and echoes a header-safe `X-Request-ID` unchanged. |

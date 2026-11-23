@@ -1495,7 +1495,7 @@ fn authzen_route_config() -> QidConfig {
 }
 
 #[tokio::test]
-async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
+async fn authzen_evaluation_returns_the_same_decision_for_repeated_authenticated_inputs() {
     use axum::{
         body::Body,
         http::{Request, StatusCode, header::AUTHORIZATION, header::CONTENT_TYPE},
@@ -1525,6 +1525,9 @@ async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
     })
     .to_string();
 
+    // Each iteration gets a fresh PEP credential: this asserts decision
+    // stability for repeated evaluation inputs, not an HTTP retry with a
+    // consumed token, which replay protection rejects with 401.
     let mut decisions = Vec::new();
     for _ in 0..2 {
         let req = Request::builder()

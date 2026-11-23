@@ -47,7 +47,8 @@ impl TestDirectory {
 impl Drop for TestDirectory {
     fn drop(&mut self) {
         clean_oidc_test_databases(&self.0).expect("remove isolated OIDC test database files");
-        std::fs::remove_dir_all(&self.0).expect("remove isolated OIDC test directory");
+        remove_with_lock_retry(&self.0, |path: &Path| std::fs::remove_dir_all(path))
+            .expect("remove isolated OIDC test directory");
     }
 }
 
@@ -95,6 +96,31 @@ fn sqlite_main_path(path: &Path) -> PathBuf {
         .map_or_else(|| path.to_path_buf(), |name| path.with_file_name(name))
 }
 
+// Windows can briefly hold a sharing lock (ERROR_SHARING_VIOLATION) after a
+// SQLite pool closes, for both database files and their containing directory.
+// Retry only that lock on Windows, within a bounded time, and return the last
+// error if it persists; every other error keeps failing immediately.
+fn remove_with_lock_retry(
+    path: &Path,
+    remove: fn(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match remove(path) {
+            Err(error)
+                if cfg!(windows)
+                    && (error.kind() == std::io::ErrorKind::PermissionDenied
+                        || error.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 type CleanupError = (PathBuf, std::io::Error);
 
 fn remove_sqlite_database_files(path: &Path) -> Result<(), CleanupError> {
@@ -102,7 +128,7 @@ fn remove_sqlite_database_files(path: &Path) -> Result<(), CleanupError> {
         let mut candidate = path.as_os_str().to_os_string();
         candidate.push(suffix);
         let candidate = PathBuf::from(candidate);
-        match std::fs::remove_file(&candidate) {
+        match remove_with_lock_retry(&candidate, |path: &Path| std::fs::remove_file(path)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err((candidate, error)),

@@ -1475,6 +1475,15 @@ async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
         );
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["decision"], true);
+        for field in ["decision_id", "policy_id", "reason"] {
+            let value = json["context"][field]
+                .as_str()
+                .unwrap_or_else(|| panic!("expected {field} to be a string: {json}"));
+            assert!(
+                !value.is_empty(),
+                "expected {field} to be non-empty: {json}"
+            );
+        }
         decisions.push(json["decision"].clone());
     }
     assert_eq!(decisions[0], decisions[1]);

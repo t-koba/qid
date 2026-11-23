@@ -7,10 +7,10 @@ server:
 storage:
   primary:
     type: postgres
-    url_env: QID_DATABASE_URL
+    url_env: DATABASE_URL
   cache:
     kind: valkey
-    url_env: QID_STORAGE_CACHE_URL
+    url_env: STORAGE_CACHE_URL
     endpoints:
       - "redis://valkey-a.internal.example.com:6379"
       - "redis://valkey-b.internal.example.com:6379"

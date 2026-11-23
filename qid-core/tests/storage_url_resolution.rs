@@ -1,6 +1,8 @@
-use qid_core::config::PrimaryStorageConfig;
+use qid_core::config::{PrimaryStorageConfig, QidConfig};
 use qid_core::error::QidError;
 use std::ffi::OsStr;
+use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 fn primary(url: Option<&str>, url_env: Option<&str>) -> PrimaryStorageConfig {
     PrimaryStorageConfig {
@@ -10,18 +12,57 @@ fn primary(url: Option<&str>, url_env: Option<&str>) -> PrimaryStorageConfig {
     }
 }
 
-struct EnvGuard(&'static str);
+// Config loading merges every `QID_` variable into the config tree, so tests
+// that set environment variables must not overlap with a config load.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvGuard {
+    name: &'static str,
+    _lock: MutexGuard<'static, ()>,
+}
 
 impl EnvGuard {
     fn set(name: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         unsafe { std::env::set_var(name, value) };
-        Self(name)
+        Self { name, _lock: lock }
     }
 }
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
-        unsafe { std::env::remove_var(self.0) };
+        unsafe { std::env::remove_var(self.name) };
+    }
+}
+
+struct TempConfigDir(PathBuf);
+
+#[allow(clippy::expect_used)] // Fixture setup failures are test failures.
+impl TempConfigDir {
+    fn with_url_env(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("qid-storage-url-{}", ulid::Ulid::new()));
+        std::fs::create_dir(&dir).expect("create temp config dir");
+        let yaml = format!(
+            "server:\n  listen: '127.0.0.1:8443'\n  public_base_url: 'https://id.example.com'\n\
+             storage:\n  primary:\n    type: postgres\n    url_env: {name}\n\
+             realms:\n  - id: corp\n    issuer: 'https://id.example.com/realms/corp'\n"
+        );
+        std::fs::write(dir.join("config.yaml"), yaml).expect("write temp config");
+        Self(dir)
+    }
+
+    fn config_path(&self) -> String {
+        self.0
+            .join("config.yaml")
+            .to_str()
+            .expect("temp path utf-8")
+            .to_string()
+    }
+}
+
+impl Drop for TempConfigDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -122,5 +163,37 @@ fn no_url_source_uses_the_supplied_default() {
     assert_eq!(
         config.resolve_url_or("sqlite:fallback.db").unwrap(),
         "sqlite:fallback.db"
+    );
+}
+
+#[test]
+fn config_file_url_env_resolves_from_an_unreserved_variable() {
+    const NAME: &str = "STORAGE_URL_REGRESSION_CONFIG_SOURCE";
+    let dir = TempConfigDir::with_url_env(NAME);
+    let _guard = EnvGuard::set(NAME, "offline-sample://valid");
+    let config = QidConfig::from_file(&dir.config_path()).unwrap();
+    assert_eq!(config.storage.primary.url_env.as_deref(), Some(NAME));
+    assert_eq!(
+        config
+            .storage
+            .primary
+            .resolve_url_or("sqlite:fallback.db")
+            .unwrap(),
+        "offline-sample://valid"
+    );
+}
+
+#[test]
+fn qid_prefixed_url_env_is_rejected_by_config_loading() {
+    const NAME: &str = "QID_STORAGE_URL_REGRESSION_RESERVED";
+    let dir = TempConfigDir::with_url_env(NAME);
+    let _guard = EnvGuard::set(NAME, "offline-sample://valid");
+    let err = QidConfig::from_file(&dir.config_path()).unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }));
+    let message = err.message();
+    assert!(message.contains("unknown field"), "{message}");
+    assert!(
+        message.contains("storage_url_regression_reserved"),
+        "{message}"
     );
 }

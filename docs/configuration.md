@@ -473,6 +473,11 @@ re-checks the requested realm, so enabling one realm never enables another.
 - `url`: direct URL or file path.
 - `url_env`: environment variable containing the URL.
 
+`QID_` is reserved for configuration overrides (see [Loading Order](#loading-order)),
+so `url_env` names in config files must not use that prefix: setting such a variable is
+read as a configuration override instead of a storage URL. The samples use
+`DATABASE_URL` and `STORAGE_CACHE_URL`.
+
 `storage.file.flush_mode` controls the file-backed JSON backend:
 
 - `immediate`: default; every mutation is flushed durably before returning.

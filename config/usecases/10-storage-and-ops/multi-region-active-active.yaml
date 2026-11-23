@@ -8,7 +8,7 @@ server:
 storage:
   primary:
     type: postgres
-    url_env: QID_DATABASE_URL
+    url_env: DATABASE_URL
 
 crypto:
   default_alg: ES256

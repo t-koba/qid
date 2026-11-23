@@ -19,7 +19,7 @@ use qid_core::{
     util::now_seconds,
 };
 use qid_storage::prelude::*;
-use rand::Rng;
+use rand::{Rng, rngs::OsRng};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::instrument::WithSubscriber;
@@ -117,7 +117,7 @@ pub(crate) async fn send<R: Repository>(
         policy.issuance_window_seconds,
     );
     let now = now_seconds();
-    let code = format!("{:08}", rand::thread_rng().gen_range(0..100_000_000u32));
+    let code = format!("{:08}", OsRng.gen_range(0..100_000_000u32));
     let mut record = CiamVerificationChallengeRecord {
         id,
         realm_id: realm,

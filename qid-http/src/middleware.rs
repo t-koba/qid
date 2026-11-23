@@ -52,9 +52,9 @@ fn new_request_id() -> String {
 
 fn valid_request_id(value: &str) -> bool {
     // Authorization API 1.0 §10.1.3 defines the identifier as an arbitrary
-    // string and requires echoing it verbatim. Only header-unsafe control
-    // characters and unbounded values are rejected; shape is not policy.
-    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+    // string and requires echoing it verbatim. Only empty values and
+    // header-unsafe control characters are rejected; shape is not policy.
+    !value.is_empty() && !value.chars().any(char::is_control)
 }
 
 pub fn cors_layer(config: &CorsConfig) -> CorsLayer {
@@ -941,11 +941,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn request_id_layer_echoes_long_header_safe_value() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        let value = "x".repeat(1024);
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(request_id_layer));
+        let req = Request::builder()
+            .uri("/health")
+            .header("x-request-id", value.clone())
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.headers()["x-request-id"], value);
+    }
+
     #[test]
-    fn request_id_rejects_control_characters_and_unbounded_values() {
+    fn request_id_rejects_control_characters_and_accepts_long_values() {
+        assert!(!valid_request_id(""));
         assert!(!valid_request_id("bad\nvalue"));
         assert!(!valid_request_id("bad\u{7f}value"));
-        assert!(!valid_request_id(&"x".repeat(129)));
+        assert!(valid_request_id(&"x".repeat(1024)));
     }
 
     #[test]

@@ -1329,3 +1329,87 @@ async fn authzen_evaluation_echoes_request_id_on_extractor_rejection() {
 
     drop(path);
 }
+
+#[tokio::test]
+async fn authzen_evaluation_error_responses() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header::CONTENT_TYPE},
+    };
+    use tower::ServiceExt;
+
+    let (state, path) = pep_adapter_state(true).await;
+    let state = Arc::new(state);
+    let app = pep_decision_routes(&state.config.server.paths)
+        .layer(axum::middleware::from_fn(
+            qid_http::middleware::request_id_layer,
+        ))
+        .with_state(state.clone());
+
+    let cases = [
+        (
+            "non-JSON content type",
+            "text/plain",
+            r#"{"subject":{},"action":{"name":"read"},"resource":{}}"#,
+            "Content-Type",
+        ),
+        ("empty body", "application/json", "", "not valid JSON"),
+        ("malformed JSON", "application/json", "{", "not valid JSON"),
+        (
+            "missing resource",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":"read"}}"#,
+            "expected shape",
+        ),
+        (
+            "missing action name",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{},"resource":{"type":"document","id":"doc-1"}}"#,
+            "expected shape",
+        ),
+        (
+            "mistyped action name",
+            "application/json",
+            r#"{"subject":{"type":"user","id":"alice@example.com"},"action":{"name":7},"resource":{"type":"document","id":"doc-1"}}"#,
+            "expected shape",
+        ),
+    ];
+
+    for (case, content_type, body, fragment) in cases {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/access/v1/evaluation")
+            .header(CONTENT_TYPE, content_type)
+            .header("x-request-id", "req.authzen-errors")
+            .body(Body::from(body))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{case}");
+        assert_eq!(
+            res.headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+            "{case}"
+        );
+        assert_eq!(
+            res.headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("req.authzen-errors"),
+            "{case}"
+        );
+        let body = axum::body::to_bytes(res.into_body(), 16_384).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let message = error
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("{case}: expected an error string: {error}"));
+        assert!(
+            message.contains(fragment),
+            "{case}: unexpected error: {message}"
+        );
+    }
+
+    drop(path);
+}

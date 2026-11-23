@@ -154,6 +154,22 @@ async fn storage_saas_audit_reports_broken_oidc_client_reference() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[tokio::test]
+async fn storage_saas_reports_missing_url_env_without_opening_the_default_store() {
+    const NAME: &str = "QID_TEST_DIAGNOSTICS_STORAGE_URL_MISSING";
+    unsafe { std::env::remove_var(NAME) };
+    let mut config = minimal_config();
+    config.storage.primary.url_env = Some(NAME.to_string());
+
+    let checks = check_storage_saas(&config).await;
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].name, "storage.saas");
+    assert_eq!(checks[0].status, CheckStatus::Error);
+    assert!(checks[0].message.contains(NAME));
+    assert!(!checks[0].message.contains("no SaaS tenant data found"));
+}
+
 #[test]
 fn check_report_covers_policy_pep_metrics_and_keyrings() {
     let dir = temp_config_dir("ok");

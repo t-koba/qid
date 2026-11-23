@@ -551,7 +551,11 @@ async fn store_password(
 }
 
 async fn open_repo(config: &QidConfig) -> anyhow::Result<Arc<AnyRepository>> {
-    let storage_url = config.storage.primary.resolve_url_or("qid-dev.db");
+    let storage_url = config
+        .storage
+        .primary
+        .resolve_url_or("qid-dev.db")
+        .context("failed to resolve storage URL")?;
     Ok(Arc::new(
         AnyRepository::connect(&storage_url)
             .await

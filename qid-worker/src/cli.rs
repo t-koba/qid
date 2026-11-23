@@ -790,7 +790,11 @@ fn load_timestamp_config(
 
 async fn open_repo(config_path: &Path) -> anyhow::Result<Arc<AnyRepository>> {
     let config = open_config(config_path)?;
-    let storage_url = config.storage.primary.resolve_url_or("qid-store.json");
+    let storage_url = config
+        .storage
+        .primary
+        .resolve_url_or("qid-store.json")
+        .context("failed to resolve storage URL")?;
     Ok(Arc::new(
         AnyRepository::connect(&storage_url)
             .await

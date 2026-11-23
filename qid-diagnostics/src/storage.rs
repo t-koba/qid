@@ -1,7 +1,15 @@
 use super::*;
 
 pub async fn check_storage_saas(config: &QidConfig) -> Vec<CheckItem> {
-    let storage_url = config.storage.primary.resolve_url_or("qid-store.json");
+    let storage_url = match config.storage.primary.resolve_url_or("qid-store.json") {
+        Ok(url) => url,
+        Err(err) => {
+            return vec![check_error(
+                "storage.saas",
+                format!("storage audit could not resolve storage URL: {err}"),
+            )];
+        }
+    };
     match AnyRepository::connect(&storage_url).await {
         Ok(repo) => match check_storage_saas_with_repo(config, &repo).await {
             Ok(checks) => checks,

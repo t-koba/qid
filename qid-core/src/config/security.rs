@@ -33,17 +33,53 @@ impl Default for PrimaryStorageConfig {
 }
 
 impl PrimaryStorageConfig {
-    /// Resolve the effective storage URL from `url`, then `url_env`, then
-    /// `default_url`.
-    pub fn resolve_url_or(&self, default_url: impl Into<String>) -> String {
-        self.url
-            .clone()
-            .or_else(|| {
-                self.url_env
-                    .as_deref()
-                    .and_then(|env| std::env::var(env).ok())
-            })
-            .unwrap_or_else(|| default_url.into())
+    /// Resolve the effective storage URL from the configured `url` or
+    /// `url_env`. The caller's `default_url` applies only when neither is
+    /// configured: an unusable configured source fails instead of falling
+    /// back to it. Values are trimmed before use.
+    pub fn resolve_url_or(&self, default_url: impl Into<String>) -> QidResult<String> {
+        match (&self.url, &self.url_env) {
+            (Some(_), Some(_)) => Err(QidError::Config {
+                message: "storage.primary must not set both url and url_env".to_string(),
+            }),
+            (Some(url), None) => {
+                let url = url.trim();
+                if url.is_empty() {
+                    return Err(QidError::Config {
+                        message: "storage.primary.url must not be blank".to_string(),
+                    });
+                }
+                Ok(url.to_string())
+            }
+            (None, Some(env)) => {
+                if env.trim().is_empty() {
+                    return Err(QidError::Config {
+                        message: "storage.primary.url_env must not be blank".to_string(),
+                    });
+                }
+                let value = match std::env::var(env) {
+                    Ok(value) => value,
+                    Err(std::env::VarError::NotPresent) => {
+                        return Err(QidError::Config {
+                            message: format!("storage.primary.url_env {env} is not set"),
+                        });
+                    }
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        return Err(QidError::Config {
+                            message: format!("storage.primary.url_env {env} is not valid Unicode"),
+                        });
+                    }
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(QidError::Config {
+                        message: format!("storage.primary.url_env {env} is blank"),
+                    });
+                }
+                Ok(value.to_string())
+            }
+            (None, None) => Ok(default_url.into()),
+        }
     }
 }
 

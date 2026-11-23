@@ -937,7 +937,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn open_repo(config: &QidConfig) -> anyhow::Result<AnyRepository> {
-    let storage_url = config.storage.primary.resolve_url_or("qid-store.json");
+    let storage_url = config
+        .storage
+        .primary
+        .resolve_url_or("qid-store.json")
+        .context("failed to resolve storage URL")?;
     let repo = AnyRepository::connect(&storage_url)
         .await
         .context("failed to connect to storage")?;

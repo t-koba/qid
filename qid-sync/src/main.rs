@@ -170,7 +170,11 @@ async fn run(args: Args) -> anyhow::Result<serde_json::Value> {
 async fn open_state(config_path: &Path) -> anyhow::Result<Arc<SharedState<AnyRepository>>> {
     let config = QidConfig::from_file(config_path.to_str().context("invalid config path")?)
         .context("failed to load config")?;
-    let storage_url = config.storage.primary.resolve_url_or("qid-store.json");
+    let storage_url = config
+        .storage
+        .primary
+        .resolve_url_or("qid-store.json")
+        .context("failed to resolve storage URL")?;
     let repo = Arc::new(
         AnyRepository::connect(&storage_url)
             .await

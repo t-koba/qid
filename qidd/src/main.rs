@@ -213,7 +213,11 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
     }
 
     // Initialize storage.
-    let storage_url = config.storage.primary.resolve_url_or("sqlite:qid.db");
+    let storage_url = config
+        .storage
+        .primary
+        .resolve_url_or("sqlite:qid.db")
+        .context("failed to resolve storage URL")?;
     warn_when_file_storage_uses_distributed_cache(&config, &storage_url);
     let repo = Arc::new(
         AnyRepository::connect_with_file_flush_mode(&storage_url, file_flush_mode(&config)?)

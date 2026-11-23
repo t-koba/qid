@@ -1,4 +1,4 @@
-use qid_core::config::{PrimaryStorageConfig, QidConfig};
+use qid_core::config::{PrimaryStorageConfig, QidConfig, StorageCacheConfig};
 use qid_core::error::QidError;
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -196,4 +196,64 @@ fn qid_prefixed_url_env_is_rejected_by_config_loading() {
         message.contains("storage_url_regression_reserved"),
         "{message}"
     );
+}
+
+fn cache(url_env: Option<&str>, endpoints: &[&str]) -> StorageCacheConfig {
+    StorageCacheConfig {
+        kind: "valkey".to_string(),
+        url_env: url_env.map(str::to_string),
+        endpoints: endpoints.iter().map(|value| value.to_string()).collect(),
+        key_prefix: "qid".to_string(),
+        ttl_seconds: 60,
+    }
+}
+
+#[test]
+fn cache_explicit_endpoints_take_precedence_over_url_env() {
+    const NAME: &str = "QID_TEST_CACHE_URL_IGNORED";
+    let _guard = EnvGuard::set(NAME, "redis://env-cache:6379");
+    let config = cache(Some(NAME), &["redis://explicit-cache:6379"]);
+    assert_eq!(
+        config.resolve_endpoints().unwrap(),
+        vec!["redis://explicit-cache:6379"]
+    );
+}
+
+#[test]
+fn cache_missing_url_env_is_rejected_and_names_the_variable() {
+    const NAME: &str = "QID_TEST_CACHE_URL_MISSING";
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    unsafe { std::env::remove_var(NAME) };
+    let config = cache(Some(NAME), &[]);
+    let err = config.resolve_endpoints().unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }));
+    assert!(err.message().contains(NAME));
+    assert!(err.message().contains("not set"));
+}
+
+#[test]
+fn cache_blank_url_env_is_rejected() {
+    const NAME: &str = "QID_TEST_CACHE_URL_BLANK";
+    let _guard = EnvGuard::set(NAME, " \t ");
+    let config = cache(Some(NAME), &[]);
+    let err = config.resolve_endpoints().unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }));
+    assert!(err.message().contains(NAME));
+    assert!(err.message().contains("blank"));
+}
+
+#[test]
+fn cache_url_env_supplies_a_single_endpoint() {
+    const NAME: &str = "QID_TEST_CACHE_URL_VALID";
+    let _guard = EnvGuard::set(NAME, " redis://env-cache:6379 ");
+    let config = cache(Some(NAME), &[]);
+    assert_eq!(
+        config.resolve_endpoints().unwrap(),
+        vec!["redis://env-cache:6379"]
+    );
+}
+
+#[test]
+fn cache_without_a_url_source_has_no_endpoints() {
+    assert!(cache(None, &[]).resolve_endpoints().unwrap().is_empty());
 }

@@ -51,33 +51,7 @@ impl PrimaryStorageConfig {
                 }
                 Ok(url.to_string())
             }
-            (None, Some(env)) => {
-                if env.trim().is_empty() {
-                    return Err(QidError::Config {
-                        message: "storage.primary.url_env must not be blank".to_string(),
-                    });
-                }
-                let value = match std::env::var(env) {
-                    Ok(value) => value,
-                    Err(std::env::VarError::NotPresent) => {
-                        return Err(QidError::Config {
-                            message: format!("storage.primary.url_env {env} is not set"),
-                        });
-                    }
-                    Err(std::env::VarError::NotUnicode(_)) => {
-                        return Err(QidError::Config {
-                            message: format!("storage.primary.url_env {env} is not valid Unicode"),
-                        });
-                    }
-                };
-                let value = value.trim();
-                if value.is_empty() {
-                    return Err(QidError::Config {
-                        message: format!("storage.primary.url_env {env} is blank"),
-                    });
-                }
-                Ok(value.to_string())
-            }
+            (None, Some(env)) => read_url_env(env, "storage.primary"),
             (None, None) => Ok(default_url.into()),
         }
     }
@@ -85,6 +59,34 @@ impl PrimaryStorageConfig {
 
 fn default_storage_type() -> String {
     "sqlite".to_string()
+}
+
+fn read_url_env(env: &str, field: &str) -> QidResult<String> {
+    if env.trim().is_empty() {
+        return Err(QidError::Config {
+            message: format!("{field}.url_env must not be blank"),
+        });
+    }
+    let value = match std::env::var(env) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => {
+            return Err(QidError::Config {
+                message: format!("{field}.url_env {env} is not set"),
+            });
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(QidError::Config {
+                message: format!("{field}.url_env {env} is not valid Unicode"),
+            });
+        }
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(QidError::Config {
+            message: format!("{field}.url_env {env} is blank"),
+        });
+    }
+    Ok(value.to_string())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -165,6 +167,21 @@ impl Default for StorageCacheConfig {
             endpoints: Vec::new(),
             key_prefix: default_ops_cache_key_prefix(),
             ttl_seconds: default_ops_cache_ttl_seconds(),
+        }
+    }
+}
+
+impl StorageCacheConfig {
+    /// Resolve the cache endpoints from explicit configuration or, when no
+    /// endpoints are configured, from `url_env`. A configured but unusable
+    /// environment source fails instead of yielding an empty endpoint list.
+    pub fn resolve_endpoints(&self) -> QidResult<Vec<String>> {
+        if !self.endpoints.is_empty() {
+            return Ok(self.endpoints.clone());
+        }
+        match &self.url_env {
+            Some(env) => Ok(vec![read_url_env(env, "storage.cache")?]),
+            None => Ok(Vec::new()),
         }
     }
 }

@@ -127,15 +127,9 @@ pub(crate) fn cache_backend_config_from_qid(
     config: &QidConfig,
 ) -> anyhow::Result<CacheBackendConfig> {
     let cache = &config.storage.cache;
-    let endpoints = if cache.endpoints.is_empty() {
-        if let Some(env) = &cache.url_env {
-            std::env::var(env).map(|url| vec![url]).unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    } else {
-        cache.endpoints.clone()
-    };
+    let endpoints = cache
+        .resolve_endpoints()
+        .map_err(|err| anyhow::anyhow!(err.message().to_string()))?;
     Ok(CacheBackendConfig {
         kind: match cache.kind.as_str() {
             "disabled" => CacheBackendKind::Disabled,

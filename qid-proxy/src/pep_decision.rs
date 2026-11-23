@@ -3,7 +3,7 @@
 use axum::{
     Json, Router,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::IntoResponse,
     routing::post,
 };
@@ -656,11 +656,30 @@ fn deny_response(_err: &QidError) -> axum::response::Response {
         .into_response()
 }
 
+fn require_authzen_json_content_type(headers: &HeaderMap) -> QidResult<()> {
+    let is_json = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("application/json"));
+    if is_json {
+        Ok(())
+    } else {
+        Err(QidError::BadRequest {
+            message: "AuthZEN requests require Content-Type: application/json".to_string(),
+        })
+    }
+}
+
 async fn authzen_evaluate<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
     JsonObject(req): JsonObject<AuthZenEvaluationRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = require_authzen_json_content_type(&headers) {
+        return qid_http::error_response(e);
+    }
     let auth = match authenticate_authzen_adapter(&headers, &state) {
         Ok(auth) => auth,
         Err(e) => return qid_http::error_response(e),

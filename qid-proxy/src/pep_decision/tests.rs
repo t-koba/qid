@@ -1248,3 +1248,46 @@ fn quarantine_is_a_stable_positive_class_but_a_deny_at_the_wire() {
     assert_eq!(payload["status"], 403);
     assert_eq!(payload["body"]["error"], "quarantine_required");
 }
+
+#[test]
+fn authzen_content_type_requires_application_json() {
+    let mut headers = axum::http::HeaderMap::new();
+    assert!(require_authzen_json_content_type(&headers).is_err());
+
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        "text/plain".parse().expect("valid header value"),
+    );
+    let err = require_authzen_json_content_type(&headers).unwrap_err();
+    assert!(err.message().contains("application/json"));
+
+    for value in ["application/json", "application/json; charset=utf-8"] {
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            value.parse().expect("valid header value"),
+        );
+        require_authzen_json_content_type(&headers).expect("valid AuthZEN content type");
+    }
+}
+
+#[test]
+fn authzen_request_rejects_missing_or_mistyped_required_fields() {
+    let mut missing = serde_json::json!({
+        "subject": { "type": "user", "id": "alice@example.com" },
+        "action": { "name": "read" }
+    });
+    assert!(serde_json::from_value::<AuthZenEvaluationRequest>(missing.clone()).is_err());
+
+    missing["resource"] = serde_json::json!("document");
+    assert!(serde_json::from_value::<AuthZenEvaluationRequest>(missing).is_err());
+
+    let mut mistyped = serde_json::json!({
+        "subject": { "type": "user", "id": "alice@example.com" },
+        "action": { "name": 7 },
+        "resource": { "type": "document", "id": "doc-1" }
+    });
+    assert!(serde_json::from_value::<AuthZenEvaluationRequest>(mistyped.clone()).is_err());
+
+    mistyped["action"]["name"] = serde_json::json!("read");
+    serde_json::from_value::<AuthZenEvaluationRequest>(mistyped).expect("valid request");
+}

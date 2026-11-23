@@ -1,7 +1,7 @@
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce, aead::Aead};
 use base64::Engine;
 use qid_core::error::{QidError, QidResult};
-use rand::Rng;
+use rand::RngCore;
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::{Oaep, PrivateKey, PublicKey, sha2::Sha256};
 use serde::{Deserialize, Serialize};
@@ -73,9 +73,10 @@ pub fn encrypt_assertion_xml(
     let pub_key = PublicKey::from_public_key_der(&spki_der).map_err(|e| QidError::BadRequest {
         message: format!("SP encryption certificate does not contain a valid RSA public key: {e}"),
     })?;
-    let mut gen_rng = rand::thread_rng();
-    let cek: [u8; 32] = gen_rng.r#gen();
-    let nonce_bytes: [u8; 12] = gen_rng.r#gen();
+    let mut cek = [0u8; 32];
+    let mut nonce_bytes = [0u8; 12];
+    rand::rngs::OsRng.fill_bytes(&mut cek);
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
     let key = Key::<Aes256Gcm>::from_slice(&cek);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(&nonce_bytes);

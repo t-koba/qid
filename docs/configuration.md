@@ -699,6 +699,13 @@ issuer, `qid_identity` scope, holder proof, subject or realm does not substitute
 for audience authorization. Scope, sender constraints, holder ownership and
 realm/issuer checks still apply independently.
 
+`realms[].protocols.vc.max_credential_lifetime_seconds` is the
+per-realm ceiling for requested VC lifetimes; it defaults to `86400`
+seconds (24 hours). Issuance requests that omit `lifetime_seconds` use
+`3600` seconds. A requested lifetime of `0` or more than the ceiling is
+rejected before a credential is issued. This ceiling is separate from
+token and refresh-token TTLs.
+
 Configure a separate deployment-level `oidc_token` keyring for the primary,
 as in the VC samples. VC configurations require the selected first `oidc_token`
 keyring to be deployment-level, so primary signing cannot reuse a VC-only or

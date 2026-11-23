@@ -76,19 +76,29 @@ fn explicit_url_is_used_without_an_environment_source() {
 }
 
 #[test]
-fn url_and_url_env_together_are_rejected() {
-    let config = primary(
-        Some("postgres://explicit"),
-        Some("QID_TEST_STORAGE_URL_AMBIGUOUS"),
+fn explicit_url_takes_precedence_over_url_env() {
+    const NAME: &str = "QID_TEST_STORAGE_URL_IGNORED";
+    let _guard = EnvGuard::set(NAME, "postgres://env-host/db");
+    let config = primary(Some("postgres://explicit"), Some(NAME));
+    assert_eq!(
+        config.resolve_url_or("sqlite:fallback.db").unwrap(),
+        "postgres://explicit"
     );
-    let err = config.resolve_url_or("sqlite:fallback.db").unwrap_err();
-    assert!(matches!(err, QidError::Config { .. }));
-    assert!(err.message().contains("both url and url_env"));
 }
 
 #[test]
 fn blank_url_is_rejected() {
     let config = primary(Some("  "), None);
+    let err = config.resolve_url_or("sqlite:fallback.db").unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }));
+    assert!(err.message().contains("url must not be blank"));
+}
+
+#[test]
+fn blank_url_is_rejected_even_with_a_valid_url_env() {
+    const NAME: &str = "QID_TEST_STORAGE_URL_BLANK_WITH_EXPLICIT";
+    let _guard = EnvGuard::set(NAME, "postgres://env-host/db");
+    let config = primary(Some(" \t "), Some(NAME));
     let err = config.resolve_url_or("sqlite:fallback.db").unwrap_err();
     assert!(matches!(err, QidError::Config { .. }));
     assert!(err.message().contains("url must not be blank"));

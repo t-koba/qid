@@ -33,26 +33,23 @@ impl Default for PrimaryStorageConfig {
 }
 
 impl PrimaryStorageConfig {
-    /// Resolve the effective storage URL from the configured `url` or
-    /// `url_env`. The caller's `default_url` applies only when neither is
-    /// configured: an unusable configured source fails instead of falling
-    /// back to it. Values are trimmed before use.
+    /// Resolve the effective storage URL from the configured sources. An
+    /// explicit `url` takes precedence over `url_env`; the caller's
+    /// `default_url` applies only when neither is configured. An unusable
+    /// selected source fails instead of falling back. Values are trimmed.
     pub fn resolve_url_or(&self, default_url: impl Into<String>) -> QidResult<String> {
-        match (&self.url, &self.url_env) {
-            (Some(_), Some(_)) => Err(QidError::Config {
-                message: "storage.primary must not set both url and url_env".to_string(),
-            }),
-            (Some(url), None) => {
-                let url = url.trim();
-                if url.is_empty() {
-                    return Err(QidError::Config {
-                        message: "storage.primary.url must not be blank".to_string(),
-                    });
-                }
-                Ok(url.to_string())
+        if let Some(url) = &self.url {
+            let url = url.trim();
+            if url.is_empty() {
+                return Err(QidError::Config {
+                    message: "storage.primary.url must not be blank".to_string(),
+                });
             }
-            (None, Some(env)) => read_url_env(env, "storage.primary"),
-            (None, None) => Ok(default_url.into()),
+            return Ok(url.to_string());
+        }
+        match &self.url_env {
+            Some(env) => read_url_env(env, "storage.primary"),
+            None => Ok(default_url.into()),
         }
     }
 }

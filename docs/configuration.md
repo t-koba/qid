@@ -483,8 +483,8 @@ read as a configuration override instead of a storage URL. The samples use
 - `immediate`: default; every mutation is flushed durably before returning.
 - `interval_ms(N)`: mutations mark the store dirty and a background task flushes at the interval; `qidd` also flushes during graceful shutdown.
 
-`url` and `url_env` are mutually exclusive; configuring both is rejected. A
-configured `url` must not be blank. A configured `url_env` is required: the
+An explicit `url` takes precedence over `url_env`, which is ignored when `url`
+is configured. A configured `url` must not be blank, even when `url_env` is also set. A configured `url_env` is required: the
 daemon and every tool fail at startup or when a command opens storage if the
 named variable is unset, non-Unicode, or blank after trimming. The error names
 the variable but never prints its value. The caller default applies only when

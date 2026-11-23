@@ -144,6 +144,34 @@ async fn native_mtls_boundary_layer(
     next.run(request).await
 }
 
+fn with_http_middleware(app: Router<AppState>, config: &QidConfig, state: AppState) -> Router<()> {
+    app.layer(axum::middleware::from_fn(http_metrics_layer))
+        .layer(axum::middleware::from_fn_with_state(
+            config.server.paths.clone(),
+            qid_http::csrf_protection_layer_with_server_paths,
+        ))
+        .layer(axum::middleware::from_fn(qid_http::csp_headers_layer))
+        .layer(axum::middleware::from_fn(
+            qid_http::zero_rtt_rejection_layer,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            effective_hsts_config(&config.server.hsts, &config.server.public_base_url),
+            qid_http::hsts_layer,
+        ))
+        .layer(axum::middleware::from_fn(
+            qid_http::security_headers_middleware,
+        ))
+        .layer(qid_http::cors_layer(&config.server.cors))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            native_mtls_boundary_layer,
+        ))
+        // Outermost: even layers that reject before reaching the handler must
+        // carry the request ID on their response.
+        .layer(axum::middleware::from_fn(request_id_layer))
+        .with_state(state)
+}
+
 fn log_and_reject_diagnostic_checks(checks: &[CheckItem], phase: &str) -> anyhow::Result<()> {
     let mut errors = 0usize;
     let mut warnings = 0usize;
@@ -347,30 +375,7 @@ async fn run(args: &Args, config: QidConfig) -> anyhow::Result<()> {
         app = app.merge(qid_vc::vc_routes::<AnyRepository>());
     }
 
-    let app = app
-        .layer(axum::middleware::from_fn(request_id_layer))
-        .layer(axum::middleware::from_fn(http_metrics_layer))
-        .layer(axum::middleware::from_fn_with_state(
-            config.server.paths.clone(),
-            qid_http::csrf_protection_layer_with_server_paths,
-        ))
-        .layer(axum::middleware::from_fn(qid_http::csp_headers_layer))
-        .layer(axum::middleware::from_fn(
-            qid_http::zero_rtt_rejection_layer,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            effective_hsts_config(&config.server.hsts, &config.server.public_base_url),
-            qid_http::hsts_layer,
-        ))
-        .layer(axum::middleware::from_fn(
-            qid_http::security_headers_middleware,
-        ))
-        .layer(qid_http::cors_layer(&config.server.cors))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            native_mtls_boundary_layer,
-        ))
-        .with_state(state.clone());
+    let app = with_http_middleware(app, &config, state.clone());
 
     let addr: std::net::SocketAddr =
         state
@@ -1818,6 +1823,51 @@ mod tests {
                 .expect("repository should initialize"),
         );
         (state_dir, repo)
+    }
+
+    #[tokio::test]
+    async fn request_id_is_echoed_on_early_rejection() {
+        use qid_crypto::LocalSigner;
+        use tower::ServiceExt;
+
+        let config = minimal_config();
+        let (state_dir, repo) = test_repo("request-id-early-rejection").await;
+        let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
+        let state: AppState = Arc::new(
+            SharedState::new(config.clone(), repo, signer, json!({}))
+                .expect("state should initialize"),
+        );
+        let app = with_http_middleware(
+            Router::<AppState>::new().route("/health", get(|| async { "ok" })),
+            &config,
+            state,
+        );
+
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header("early-data", "1")
+            .header("x-request-id", "req+daemon/reject")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_EARLY);
+        assert_eq!(
+            response
+                .headers()
+                .get("early-data")
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("req+daemon/reject")
+        );
+        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     fn free_udp_bind() -> Option<String> {

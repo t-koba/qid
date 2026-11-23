@@ -1413,3 +1413,71 @@ async fn authzen_evaluation_error_responses() {
 
     drop(path);
 }
+
+fn authzen_route_config() -> QidConfig {
+    let mut config = pep_adapter_config(true);
+    let capabilities = &mut config.realms[0].pep_registrations.registrations[0].capabilities;
+    capabilities.push(qid_core::config::PepCapabilityConfig {
+        effect: "authzen".to_string(),
+    });
+    capabilities.push(qid_core::config::PepCapabilityConfig {
+        effect: "policy_tags".to_string(),
+    });
+    config
+}
+
+#[tokio::test]
+async fn authzen_evaluation_returns_the_same_decision_for_repeated_requests() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header::AUTHORIZATION, header::CONTENT_TYPE},
+    };
+    use tower::ServiceExt;
+
+    let (state, path) = cache_ttl_state(authzen_route_config(), "allow").await;
+    let state = Arc::new(state);
+    let app = pep_decision_routes(&state.config.server.paths).with_state(state.clone());
+    let body = serde_json::json!({
+        "subject": {
+            "type": "user",
+            "id": "alice@example.com",
+            "properties": {"groups": ["finance", "engineering"]}
+        },
+        "action": {"name": "document.read"},
+        "resource": {
+            "type": "document",
+            "id": "finance.example.com",
+            "properties": {"host": "finance.example.com"}
+        }
+    })
+    .to_string();
+
+    let mut decisions = Vec::new();
+    for _ in 0..2 {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/access/v1/evaluation")
+            .header(CONTENT_TYPE, "application/json")
+            .header(
+                AUTHORIZATION,
+                format!("Bearer {}", pep_adapter_token(&state)),
+            )
+            .body(Body::from(body.clone()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 16_384).await.unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "body: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["decision"], true);
+        decisions.push(json["decision"].clone());
+    }
+    assert_eq!(decisions[0], decisions[1]);
+
+    drop(path);
+}

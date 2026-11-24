@@ -198,12 +198,15 @@ fn is_cross_site_request(headers: &HeaderMap, uri: &Uri) -> bool {
     if let Some(referer) = headers.get(REFERER).and_then(header_to_str) {
         return !same_origin(referer, headers, uri);
     }
+    // Sec-Fetch-Site is a fallback only when Origin and Referer are absent.
+    // `same-site` means the same registrable site but a different origin, so it
+    // does not satisfy a same-origin CSRF check. Unknown values fail closed too.
     matches!(
         headers
             .get("sec-fetch-site")
             .and_then(header_to_str)
             .map(|value| value.to_ascii_lowercase()),
-        Some(value) if value == "cross-site"
+        Some(value) if !matches!(value.as_str(), "same-origin" | "none")
     )
 }
 
@@ -696,10 +699,22 @@ mod tests {
     }
 
     #[test]
-    fn csrf_rejects_cross_site_fetch_metadata_without_origin() {
-        let headers = headers(&[("host", "id.example.com"), ("sec-fetch-site", "cross-site")]);
+    fn csrf_rejects_non_same_origin_fetch_metadata_without_origin() {
         let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(is_cross_site_request(&headers, &uri));
+        for site in ["cross-site", "same-site", "unknown"] {
+            let headers = headers(&[("host", "id.example.com"), ("sec-fetch-site", site)]);
+            assert!(is_cross_site_request(&headers, &uri), "site {site}");
+        }
+    }
+
+    #[test]
+    fn csrf_allows_same_origin_fetch_metadata_without_origin() {
+        let headers = headers(&[
+            ("host", "id.example.com"),
+            ("sec-fetch-site", "same-origin"),
+        ]);
+        let uri = Uri::from_static("/admin/api/v1/test/clients");
+        assert!(!is_cross_site_request(&headers, &uri));
     }
 
     #[test]

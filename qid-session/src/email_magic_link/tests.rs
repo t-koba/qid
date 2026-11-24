@@ -119,8 +119,8 @@ impl Fixture {
         let app = crate::auth_routes(&state.paths)
             .with_state(state.clone())
             .layer(axum::middleware::from_fn_with_state(
-                state.paths.clone(),
-                qid_http::csrf_protection_layer_with_server_paths,
+                qid_http::CsrfConfig::new(state.paths.clone(), "https"),
+                qid_http::csrf_protection_layer,
             ))
             .layer(axum::middleware::from_fn(qid_http::csp_headers_layer))
             .layer(axum::middleware::from_fn(

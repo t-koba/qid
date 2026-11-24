@@ -504,6 +504,20 @@ pub fn effective_hsts_config(config: &HstsConfig, public_base_url: &str) -> Hsts
     }
 }
 
+/// Resolve the deployment public scheme used as the last-resort expected
+/// scheme for same-origin CSRF checks.
+///
+/// Only a successfully parsed URL with scheme exactly `http` returns `http`.
+/// Https, invalid and unsupported URLs fall back to `https` so a bad
+/// configuration cannot weaken the check.
+pub fn public_url_scheme(public_base_url: &str) -> &'static str {
+    if url::Url::parse(public_base_url).is_ok_and(|url| url.scheme() == "http") {
+        "http"
+    } else {
+        "https"
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HttpMessageSignaturesConfig {

@@ -7,7 +7,9 @@ use axum::{
     routing::get,
 };
 use clap::Parser;
-use qid_core::config::{DeploymentProfile, QidConfig, StaticClientConfig, effective_hsts_config};
+use qid_core::config::{
+    DeploymentProfile, QidConfig, StaticClientConfig, effective_hsts_config, public_url_scheme,
+};
 use qid_core::jwt::Signer;
 use qid_core::models::{Client, PolicyBundle};
 use qid_core::state::{SharedState, WorkloadCaMaterial};
@@ -147,8 +149,11 @@ async fn native_mtls_boundary_layer(
 fn with_http_middleware(app: Router<AppState>, config: &QidConfig, state: AppState) -> Router<()> {
     app.layer(axum::middleware::from_fn(http_metrics_layer))
         .layer(axum::middleware::from_fn_with_state(
-            config.server.paths.clone(),
-            qid_http::csrf_protection_layer_with_server_paths,
+            qid_http::CsrfConfig::new(
+                config.server.paths.clone(),
+                public_url_scheme(&config.server.public_base_url),
+            ),
+            qid_http::csrf_protection_layer,
         ))
         .layer(axum::middleware::from_fn(qid_http::csp_headers_layer))
         .layer(axum::middleware::from_fn(

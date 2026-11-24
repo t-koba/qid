@@ -159,20 +159,37 @@ fn matches_path_template(template: &str, path: &str) -> bool {
     }
 }
 
+/// State for same-origin CSRF protection: configured paths and the fallback
+/// scheme from the deployment's `server.public_base_url`.
+#[derive(Clone, Debug)]
+pub struct CsrfConfig {
+    paths: ServerPaths,
+    public_scheme: String,
+}
+
+impl CsrfConfig {
+    pub fn new(paths: ServerPaths, public_scheme: &str) -> Self {
+        Self {
+            paths,
+            public_scheme: public_scheme.to_string(),
+        }
+    }
+}
+
 /// CSRF protection that exempts non-cookie OAuth routes.
 ///
-/// Wire with `axum::middleware::from_fn_with_state(paths, ..)` so configured
-/// `server.paths` are honoured. Approval sub-paths (`.../approve`) remain
-/// protected because matching is exact, except for the templated dynamic
-/// client registration management route.
-pub async fn csrf_protection_layer_with_server_paths(
-    State(paths): State<ServerPaths>,
+/// Wire with `axum::middleware::from_fn_with_state(CsrfConfig::new(..), ..)`
+/// so configured `server.paths` and the public scheme are honoured. Approval
+/// sub-paths (`.../approve`) remain protected because matching is exact,
+/// except for the templated dynamic client registration management route.
+pub async fn csrf_protection_layer(
+    State(config): State<CsrfConfig>,
     req: Request,
     next: Next,
 ) -> Response {
     if is_state_changing_method(req.method())
-        && !is_csrf_exempt_path(req.uri().path(), &paths)
-        && is_cross_site_request(req.headers(), req.uri())
+        && !is_csrf_exempt_path(req.uri().path(), &config.paths)
+        && is_cross_site_request(req.headers(), req.uri(), config.public_scheme.as_str())
     {
         warn!(
             method = %req.method(),
@@ -191,12 +208,12 @@ fn is_state_changing_method(method: &Method) -> bool {
     )
 }
 
-fn is_cross_site_request(headers: &HeaderMap, uri: &Uri) -> bool {
+fn is_cross_site_request(headers: &HeaderMap, uri: &Uri, public_scheme: &str) -> bool {
     if let Some(origin) = headers.get(ORIGIN).and_then(header_to_str) {
-        return !same_origin(origin, headers, uri);
+        return !same_origin(origin, headers, uri, public_scheme);
     }
     if let Some(referer) = headers.get(REFERER).and_then(header_to_str) {
-        return !same_origin(referer, headers, uri);
+        return !same_origin(referer, headers, uri, public_scheme);
     }
     // Sec-Fetch-Site is a fallback only when Origin and Referer are absent.
     // `same-site` means the same registrable site but a different origin, so it
@@ -210,7 +227,7 @@ fn is_cross_site_request(headers: &HeaderMap, uri: &Uri) -> bool {
     )
 }
 
-fn same_origin(candidate: &str, headers: &HeaderMap, uri: &Uri) -> bool {
+fn same_origin(candidate: &str, headers: &HeaderMap, uri: &Uri, public_scheme: &str) -> bool {
     let Some((candidate_scheme, candidate_host)) = parse_origin(candidate) else {
         return false;
     };
@@ -221,7 +238,7 @@ fn same_origin(candidate: &str, headers: &HeaderMap, uri: &Uri) -> bool {
         .get("x-forwarded-proto")
         .and_then(header_to_str)
         .or_else(|| uri.scheme_str())
-        .unwrap_or("https");
+        .unwrap_or(public_scheme);
     candidate_scheme.eq_ignore_ascii_case(expected_scheme)
         && candidate_host.eq_ignore_ascii_case(expected_host)
 }
@@ -685,7 +702,7 @@ mod tests {
             ("origin", "https://id.example.com"),
         ]);
         let uri = Uri::from_static("/oauth2/token");
-        assert!(!is_cross_site_request(&headers, &uri));
+        assert!(!is_cross_site_request(&headers, &uri, "https"));
     }
 
     #[test]
@@ -695,7 +712,7 @@ mod tests {
             ("origin", "https://evil.example.com"),
         ]);
         let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(is_cross_site_request(&headers, &uri));
+        assert!(is_cross_site_request(&headers, &uri, "https"));
     }
 
     #[test]
@@ -703,7 +720,10 @@ mod tests {
         let uri = Uri::from_static("/admin/api/v1/test/clients");
         for site in ["cross-site", "same-site", "unknown"] {
             let headers = headers(&[("host", "id.example.com"), ("sec-fetch-site", site)]);
-            assert!(is_cross_site_request(&headers, &uri), "site {site}");
+            assert!(
+                is_cross_site_request(&headers, &uri, "https"),
+                "site {site}"
+            );
         }
     }
 
@@ -714,14 +734,51 @@ mod tests {
             ("sec-fetch-site", "same-origin"),
         ]);
         let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(!is_cross_site_request(&headers, &uri));
+        assert!(!is_cross_site_request(&headers, &uri, "https"));
     }
 
     #[test]
     fn csrf_allows_machine_clients_without_browser_signal() {
         let headers = headers(&[("host", "id.example.com")]);
         let uri = Uri::from_static("/oauth2/token");
-        assert!(!is_cross_site_request(&headers, &uri));
+        assert!(!is_cross_site_request(&headers, &uri, "https"));
+    }
+
+    #[test]
+    fn csrf_accepts_origin_form_http_request_with_http_public_scheme() {
+        let headers = headers(&[
+            ("host", "localhost:8080"),
+            ("origin", "http://localhost:8080"),
+        ]);
+        let uri = Uri::from_static("/oauth2/authorize");
+        assert!(!is_cross_site_request(&headers, &uri, "http"));
+    }
+
+    #[test]
+    fn csrf_rejects_origin_form_http_request_with_https_public_scheme() {
+        let headers = headers(&[
+            ("host", "localhost:8080"),
+            ("origin", "http://localhost:8080"),
+        ]);
+        let uri = Uri::from_static("/oauth2/authorize");
+        assert!(is_cross_site_request(&headers, &uri, "https"));
+    }
+
+    #[test]
+    fn csrf_forwarded_proto_overrides_public_scheme() {
+        let uri = Uri::from_static("/oauth2/authorize");
+        let secure = headers(&[
+            ("host", "localhost:8080"),
+            ("origin", "https://localhost:8080"),
+            ("x-forwarded-proto", "https"),
+        ]);
+        assert!(!is_cross_site_request(&secure, &uri, "http"));
+        let insecure = headers(&[
+            ("host", "localhost:8080"),
+            ("origin", "http://localhost:8080"),
+            ("x-forwarded-proto", "http"),
+        ]);
+        assert!(!is_cross_site_request(&insecure, &uri, "https"));
     }
 
     #[test]
@@ -1211,8 +1268,8 @@ mod tests {
             .route(&token_path, post(|| async { "token-ok" }))
             .route(&session_template, post(|| async { "session-ok" }))
             .layer(axum::middleware::from_fn_with_state(
-                paths.clone(),
-                csrf_protection_layer_with_server_paths,
+                CsrfConfig::new(paths.clone(), "https"),
+                csrf_protection_layer,
             ))
             .layer(axum::middleware::from_fn(csp_headers_layer))
             .layer(axum::middleware::from_fn(zero_rtt_rejection_layer))

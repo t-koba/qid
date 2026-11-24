@@ -3817,3 +3817,16 @@ fn inbound_kerberos_provider_rejects_inline_key_material() {
         );
     }
 }
+
+#[test]
+fn public_url_scheme_falls_back_to_https() {
+    assert_eq!(public_url_scheme("http://localhost:8080"), "http");
+    for url in [
+        "https://id.example.com",
+        "ftp://id.example.com",
+        "not a url",
+        "",
+    ] {
+        assert_eq!(public_url_scheme(url), "https", "url {url}");
+    }
+}

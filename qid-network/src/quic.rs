@@ -7,6 +7,10 @@
 //! Feature-gated behind `quic`.
 
 use qid_core::error::{QidError, QidResult};
+use rustls::pki_types::{
+    CertificateDer, PrivateKeyDer,
+    pem::{self as pki_pem, PemObject},
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -224,8 +228,7 @@ fn build_tls_server_config(
     private_key_der: &[u8],
 ) -> QidResult<rustls::ServerConfig> {
     let cert_chain = if certificate_der.starts_with(b"-----BEGIN ") {
-        let mut certificate_reader = certificate_der;
-        let certs = rustls_pemfile::certs(&mut certificate_reader)
+        let certs = CertificateDer::pem_slice_iter(certificate_der)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| QidError::Crypto {
                 message: format!("failed to parse QUIC TLS certificate PEM: {e}"),
@@ -237,20 +240,23 @@ fn build_tls_server_config(
         }
         certs
     } else {
-        vec![rustls::pki_types::CertificateDer::from(
-            certificate_der.to_vec(),
-        )]
+        vec![CertificateDer::from(certificate_der.to_vec())]
     };
 
     let key = if private_key_der.starts_with(b"-----BEGIN ") {
-        let mut private_key_reader = private_key_der;
-        rustls_pemfile::private_key(&mut private_key_reader)
-            .map_err(|e| QidError::Crypto {
-                message: format!("failed to parse QUIC TLS private key PEM: {e}"),
-            })?
-            .ok_or_else(|| QidError::Crypto {
-                message: "QUIC TLS private key PEM contains no keys".to_string(),
-            })?
+        match PrivateKeyDer::from_pem_slice(private_key_der) {
+            Ok(key) => key,
+            Err(pki_pem::Error::NoItemsFound) => {
+                return Err(QidError::Crypto {
+                    message: "QUIC TLS private key PEM contains no keys".to_string(),
+                });
+            }
+            Err(error) => {
+                return Err(QidError::Crypto {
+                    message: format!("failed to parse QUIC TLS private key PEM: {error}"),
+                });
+            }
+        }
     } else {
         rustls::pki_types::PrivatePkcs8KeyDer::from(private_key_der.to_vec()).into()
     };

@@ -14,6 +14,7 @@ use qid_core::{
     state::SharedState,
 };
 use qid_storage::prelude::*;
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use std::sync::Arc;
 
 async fn authenticate<R: Repository>(
@@ -100,7 +101,7 @@ fn cms_response(pem: &str, leaf_only: bool) -> QidResult<Response> {
         message: "EST certificate encoding failed".into(),
     };
     let mut certificates = Vec::new();
-    for cert in rustls_pemfile::certs(&mut pem.as_bytes()) {
+    for cert in CertificateDer::pem_slice_iter(pem.as_bytes()) {
         certificates.push(
             Certificate::from_der(cert.map_err(|_| crypto())?.as_ref()).map_err(|_| crypto())?,
         );

@@ -1,5 +1,10 @@
 [advisories]
 ignore = [
+    # RUSTSEC-2025-0134: rustls-pemfile is unmaintained (INFO, no patched
+    # release). qid no longer calls it directly after migrating PEM parsing to
+    # rustls-pki-types; it remains only transitively through axum-server 0.7.3
+    # (tls-rustls) and tonic 0.12.3. Keep this exception in sync with
+    # deny.toml until those dependencies no longer pull it in.
     "RUSTSEC-2025-0134",
     # RUSTSEC-2026-0543: chrono is flagged "unmaintained" (category INFO,
     # no known vulnerability, no patched release). Maintenance notice, not a

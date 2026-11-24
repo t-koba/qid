@@ -3,7 +3,10 @@ use anyhow::{Context, bail};
 use axum::{Router, http::Request};
 use axum_server::{accept::Accept, tls_rustls::RustlsAcceptor};
 use qid_core::{config::TlsConfig, util::base64_url_encode};
-use rustls_pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
+use rustls_pki_types::{
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
+    pem::{self, PemObject},
+};
 use sha2::{Digest, Sha256};
 use std::{future::Future, io, pin::Pin, sync::Arc};
 use tokio::{
@@ -195,8 +198,7 @@ pub fn load_rustls_config(
 
 fn read_certificates(path: &str, label: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let bytes = std::fs::read(path).with_context(|| format!("failed to read {label} {path}"))?;
-    let mut input = bytes.as_slice();
-    let certificates = rustls_pemfile::certs(&mut input)
+    let certificates = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
         .with_context(|| format!("failed to parse {label} PEM {path}"))?;
     if certificates.is_empty() {
@@ -208,16 +210,19 @@ fn read_certificates(path: &str, label: &str) -> anyhow::Result<Vec<CertificateD
 fn read_private_key(path: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
     let bytes =
         std::fs::read(path).with_context(|| format!("failed to read server private key {path}"))?;
-    rustls_pemfile::private_key(&mut bytes.as_slice())
-        .with_context(|| format!("failed to parse server private key PEM {path}"))?
-        .with_context(|| format!("server private key PEM contains no key: {path}"))
+    match PrivateKeyDer::from_pem_slice(&bytes) {
+        Ok(key) => Ok(key),
+        Err(pem::Error::NoItemsFound) => bail!("server private key PEM contains no key: {path}"),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to parse server private key PEM {path}"))
+        }
+    }
 }
 
 fn read_crls(path: &str) -> anyhow::Result<Vec<CertificateRevocationListDer<'static>>> {
     let bytes = std::fs::read(path).with_context(|| format!("failed to read client CRL {path}"))?;
     if bytes.starts_with(b"-----BEGIN ") {
-        let mut input = bytes.as_slice();
-        let crls = rustls_pemfile::crls(&mut input)
+        let crls = CertificateRevocationListDer::pem_slice_iter(&bytes)
             .collect::<Result<Vec<_>, _>>()
             .with_context(|| format!("failed to parse client CRL PEM {path}"))?;
         if crls.is_empty() {

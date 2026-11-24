@@ -3,6 +3,8 @@
 #[cfg(feature = "radius-tls")]
 use qid_core::error::{QidError, QidResult};
 #[cfg(feature = "radius-tls")]
+use rustls_pki_types::pem::{self as pki_pem, PemObject};
+#[cfg(feature = "radius-tls")]
 use std::sync::Arc;
 #[cfg(feature = "radius-tls")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -279,10 +281,10 @@ fn build_radius_tls_server_config(
 
 #[cfg(feature = "radius-tls")]
 fn parse_certificate_chain(
-    mut certificate_der: &[u8],
+    certificate_der: &[u8],
 ) -> QidResult<Vec<rustls_pki_types::CertificateDer<'static>>> {
     if certificate_der.starts_with(b"-----BEGIN ") {
-        let certs = rustls_pemfile::certs(&mut certificate_der)
+        let certs = rustls_pki_types::CertificateDer::pem_slice_iter(certificate_der)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| QidError::BadRequest {
                 message: format!("RADIUS/TLS certificate PEM is invalid: {error}"),
@@ -302,17 +304,18 @@ fn parse_certificate_chain(
 
 #[cfg(feature = "radius-tls")]
 fn parse_private_key(
-    mut private_key_der: &[u8],
+    private_key_der: &[u8],
 ) -> QidResult<rustls_pki_types::PrivateKeyDer<'static>> {
     if private_key_der.starts_with(b"-----BEGIN ") {
-        let mut keys = rustls_pemfile::private_key(&mut private_key_der).map_err(|error| {
-            QidError::BadRequest {
+        match rustls_pki_types::PrivateKeyDer::from_pem_slice(private_key_der) {
+            Ok(key) => Ok(key),
+            Err(pki_pem::Error::NoItemsFound) => Err(QidError::BadRequest {
+                message: "RADIUS/TLS private key PEM does not contain a private key".to_string(),
+            }),
+            Err(error) => Err(QidError::BadRequest {
                 message: format!("RADIUS/TLS private key PEM is invalid: {error}"),
-            }
-        })?;
-        keys.take().ok_or_else(|| QidError::BadRequest {
-            message: "RADIUS/TLS private key PEM does not contain a private key".to_string(),
-        })
+            }),
+        }
     } else {
         rustls_pki_types::PrivateKeyDer::try_from(private_key_der.to_vec()).map_err(|error| {
             QidError::BadRequest {

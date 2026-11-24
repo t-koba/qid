@@ -15,6 +15,10 @@ use std::sync::Arc;
 
 use super::not_found_response;
 use qid_core::models::{WorkloadCertificate, WorkloadIdentity};
+use rustls_pki_types::{
+    CertificateSigningRequestDer,
+    pem::{self, PemObject},
+};
 
 //
 // Workload identity
@@ -229,16 +233,18 @@ fn parse_workload_csr(
     {
         return Err(invalid());
     }
-    // rustls-pemfile resets its section on nested markers, so reject them first.
+    // The PEM reader treats a nested marker as a new section, so reject them first.
     if envelope.matches("-----BEGIN").count() != 1 || envelope.matches("-----END").count() != 1 {
         return Err(invalid());
     }
-    let Some((rustls_pemfile::Item::Csr(der), rest)) =
-        rustls_pemfile::read_one_from_slice(envelope.as_bytes()).map_err(|_| invalid())?
-    else {
+    let mut envelope_bytes = envelope.as_bytes();
+    let Some((kind, section)) = pem::from_buf(&mut envelope_bytes).map_err(|_| invalid())? else {
         return Err(invalid());
     };
-    if !rest.iter().all(u8::is_ascii_whitespace) {
+    let Some(der) = CertificateSigningRequestDer::from_pem(kind, section) else {
+        return Err(invalid());
+    };
+    if !envelope_bytes.iter().all(u8::is_ascii_whitespace) {
         return Err(invalid());
     }
     parse_workload_csr_der(&der)

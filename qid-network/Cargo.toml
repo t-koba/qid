@@ -12,8 +12,8 @@ rust-version.workspace = true
 
 [features]
 default = []
-quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile"]
-radius-tls = ["dep:rustls", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:tokio-rustls"]
+quic = ["dep:quinn", "dep:rustls"]
+radius-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls"]
 
 [dependencies]
 hkdf = { workspace = true }
@@ -23,7 +23,6 @@ qid-core = { workspace = true }
 quinn = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
-rustls-pemfile = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

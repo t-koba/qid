@@ -38,7 +38,6 @@ sigstore-tsa = { workspace = true }
 tokio = { workspace = true }
 ulid = { workspace = true }
 zeroize = { workspace = true }
-rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 
 [dev-dependencies]

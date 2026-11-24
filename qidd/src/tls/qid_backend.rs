@@ -8,6 +8,7 @@ use qid_tls::tls12::{
     ServerHandshake, ServerHandshakeConfig, ServerHandshakeState, Tls12Error,
 };
 use rand::{RngCore, rngs::OsRng};
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use std::{
     future::Future,
     io,
@@ -100,7 +101,7 @@ fn load_server_config(config: &TlsConfig) -> anyhow::Result<ServerConfig> {
 fn read_certificates(path: &str) -> anyhow::Result<Vec<Vec<u8>>> {
     let bytes =
         std::fs::read(path).with_context(|| format!("failed to read server certificate {path}"))?;
-    let certificates = rustls_pemfile::certs(&mut bytes.as_slice())
+    let certificates = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
         .with_context(|| format!("failed to parse server certificate PEM {path}"))?;
     if certificates.is_empty() {

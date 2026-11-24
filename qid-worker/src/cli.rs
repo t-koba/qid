@@ -13,6 +13,7 @@ use qid_worker::{
     run_audit_siem_redrive_job, run_audit_worm_archive_job, run_directory_sync_job,
     run_key_rotation_execution_job, run_key_rotation_planning_job, run_notification_delivery_job,
 };
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use std::{
     cell::RefCell,
     fs::{self, OpenOptions},
@@ -767,7 +768,7 @@ fn load_timestamp_config(
     for path in ca_paths {
         let bytes = fs::read(&path)
             .with_context(|| format!("failed to read TSA CA bundle {}", path.display()))?;
-        let certificates = rustls_pemfile::certs(&mut bytes.as_slice())
+        let certificates = CertificateDer::pem_slice_iter(&bytes)
             .collect::<Result<Vec<_>, _>>()
             .with_context(|| format!("failed to parse TSA CA bundle {}", path.display()))?;
         ensure!(

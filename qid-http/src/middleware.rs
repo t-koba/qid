@@ -209,11 +209,20 @@ fn is_state_changing_method(method: &Method) -> bool {
 }
 
 fn is_cross_site_request(headers: &HeaderMap, uri: &Uri, public_scheme: &str) -> bool {
-    if let Some(origin) = headers.get(ORIGIN).and_then(header_to_str) {
-        return !same_origin(origin, headers, uri, public_scheme);
+    // Presence is checked separately from parsing for every metadata header:
+    // an unusable value must fail closed instead of falling through to a
+    // weaker signal.
+    if let Some(value) = headers.get(ORIGIN) {
+        return match header_to_str(value) {
+            Some(origin) => !same_origin(origin, headers, uri, public_scheme),
+            None => true,
+        };
     }
-    if let Some(referer) = headers.get(REFERER).and_then(header_to_str) {
-        return !same_origin(referer, headers, uri, public_scheme);
+    if let Some(value) = headers.get(REFERER) {
+        return match header_to_str(value) {
+            Some(referer) => !same_origin(referer, headers, uri, public_scheme),
+            None => true,
+        };
     }
     // Sec-Fetch-Site is a fallback only when Origin and Referer are absent.
     // `same-site` means the same registrable site but a different origin, so it
@@ -740,6 +749,73 @@ mod tests {
             headers.insert(name.clone(), value);
             assert!(is_cross_site_request(&headers, &uri, "https"));
         }
+    }
+
+    fn malformed_header_values() -> [HeaderValue; 2] {
+        [
+            HeaderValue::from_bytes(&[0xff]).unwrap(),
+            HeaderValue::from_static(""),
+        ]
+    }
+
+    #[test]
+    fn csrf_rejects_unparseable_origin() {
+        let uri = Uri::from_static("/admin/api/v1/test/clients");
+        for value in malformed_header_values() {
+            let mut headers = headers(&[("host", "id.example.com")]);
+            headers.insert(ORIGIN, value);
+            assert!(is_cross_site_request(&headers, &uri, "https"));
+        }
+    }
+
+    #[test]
+    fn csrf_rejects_unparseable_referer_without_origin() {
+        let uri = Uri::from_static("/admin/api/v1/test/clients");
+        for value in malformed_header_values() {
+            let mut headers = headers(&[("host", "id.example.com")]);
+            headers.insert(REFERER, value);
+            assert!(is_cross_site_request(&headers, &uri, "https"));
+        }
+    }
+
+    #[test]
+    fn csrf_rejects_unparseable_origin_not_rescued_by_same_origin_referer() {
+        let uri = Uri::from_static("/admin/api/v1/test/clients");
+        for value in malformed_header_values() {
+            let mut headers = headers(&[
+                ("host", "id.example.com"),
+                ("referer", "https://id.example.com/settings"),
+            ]);
+            headers.insert(ORIGIN, value);
+            assert!(is_cross_site_request(&headers, &uri, "https"));
+        }
+        // A valid Origin still takes precedence over an unusable Referer.
+        let mut headers = headers(&[
+            ("host", "id.example.com"),
+            ("origin", "https://id.example.com"),
+        ]);
+        headers.insert(REFERER, malformed_header_values()[0].clone());
+        assert!(!is_cross_site_request(&headers, &uri, "https"));
+    }
+
+    #[test]
+    fn csrf_rejects_unparseable_referer_not_rescued_by_same_origin_fetch_metadata() {
+        let uri = Uri::from_static("/admin/api/v1/test/clients");
+        for value in malformed_header_values() {
+            let mut headers = headers(&[
+                ("host", "id.example.com"),
+                ("sec-fetch-site", "same-origin"),
+            ]);
+            headers.insert(REFERER, value);
+            assert!(is_cross_site_request(&headers, &uri, "https"));
+        }
+        // A valid Referer still takes precedence over Sec-Fetch-Site.
+        let headers = headers(&[
+            ("host", "id.example.com"),
+            ("referer", "https://id.example.com/settings"),
+            ("sec-fetch-site", "cross-site"),
+        ]);
+        assert!(!is_cross_site_request(&headers, &uri, "https"));
     }
 
     #[test]

@@ -1695,7 +1695,7 @@ mod tests {
         StorageConfig,
     };
     use qid_core::models::{ClientType, User};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::TempDir;
 
     pub(super) fn minimal_config() -> QidConfig {
         QidConfig {
@@ -1734,12 +1734,13 @@ mod tests {
         }
     }
 
-    fn test_state_dir(name: &str) -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("qid-qidd-{name}-{suffix}"))
+    // Declared first in every test so repositories, state and listeners drop
+    // before the directory, including on panic or early return.
+    fn test_state_dir(name: &str) -> TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("qid-qidd-{name}-"))
+            .tempdir()
+            .expect("temporary state directory")
     }
 
     fn configure_policy_bundle(config: &mut QidConfig, state_dir: &Path, mode: &str) {
@@ -1814,9 +1815,9 @@ mod tests {
         config
     }
 
-    async fn test_repo(name: &str) -> (PathBuf, Arc<AnyRepository>) {
+    async fn test_repo(name: &str) -> (TempDir, Arc<AnyRepository>) {
         let state_dir = test_state_dir(name);
-        let store_path = state_dir.join("store.json");
+        let store_path = state_dir.path().join("store.json");
         let repo = Arc::new(
             AnyRepository::connect(store_path.to_str().expect("valid store path"))
                 .await
@@ -1831,7 +1832,7 @@ mod tests {
         use tower::ServiceExt;
 
         let config = minimal_config();
-        let (state_dir, repo) = test_repo("request-id-early-rejection").await;
+        let (_state_dir, repo) = test_repo("request-id-early-rejection").await;
         let signer = Arc::new(LocalSigner::from_secret("test", b"test-secret-for-tests"));
         let state: AppState = Arc::new(
             SharedState::new(config.clone(), repo, signer, json!({}))
@@ -1867,7 +1868,6 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("req+daemon/reject")
         );
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     fn free_udp_bind() -> Option<String> {
@@ -1884,13 +1884,12 @@ mod tests {
         let config = minimal_config();
         let state_dir = test_state_dir("default");
 
-        let material =
-            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+        let material = initialize_signing_material(&config, state_dir.path())
+            .expect("signing material failed");
 
-        assert!(state_dir.join("signing-key.pem").exists());
+        assert!(state_dir.path().join("signing-key.pem").exists());
         assert_eq!(material.signer.algorithm(), "ES256");
         assert_eq!(material.jwks["keys"][0]["kid"], "default");
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[test]
@@ -1906,15 +1905,19 @@ mod tests {
         }];
         let state_dir = test_state_dir("eddsa");
 
-        let material =
-            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+        let material = initialize_signing_material(&config, state_dir.path())
+            .expect("signing material failed");
 
-        assert!(state_dir.join("signing-key-corp-main-EdDSA.pem").exists());
+        assert!(
+            state_dir
+                .path()
+                .join("signing-key-corp-main-EdDSA.pem")
+                .exists()
+        );
         assert_eq!(material.signer.algorithm(), "EdDSA");
         assert_eq!(material.jwks["keys"][0]["kid"], "corp-main");
         assert_eq!(material.jwks["keys"][0]["alg"], "EdDSA");
         assert!(material.pep_assertion_signers.is_empty());
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[test]
@@ -1944,7 +1947,7 @@ mod tests {
             rotation: Default::default(),
         });
         let state_dir = test_state_dir("vc-realms");
-        let material = initialize_signing_material(&config, &state_dir).unwrap();
+        let material = initialize_signing_material(&config, state_dir.path()).unwrap();
         let claims: qid_core::jwt::JwtClaims = serde_json::from_value(
             json!({"iss": "test", "exp": qid_core::util::now_seconds() + 600}),
         )
@@ -1981,14 +1984,14 @@ mod tests {
         }
         // Missing/ambiguous references fail before creating or loading any keys.
         config.realms[0].protocols.vc.issuer_key_ref = Some("missing".into());
-        assert!(initialize_signing_material(&config, &state_dir).is_err());
+        assert!(initialize_signing_material(&config, state_dir.path()).is_err());
         config.realms[0].protocols.vc.issuer_key_ref = Some("corp-vc".into());
         config.crypto.keyrings[1].name = "corp/vc".into();
         config.crypto.keyrings[0].name = "corp_vc".into();
         config.realms[0].protocols.vc.issuer_key_ref = Some("corp_vc".into());
         config.realms[1].protocols.vc.issuer_key_ref = Some("corp/vc".into());
         assert!(
-            initialize_signing_material(&config, &state_dir)
+            initialize_signing_material(&config, state_dir.path())
                 .err()
                 .unwrap()
                 .to_string()
@@ -1999,13 +2002,12 @@ mod tests {
         config.realms[0].protocols.vc.issuer_key_ref = Some("Corp-vc".into());
         config.realms[1].protocols.vc.issuer_key_ref = Some("corp-vc".into());
         assert!(
-            initialize_signing_material(&config, &state_dir)
+            initialize_signing_material(&config, state_dir.path())
                 .err()
                 .unwrap()
                 .to_string()
                 .contains("same local key path")
         );
-        std::fs::remove_dir_all(&state_dir).unwrap();
     }
 
     #[test]
@@ -2030,8 +2032,8 @@ mod tests {
         ];
         let state_dir = test_state_dir("pep-assertion");
 
-        let material =
-            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+        let material = initialize_signing_material(&config, state_dir.path())
+            .expect("signing material failed");
 
         assert_eq!(material.signer.algorithm(), "EdDSA");
         assert!(material.pep_assertion_signers.contains_key("corp"));
@@ -2051,29 +2053,26 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(kids.contains(&"corp-main"));
         assert!(kids.contains(&"corp-pep-assertion"));
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[test]
     fn passphrase_config_writes_encrypted_local_signing_key() {
         let mut config = minimal_config();
         let state_dir = test_state_dir("encrypted-generate");
-        std::fs::create_dir_all(&state_dir).expect("state dir");
-        let passphrase_path = state_dir.join("passphrase.txt");
+        let passphrase_path = state_dir.path().join("passphrase.txt");
         std::fs::write(&passphrase_path, "test-passphrase\n").expect("passphrase");
         config.crypto.key_passphrase_file = Some(passphrase_path.display().to_string());
 
-        let material =
-            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+        let material = initialize_signing_material(&config, state_dir.path())
+            .expect("signing material failed");
 
         assert_eq!(material.signer.algorithm(), "ES256");
-        assert!(state_dir.join("signing-key.pem.enc").exists());
-        assert!(!state_dir.join("signing-key.pem").exists());
-        assert!(state_dir.join("signing-key.pub.pem").exists());
-        let encrypted =
-            std::fs::read_to_string(state_dir.join("signing-key.pem.enc")).expect("encrypted key");
+        assert!(state_dir.path().join("signing-key.pem.enc").exists());
+        assert!(!state_dir.path().join("signing-key.pem").exists());
+        assert!(state_dir.path().join("signing-key.pub.pem").exists());
+        let encrypted = std::fs::read_to_string(state_dir.path().join("signing-key.pem.enc"))
+            .expect("encrypted key");
         assert!(!encrypted.contains("PRIVATE KEY"));
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[test]
@@ -2087,8 +2086,7 @@ mod tests {
             rotation: RotationConfig::default(),
         }];
         let state_dir = test_state_dir("encrypted-successor");
-        std::fs::create_dir_all(&state_dir).expect("state dir");
-        let passphrase_path = state_dir.join("passphrase.txt");
+        let passphrase_path = state_dir.path().join("passphrase.txt");
         std::fs::write(&passphrase_path, "test-passphrase\n").expect("passphrase");
         config.crypto.key_passphrase_file = Some(passphrase_path.display().to_string());
 
@@ -2098,13 +2096,15 @@ mod tests {
             .seal(&successor.private_pem, &successor.kid, "ES256")
             .expect("encrypted successor");
         std::fs::write(
-            state_dir.join("signing-key-corp-main-ES256-corp-main-next.pem.enc"),
+            state_dir
+                .path()
+                .join("signing-key-corp-main-ES256-corp-main-next.pem.enc"),
             serialize_encrypted_key(&encrypted).expect("successor serialization"),
         )
         .expect("successor key file");
 
-        let material =
-            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+        let material = initialize_signing_material(&config, state_dir.path())
+            .expect("signing material failed");
         let kids = material.jwks["keys"]
             .as_array()
             .expect("jwks keys")
@@ -2115,31 +2115,34 @@ mod tests {
         assert_eq!(material.signer.algorithm(), "ES256");
         assert!(kids.contains(&"corp-main"));
         assert!(kids.contains(&"corp-main-next"));
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[test]
     fn passphrase_config_migrates_plaintext_local_signing_key() {
         let mut config = minimal_config();
         let state_dir = test_state_dir("encrypted-migrate");
-        std::fs::create_dir_all(&state_dir).expect("state dir");
-        let passphrase_path = state_dir.join("passphrase.txt");
+        let passphrase_path = state_dir.path().join("passphrase.txt");
         std::fs::write(&passphrase_path, "test-passphrase\n").expect("passphrase");
         let generated = generate_es256("default").expect("generated key");
-        std::fs::write(state_dir.join("signing-key.pem"), &generated.private_pem)
-            .expect("plaintext key");
-        std::fs::write(state_dir.join("signing-key.pub.pem"), &generated.public_pem)
-            .expect("public key");
+        std::fs::write(
+            state_dir.path().join("signing-key.pem"),
+            &generated.private_pem,
+        )
+        .expect("plaintext key");
+        std::fs::write(
+            state_dir.path().join("signing-key.pub.pem"),
+            &generated.public_pem,
+        )
+        .expect("public key");
         config.crypto.key_passphrase_file = Some(passphrase_path.display().to_string());
 
-        let material =
-            initialize_signing_material(&config, &state_dir).expect("signing material failed");
+        let material = initialize_signing_material(&config, state_dir.path())
+            .expect("signing material failed");
 
         assert_eq!(material.signer.algorithm(), "ES256");
-        assert!(state_dir.join("signing-key.pem.enc").exists());
-        assert!(state_dir.join("signing-key.pem.bak").exists());
-        assert!(!state_dir.join("signing-key.pem").exists());
-        std::fs::remove_dir_all(&state_dir).ok();
+        assert!(state_dir.path().join("signing-key.pem.enc").exists());
+        assert!(state_dir.path().join("signing-key.pem.bak").exists());
+        assert!(!state_dir.path().join("signing-key.pem").exists());
     }
 
     #[test]
@@ -2222,13 +2225,12 @@ mod tests {
         }];
         let state_dir = test_state_dir("remote");
 
-        let err = match initialize_signing_material(&config, &state_dir) {
+        let err = match initialize_signing_material(&config, state_dir.path()) {
             Ok(_) => panic!("remote signer configuration should fail closed"),
             Err(err) => err,
         };
 
         assert!(err.to_string().contains("no remote signer transport"));
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[test]
@@ -2279,12 +2281,12 @@ mod tests {
             grant_types: vec!["authorization_code".to_string()],
         }];
         let state_dir = test_state_dir("seed");
-        let store_path = state_dir.join("store.json");
+        let store_path = state_dir.path().join("store.json");
         let repo = AnyRepository::connect(store_path.to_str().expect("valid store path"))
             .await
             .expect("repository should initialize");
 
-        let config_path = state_dir.join("qid.yaml");
+        let config_path = state_dir.path().join("qid.yaml");
         seed_configured_realms_and_clients(&repo, &config, &config_path)
             .await
             .expect("configured seed should succeed");
@@ -2310,7 +2312,6 @@ mod tests {
             client.redirect_uris,
             vec!["https://app.example.com/callback"]
         );
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[tokio::test]
@@ -2335,11 +2336,11 @@ mod tests {
             }];
         }
         let state_dir = test_state_dir("seed-ambiguous-client");
-        let store_path = state_dir.join("store.json");
+        let store_path = state_dir.path().join("store.json");
         let repo = AnyRepository::connect(store_path.to_str().expect("valid store path"))
             .await
             .expect("repository should initialize");
-        let config_path = state_dir.join("qid.yaml");
+        let config_path = state_dir.path().join("qid.yaml");
 
         // The client id names a client of two realms the deployment
         // serves, so the daemon refuses to seed it and names the realm
@@ -2356,20 +2357,19 @@ mod tests {
             message.contains("corp") || message.contains("other"),
             "the refusal must name the realm that holds the id, got: {message}"
         );
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[tokio::test]
     async fn configured_policy_bundles_are_seeded_from_config_sources() {
         let mut config = minimal_config();
         let state_dir = test_state_dir("policy-seed");
-        configure_policy_bundle(&mut config, &state_dir, "enforce");
+        configure_policy_bundle(&mut config, state_dir.path(), "enforce");
 
-        let store_path = state_dir.join("store.json");
+        let store_path = state_dir.path().join("store.json");
         let repo = AnyRepository::connect(store_path.to_str().expect("valid store path"))
             .await
             .expect("repository should initialize");
-        let config_path = state_dir.join("qid.yaml");
+        let config_path = state_dir.path().join("qid.yaml");
 
         seed_configured_realms_and_clients(&repo, &config, &config_path)
             .await
@@ -2387,7 +2387,6 @@ mod tests {
         assert_eq!(bundle.compiled_json["rules"][0]["name"], "allow-qpx-e2e");
         assert_eq!(bundle.version, 1);
         assert!(bundle.active);
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[tokio::test]
@@ -2395,13 +2394,13 @@ mod tests {
         for (stored_mode, configured_mode) in [("enforce", "monitor"), ("monitor", "enforce")] {
             let mut config = minimal_config();
             let state_dir = test_state_dir(&format!("policy-mode-{stored_mode}"));
-            configure_policy_bundle(&mut config, &state_dir, stored_mode);
+            configure_policy_bundle(&mut config, state_dir.path(), stored_mode);
 
-            let store_path = state_dir.join("store.json");
+            let store_path = state_dir.path().join("store.json");
             let repo = AnyRepository::connect(store_path.to_str().expect("valid store path"))
                 .await
                 .expect("repository should initialize");
-            let config_path = state_dir.join("qid.yaml");
+            let config_path = state_dir.path().join("qid.yaml");
             seed_configured_realms_and_clients(&repo, &config, &config_path)
                 .await
                 .expect("initial configured seed should succeed");
@@ -2430,14 +2429,13 @@ mod tests {
                 serde_json::to_value(before).expect("serialize incumbent state"),
                 "mode drift refusal must leave the incumbent record unchanged"
             );
-            std::fs::remove_dir_all(&state_dir).ok();
         }
     }
 
     #[tokio::test]
     async fn network_aaa_listener_bind_failure_fails_startup() {
         let config = network_aaa_config("192.0.2.1:1812".to_string());
-        let (state_dir, repo) = test_repo("network-aaa-bind-failure").await;
+        let (_state_dir, repo) = test_repo("network-aaa-bind-failure").await;
 
         let err = start_network_aaa_listeners(&config, repo)
             .await
@@ -2447,7 +2445,6 @@ mod tests {
                 .contains("failed to bind RADIUS authentication listener"),
             "{err}"
         );
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[tokio::test]
@@ -2456,7 +2453,7 @@ mod tests {
             return;
         };
         let config = network_aaa_config(bind.clone());
-        let (state_dir, repo) = test_repo("network-aaa-shutdown").await;
+        let (_state_dir, repo) = test_repo("network-aaa-shutdown").await;
 
         let senders = start_network_aaa_listeners(&config, repo)
             .await
@@ -2475,7 +2472,6 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         assert!(released, "network-aaa shutdown did not release {bind}");
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[tokio::test]
@@ -2483,18 +2479,17 @@ mod tests {
         let bind = "127.0.0.1:1812".to_string();
         let mut config = network_aaa_config(bind);
         config.realms[0].protocols.network_aaa.shared_secret = None;
-        let (state_dir, repo) = test_repo("network-aaa-missing-config").await;
+        let (_state_dir, repo) = test_repo("network-aaa-missing-config").await;
 
         let err = start_network_aaa_listeners(&config, repo)
             .await
             .expect_err("missing shared secret must fail startup");
         assert!(err.to_string().contains("shared_secret"), "{err}");
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[tokio::test]
     async fn network_aaa_authorizer_uses_stored_directory_users() {
-        let (state_dir, repo) = test_repo("network-aaa-authorizer").await;
+        let (_state_dir, repo) = test_repo("network-aaa-authorizer").await;
         repo.create_user(&User {
             id: "user-alice".to_string(),
             realm_id: "corp".to_string(),
@@ -2525,7 +2520,6 @@ mod tests {
             authorizer("mallory@example.com", &request),
             qid_network::server::RadiusAccessDecision::Reject { .. }
         ));
-        std::fs::remove_dir_all(&state_dir).ok();
     }
 
     #[test]

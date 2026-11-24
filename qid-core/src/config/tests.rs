@@ -1514,6 +1514,48 @@ fn the_removed_directory_sync_keys_are_rejected() {
 }
 
 #[test]
+fn browser_session_cookie_settings_accept_defaults_and_valid_tokens() {
+    minimal_config()
+        .validate()
+        .expect("the default browser cookie settings are valid");
+
+    let mut config = minimal_config();
+    config.realms[0].sessions.browser.cookie_name = "qid_session+v1.0~prod".to_string();
+    config.realms[0].sessions.browser.same_site = "None".to_string();
+    config
+        .validate()
+        .expect("a token cookie name and a supported SameSite value are valid");
+}
+
+#[test]
+fn browser_session_same_site_cannot_carry_more_cookie_attributes() {
+    let mut config = minimal_config();
+    config.realms[0].sessions.browser.same_site = "Lax; Domain=evil.test".to_string();
+    let err = config
+        .validate()
+        .expect_err("an injected cookie attribute is rejected");
+    assert!(
+        err.message().contains("same_site") && err.message().contains("corp"),
+        "the error names the key and the realm: {err}"
+    );
+}
+
+#[test]
+fn browser_session_cookie_name_must_be_a_single_token() {
+    for name in ["qid; Domain=evil.test", "qid=other", "qid with space", ""] {
+        let mut config = minimal_config();
+        config.realms[0].sessions.browser.cookie_name = name.to_string();
+        let err = config
+            .validate()
+            .expect_err("a non-token cookie name is rejected");
+        assert!(
+            err.message().contains("cookie_name") && err.message().contains("corp"),
+            "the error names the key and the realm: {err}"
+        );
+    }
+}
+
+#[test]
 fn the_refresh_token_settings_must_name_the_enforced_behaviour() {
     // The refresh path always rotates the token on every use and always
     // revokes the family of a superseded or concurrently redeemed token, so a

@@ -1814,6 +1814,7 @@ impl RealmConfig {
                 }
             }
         }
+        self.sessions.browser.validate(&self.id)?;
         self.sessions.refresh_tokens.validate(&self.id)?;
         self.authentication.password.validate(&self.id)?;
         self.authentication.mfa.totp.validate(&self.id)?;

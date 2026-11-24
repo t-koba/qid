@@ -511,6 +511,35 @@ fn default_absolute_timeout_hours() -> u64 {
     12
 }
 
+impl BrowserSessionConfig {
+    /// Both values are written into the session cookie's Set-Cookie header, so
+    /// each must be one token: an embedded separator could add cookie
+    /// attributes the operator never configured.
+    pub(crate) fn validate(&self, realm_id: &str) -> QidResult<()> {
+        let valid_name = !self.cookie_name.is_empty()
+            && self
+                .cookie_name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte));
+        if !valid_name {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} sessions.browser.cookie_name must be a nonempty RFC 6265 cookie-name token"
+                ),
+            });
+        }
+        if !matches!(self.same_site.as_str(), "Strict" | "Lax" | "None") {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} sessions.browser.same_site must be Strict, Lax or None (got {:?})",
+                    self.same_site
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RefreshTokenConfig {

@@ -31,8 +31,8 @@ jobs:
           - name: macos-aarch64
             os: macos-15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Build workspace
@@ -65,7 +65,7 @@ jobs:
           exit "$report_status"
       - name: Upload test binary timings
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-binary-timings-${{ matrix.name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/test-binary-timings.csv
@@ -75,8 +75,8 @@ jobs:
     name: wolfSSL TLS-POK Interop
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Fetch Rust dependencies for the offline test step
@@ -112,8 +112,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Test PostgreSQL push storage
@@ -127,22 +127,22 @@ jobs:
     name: All Features
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Test all features
         env:
           RUSTFLAGS: "-D warnings"
         run: cargo test --workspace --all-targets --all-features --locked
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - name: Install the pinned independent EST client
         run: python3 -m pip install -r qid-resource/tests/workload/requirements-est.txt
       - name: Verify workload EST with an independent client
         run: cargo test -p qid-resource --locked --test workload est::independent_python_est_client -- --ignored --exact --nocapture
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '21'
@@ -176,8 +176,8 @@ jobs:
     name: Config Samples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Validate sample configs
@@ -189,15 +189,15 @@ jobs:
     name: Sister PEP Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Checkout pinned qpx
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: t-koba/qpx
           ref: 7c68ccbb49558b9ed955818677b6e44dc2465c4e
           path: qpx
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Build qpxd with native TLS
@@ -215,8 +215,8 @@ jobs:
     name: Fuzz Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           # Pinned: the nightly after 2026-10-31 regressed on sqlx-core 0.8.6
           # (rust-lang/rust#165263); nightly-2026-10-31 compiles it.
@@ -280,8 +280,8 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: llvm-tools-preview

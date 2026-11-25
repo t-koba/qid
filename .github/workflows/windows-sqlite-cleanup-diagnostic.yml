@@ -20,7 +20,7 @@ jobs:
       CARGO_TERM_COLOR: never
       QID_DIAGNOSTIC_OWNED: "false"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
       - name: Verify the exact dispatched source
@@ -39,7 +39,7 @@ jobs:
             exit 1
           }
           Write-Host "Verified diagnostic source $actual."
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: "1.96"
       - name: Acquire optional Microsoft Handle
@@ -412,7 +412,7 @@ jobs:
           }
       - name: Upload sanitized Windows SQLite diagnostic
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-sqlite-cleanup-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/windows-sqlite-cleanup-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}.txt

@@ -160,8 +160,8 @@ fn matches_path_template(template: &str, path: &str) -> bool {
     }
 }
 
-/// State for same-origin CSRF protection: configured paths and the fallback
-/// scheme from the deployment's `server.public_base_url`.
+/// State for same-origin CSRF protection: configured paths and the
+/// authoritative scheme from the deployment's `server.public_base_url`.
 #[derive(Clone, Debug)]
 pub struct CsrfConfig {
     paths: ServerPaths,
@@ -183,6 +183,10 @@ impl CsrfConfig {
 /// so configured `server.paths` and the public scheme are honoured. Approval
 /// sub-paths (`.../approve`) remain protected because matching is exact,
 /// except for the templated dynamic client registration management route.
+///
+/// The configured public scheme is authoritative for origin comparison,
+/// including behind TLS termination. Forwarded and request schemes are never
+/// trusted to change the expected scheme.
 pub async fn csrf_protection_layer(
     State(config): State<CsrfConfig>,
     req: Request,
@@ -190,7 +194,7 @@ pub async fn csrf_protection_layer(
 ) -> Response {
     if is_state_changing_method(req.method())
         && !is_csrf_exempt_path(req.uri().path(), &config.paths)
-        && is_cross_site_request(req.headers(), req.uri(), config.public_scheme.as_str())
+        && is_cross_site_request(req.headers(), config.public_scheme.as_str())
     {
         warn!(
             method = %req.method(),
@@ -209,19 +213,19 @@ fn is_state_changing_method(method: &Method) -> bool {
     )
 }
 
-fn is_cross_site_request(headers: &HeaderMap, uri: &Uri, public_scheme: &str) -> bool {
+fn is_cross_site_request(headers: &HeaderMap, public_scheme: &str) -> bool {
     // Presence is checked separately from parsing for every metadata header:
     // an unusable value must fail closed instead of falling through to a
     // weaker signal.
     if let Some(value) = headers.get(ORIGIN) {
         return match header_to_str(value).and_then(parse_origin) {
-            Some(origin) => !same_origin(&origin, headers, uri, public_scheme),
+            Some(origin) => !same_origin(&origin, headers, public_scheme),
             None => true,
         };
     }
     if let Some(value) = headers.get(REFERER) {
         return match header_to_str(value).and_then(parse_referer) {
-            Some(referer) => !same_origin(&referer, headers, uri, public_scheme),
+            Some(referer) => !same_origin(&referer, headers, public_scheme),
             None => true,
         };
     }
@@ -309,12 +313,7 @@ fn scheme_default_port(scheme: &str) -> Option<u16> {
     }
 }
 
-fn same_origin(
-    candidate: &ParsedOrigin<'_>,
-    headers: &HeaderMap,
-    uri: &Uri,
-    public_scheme: &str,
-) -> bool {
+fn same_origin(candidate: &ParsedOrigin<'_>, headers: &HeaderMap, public_scheme: &str) -> bool {
     let Some(expected_host) = headers.get(HOST).and_then(header_to_str) else {
         return false;
     };
@@ -324,12 +323,7 @@ fn same_origin(
     if !valid_authority(&expected_authority) {
         return false;
     }
-    let expected_scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(header_to_str)
-        .or_else(|| uri.scheme_str())
-        .unwrap_or(public_scheme);
-    if !candidate.scheme.eq_ignore_ascii_case(expected_scheme) {
+    if !candidate.scheme.eq_ignore_ascii_case(public_scheme) {
         return false;
     }
     if !candidate
@@ -340,7 +334,7 @@ fn same_origin(
     {
         return false;
     }
-    let Some(default_port) = scheme_default_port(expected_scheme) else {
+    let Some(default_port) = scheme_default_port(public_scheme) else {
         return false;
     };
     candidate.authority.port_u16().unwrap_or(default_port)
@@ -799,8 +793,7 @@ mod tests {
             ("host", "id.example.com"),
             ("origin", "https://id.example.com"),
         ]);
-        let uri = Uri::from_static("/oauth2/token");
-        assert!(!is_cross_site_request(&headers, &uri, "https"));
+        assert!(!is_cross_site_request(&headers, "https"));
     }
 
     #[test]
@@ -809,25 +802,19 @@ mod tests {
             ("host", "id.example.com"),
             ("origin", "https://evil.example.com"),
         ]);
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(is_cross_site_request(&headers, &uri, "https"));
+        assert!(is_cross_site_request(&headers, "https"));
     }
 
     #[test]
     fn csrf_rejects_non_same_origin_fetch_metadata_without_origin() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for site in ["cross-site", "same-site", "unknown"] {
             let headers = headers(&[("host", "id.example.com"), ("sec-fetch-site", site)]);
-            assert!(
-                is_cross_site_request(&headers, &uri, "https"),
-                "site {site}"
-            );
+            assert!(is_cross_site_request(&headers, "https"), "site {site}");
         }
     }
 
     #[test]
     fn csrf_rejects_unparseable_fetch_metadata_without_origin() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         let name = HeaderName::from_static("sec-fetch-site");
         for value in [
             HeaderValue::from_bytes(&[0xff]).unwrap(),
@@ -835,7 +822,7 @@ mod tests {
         ] {
             let mut headers = headers(&[("host", "id.example.com")]);
             headers.insert(name.clone(), value);
-            assert!(is_cross_site_request(&headers, &uri, "https"));
+            assert!(is_cross_site_request(&headers, "https"));
         }
     }
 
@@ -848,34 +835,31 @@ mod tests {
 
     #[test]
     fn csrf_rejects_unparseable_origin() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for value in malformed_header_values() {
             let mut headers = headers(&[("host", "id.example.com")]);
             headers.insert(ORIGIN, value);
-            assert!(is_cross_site_request(&headers, &uri, "https"));
+            assert!(is_cross_site_request(&headers, "https"));
         }
     }
 
     #[test]
     fn csrf_rejects_unparseable_referer_without_origin() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for value in malformed_header_values() {
             let mut headers = headers(&[("host", "id.example.com")]);
             headers.insert(REFERER, value);
-            assert!(is_cross_site_request(&headers, &uri, "https"));
+            assert!(is_cross_site_request(&headers, "https"));
         }
     }
 
     #[test]
     fn csrf_rejects_unparseable_origin_not_rescued_by_same_origin_referer() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for value in malformed_header_values() {
             let mut headers = headers(&[
                 ("host", "id.example.com"),
                 ("referer", "https://id.example.com/settings"),
             ]);
             headers.insert(ORIGIN, value);
-            assert!(is_cross_site_request(&headers, &uri, "https"));
+            assert!(is_cross_site_request(&headers, "https"));
         }
         // A valid Origin still takes precedence over an unusable Referer.
         let mut headers = headers(&[
@@ -883,19 +867,18 @@ mod tests {
             ("origin", "https://id.example.com"),
         ]);
         headers.insert(REFERER, malformed_header_values()[0].clone());
-        assert!(!is_cross_site_request(&headers, &uri, "https"));
+        assert!(!is_cross_site_request(&headers, "https"));
     }
 
     #[test]
     fn csrf_rejects_unparseable_referer_not_rescued_by_same_origin_fetch_metadata() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for value in malformed_header_values() {
             let mut headers = headers(&[
                 ("host", "id.example.com"),
                 ("sec-fetch-site", "same-origin"),
             ]);
             headers.insert(REFERER, value);
-            assert!(is_cross_site_request(&headers, &uri, "https"));
+            assert!(is_cross_site_request(&headers, "https"));
         }
         // A valid Referer still takes precedence over Sec-Fetch-Site.
         let headers = headers(&[
@@ -903,7 +886,7 @@ mod tests {
             ("referer", "https://id.example.com/settings"),
             ("sec-fetch-site", "cross-site"),
         ]);
-        assert!(!is_cross_site_request(&headers, &uri, "https"));
+        assert!(!is_cross_site_request(&headers, "https"));
     }
 
     #[test]
@@ -912,15 +895,13 @@ mod tests {
             ("host", "id.example.com"),
             ("sec-fetch-site", "same-origin"),
         ]);
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(!is_cross_site_request(&headers, &uri, "https"));
+        assert!(!is_cross_site_request(&headers, "https"));
     }
 
     #[test]
     fn csrf_allows_machine_clients_without_browser_signal() {
         let headers = headers(&[("host", "id.example.com")]);
-        let uri = Uri::from_static("/oauth2/token");
-        assert!(!is_cross_site_request(&headers, &uri, "https"));
+        assert!(!is_cross_site_request(&headers, "https"));
     }
 
     #[test]
@@ -929,8 +910,7 @@ mod tests {
             ("host", "localhost:8080"),
             ("origin", "http://localhost:8080"),
         ]);
-        let uri = Uri::from_static("/oauth2/authorize");
-        assert!(!is_cross_site_request(&headers, &uri, "http"));
+        assert!(!is_cross_site_request(&headers, "http"));
     }
 
     #[test]
@@ -939,30 +919,82 @@ mod tests {
             ("host", "localhost:8080"),
             ("origin", "http://localhost:8080"),
         ]);
-        let uri = Uri::from_static("/oauth2/authorize");
-        assert!(is_cross_site_request(&headers, &uri, "https"));
+        assert!(is_cross_site_request(&headers, "https"));
     }
 
     #[test]
-    fn csrf_forwarded_proto_overrides_public_scheme() {
-        let uri = Uri::from_static("/oauth2/authorize");
-        let secure = headers(&[
-            ("host", "localhost:8080"),
-            ("origin", "https://localhost:8080"),
-            ("x-forwarded-proto", "https"),
-        ]);
-        assert!(!is_cross_site_request(&secure, &uri, "http"));
-        let insecure = headers(&[
+    fn csrf_ignores_forwarded_proto_when_public_scheme_is_configured() {
+        // A forwarded plaintext scheme cannot downgrade a configured https.
+        let plaintext_origin = headers(&[
             ("host", "localhost:8080"),
             ("origin", "http://localhost:8080"),
             ("x-forwarded-proto", "http"),
         ]);
-        assert!(!is_cross_site_request(&insecure, &uri, "https"));
+        assert!(is_cross_site_request(&plaintext_origin, "https"));
+
+        // A forwarded secure scheme cannot upgrade a configured http.
+        let secure_origin = headers(&[
+            ("host", "localhost:8080"),
+            ("origin", "https://localhost:8080"),
+            ("x-forwarded-proto", "https"),
+        ]);
+        assert!(is_cross_site_request(&secure_origin, "http"));
+
+        // The configured https scheme still accepts a matching origin even
+        // when forwarded metadata conflicts with it.
+        let secure_origin = headers(&[
+            ("host", "localhost:8080"),
+            ("origin", "https://localhost:8080"),
+            ("x-forwarded-proto", "http"),
+        ]);
+        assert!(!is_cross_site_request(&secure_origin, "https"));
+    }
+
+    #[tokio::test]
+    async fn csrf_layer_ignores_absolute_request_uri_scheme() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use axum::routing::post;
+        use tower::ServiceExt;
+
+        // An absolute-form request URI advertising `http` must not downgrade
+        // the configured public scheme behind a TLS-terminating proxy.
+        let app = Router::new()
+            .route("/admin/api/v1/test/clients", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                CsrfConfig::new(ServerPaths::default(), "https"),
+                csrf_protection_layer,
+            ));
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://id.example.com/admin/api/v1/test/clients")
+            .header("host", "id.example.com")
+            .header("origin", "https://id.example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
+
+        // The reverse conflict is ignored too: an `https` request URI does not
+        // upgrade a configured `http` public scheme.
+        let app = Router::new()
+            .route("/admin/api/v1/test/clients", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                CsrfConfig::new(ServerPaths::default(), "http"),
+                csrf_protection_layer,
+            ));
+        let req = Request::builder()
+            .method("POST")
+            .uri("https://id.example.com/admin/api/v1/test/clients")
+            .header("host", "id.example.com")
+            .header("origin", "http://id.example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
     }
 
     #[test]
     fn csrf_rejects_origin_with_path_query_fragment_or_userinfo() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for origin in [
             "https://id.example.com/admin",
             "https://id.example.com/?q=1",
@@ -971,46 +1003,40 @@ mod tests {
             "https://user:pass@id.example.com",
         ] {
             let headers = headers(&[("host", "id.example.com"), ("origin", origin)]);
-            assert!(
-                is_cross_site_request(&headers, &uri, "https"),
-                "origin {origin}"
-            );
+            assert!(is_cross_site_request(&headers, "https"), "origin {origin}");
         }
     }
 
     #[test]
     fn csrf_rejects_origin_port_mismatch() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         let mismatch = headers(&[
             ("host", "id.example.com:8443"),
             ("origin", "https://id.example.com:9443"),
         ]);
-        assert!(is_cross_site_request(&mismatch, &uri, "https"));
+        assert!(is_cross_site_request(&mismatch, "https"));
         let explicit = headers(&[
             ("host", "id.example.com"),
             ("origin", "https://id.example.com:8443"),
         ]);
-        assert!(is_cross_site_request(&explicit, &uri, "https"));
+        assert!(is_cross_site_request(&explicit, "https"));
     }
 
     #[test]
     fn csrf_rejects_referer_userinfo_and_port_mismatch() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         let userinfo = headers(&[
             ("host", "id.example.com"),
             ("referer", "https://user@id.example.com/settings"),
         ]);
-        assert!(is_cross_site_request(&userinfo, &uri, "https"));
+        assert!(is_cross_site_request(&userinfo, "https"));
         let mismatch = headers(&[
             ("host", "id.example.com:8443"),
             ("referer", "https://id.example.com:9443/settings"),
         ]);
-        assert!(is_cross_site_request(&mismatch, &uri, "https"));
+        assert!(is_cross_site_request(&mismatch, "https"));
     }
 
     #[test]
     fn csrf_rejects_non_absolute_origin_values() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for origin in [
             "null",
             "id.example.com",
@@ -1018,23 +1044,19 @@ mod tests {
             "https:///admin",
         ] {
             let headers = headers(&[("host", "id.example.com"), ("origin", origin)]);
-            assert!(
-                is_cross_site_request(&headers, &uri, "https"),
-                "origin {origin}"
-            );
+            assert!(is_cross_site_request(&headers, "https"), "origin {origin}");
         }
     }
 
     #[test]
     fn csrf_rejects_referer_with_invalid_path_or_query() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         for referer in [
             "https://id.example.com/settings?x=%zz",
             "https://id.example.com/my settings",
         ] {
             let headers = headers(&[("host", "id.example.com"), ("referer", referer)]);
             assert!(
-                is_cross_site_request(&headers, &uri, "https"),
+                is_cross_site_request(&headers, "https"),
                 "referer {referer}"
             );
         }
@@ -1046,23 +1068,21 @@ mod tests {
             ("host", "id.example.com"),
             ("referer", "https://id.example.com/settings?tab=1#section"),
         ]);
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(!is_cross_site_request(&headers, &uri, "https"));
+        assert!(!is_cross_site_request(&headers, "https"));
     }
 
     #[test]
     fn csrf_accepts_origin_with_explicit_default_port() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         let omitted = headers(&[
             ("host", "id.example.com"),
             ("origin", "https://id.example.com:443"),
         ]);
-        assert!(!is_cross_site_request(&omitted, &uri, "https"));
+        assert!(!is_cross_site_request(&omitted, "https"));
         let explicit = headers(&[
             ("host", "id.example.com:443"),
             ("origin", "https://id.example.com:443"),
         ]);
-        assert!(!is_cross_site_request(&explicit, &uri, "https"));
+        assert!(!is_cross_site_request(&explicit, "https"));
     }
 
     #[test]
@@ -1072,8 +1092,7 @@ mod tests {
             ("origin", "https://id.example.com/admin"),
             ("referer", "https://id.example.com/settings"),
         ]);
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(is_cross_site_request(&headers, &uri, "https"));
+        assert!(is_cross_site_request(&headers, "https"));
     }
 
     #[test]
@@ -1083,17 +1102,15 @@ mod tests {
             ("referer", "https://user@id.example.com/settings"),
             ("sec-fetch-site", "same-origin"),
         ]);
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
-        assert!(is_cross_site_request(&headers, &uri, "https"));
+        assert!(is_cross_site_request(&headers, "https"));
     }
 
     #[test]
     fn csrf_compares_ipv6_authorities_with_effective_port() {
-        let uri = Uri::from_static("/admin/api/v1/test/clients");
         let same = headers(&[("host", "[::1]:8443"), ("origin", "HTTPS://[::1]:8443")]);
-        assert!(!is_cross_site_request(&same, &uri, "https"));
+        assert!(!is_cross_site_request(&same, "https"));
         let mismatch = headers(&[("host", "[::1]:8443"), ("origin", "https://[::1]:9443")]);
-        assert!(is_cross_site_request(&mismatch, &uri, "https"));
+        assert!(is_cross_site_request(&mismatch, "https"));
     }
 
     #[test]

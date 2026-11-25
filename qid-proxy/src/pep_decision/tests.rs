@@ -663,9 +663,22 @@ async fn pep_adapter_state(enabled: bool) -> StateFixture {
     }
 }
 
-fn pep_adapter_token(state: &SharedState<qid_storage::FileRepository>) -> String {
+fn bearer_headers(token: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {token}")
+            .parse()
+            .expect("authorization header"),
+    );
+    headers
+}
+
+fn sign_pep_adapter_token(
+    state: &SharedState<qid_storage::FileRepository>,
+    mut extra: HashMap<String, serde_json::Value>,
+) -> String {
     let now = qid_core::util::now_seconds();
-    let mut extra = HashMap::new();
     extra.insert(
         "realm_id".to_string(),
         serde_json::Value::String("test".to_string()),
@@ -685,6 +698,54 @@ fn pep_adapter_token(state: &SharedState<qid_storage::FileRepository>) -> String
             extra,
         })
         .expect("adapter token")
+}
+
+fn pep_adapter_token(state: &SharedState<qid_storage::FileRepository>) -> String {
+    sign_pep_adapter_token(state, HashMap::new())
+}
+
+fn sender_constrained_pep_adapter_token(
+    state: &SharedState<qid_storage::FileRepository>,
+    cnf: serde_json::Value,
+) -> String {
+    sign_pep_adapter_token(state, HashMap::from([("cnf".to_string(), cnf)]))
+}
+
+#[tokio::test]
+async fn sender_constrained_adapter_tokens_are_not_accepted_as_plain_bearers() {
+    let fixture = cache_ttl_state(authzen_route_config(), "allow").await;
+    let state = fixture.state();
+    let req = request();
+
+    let pep_headers = bearer_headers(&pep_adapter_token(&state));
+    let pep_auth = authenticate_pep_decision_adapter(&pep_headers, &state, &req)
+        .expect("unbound token authenticates PEP decisions");
+    let authzen_headers = bearer_headers(&pep_adapter_token(&state));
+    let authzen_auth = authenticate_authzen_adapter(&authzen_headers, &state)
+        .expect("unbound token authenticates AuthZEN");
+    assert_eq!(pep_auth.realm_id, "test");
+    assert_eq!(authzen_auth.realm_id, "test");
+
+    for cnf in [
+        serde_json::json!({"jkt": "thumbprint"}),
+        serde_json::json!({"x5t#S256": "thumbprint"}),
+    ] {
+        let headers = bearer_headers(&sender_constrained_pep_adapter_token(&state, cnf));
+        let err = authenticate_pep_decision_adapter(&headers, &state, &req)
+            .expect_err("sender-constrained token must not authenticate PEP decisions");
+        assert!(
+            err.message()
+                .contains("invalid PEP registration authentication token"),
+            "{err:?}"
+        );
+        let err = authenticate_authzen_adapter(&headers, &state)
+            .expect_err("sender-constrained token must not authenticate AuthZEN");
+        assert!(
+            err.message()
+                .contains("invalid AuthZEN adapter authentication token"),
+            "{err:?}"
+        );
+    }
 }
 
 #[tokio::test]

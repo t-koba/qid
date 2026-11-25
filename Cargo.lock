@@ -3992,9 +3992,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "qid-core",
+ "qid-crypto",
  "qid-storage",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
  "ulid",
 ]

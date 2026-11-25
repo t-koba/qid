@@ -364,6 +364,9 @@ fn authenticate_capport_control_adapter<R: Repository>(
         let Ok(decoded) = state.signer.decode_with_aud(token, audience) else {
             continue;
         };
+        if qid_core::oauth::reject_sender_constrained_bearer_token(&decoded.claims).is_err() {
+            continue;
+        }
         if decoded.claims.sub.as_deref() != Some(adapter.name.as_str()) {
             continue;
         }
@@ -460,5 +463,112 @@ mod validation_tests {
         let mut absolute = session();
         absolute.absolute_expires_at = 99;
         assert!(validate_capport_session(&absolute, "realm-a", 100).is_err());
+    }
+}
+
+#[cfg(test)]
+mod control_adapter_tests {
+    use super::authenticate_capport_control_adapter;
+    use axum::http::{HeaderMap, header::AUTHORIZATION};
+    use qid_core::state::SharedState;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn control_adapter_config() -> qid_core::config::QidConfig {
+        serde_json::from_value(serde_json::json!({
+            "server": {"listen": "127.0.0.1:1", "public_base_url": "https://proxy.example.com"},
+            "realms": [{
+                "id": "test",
+                "issuer": "https://proxy.example.com/realm-test",
+                "pep_registrations": {
+                    "enabled": true,
+                    "registrations": [{
+                        "name": "egress-main",
+                        "audience": "urn:qid:pep:test/egress-main",
+                        "capabilities": [{"effect": "captive_portal"}],
+                        "decision": {"fail_policy": "deny"}
+                    }]
+                }
+            }]
+        }))
+        .expect("test config must deserialize")
+    }
+
+    fn bearer_headers(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            format!("Bearer {token}")
+                .parse()
+                .expect("authorization header"),
+        );
+        headers
+    }
+
+    fn sign_control_adapter_token(
+        state: &SharedState<qid_storage::FileRepository>,
+        extra: HashMap<String, serde_json::Value>,
+    ) -> String {
+        let now = qid_core::util::now_seconds();
+        let mut claims_extra = extra;
+        claims_extra.insert(
+            "realm_id".to_string(),
+            serde_json::Value::String("test".to_string()),
+        );
+        state
+            .signer
+            .sign(&qid_core::jwt::JwtClaims {
+                iss: Some("https://proxy.example.com".to_string()),
+                sub: Some("egress-main".to_string()),
+                aud: Some(qid_core::jwt::Audience::single(
+                    "urn:qid:pep:test/egress-main".to_string(),
+                )),
+                exp: Some((now + 60) as usize),
+                nbf: Some((now - 5) as usize),
+                iat: Some(now as usize),
+                jti: Some(format!("capport-adapter-{}", ulid::Ulid::new())),
+                extra: claims_extra,
+            })
+            .expect("adapter token")
+    }
+
+    #[tokio::test]
+    async fn sender_constrained_tokens_are_not_capport_control_credentials() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo = qid_storage::FileRepository::new(
+            dir.path().join("store.json").to_str().expect("temp path"),
+        )
+        .await
+        .expect("file repository");
+        repo.migrate().await.expect("file repository migration");
+        let signer = Arc::new(qid_crypto::LocalSigner::from_secret(
+            "test",
+            b"test-secret-for-capport-adapter-cnf",
+        ));
+        let state = SharedState::new(
+            control_adapter_config(),
+            Arc::new(repo),
+            signer,
+            serde_json::json!({}),
+        )
+        .expect("shared state");
+
+        let headers = bearer_headers(&sign_control_adapter_token(&state, HashMap::new()));
+        assert!(
+            authenticate_capport_control_adapter(&headers, &state, "test").is_ok(),
+            "unbound token authenticates CAPPORT control"
+        );
+
+        for cnf in [
+            serde_json::json!({"jkt": "thumbprint"}),
+            serde_json::json!({"x5t#S256": "thumbprint"}),
+        ] {
+            let headers = bearer_headers(&sign_control_adapter_token(
+                &state,
+                HashMap::from([("cnf".to_string(), cnf)]),
+            ));
+            authenticate_capport_control_adapter(&headers, &state, "test")
+                .expect_err("sender-constrained token must not authenticate CAPPORT control");
+        }
     }
 }

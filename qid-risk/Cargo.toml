@@ -19,5 +19,10 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
 
+[dev-dependencies]
+qid-crypto = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
 [lints]
 workspace = true

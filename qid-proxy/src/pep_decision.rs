@@ -478,6 +478,9 @@ fn authenticate_pep_decision_adapter<R: Repository>(
                 continue;
             };
             let claims = decoded.claims;
+            if qid_core::oauth::reject_sender_constrained_bearer_token(&claims).is_err() {
+                continue;
+            }
             if claims.sub.as_deref() != Some(req.proxy.proxy_name.as_str()) {
                 continue;
             }
@@ -709,6 +712,9 @@ fn authenticate_authzen_adapter<R: Repository>(
                 continue;
             };
             let claims = decoded.claims;
+            if qid_core::oauth::reject_sender_constrained_bearer_token(&claims).is_err() {
+                continue;
+            }
             if claims.sub.as_deref() != Some(adapter.name.as_str()) {
                 continue;
             }

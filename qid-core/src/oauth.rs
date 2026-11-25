@@ -3,6 +3,7 @@
 use crate::{
     config::{OAuthResourceServerConfig, RealmConfig},
     error::{QidError, QidResult},
+    jwt::JwtClaims,
 };
 use std::collections::BTreeSet;
 
@@ -79,6 +80,22 @@ pub fn validate_authorization_details(details: &serde_json::Value) -> QidResult<
                 message: format!("authorization_details[{idx}].type must not be empty"),
             });
         }
+    }
+    Ok(())
+}
+
+/// Reject sender-constrained tokens presented as plain bearer credentials.
+///
+/// PEP registration, AuthZEN, risk-evaluation and CAPPORT control adapters
+/// accept only unbound bearer tokens. A `cnf` claim (RFC 7800) marks the
+/// token as bound to a key the bearer path never verifies, so any presence
+/// of `cnf` fails closed here instead of being accepted as a bearer
+/// credential.
+pub fn reject_sender_constrained_bearer_token(claims: &JwtClaims) -> QidResult<()> {
+    if claims.extra.contains_key("cnf") {
+        return Err(QidError::Unauthorized {
+            message: "sender-constrained tokens cannot be used as bearer credentials".to_string(),
+        });
     }
     Ok(())
 }
@@ -237,7 +254,10 @@ fn validate_scopes_per_target(
 
 #[cfg(test)]
 mod tests {
-    use super::{RedirectUriError, validate_authorization_details, validate_redirect_uri};
+    use super::{
+        RedirectUriError, reject_sender_constrained_bearer_token, validate_authorization_details,
+        validate_redirect_uri,
+    };
     use crate::config::{
         OAuthProtocolConfig, OAuthResourceServerConfig, ProtocolConfig, RealmConfig,
     };
@@ -460,6 +480,45 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn bearer_adapters_reject_any_cnf_claim() {
+        use std::collections::HashMap;
+
+        let unbound = crate::jwt::JwtClaims {
+            iss: None,
+            sub: None,
+            aud: None,
+            exp: None,
+            nbf: None,
+            iat: None,
+            jti: None,
+            extra: HashMap::new(),
+        };
+        assert!(reject_sender_constrained_bearer_token(&unbound).is_ok());
+
+        for cnf in [
+            serde_json::json!({"jkt": "thumbprint"}),
+            serde_json::json!({"x5t#S256": "thumbprint"}),
+            serde_json::json!({}),
+            serde_json::json!(null),
+        ] {
+            let constrained = crate::jwt::JwtClaims {
+                iss: None,
+                sub: None,
+                aud: None,
+                exp: None,
+                nbf: None,
+                iat: None,
+                jti: None,
+                extra: HashMap::from([("cnf".to_string(), cnf)]),
+            };
+            assert!(
+                reject_sender_constrained_bearer_token(&constrained).is_err(),
+                "cnf-bearing token must fail closed as a bearer credential"
+            );
+        }
     }
 
     fn realm_with_resource_servers(

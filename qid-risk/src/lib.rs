@@ -297,6 +297,12 @@ fn authenticate_risk_adapter<R: Repository>(
                 continue;
             };
             match state.signer.decode_with_aud(token, audience) {
+                Ok(decoded)
+                    if qid_core::oauth::reject_sender_constrained_bearer_token(&decoded.claims)
+                        .is_err() =>
+                {
+                    last_error = Some("invalid risk evaluation adapter token".to_string());
+                }
                 Ok(decoded) if decoded.claims.sub.as_deref() == Some(adapter.name.as_str()) => {
                     return Ok(RiskAdapterAuthentication {
                         realm_id: realm.id.clone(),
@@ -974,5 +980,107 @@ mod tests {
                 .labels
                 .contains(&"posture-jailbreak-or-root".to_string())
         );
+    }
+
+    fn risk_adapter_config() -> qid_core::config::QidConfig {
+        serde_json::from_value(serde_json::json!({
+            "server": {"listen": "127.0.0.1:1", "public_base_url": "https://proxy.example.com"},
+            "realms": [{
+                "id": "test",
+                "issuer": "https://proxy.example.com/realm-test",
+                "pep_registrations": {
+                    "enabled": true,
+                    "registrations": [{
+                        "name": "egress-main",
+                        "audience": "urn:qid:pep:test/egress-main",
+                        "capabilities": [{"effect": "local_response"}],
+                        "decision": {"fail_policy": "deny"}
+                    }]
+                }
+            }]
+        }))
+        .expect("test config must deserialize")
+    }
+
+    fn bearer_headers(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}")
+                .parse()
+                .expect("authorization header"),
+        );
+        headers
+    }
+
+    fn sign_risk_adapter_token(
+        state: &qid_core::state::SharedState<qid_storage::FileRepository>,
+        extra: std::collections::HashMap<String, serde_json::Value>,
+    ) -> String {
+        let now = qid_core::util::now_seconds();
+        state
+            .signer
+            .sign(&qid_core::jwt::JwtClaims {
+                iss: Some("https://proxy.example.com".to_string()),
+                sub: Some("egress-main".to_string()),
+                aud: Some(qid_core::jwt::Audience::single(
+                    "urn:qid:pep:test/egress-main".to_string(),
+                )),
+                exp: Some((now + 60) as usize),
+                nbf: Some((now - 5) as usize),
+                iat: Some(now as usize),
+                jti: Some(format!("risk-adapter-{}", ulid::Ulid::new())),
+                extra,
+            })
+            .expect("adapter token")
+    }
+
+    #[tokio::test]
+    async fn sender_constrained_tokens_are_not_risk_adapter_credentials() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo = qid_storage::FileRepository::new(
+            dir.path().join("store.json").to_str().expect("temp path"),
+        )
+        .await
+        .expect("file repository");
+        repo.migrate().await.expect("file repository migration");
+        let signer = std::sync::Arc::new(qid_crypto::LocalSigner::from_secret(
+            "test",
+            b"test-secret-for-risk-adapter-cnf",
+        ));
+        let state = qid_core::state::SharedState::new(
+            risk_adapter_config(),
+            std::sync::Arc::new(repo),
+            signer,
+            serde_json::json!({}),
+        )
+        .expect("shared state");
+
+        let headers = bearer_headers(&sign_risk_adapter_token(
+            &state,
+            std::collections::HashMap::new(),
+        ));
+        assert!(
+            authenticate_risk_adapter(&headers, &state).is_ok(),
+            "unbound token authenticates risk evaluation"
+        );
+
+        for cnf in [
+            serde_json::json!({"jkt": "thumbprint"}),
+            serde_json::json!({"x5t#S256": "thumbprint"}),
+        ] {
+            let headers = bearer_headers(&sign_risk_adapter_token(
+                &state,
+                std::collections::HashMap::from([("cnf".to_string(), cnf)]),
+            ));
+            let err = authenticate_risk_adapter(&headers, &state)
+                .err()
+                .expect("sender-constrained token must not authenticate risk evaluation");
+            assert!(
+                err.message()
+                    .contains("invalid risk evaluation adapter token"),
+                "{err:?}"
+            );
+        }
     }
 }

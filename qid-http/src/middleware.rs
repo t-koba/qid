@@ -390,8 +390,7 @@ fn same_origin(
     if !candidate
         .authority
         .host()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case(expected_authority.host().trim_end_matches('.'))
+        .eq_ignore_ascii_case(expected_authority.host())
     {
         return false;
     }
@@ -1292,6 +1291,39 @@ mod tests {
             ("sec-fetch-site", "same-origin"),
         ]);
         assert!(is_cross_site_request(&headers, &origin_form_uri(), "https"));
+    }
+
+    #[test]
+    fn csrf_treats_trailing_dot_host_as_cross_origin() {
+        let dotted_origin = headers(&[
+            ("host", "id.example.com"),
+            ("origin", "https://id.example.com."),
+        ]);
+        assert!(is_cross_site_request(
+            &dotted_origin,
+            &origin_form_uri(),
+            "https"
+        ));
+
+        let dotted_host = headers(&[
+            ("host", "id.example.com."),
+            ("origin", "https://id.example.com"),
+        ]);
+        assert!(is_cross_site_request(
+            &dotted_host,
+            &origin_form_uri(),
+            "https"
+        ));
+
+        let matching = headers(&[
+            ("host", "id.example.com."),
+            ("origin", "https://ID.EXAMPLE.COM."),
+        ]);
+        assert!(!is_cross_site_request(
+            &matching,
+            &origin_form_uri(),
+            "https"
+        ));
     }
 
     #[test]

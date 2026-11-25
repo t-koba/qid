@@ -5,7 +5,7 @@
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{
-    HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
+    HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{CONTENT_SECURITY_POLICY, HOST, ORIGIN, REFERER, STRICT_TRANSPORT_SECURITY},
     uri::Authority,
 };
@@ -268,10 +268,18 @@ fn parse_referer(value: &str) -> Option<ParsedOrigin<'_>> {
 }
 
 fn split_absolute_url(value: &str) -> Option<(&str, Authority, Option<&str>)> {
-    // `Uri` requires an absolute URL and rejects whitespace and invalid
-    // authority characters, but it ignores fragments and percent escapes.
-    Uri::try_from(value).ok()?.scheme_str()?;
+    // Require an absolute URL with a valid scheme. `Uri` is not used as a
+    // gate here because its scanner rejects browser-tolerated path bytes.
     let (scheme, after_scheme) = value.split_once("://")?;
+    let mut scheme_bytes = scheme.bytes();
+    if !scheme_bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+        || !scheme_bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+    {
+        return None;
+    }
     let authority_end = after_scheme
         .find(['/', '?', '#'])
         .unwrap_or(after_scheme.len());
@@ -293,60 +301,36 @@ fn valid_authority(authority: &Authority) -> bool {
         && (authority.port_u16().is_some() || authority.as_str() == authority.host())
 }
 
-/// RFC 3986 `pchar`: unreserved / pct-encoded / sub-delims / ":" / "@".
-fn is_pchar(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
-        || matches!(
-            byte,
-            b'-' | b'.'
-                | b'_'
-                | b'~'
-                | b'!'
-                | b'$'
-                | b'&'
-                | b'\''
-                | b'('
-                | b')'
-                | b'*'
-                | b'+'
-                | b','
-                | b';'
-                | b'='
-                | b':'
-                | b'@'
-        )
-}
-
-/// Validates a path, query or fragment independently of `Uri`, whose scanner
-/// stops at '#' and tolerates bytes outside these RFC 3986 components.
-fn valid_component(bytes: &[u8], allow_question: bool) -> bool {
+/// Validates the Referer path/query/fragment suffix with URL-compatible rules.
+///
+/// `Uri` stops at `#` and tolerates bytes outside strict URL grammar, so the
+/// suffix is checked here for only clearly invalid bytes: ASCII controls,
+/// ASCII space, raw `"`, `<`, `>`, and malformed percent escapes. Everything
+/// else browsers send and WHATWG URL preserves (including `[ ] { } | \ ^`
+/// backtick, `#`, `?`, and non-ASCII bytes) is accepted.
+fn valid_url_suffix(suffix: &str) -> bool {
+    let bytes = suffix.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
-        if byte == b'%' {
-            if !bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
-                || !bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit)
-            {
-                return false;
-            }
-            index += 3;
-        } else if is_pchar(byte) || byte == b'/' || (allow_question && byte == b'?') {
-            index += 1;
-        } else {
+        if byte < 0x20
+            || byte == 0x7f
+            || byte == b' '
+            || byte == b'"'
+            || byte == b'<'
+            || byte == b'>'
+        {
             return false;
         }
+        if byte == b'%'
+            && (!bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+                || !bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit))
+        {
+            return false;
+        }
+        index += 1;
     }
     true
-}
-
-fn valid_url_suffix(suffix: &str) -> bool {
-    let (before_fragment, fragment) = suffix.split_once('#').unwrap_or((suffix, ""));
-    let (path, query) = before_fragment
-        .split_once('?')
-        .unwrap_or((before_fragment, ""));
-    valid_component(path.as_bytes(), false)
-        && valid_component(query.as_bytes(), true)
-        && valid_component(fragment.as_bytes(), true)
 }
 
 fn scheme_default_port(scheme: &str) -> Option<u16> {
@@ -1098,14 +1082,14 @@ mod tests {
     fn csrf_rejects_referer_with_invalid_path_query_or_fragment() {
         for referer in [
             "https://id.example.com/settings?x=%zz",
+            "https://id.example.com/settings?x=%2",
+            "https://id.example.com/settings?x=%",
             "https://id.example.com/my settings",
+            "https://id.example.com/settings?a=1 2",
             "https://id.example.com/settings#<script>",
             "https://id.example.com/settings#a>b",
+            "https://id.example.com/settings#a<b",
             "https://id.example.com/settings#a\"b",
-            "https://id.example.com/settings#a\\b",
-            "https://id.example.com/settings#a^b",
-            "https://id.example.com/settings#a{b}",
-            "https://id.example.com/settings#a|b",
         ] {
             let headers = headers(&[("host", "id.example.com"), ("referer", referer)]);
             assert!(
@@ -1120,6 +1104,16 @@ mod tests {
         for referer in [
             "https://id.example.com/settings?tab=1#section",
             "https://id.example.com/a/b-c_d.e~f!$&'()*+,;=:@?q=a%20b#part%20one?more=1",
+            "https://id.example.com/settings?tags[]=a",
+            "https://id.example.com/settings?q[]=1&x=2",
+            "https://id.example.com/a|b",
+            "https://id.example.com/a{b}",
+            "https://id.example.com/a}b",
+            "https://id.example.com/a\\b",
+            "https://id.example.com/a^b",
+            "https://id.example.com/a`b",
+            "https://id.example.com/settings?a=1|2",
+            "https://id.example.com/settings?q=a%20b",
         ] {
             let headers = headers(&[("host", "id.example.com"), ("referer", referer)]);
             assert!(

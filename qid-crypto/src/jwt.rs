@@ -794,6 +794,41 @@ mod tests {
     }
 
     #[test]
+    fn jwk_verifier_rejects_symmetric_and_none_algorithm_labels() {
+        let key = generate_es256("dpop").expect("key generation failed");
+        let public_material = URL_SAFE_NO_PAD
+            .decode(key.public_jwk.x.as_deref().expect("public x coordinate"))
+            .expect("public x coordinate is base64url");
+        let claims = serde_json::json!({ "sub": "user-1" });
+
+        for (label, algorithm) in [("HS256", Algorithm::HS256), ("HS512", Algorithm::HS512)] {
+            let header = Header::new(algorithm);
+            let token = encode(
+                &header,
+                &claims,
+                &EncodingKey::from_secret(&public_material),
+            )
+            .expect("symmetric token signing failed");
+            assert!(
+                verify_jwt_signature_with_jwk(&token, &key.public_jwk, label).is_err(),
+                "{label} must not verify against an asymmetric public JWK"
+            );
+        }
+
+        let header = URL_SAFE_NO_PAD.encode(
+            serde_json::to_string(&serde_json::json!({ "alg": "none", "typ": "JWT" }))
+                .expect("header serialization failed"),
+        );
+        let payload = URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&claims).expect("claims serialization failed"));
+        let unsecured = format!("{header}.{payload}.");
+        assert!(
+            verify_jwt_signature_with_jwk(&unsecured, &key.public_jwk, "none").is_err(),
+            "none must not verify against an asymmetric public JWK"
+        );
+    }
+
+    #[test]
     fn verify_es256_jwk_derivation() {
         let key = generate_es256("test-kid").expect("key generation failed");
         assert_eq!(key.public_jwk.kty, "EC");

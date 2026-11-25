@@ -166,6 +166,7 @@ Failure behavior is intentionally split by security impact:
 
 CSRF checks reject cross-site state-changing requests with an `Origin`/`Referer`/`Sec-Fetch-Site` mismatch. Non-cookie OAuth routes authenticate with client credentials, bearer tokens, DPoP/mTLS proof, or PKCE rather than the session cookie and are exempt by exact configured `server.paths` match: token, introspection, revocation, PAR, device/CIBA initiation, dynamic client registration (including the concrete `/:client_id` instance), and `/oauth2/challenge`. Device/CIBA approval sub-paths (`.../approve`) and all session, authorize, logout, and admin operations stay fail-closed. A CORS `allowed_origins` entry does not imply CSRF exemption for session routes.
 The expected scheme always comes from the configured `server.public_base_url` (invalid or unsupported public URLs fall back to https at config resolution); neither `X-Forwarded-Proto` nor the request URI scheme overrides it. Operators must configure the external scheme (typically `https`) when qid runs behind TLS termination, so cookie-based CSRF checks compare against the scheme browsers use.
+The target authority comes from the literal `Host` header, falling back to the request URI authority on native HTTP/2; ingress must preserve the browser-supplied authority, and forwarded-host headers are not trusted.
 
 HTTP Message Signatures can wrap signed OAuth and PEP-facing back-channel routes. Public front-channel and metadata routes stay outside that layer by design.
 

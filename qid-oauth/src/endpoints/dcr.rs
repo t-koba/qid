@@ -465,9 +465,19 @@ fn validate_dynamic_client_metadata(
     req: &DynamicClientRegistrationRequest,
 ) -> QidResult<DynamicClientMetadata> {
     for redirect_uri in &req.redirect_uris {
+        if redirect_uri.contains('*') {
+            return Err(QidError::BadRequest {
+                message: format!("redirect_uri {redirect_uri} must not contain wildcards"),
+            });
+        }
         let parsed = url::Url::parse(redirect_uri).map_err(|_| QidError::BadRequest {
             message: format!("redirect_uri {redirect_uri} is not a valid URL"),
         })?;
+        if parsed.fragment().is_some() {
+            return Err(QidError::BadRequest {
+                message: format!("redirect_uri {redirect_uri} must not contain a fragment"),
+            });
+        }
         let host = parsed.host_str().unwrap_or("");
         let scheme = parsed.scheme();
         let is_localhost = host == "localhost"
@@ -984,6 +994,35 @@ mod tests {
             "subject_type": subject_type,
         }))
         .unwrap()
+    }
+
+    fn dcr_request_with_redirect_uri(redirect_uri: &str) -> DynamicClientRegistrationRequest {
+        serde_json::from_value(serde_json::json!({
+            "redirect_uris": [redirect_uri],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dcr_rejects_redirect_uri_with_fragment() {
+        let req = dcr_request_with_redirect_uri("https://client.example.com/cb#frag");
+        let err = validate_dynamic_client_metadata(&req).unwrap_err();
+        assert!(err.to_string().contains("must not contain a fragment"));
+    }
+
+    #[test]
+    fn dcr_rejects_redirect_uri_with_wildcard() {
+        let req = dcr_request_with_redirect_uri("https://*.example.com/cb");
+        let err = validate_dynamic_client_metadata(&req).unwrap_err();
+        assert!(err.to_string().contains("must not contain wildcards"));
+    }
+
+    #[test]
+    fn dcr_accepts_https_and_localhost_http_redirect_uris() {
+        for redirect_uri in ["https://client.example.com/cb", "http://localhost:3000/cb"] {
+            let req = dcr_request_with_redirect_uri(redirect_uri);
+            validate_dynamic_client_metadata(&req).unwrap();
+        }
     }
 
     #[test]

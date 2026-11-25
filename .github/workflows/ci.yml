@@ -76,5 +76,9 @@ jobs:
           }
       - name: Verify release checksum sidecars
         run: bash ./scripts/check-release-checksums.sh
+      - name: Test workflow action-pin guard
+        run: python3 -m unittest discover -s scripts -p 'test_check_workflow_action_pins.py'
+      - name: Check workflow actions are pinned to full SHAs
+        run: python3 ./scripts/check-workflow-action-pins.py
       - name: Check workflow push triggers exclude mizu
         run: python3 ./scripts/check-workflow-triggers.py

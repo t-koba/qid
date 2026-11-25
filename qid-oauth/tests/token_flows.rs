@@ -3546,6 +3546,135 @@ async fn device_authorization_is_disabled_by_default() {
 }
 
 #[tokio::test]
+async fn device_browser_verification_and_approval_use_grant_realm_feature_flag() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&device_test_client(
+            "device-flag-client-id",
+            "device-flag-client",
+        ))
+        .await
+        .unwrap();
+
+    let authorization = post_form(
+        app.clone(),
+        &state.paths.device_authorization,
+        "client_id=device-flag-client&scope=api",
+    )
+    .await;
+    assert_eq!(authorization.status(), StatusCode::OK);
+    let authorization = json_body(authorization).await;
+    let user_code = authorization["user_code"].as_str().unwrap();
+
+    // Disable the grant realm while another realm keeps the feature on: an
+    // any-realm check would still let the browser surfaces through.
+    let mut disabled_config = test_helpers::test_config();
+    disabled_config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = false;
+    let mut other_realm = disabled_config.realms[0].clone();
+    other_realm.id = "other".into();
+    other_realm.issuer = "https://other.example.com".into();
+    other_realm.protocols.oauth.device_authorization.enabled = true;
+    disabled_config.realms.push(other_realm);
+    let disabled_state = Arc::new(
+        SharedState::new(
+            disabled_config,
+            state.repo.clone(),
+            state.signer.clone(),
+            state.jwks.clone(),
+        )
+        .unwrap(),
+    );
+    let disabled_app = qid_oauth::routes(&disabled_state.paths).with_state(disabled_state);
+
+    // Code entry is unrelated to any particular grant and stays available.
+    let entry = get_response(disabled_app.clone(), &state.paths.device_verification).await;
+    assert_eq!(entry.status(), StatusCode::OK);
+    let page = get_response(
+        disabled_app.clone(),
+        authorization["verification_uri_complete"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::NOT_FOUND);
+
+    state
+        .repo
+        .create_user(&User {
+            id: "device-flag-user".to_string(),
+            realm_id: "test".to_string(),
+            email: Some("device-flag@example.com".to_string()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let sessions = SessionManager::new(state.repo.clone(), 60, 24);
+    let session = sessions
+        .create("test", "device-flag-user", "password", &[])
+        .await
+        .unwrap();
+    let cookie_name = &state.config.realms[0].sessions.browser.cookie_name;
+    let approve_path = format!("{}/approve", state.paths.device_authorization);
+    let approval_body = format!(r#"{{"user_code":"{user_code}"}}"#);
+    let disabled_approval = disabled_app
+        .oneshot(
+            Request::post(&approve_path)
+                .header("Content-Type", "application/json")
+                .header("Cookie", format!("{cookie_name}={}", session.id))
+                .body(Body::from(approval_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled_approval.status(), StatusCode::BAD_REQUEST);
+
+    let grant = state
+        .repo
+        .get_device_authorization_grant_by_user_code(user_code)
+        .await
+        .unwrap()
+        .expect("device grant must survive a disabled-feature approval attempt");
+    assert!(grant.approved_at.is_none());
+    assert!(grant.user_id.is_none());
+    assert!(!grant.consumed);
+
+    // The same grant is still approvable through the realm with the feature on.
+    let approved = app
+        .oneshot(
+            Request::post(&approve_path)
+                .header("Content-Type", "application/json")
+                .header("Cookie", format!("{cookie_name}={}", session.id))
+                .body(Body::from(approval_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approved.status(), StatusCode::OK);
+    let grant = state
+        .repo
+        .get_device_authorization_grant_by_user_code(user_code)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(grant.approved_at.is_some());
+    assert_eq!(grant.user_id.as_deref(), Some("device-flag-user"));
+    assert!(!grant.consumed);
+}
+
+#[tokio::test]
 async fn device_code_grant_requires_approval_then_consumes_code() {
     let mut config = test_helpers::test_config();
     config.realms[0]

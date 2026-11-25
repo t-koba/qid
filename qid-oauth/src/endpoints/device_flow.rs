@@ -172,7 +172,14 @@ pub async fn device_verification_page<R: Repository>(
                 .get_device_authorization_grant_by_user_code(code)
                 .await
         ) {
-            Some(grant) if grant.expires_at > qid_core::util::now_seconds() => Some(grant),
+            Some(grant)
+                if grant.expires_at > qid_core::util::now_seconds()
+                    && oauth_feature_enabled(&state, &grant.realm_id, |oauth| {
+                        oauth.device_authorization.enabled
+                    }) =>
+            {
+                Some(grant)
+            }
             _ => {
                 return qid_http::error_response(QidError::NotFound {
                     resource: "device authorization grant".to_string(),
@@ -240,15 +247,6 @@ pub async fn device_authorization_approve<R: Repository>(
     headers: HeaderMap,
     JsonObject(req): JsonObject<DeviceAuthorizationApprovalRequest>,
 ) -> Response {
-    if !state.config.realms.iter().any(|realm| {
-        oauth_feature_enabled(&state, &realm.id, |oauth| {
-            oauth.device_authorization.enabled
-        })
-    }) {
-        return qid_http::error_response(QidError::BadRequest {
-            message: "device authorization is disabled".to_string(),
-        });
-    }
     match approve_device_authorization(&state, &req, &headers).await {
         Ok(()) => Json(DeviceAuthorizationApprovalResponse {
             approved: true,
@@ -277,6 +275,14 @@ async fn approve_device_authorization<R: Repository>(
         .ok_or_else(|| QidError::Config {
             message: format!("realm {} not found", grant.realm_id),
         })?;
+
+    if !oauth_feature_enabled(state, &grant.realm_id, |oauth| {
+        oauth.device_authorization.enabled
+    }) {
+        return Err(QidError::BadRequest {
+            message: "device authorization is disabled".to_string(),
+        });
+    }
 
     let cookie_name = &realm_cfg.browser_session.cookie_name;
     let session_id =

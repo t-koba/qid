@@ -60,6 +60,8 @@ pub struct BackchannelAuthenticationContextResponse {
     pub scopes: Vec<String>,
     pub resource: Vec<String>,
     pub audience: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_message: Option<String>,
 }
 
 pub async fn backchannel_authentication<R: Repository>(
@@ -376,6 +378,7 @@ pub async fn backchannel_authentication_context<R: Repository>(
         scopes: grant.scopes.clone(),
         resource: grant.resource.clone(),
         audience: grant.audience.clone(),
+        binding_message: grant.binding_message.clone(),
     })
     .into_response()
 }

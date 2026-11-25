@@ -834,7 +834,7 @@ validates that authorization context without pretending to possess a sender
 proof. CIBA initiation accepts `client_secret_post` clients and verifies the secret
 immediately. The durable grant records the exact resource, resolved API audience
 and scopes before approval; approval only binds the subject and approval time. The
-device verification page displays that stored resource alongside the scopes. The CIBA approval path serves the same stored `client_id`, `scopes`, `resource`, and resolved `audience` read-only at `GET <backchannel_authentication>/approve?auth_req_id=...` before approval: it requires the same live browser session whose user and realm match the grant's bound user/realm, rejects missing, expired, or consumed grants without revealing the context to another user, and never approves or consumes the grant.
+device verification page displays that stored resource alongside the scopes. The CIBA approval path serves the same stored `client_id`, `scopes`, `resource`, and resolved `audience` read-only at `GET <backchannel_authentication>/approve?auth_req_id=...` before approval: it requires the same live browser session whose user and realm match the grant's bound user/realm, rejects missing, expired, or consumed grants without revealing the context to another user, and never approves or consumes the grant. It also returns the optional `binding_message` stored from CIBA initiation when one was supplied, so the approving user can compare the client's anti-phishing message with the request; the field is omitted when no message was stored.
 
 Token polling may omit `resource` and `audience` or repeat the stored target and
 resolved audience, but cannot replace them. An optional `scope` may only narrow

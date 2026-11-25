@@ -4965,6 +4965,72 @@ async fn ciba_approval_context_returns_bound_target_without_approving() {
 }
 
 #[tokio::test]
+async fn ciba_approval_context_returns_stored_binding_message() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.ciba.enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_user(&User {
+            id: "binding-user".into(),
+            realm_id: "test".into(),
+            email: Some("binding-user@example.com".into()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let sessions = SessionManager::new(state.repo.clone(), 15, 1);
+    let session = sessions
+        .create("test", "binding-user", "password", &[])
+        .await
+        .unwrap();
+    let cookie = format!(
+        "{}={}",
+        state.config.realms[0].sessions.browser.cookie_name, session.id
+    );
+    let binding_message = "Approve payment of 42 EUR to Example Shop";
+    let mut auth_req_ids = Vec::new();
+    for message in [Some(binding_message), None] {
+        let form = match message {
+            Some(message) => format!(
+                "client_id=ciba-client&client_secret=secret&login_hint=binding-user%40example.com&scope=openid&binding_message={}",
+                urlencoding::encode(message)
+            ),
+            None => "client_id=ciba-client&client_secret=secret&login_hint=binding-user%40example.com&scope=openid".to_string(),
+        };
+        let response = post_form(app.clone(), &state.paths.backchannel_authentication, form).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        auth_req_ids.push(
+            json_body(response).await["auth_req_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let mut contexts = Vec::new();
+    for auth_req_id in auth_req_ids {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!(
+                "{}/approve?auth_req_id={auth_req_id}",
+                state.paths.backchannel_authentication
+            ))
+            .header(axum::http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        contexts.push(json_body(response).await);
+    }
+    assert_eq!(contexts[0]["binding_message"], binding_message);
+    assert!(contexts[1].get("binding_message").is_none());
+}
+
+#[tokio::test]
 async fn device_resource_binding_survives_approval_and_polling() {
     for require_proof in [false, true] {
         resource_bound_polling_flow(false, require_proof).await;

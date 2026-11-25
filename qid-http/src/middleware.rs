@@ -257,8 +257,9 @@ fn parse_origin(value: &str) -> Option<ParsedOrigin<'_>> {
         .then_some(ParsedOrigin { scheme, authority })
 }
 
-/// `Referer` is an absolute URL whose path, query and fragment are ignored;
-/// userinfo and malformed URL syntax are not accepted.
+/// `Referer` is an absolute URL whose path, query and fragment are ignored.
+/// Userinfo, controls, spaces, raw quotes/angle brackets and malformed percent
+/// escapes are rejected; other browser-tolerated suffix bytes are accepted.
 fn parse_referer(value: &str) -> Option<ParsedOrigin<'_>> {
     let (scheme, authority, remainder) = split_absolute_url(value)?;
     if remainder.is_some_and(|suffix| !valid_url_suffix(suffix)) {

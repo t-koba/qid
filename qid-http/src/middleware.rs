@@ -293,14 +293,60 @@ fn valid_authority(authority: &Authority) -> bool {
         && (authority.port_u16().is_some() || authority.as_str() == authority.host())
 }
 
+/// RFC 3986 `pchar`: unreserved / pct-encoded / sub-delims / ":" / "@".
+fn is_pchar(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'-' | b'.'
+                | b'_'
+                | b'~'
+                | b'!'
+                | b'$'
+                | b'&'
+                | b'\''
+                | b'('
+                | b')'
+                | b'*'
+                | b'+'
+                | b','
+                | b';'
+                | b'='
+                | b':'
+                | b'@'
+        )
+}
+
+/// Validates a path, query or fragment independently of `Uri`, whose scanner
+/// stops at '#' and tolerates bytes outside these RFC 3986 components.
+fn valid_component(bytes: &[u8], allow_question: bool) -> bool {
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' {
+            if !bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+                || !bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit)
+            {
+                return false;
+            }
+            index += 3;
+        } else if is_pchar(byte) || byte == b'/' || (allow_question && byte == b'?') {
+            index += 1;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
 fn valid_url_suffix(suffix: &str) -> bool {
-    let bytes = suffix.as_bytes();
-    !bytes.iter().any(u8::is_ascii_whitespace)
-        && bytes.iter().enumerate().all(|(index, byte)| {
-            *byte != b'%'
-                || (bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
-                    && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit))
-        })
+    let (before_fragment, fragment) = suffix.split_once('#').unwrap_or((suffix, ""));
+    let (path, query) = before_fragment
+        .split_once('?')
+        .unwrap_or((before_fragment, ""));
+    valid_component(path.as_bytes(), false)
+        && valid_component(query.as_bytes(), true)
+        && valid_component(fragment.as_bytes(), true)
 }
 
 fn scheme_default_port(scheme: &str) -> Option<u16> {
@@ -1049,10 +1095,17 @@ mod tests {
     }
 
     #[test]
-    fn csrf_rejects_referer_with_invalid_path_or_query() {
+    fn csrf_rejects_referer_with_invalid_path_query_or_fragment() {
         for referer in [
             "https://id.example.com/settings?x=%zz",
             "https://id.example.com/my settings",
+            "https://id.example.com/settings#<script>",
+            "https://id.example.com/settings#a>b",
+            "https://id.example.com/settings#a\"b",
+            "https://id.example.com/settings#a\\b",
+            "https://id.example.com/settings#a^b",
+            "https://id.example.com/settings#a{b}",
+            "https://id.example.com/settings#a|b",
         ] {
             let headers = headers(&[("host", "id.example.com"), ("referer", referer)]);
             assert!(
@@ -1064,11 +1117,16 @@ mod tests {
 
     #[test]
     fn csrf_accepts_referer_with_path_query_and_fragment() {
-        let headers = headers(&[
-            ("host", "id.example.com"),
-            ("referer", "https://id.example.com/settings?tab=1#section"),
-        ]);
-        assert!(!is_cross_site_request(&headers, "https"));
+        for referer in [
+            "https://id.example.com/settings?tab=1#section",
+            "https://id.example.com/a/b-c_d.e~f!$&'()*+,;=:@?q=a%20b#part%20one?more=1",
+        ] {
+            let headers = headers(&[("host", "id.example.com"), ("referer", referer)]);
+            assert!(
+                !is_cross_site_request(&headers, "https"),
+                "referer {referer}"
+            );
+        }
     }
 
     #[test]

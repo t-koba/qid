@@ -46,8 +46,8 @@ Important validation rules:
 - Authorization code flow requires PKCE.
 - Multi-realm issuer URLs must match realm-scoped discovery paths.
 - Metrics cannot bind to all interfaces.
-- Static redirect URIs cannot use wildcards or fragments.
-- Redirect URIs must use HTTPS except localhost HTTP.
+- Redirect URIs cannot use wildcards or fragments.
+- Redirect URIs must use HTTPS except loopback HTTP (localhost, 127.0.0.0/8, ::1).
 - SCIM cursor secrets must be at least 32 bytes when SCIM is enabled.
 - SCIM event callback allowlists must be hostnames and reject unsafe local/non-routable hosts.
 - PEP decisions fail closed by default (`decision.fail_policy: deny`); opt-in `allow` opens only internal/storage evaluation errors after successful PEP authentication, never auth, binding, config, capability, or policy outcomes.

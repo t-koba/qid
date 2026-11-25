@@ -565,7 +565,7 @@ Validation rules:
 - mTLS clients need certificate thumbprints.
 - Authorization code clients need redirect URIs.
 - Redirect URIs cannot contain wildcards or fragments.
-- Redirect URIs must use HTTPS, except localhost HTTP.
+- Redirect URIs must use HTTPS, except loopback HTTP (localhost, 127.0.0.0/8, ::1).
 
 ## Protocols
 

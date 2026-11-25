@@ -2115,36 +2115,29 @@ fn validate_static_redirect_uri(
     client_id: &str,
     redirect_uri: &str,
 ) -> QidResult<()> {
-    if redirect_uri.contains('*') {
-        return Err(QidError::Config {
+    match crate::oauth::validate_redirect_uri(redirect_uri) {
+        Ok(()) => Ok(()),
+        Err(crate::oauth::RedirectUriError::Wildcard) => Err(QidError::Config {
             message: format!(
                 "realm {realm_id} static client {client_id} redirect_uri must not contain wildcards"
             ),
-        });
-    }
-    let parsed = url::Url::parse(redirect_uri).map_err(|e| QidError::Config {
-        message: format!(
-            "realm {realm_id} static client {client_id} redirect_uri is not valid: {e}"
-        ),
-    })?;
-    if parsed.fragment().is_some() {
-        return Err(QidError::Config {
+        }),
+        Err(crate::oauth::RedirectUriError::InvalidUrl(detail)) => Err(QidError::Config {
+            message: format!(
+                "realm {realm_id} static client {client_id} redirect_uri is not valid: {detail}"
+            ),
+        }),
+        Err(crate::oauth::RedirectUriError::Fragment) => Err(QidError::Config {
             message: format!(
                 "realm {realm_id} static client {client_id} redirect_uri must not contain a fragment"
             ),
-        });
-    }
-    let scheme = parsed.scheme();
-    let host = parsed.host_str().unwrap_or_default();
-    let localhost = matches!(host, "localhost" | "127.0.0.1" | "::1");
-    if scheme != "https" && !(scheme == "http" && localhost) {
-        return Err(QidError::Config {
+        }),
+        Err(crate::oauth::RedirectUriError::InsecureScheme) => Err(QidError::Config {
             message: format!(
-                "realm {realm_id} static client {client_id} redirect_uri must use https except localhost"
+                "realm {realm_id} static client {client_id} redirect_uri must use https except loopback http"
             ),
-        });
+        }),
     }
-    Ok(())
 }
 
 pub use protocol::*;

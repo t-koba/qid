@@ -465,30 +465,30 @@ fn validate_dynamic_client_metadata(
     req: &DynamicClientRegistrationRequest,
 ) -> QidResult<DynamicClientMetadata> {
     for redirect_uri in &req.redirect_uris {
-        if redirect_uri.contains('*') {
-            return Err(QidError::BadRequest {
-                message: format!("redirect_uri {redirect_uri} must not contain wildcards"),
-            });
-        }
-        let parsed = url::Url::parse(redirect_uri).map_err(|_| QidError::BadRequest {
-            message: format!("redirect_uri {redirect_uri} is not a valid URL"),
-        })?;
-        if parsed.fragment().is_some() {
-            return Err(QidError::BadRequest {
-                message: format!("redirect_uri {redirect_uri} must not contain a fragment"),
-            });
-        }
-        let host = parsed.host_str().unwrap_or("");
-        let scheme = parsed.scheme();
-        let is_localhost = host == "localhost"
-            || host == "127.0.0.1"
-            || host == "::1"
-            || host.starts_with("127.")
-            || host == "[::1]";
-        if scheme != "https" && !(scheme == "http" && is_localhost) {
-            return Err(QidError::BadRequest {
-                message: format!("redirect_uri {redirect_uri} has no scheme"),
-            });
+        match qid_core::oauth::validate_redirect_uri(redirect_uri) {
+            Ok(()) => {}
+            Err(qid_core::oauth::RedirectUriError::Wildcard) => {
+                return Err(QidError::BadRequest {
+                    message: format!("redirect_uri {redirect_uri} must not contain wildcards"),
+                });
+            }
+            Err(qid_core::oauth::RedirectUriError::InvalidUrl(_)) => {
+                return Err(QidError::BadRequest {
+                    message: format!("redirect_uri {redirect_uri} is not a valid URL"),
+                });
+            }
+            Err(qid_core::oauth::RedirectUriError::Fragment) => {
+                return Err(QidError::BadRequest {
+                    message: format!("redirect_uri {redirect_uri} must not contain a fragment"),
+                });
+            }
+            Err(qid_core::oauth::RedirectUriError::InsecureScheme) => {
+                return Err(QidError::BadRequest {
+                    message: format!(
+                        "redirect_uri {redirect_uri} must use https except loopback http"
+                    ),
+                });
+            }
         }
     }
     let auth_method = req
@@ -1015,6 +1015,13 @@ mod tests {
         let req = dcr_request_with_redirect_uri("https://*.example.com/cb");
         let err = validate_dynamic_client_metadata(&req).unwrap_err();
         assert!(err.to_string().contains("must not contain wildcards"));
+    }
+
+    #[test]
+    fn dcr_rejects_spoofed_loopback_redirect_uri() {
+        let req = dcr_request_with_redirect_uri("http://127.evil.example/cb");
+        let err = validate_dynamic_client_metadata(&req).unwrap_err();
+        assert!(err.to_string().contains("must use https"));
     }
 
     #[test]

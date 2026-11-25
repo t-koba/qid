@@ -6,6 +6,49 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+/// Reason a redirect URI was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedirectUriError {
+    /// The URI contains a `*` wildcard.
+    Wildcard,
+    /// The URI is not a valid URL; the payload is the parser error.
+    InvalidUrl(String),
+    /// The URI contains a fragment.
+    Fragment,
+    /// The URI uses a scheme other than HTTPS without true loopback HTTP.
+    InsecureScheme,
+}
+
+/// Validate a redirect URI: no `*` wildcards, a valid URL without a
+/// fragment, and HTTPS except for true loopback HTTP (`localhost`,
+/// `127.0.0.0/8`, or `::1`).
+pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError> {
+    if redirect_uri.contains('*') {
+        return Err(RedirectUriError::Wildcard);
+    }
+    let parsed =
+        url::Url::parse(redirect_uri).map_err(|e| RedirectUriError::InvalidUrl(e.to_string()))?;
+    if parsed.fragment().is_some() {
+        return Err(RedirectUriError::Fragment);
+    }
+    if parsed.scheme() == "https" {
+        return Ok(());
+    }
+    if parsed.scheme() == "http" && is_loopback_host(parsed.host()) {
+        return Ok(());
+    }
+    Err(RedirectUriError::InsecureScheme)
+}
+
+fn is_loopback_host(host: Option<url::Host<&str>>) -> bool {
+    match host {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr.octets()[0] == 127,
+        Some(url::Host::Ipv6(addr)) => addr == std::net::Ipv6Addr::LOCALHOST,
+        None => false,
+    }
+}
+
 /// Validate OAuth Rich Authorization Requests authorization details.
 ///
 /// RFC 9396 defines `authorization_details` as a non-empty JSON array of
@@ -194,7 +237,7 @@ fn validate_scopes_per_target(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_authorization_details;
+    use super::{RedirectUriError, validate_authorization_details, validate_redirect_uri};
     use crate::config::{
         OAuthProtocolConfig, OAuthResourceServerConfig, ProtocolConfig, RealmConfig,
     };
@@ -215,6 +258,44 @@ mod tests {
             validate_authorization_details(&serde_json::json!([{ "actions": ["read"] }])).is_err()
         );
         assert!(validate_authorization_details(&serde_json::json!([{ "type": " " }])).is_err());
+    }
+
+    #[test]
+    fn redirect_uri_rejects_wildcard_fragment_and_spoofed_loopback() {
+        assert_eq!(
+            validate_redirect_uri("https://*.example.com/cb"),
+            Err(RedirectUriError::Wildcard)
+        );
+        assert_eq!(
+            validate_redirect_uri("https://client.example.com/cb#frag"),
+            Err(RedirectUriError::Fragment)
+        );
+        assert_eq!(
+            validate_redirect_uri("http://127.evil.example/cb"),
+            Err(RedirectUriError::InsecureScheme)
+        );
+        assert!(matches!(
+            validate_redirect_uri("not a url"),
+            Err(RedirectUriError::InvalidUrl(_))
+        ));
+        assert_eq!(
+            validate_redirect_uri("http://app.example.com/cb"),
+            Err(RedirectUriError::InsecureScheme)
+        );
+    }
+
+    #[test]
+    fn redirect_uri_accepts_https_and_true_loopback_http() {
+        for uri in [
+            "https://client.example.com/cb",
+            "http://localhost:3000/cb",
+            "http://127.0.0.1/cb",
+            "http://127.1.2.3:8080/cb",
+            "http://[::1]/cb",
+            "http://[::1]:3000/cb",
+        ] {
+            validate_redirect_uri(uri).expect(uri);
+        }
     }
 
     #[test]

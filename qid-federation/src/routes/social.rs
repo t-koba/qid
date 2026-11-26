@@ -289,8 +289,6 @@ mod tests {
         assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
 
         server.abort();
-        drop(fixture.state);
-        std::fs::remove_dir_all(&fixture.directory).unwrap();
     }
 
     #[tokio::test]
@@ -328,7 +326,5 @@ mod tests {
         tx_test::assert_no_identity_effects(&fixture, "other-social").await;
 
         server.abort();
-        drop(fixture.state);
-        std::fs::remove_dir_all(&fixture.directory).unwrap();
     }
 }

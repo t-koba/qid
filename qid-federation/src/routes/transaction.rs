@@ -355,10 +355,27 @@ pub(crate) mod test_support {
         (format!("http://{address}"), handle)
     }
 
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(kind: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("qid-federation-tx-{}-{kind}", ulid::Ulid::new()));
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     pub(crate) struct Fixture {
         pub(crate) state: Arc<SharedState<FileRepository>>,
         pub(crate) repo: Arc<FileRepository>,
-        pub(crate) directory: PathBuf,
+        // Dropped last: state and repository release their files first.
+        _directory: TestDirectory,
     }
 
     pub(crate) async fn fixture(provider_id: &str, kind: &str, base_url: &str) -> Fixture {
@@ -413,10 +430,9 @@ pub(crate) mod test_support {
             .collect();
         federation.inbound_providers =
             serde_json::from_value(serde_json::Value::Array(providers)).expect("provider config");
-        let directory =
-            std::env::temp_dir().join(format!("qid-federation-tx-{}-{kind}", ulid::Ulid::new()));
+        let directory = TestDirectory::new(kind);
         let repo = Arc::new(
-            FileRepository::new(directory.join("store.json").to_str().expect("utf8 path"))
+            FileRepository::new(directory.0.join("store.json").to_str().expect("utf8 path"))
                 .await
                 .expect("repository"),
         );
@@ -436,7 +452,7 @@ pub(crate) mod test_support {
         Fixture {
             state,
             repo,
-            directory,
+            _directory: directory,
         }
     }
 
@@ -487,9 +503,6 @@ pub(crate) mod test_support {
             .expect("route response");
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().contains_key(header::SET_COOKIE));
-
-        drop(fixture.state);
-        std::fs::remove_dir_all(&fixture.directory).expect("cleanup");
     }
 
     #[tokio::test]
@@ -522,7 +535,5 @@ pub(crate) mod test_support {
             .expect("first use succeeds");
         assert_eq!(verified.provider, "configured-provider");
         assert!(verify(&fixture.state, &headers, "test", Some(&token), None).is_err());
-        drop(fixture.state);
-        std::fs::remove_dir_all(&fixture.directory).expect("cleanup");
     }
 }

@@ -440,8 +440,6 @@ mod tests {
         );
 
         server.abort();
-        drop(fixture.state);
-        std::fs::remove_dir_all(&fixture.directory).unwrap();
     }
 
     #[tokio::test]
@@ -479,8 +477,6 @@ mod tests {
         tx_test::assert_no_identity_effects(&fixture, "other-oidc").await;
 
         server.abort();
-        drop(fixture.state);
-        std::fs::remove_dir_all(&fixture.directory).unwrap();
     }
 
     fn id_token_response(sub_json: &str) -> serde_json::Value {

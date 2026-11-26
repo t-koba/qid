@@ -558,7 +558,7 @@ Validation rules:
 
 - `grant_types` must not be empty.
 - `implicit` and `password` grants are forbidden.
-- Entries outside the eight implemented grants are rejected; DCR and token redemption share that set.
+- Entries outside the eight implemented grants are rejected; static config, DCR, token redemption, and admin client creation share that set.
 - Public clients must use `token_endpoint_auth_method=none` and cannot declare secrets.
 - Public clients cannot use `client_credentials`.
 - Confidential clients using `client_secret_basic` or `client_secret_post` need a secret or hash.

@@ -614,6 +614,13 @@ are exempt. Enabled providers sharing one `issuer` must also configure the same
 `token_url`, `userinfo_url`, `jwks_uri`, and `jwks` values; multiple client
 registrations at one authorization server remain valid.
 
+Enabled `social` providers use `social_provider` as a routing alias, compared
+case-insensitively in hint routing and callback paths. Two enabled social
+providers in one realm must not set aliases that differ only by case; config
+load rejects the collision because it has no unambiguous callback target.
+Canonical provider ids remain exact, and aliasing does not change federated
+subject matching.
+
 `realms[].protocols.federation.transaction_ttl_seconds` bounds the signed
 browser-bound proof issued by `GET /federation/:realm/transaction/start` for
 inbound OIDC/social callbacks. One positive value sets the JWT lifetime, the

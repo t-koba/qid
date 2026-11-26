@@ -1,5 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
+use qid_core::oauth::is_supported_grant_type;
 use qid_core::web::JsonObject;
 
 pub(crate) async fn list_realms<R: Repository>(
@@ -420,6 +421,24 @@ pub(crate) async fn list_clients<R: Repository>(
     }
 }
 
+fn validate_client_grant_types(
+    realm: &str,
+    client_id: &str,
+    grant_types: &[String],
+) -> QidResult<()> {
+    if let Some(grant) = grant_types
+        .iter()
+        .find(|grant| !is_supported_grant_type(grant))
+    {
+        return Err(QidError::BadRequest {
+            message: format!(
+                "realm {realm} client {client_id} has unsupported grant_type: {grant}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub(crate) struct CreateClientRequest {
     client_id: String,
@@ -436,6 +455,9 @@ pub(crate) async fn create_client<R: Repository>(
     JsonObject(req): JsonObject<CreateClientRequest>,
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::AppAdmin, Some(&realm));
+    if let Err(e) = validate_client_grant_types(&realm, &req.client_id, &req.grant_types) {
+        return qid_http::error_response(e);
+    }
     let token_endpoint_auth_method = match req.client_type {
         ClientType::Public => "none".to_string(),
         ClientType::Confidential => qid_core::models::default_token_endpoint_auth_method(),
@@ -558,4 +580,29 @@ pub(crate) async fn delete_client<R: Repository>(
         serde_json::json!({ "client_internal_id": client.id }),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_client_grant_validation_accepts_extension_grant() {
+        let grants = vec!["urn:ietf:params:oauth:grant-type:jwt-bearer".to_string()];
+        assert!(validate_client_grant_types("corp", "worker", &grants).is_ok());
+    }
+
+    #[test]
+    fn admin_client_grant_validation_rejects_typo() {
+        let grants = vec!["authorization_codee".to_string()];
+        let err = validate_client_grant_types("corp", "worker", &grants).unwrap_err();
+        assert!(matches!(err, QidError::BadRequest { .. }));
+        assert!(
+            err.message().contains(
+                "realm corp client worker has unsupported grant_type: authorization_codee"
+            ),
+            "{}",
+            err.message()
+        );
+    }
 }

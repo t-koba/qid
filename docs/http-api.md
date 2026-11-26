@@ -188,7 +188,7 @@ require their configured reason and, when enabled, a valid
 | `POST` | `/admin/api/v1/:realm/token-families/:family_id/revoke` | Revoke token family. |
 | `GET` | `/admin/api/v1/:realm/pep-decisions` | List PEP decisions. |
 | `GET` | `/admin/api/v1/:realm/risk-events` | List risk events. |
-| `GET, POST` | `/admin/api/v1/:realm/clients` | List/create clients. A client id the realm already holds is refused, and so is a client id another realm the deployment serves holds. |
+| `GET, POST` | `/admin/api/v1/:realm/clients` | List/create clients. A client id the realm already holds is refused, and so is a client id another realm the deployment serves holds. Grant types outside the eight implemented by the token endpoint are refused. |
 | `DELETE` | `/admin/api/v1/:realm/clients/:client_id` | Delete client. |
 | `GET, POST` | `/admin/api/v1/:realm/service-accounts` | List/create service accounts. |
 | `DELETE` | `/admin/api/v1/:realm/service-accounts/:sa_id` | Delete service account. |

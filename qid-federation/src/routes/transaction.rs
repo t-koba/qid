@@ -230,9 +230,12 @@ pub(crate) fn verify<R: Repository>(
         .extra
         .get(SOCIAL_PROVIDER_CLAIM)
         .and_then(|value| value.as_str());
-    if expected_provider
-        .is_some_and(|expected| expected != provider && social_provider != Some(expected))
-    {
+    // Canonical provider ids stay exact; aliases follow the case-insensitive
+    // matching used by discovery and social callback routing.
+    if expected_provider.is_some_and(|expected| {
+        expected != provider
+            && !social_provider.is_some_and(|alias| alias.eq_ignore_ascii_case(expected))
+    }) {
         return Err(TransactionError("transaction provider mismatch"));
     }
     let verifier = string_claim(&claims, VERIFIER_CLAIM)?;
@@ -606,5 +609,85 @@ pub(crate) mod test_support {
             .expect("first use succeeds");
         assert_eq!(verified.provider, "configured-provider");
         assert!(verify(&fixture.state, &headers, "test", Some(&token), None).is_err());
+    }
+
+    #[tokio::test]
+    async fn transaction_verify_matches_social_alias_ignoring_ascii_case() {
+        let fixture =
+            fixture_with_social_alias(&["corp-social"], "Google", "http://127.0.0.1:1").await;
+
+        for expected in ["google", "GOOGLE"] {
+            let (token, cookie) = issue_transaction(&fixture.state, "test", "corp-social").await;
+            let mut headers = HeaderMap::new();
+            headers.insert(header::COOKIE, cookie.parse().expect("cookie"));
+            let verified = verify(
+                &fixture.state,
+                &headers,
+                "test",
+                Some(&token),
+                Some(expected),
+            )
+            .expect("configured alias matches regardless of case");
+            assert_eq!(verified.provider, "corp-social");
+            assert!(
+                verify(
+                    &fixture.state,
+                    &headers,
+                    "test",
+                    Some(&token),
+                    Some(expected)
+                )
+                .is_err(),
+                "proof must remain single use"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_verify_rejects_a_different_social_alias() {
+        let fixture =
+            fixture_with_social_alias(&["corp-social"], "Google", "http://127.0.0.1:1").await;
+        let (token, cookie) = issue_transaction(&fixture.state, "test", "corp-social").await;
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, cookie.parse().expect("cookie"));
+
+        let error = verify(
+            &fixture.state,
+            &headers,
+            "test",
+            Some(&token),
+            Some("github"),
+        )
+        .expect_err("a different alias must fail");
+        assert_eq!(error.0, "transaction provider mismatch");
+        let error = verify(
+            &fixture.state,
+            &headers,
+            "test",
+            Some(&token),
+            Some("CORP-SOCIAL"),
+        )
+        .expect_err("canonical provider ids stay exact");
+        assert_eq!(error.0, "transaction provider mismatch");
+
+        let verified = verify(
+            &fixture.state,
+            &headers,
+            "test",
+            Some(&token),
+            Some("google"),
+        )
+        .expect("a mismatch does not spend the proof");
+        assert_eq!(verified.provider, "corp-social");
+        assert!(
+            verify(
+                &fixture.state,
+                &headers,
+                "test",
+                Some(&token),
+                Some("google")
+            )
+            .is_err()
+        );
     }
 }

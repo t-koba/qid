@@ -700,4 +700,40 @@ mod tests {
 
         server.abort();
     }
+
+    #[tokio::test]
+    async fn social_callback_accepts_alias_with_different_case() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture =
+            tx_test::fixture_with_social_alias(&["corp-social"], "Google", &base_url).await;
+        let realm = RealmId("test".to_string());
+
+        for path in ["google", "GOOGLE"] {
+            let (proof, cookie) =
+                tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+            let (status, body) = callback(&fixture.state, path, Some(&proof), Some(&cookie)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["provider"], "corp-social");
+        }
+        // Both paths link the same external subject to one local user.
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn social_callback_rejects_a_different_alias() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture =
+            tx_test::fixture_with_social_alias(&["corp-social"], "Google", &base_url).await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+
+        let (status, body) = callback(&fixture.state, "github", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_transaction");
+        tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
+
+        server.abort();
+    }
 }

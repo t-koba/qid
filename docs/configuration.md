@@ -610,7 +610,9 @@ Enabled front-channel inbound providers (`oidc`, `entra_id`/`entra`/`azure_ad`,
 `google_workspace`/`google`, `okta`, `social`) must set `issuer` to an HTTPS URL
 with a host and without credentials, query, or fragment, so it is a usable RFC
 8414 issuer identifier for RFC 9207 binding. Disabled providers and other kinds
-are exempt.
+are exempt. Enabled providers sharing one `issuer` must also configure the same
+`token_url`, `userinfo_url`, `jwks_uri`, and `jwks` values; multiple client
+registrations at one authorization server remain valid.
 
 `realms[].protocols.federation.transaction_ttl_seconds` bounds the signed
 browser-bound proof issued by `GET /federation/:realm/transaction/start` for

@@ -17,7 +17,9 @@ use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::{extract_basic_client_auth, oauth_feature_enabled, verify_client_secret};
+use super::{
+    extract_basic_client_auth, is_supported_grant_type, oauth_feature_enabled, verify_client_secret,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct DynamicClientRegistrationRequest {
@@ -529,6 +531,11 @@ fn validate_dynamic_client_metadata(
     if client_type == ClientType::Public && grant_types.iter().any(|g| g == "client_credentials") {
         return Err(QidError::BadRequest {
             message: "public clients cannot use client_credentials".to_string(),
+        });
+    }
+    if grant_types.iter().any(|g| !is_supported_grant_type(g)) {
+        return Err(QidError::BadRequest {
+            message: "unsupported grant_type".to_string(),
         });
     }
     if matches!(

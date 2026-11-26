@@ -18,7 +18,7 @@ use std::sync::Arc;
 use super::{
     TokenIssueClaims, TokenRequest, TokenResponse, access_token_type_for_cnf,
     authorization_code_grant, ciba_grant, client_credentials_grant, decode_access_token,
-    device_code_grant, issue_access_token, refresh_token_grant,
+    device_code_grant, is_supported_grant_type, issue_access_token, refresh_token_grant,
 };
 
 pub async fn token<R: Repository>(
@@ -239,20 +239,6 @@ fn metric_grant_type_label(grant_type: &str) -> &'static str {
         "urn:openid:params:grant-type:ciba" => "ciba",
         _ => "other",
     }
-}
-
-fn is_supported_grant_type(grant_type: &str) -> bool {
-    matches!(
-        grant_type,
-        "authorization_code"
-            | "client_credentials"
-            | "refresh_token"
-            | "urn:ietf:params:oauth:grant-type:token-exchange"
-            | "urn:ietf:params:oauth:grant-type:jwt-bearer"
-            | "urn:ietf:params:oauth:grant-type:saml2-bearer"
-            | "urn:ietf:params:oauth:grant-type:device_code"
-            | "urn:openid:params:grant-type:ciba"
-    )
 }
 
 fn required_dpop_nonce_for_realm(

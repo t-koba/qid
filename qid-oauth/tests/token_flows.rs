@@ -3055,6 +3055,165 @@ async fn dynamic_client_registration_creates_client() {
 }
 
 #[tokio::test]
+async fn dynamic_client_registration_rejects_unsupported_grant_type() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .enabled = true;
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    let (app, _, state) = setup_with_config(config).await;
+    let path = state.paths.dynamic_client_registration.clone();
+
+    let rejected = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-unsupported-grant","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code","authorization_codee"],"token_endpoint_auth_method":"none"}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(rejected).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported grant_type")
+    );
+    assert!(
+        state
+            .repo
+            .get_client_by_client_id(&RealmId::from("test"), "dcr-unsupported-grant")
+            .await
+            .unwrap()
+            .is_none(),
+        "an unsupported grant_type must not create a client"
+    );
+
+    let accepted = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-jwt-bearer-grant","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code","urn:ietf:params:oauth:grant-type:jwt-bearer"],"token_endpoint_auth_method":"none"}"#,
+        ))
+        .unwrap();
+    let response = app.oneshot(accepted).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "dcr-jwt-bearer-grant")
+        .await
+        .unwrap()
+        .expect("supported extension grant should register a client");
+    assert_eq!(
+        client.grant_types,
+        [
+            "authorization_code",
+            "urn:ietf:params:oauth:grant-type:jwt-bearer"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_management_rejects_unsupported_grant_type() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .enabled = true;
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    let (app, _, state) = setup_with_config(config).await;
+    let create_path = state.paths.dynamic_client_registration.clone();
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri(&create_path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"client_id":"dcr-managed-grant","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"client_secret_post"}"#,
+        ))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let registration_access_token = json_body(create_response).await["registration_access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_path = state
+        .paths
+        .dynamic_client_registration_management
+        .replace(":client_id", "dcr-managed-grant");
+    let rejected = Request::builder()
+        .method(Method::PUT)
+        .uri(&update_path)
+        .header("Content-Type", "application/json")
+        .header(
+            "Authorization",
+            format!("Bearer {registration_access_token}"),
+        )
+        .body(Body::from(
+            r#"{"client_id":"dcr-managed-grant","redirect_uris":["https://app.example.com/typo"],"grant_types":["authorization_code","authorizaton_code"],"token_endpoint_auth_method":"client_secret_post"}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(rejected).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported grant_type")
+    );
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "dcr-managed-grant")
+        .await
+        .unwrap()
+        .expect("rejected update must preserve the client");
+    assert_eq!(client.grant_types, ["authorization_code"]);
+    assert_eq!(
+        client.redirect_uris,
+        ["https://app.example.com/cb".to_string()]
+    );
+
+    let accepted = Request::builder()
+        .method(Method::PUT)
+        .uri(&update_path)
+        .header("Content-Type", "application/json")
+        .header(
+            "Authorization",
+            format!("Bearer {registration_access_token}"),
+        )
+        .body(Body::from(
+            r#"{"client_id":"dcr-managed-grant","redirect_uris":["https://app.example.com/cb"],"grant_types":["urn:ietf:params:oauth:grant-type:jwt-bearer"],"token_endpoint_auth_method":"client_secret_post"}"#,
+        ))
+        .unwrap();
+    let response = app.oneshot(accepted).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "dcr-managed-grant")
+        .await
+        .unwrap()
+        .expect("supported extension grant should update the client");
+    assert_eq!(
+        client.grant_types,
+        ["urn:ietf:params:oauth:grant-type:jwt-bearer"]
+    );
+}
+
+#[tokio::test]
 async fn dynamic_client_registration_refuses_a_client_id_another_realm_holds() {
     let mut config = test_helpers::test_config();
     config.realms[0]

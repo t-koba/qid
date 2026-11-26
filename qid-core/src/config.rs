@@ -57,6 +57,19 @@ pub const EDGE_PEP_REQUIRED_CAPABILITY_EFFECTS: &[&str] = &[
     "policy_tags",
 ];
 
+/// Whether a configured URL can serve as an exact HTTPS identifier: it has a
+/// host and carries no credentials, query, or fragment.
+fn is_secure_https_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
+}
+
 /// Top-level configuration for qid.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -180,15 +193,7 @@ impl QidConfig {
             let Some(reference) = vc.issuer_key_ref.as_deref() else {
                 continue;
             };
-            let issuer_is_secure = url::Url::parse(&realm.issuer).is_ok_and(|issuer| {
-                issuer.scheme() == "https"
-                    && issuer.host_str().is_some()
-                    && issuer.username().is_empty()
-                    && issuer.password().is_none()
-                    && issuer.query().is_none()
-                    && issuer.fragment().is_none()
-            });
-            if !issuer_is_secure {
+            if !is_secure_https_url(&realm.issuer) {
                 return Err(QidError::Config {
                     message: format!(
                         "realm {} VC issuer must be an HTTPS URL without credentials, query, or fragment",
@@ -334,15 +339,7 @@ impl QidConfig {
             }
             realm.validate()?;
             if realm.authentication.mfa.sms_recovery.enabled {
-                let secure = url::Url::parse(&self.server.public_base_url).is_ok_and(|u| {
-                    u.scheme() == "https"
-                        && u.host_str().is_some()
-                        && u.username().is_empty()
-                        && u.password().is_none()
-                        && u.query().is_none()
-                        && u.fragment().is_none()
-                });
-                if !secure
+                if !is_secure_https_url(&self.server.public_base_url)
                     || self.server.notification.is_none()
                     || self
                         .realms
@@ -353,22 +350,14 @@ impl QidConfig {
                 }
             }
             if realm.authentication.email_magic_link.enabled {
-                let secure_base = url::Url::parse(&self.server.public_base_url)
-                    .ok()
-                    .is_some_and(|url| {
-                        url.scheme() == "https"
-                            && url.host_str().is_some()
-                            && url.username().is_empty()
-                            && url.password().is_none()
-                            && url.query().is_none()
-                            && url.fragment().is_none()
-                    });
                 if matches!(realm.id.as_str(), "." | "..") {
                     return Err(QidError::Config {
                         message: "email magic link realm id must not be a URL dot segment".into(),
                     });
                 }
-                if self.server.notification.is_none() || !secure_base {
+                if !is_secure_https_url(&self.server.public_base_url)
+                    || self.server.notification.is_none()
+                {
                     return Err(QidError::Config { message: "authentication.email_magic_link.enabled requires server.notification and an HTTPS server.public_base_url without credentials, query or fragment".into() });
                 }
                 if self.realms.iter().any(|candidate| {
@@ -1342,6 +1331,28 @@ pub fn is_front_channel_inbound_provider_kind(kind: &str) -> bool {
     .any(|candidate| kind.eq_ignore_ascii_case(candidate))
 }
 
+/// An issuer identifier is an HTTPS URL used as an exact value for RFC 9207
+/// binding and RFC 8414 metadata. Reject syntax that cannot represent one such
+/// identifier at config load, including credentials, query and fragment parts.
+fn validate_inbound_provider_issuer_syntax(
+    realm_id: &str,
+    providers: &[InboundProviderConfig],
+) -> QidResult<()> {
+    for provider in providers.iter().filter(|provider| {
+        provider.enabled && is_front_channel_inbound_provider_kind(&provider.kind)
+    }) {
+        if !is_secure_https_url(&provider.issuer) {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} inbound provider {} issuer must be an HTTPS URL with a host and without credentials, query, or fragment",
+                    provider.id
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// RFC 9207 §4 requires one issuer identifier to designate one authorization
 /// server. Multiple client registrations at that server are valid; different
 /// upstream endpoints configured for the same issuer are not.
@@ -1802,6 +1813,10 @@ impl RealmConfig {
                 }
             }
         }
+        validate_inbound_provider_issuer_syntax(
+            &self.id,
+            &self.protocols.federation.inbound_providers,
+        )?;
         validate_inbound_provider_issuer_uniqueness(
             &self.id,
             &self.protocols.federation.inbound_providers,

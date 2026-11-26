@@ -4093,3 +4093,71 @@ fn inbound_provider_issuer_uniqueness_ignores_non_front_channel_kinds() {
         });
     }
 }
+
+#[test]
+fn front_channel_inbound_provider_accepts_https_issuer_with_path() {
+    for kind in [
+        "oidc",
+        "entra_id",
+        "entra",
+        "azure_ad",
+        "google_workspace",
+        "google",
+        "okta",
+        "social",
+    ] {
+        let mut config = config_with_provider_kind(kind);
+        let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+        provider.enabled = true;
+        provider.issuer = "https://login.example.com/realms/partner".to_string();
+        config.validate().unwrap_or_else(|err| {
+            panic!(
+                "front-channel provider {kind} must accept an HTTPS issuer with a path: {}",
+                err.message()
+            )
+        });
+    }
+}
+
+#[test]
+fn front_channel_inbound_provider_rejects_unsafe_issuer_syntax() {
+    for issuer in [
+        "http://login.example.com/realms/partner",
+        "not-a-valid-url",
+        "https://:443/path",
+        "https://login.example.com/realms/partner?tenant=corp",
+        "https://login.example.com/realms/partner#section",
+        "https://user@login.example.com/realms/partner",
+        "https://user:password@login.example.com/realms/partner",
+    ] {
+        let mut config = config_with_provider_kind("oidc");
+        let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+        provider.enabled = true;
+        provider.issuer = issuer.to_string();
+        let message = config.validate().unwrap_err().message().to_string();
+        assert!(
+            message.contains("realm corp inbound provider provider")
+                && message.contains("issuer must be an HTTPS URL with a host and without credentials, query, or fragment"),
+            "issuer {issuer} must be rejected with a realm/provider-specific message: {message}"
+        );
+    }
+}
+
+#[test]
+fn disabled_and_non_front_channel_providers_are_exempt_from_issuer_syntax() {
+    let mut config = config_with_provider_kind("oidc");
+    config.realms[0].protocols.federation.inbound_providers[0].issuer =
+        "not-a-valid-url".to_string();
+    config
+        .validate()
+        .unwrap_or_else(|err| panic!("disabled provider must be exempt: {}", err.message()));
+
+    let mut config = config_with_provider_kind("saml");
+    let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+    provider.enabled = true;
+    provider.issuer = "not-a-valid-url".to_string();
+    provider.saml_signing_certificates = vec!["dummy-certificate".to_string()];
+    config
+        .validate()
+        .unwrap_or_else(|err| panic!("SAML provider must be exempt: {}", err.message()));
+}

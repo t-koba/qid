@@ -606,6 +606,12 @@ defaults to `false`, which leaves the callback-target binding rule unchanged:
 `iss` must match when supplied, and may be absent when the target already
 selects one provider.
 
+Enabled front-channel inbound providers (`oidc`, `entra_id`/`entra`/`azure_ad`,
+`google_workspace`/`google`, `okta`, `social`) must set `issuer` to an HTTPS URL
+with a host and without credentials, query, or fragment, so it is a usable RFC
+8414 issuer identifier for RFC 9207 binding. Disabled providers and other kinds
+are exempt.
+
 `realms[].protocols.federation.transaction_ttl_seconds` bounds the signed
 browser-bound proof issued by `GET /federation/:realm/transaction/start` for
 inbound OIDC/social callbacks. One positive value sets the JWT lifetime, the

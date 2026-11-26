@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use qid_core::{QidError, state::SharedState};
@@ -12,7 +12,7 @@ use crate::{ExternalIdentityClaims, HomeRealmDiscoveryRequest, verify_inbound_id
 
 use super::{
     OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
-    providers_from_config,
+    providers_from_config, transaction,
 };
 
 /// Exchange an authorization code for tokens at the external provider's token endpoint.
@@ -180,7 +180,14 @@ pub async fn oidc_inbound_callback<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     Query(params): Query<OidcCallbackQuery>,
+    headers: HeaderMap,
 ) -> Response {
+    // Spend the browser-bound proof before token exchange, lookups or writes.
+    let proof = match transaction::verify(&state, &headers, &realm, params.state.as_deref(), None) {
+        Ok(proof) => proof,
+        Err(error) => return error.into_response(),
+    };
+
     let realm_config = match state.config.realms.iter().find(|r| r.id == realm) {
         Some(cfg) => cfg,
         None => {
@@ -202,19 +209,17 @@ pub async fn oidc_inbound_callback<R: Repository>(
 
     let providers = providers_from_config(&realm_config.protocols.federation.inbound_providers);
 
-    // Use state parameter to identify the provider
-    let provider_id = params.state.as_deref().unwrap_or("");
-    let provider = match providers.iter().find(|p| p.id == provider_id) {
+    // The verified proof, not the raw state parameter, selects the provider.
+    let provider_id = proof.provider.as_str();
+    let provider = match providers.iter().find(|p| p.id == provider_id && p.enabled) {
         Some(p) => p.clone(),
         None => {
-            let msg = if provider_id.is_empty() {
-                "no provider identifier in state parameter".to_string()
-            } else {
-                format!("provider {provider_id} not found")
-            };
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "provider_not_found", "message": msg})),
+                Json(serde_json::json!({
+                    "error": "provider_not_found",
+                    "message": format!("provider {provider_id} not found")
+                })),
             )
                 .into_response();
         }
@@ -356,62 +361,126 @@ pub async fn oidc_inbound_callback<R: Repository>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::{HeaderMap, header};
+    use http_body_util::BodyExt;
+    use qid_core::tenant::RealmId;
+    use serde_json::Value;
+
+    use super::super::transaction::test_support as tx_test;
+
+    fn callback_headers(cookie: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(cookie) = cookie {
+            headers.insert(header::COOKIE, cookie.parse().unwrap());
+        }
+        headers
+    }
+
+    async fn callback(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        proof: Option<&str>,
+        cookie: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let response = oidc_inbound_callback(
+            State(state.clone()),
+            Path("test".to_string()),
+            Query(OidcCallbackQuery {
+                code: "provider-code".to_string(),
+                state: proof.map(str::to_string),
+            }),
+            callback_headers(cookie),
+        )
+        .await;
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
 
     #[tokio::test]
-    async fn oidc_callback_rejects_missing_empty_and_unknown_provider_state() {
-        use http_body_util::BodyExt;
-        use qid_core::test_helpers;
-        use qid_crypto::LocalSigner;
-        use qid_storage::FileRepository;
+    async fn oidc_callback_completes_with_a_valid_transaction_and_spends_it() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture("corp-oidc", "oidc", &base_url).await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
 
-        let mut config = test_helpers::test_config();
-        let federation = &mut config.realms[0].protocols.federation;
-        federation.enabled = true;
-        federation.inbound_providers = serde_json::from_value(serde_json::json!([{
-            "id": "configured-provider",
-            "kind": "oidc",
-            "issuer": "https://provider.example.com",
-            "enabled": true
-        }]))
-        .unwrap();
-        let directory = std::env::temp_dir().join(format!("qid-oidc-state-{}", ulid::Ulid::new()));
-        let repo = Arc::new(
-            FileRepository::new(directory.join("store.json").to_str().unwrap())
+        let (status, body) = callback(&fixture.state, Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "linked");
+        assert_eq!(body["provider"], "corp-oidc");
+
+        let realm = RealmId("test".to_string());
+        let users = fixture.repo.list_users(&realm).await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-oidc", "user-123")
                 .await
-                .unwrap(),
+                .unwrap()
+                .is_some()
         );
-        let state = Arc::new(
-            SharedState::new(
-                config,
-                repo,
-                Arc::new(LocalSigner::from_secret("oidc-state-test", b"test-secret")),
-                serde_json::json!({}),
-            )
-            .unwrap(),
+        let audit = fixture
+            .repo
+            .list_audit_events(Some(&realm), 100)
+            .await
+            .unwrap();
+        assert_eq!(audit.len(), 2);
+
+        let (status, body) = callback(&fixture.state, Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_transaction");
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert_eq!(
+            fixture
+                .repo
+                .list_audit_events(Some(&realm), 100)
+                .await
+                .unwrap()
+                .len(),
+            2
         );
-        for (provider_id, expected_error) in [
-            (None, "provider_not_found"),
-            (Some(""), "provider_not_found"),
-            (Some("unknown-provider"), "provider_not_found"),
-            // A known identifier reaches the next check, proving the configured list is used.
-            (Some("configured-provider"), "client_id_not_configured"),
-        ] {
-            let response = oidc_inbound_callback(
-                State(state.clone()),
-                Path("test".to_string()),
-                Query(OidcCallbackQuery {
-                    code: "unused-code".to_string(),
-                    state: provider_id.map(str::to_string),
-                }),
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"], expected_error, "state: {provider_id:?}");
+
+        server.abort();
+        drop(fixture.state);
+        std::fs::remove_dir_all(&fixture.directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_rejects_proof_failures_before_identity_effects() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture =
+            tx_test::fixture_with_providers(&["corp-oidc", "other-oidc"], "oidc", &base_url).await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (other_proof, other_cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "other-oidc").await;
+
+        let cases: Vec<(Option<&str>, Option<&str>, &str)> = vec![
+            (None, Some(&cookie), "invalid_transaction"),
+            (Some(""), Some(&cookie), "invalid_transaction"),
+            (Some(&proof), None, "invalid_transaction"),
+            (
+                Some(&proof),
+                Some("__Host-qid-federation-tx=foreign-secret"),
+                "invalid_transaction",
+            ),
+            // A valid proof for another configured provider selects that provider,
+            // whose missing client configuration stops the exchange before writes.
+            (
+                Some(&other_proof),
+                Some(&other_cookie),
+                "client_id_not_configured",
+            ),
+        ];
+        for (proof, cookie, expected_error) in cases {
+            let (status, body) = callback(&fixture.state, proof, cookie).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"], expected_error);
         }
-        drop(state);
-        std::fs::remove_dir_all(directory).unwrap();
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-oidc").await;
+
+        server.abort();
+        drop(fixture.state);
+        std::fs::remove_dir_all(&fixture.directory).unwrap();
     }
 
     fn id_token_response(sub_json: &str) -> serde_json::Value {

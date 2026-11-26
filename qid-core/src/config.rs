@@ -1620,6 +1620,14 @@ impl RealmConfig {
                 ),
             });
         }
+        if self.protocols.federation.transaction_ttl_seconds == 0 {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {} federation.transaction_ttl_seconds must be positive",
+                    self.id
+                ),
+            });
+        }
         for provider in &self.protocols.federation.inbound_providers {
             if !is_known_inbound_provider_kind(&provider.kind) {
                 return Err(QidError::Config {

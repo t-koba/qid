@@ -788,13 +788,35 @@ pub struct NetworkAaaProtocolConfig {
     pub shared_secret: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+/// Default lifetime of an inbound federation callback transaction proof.
+pub const DEFAULT_FEDERATION_TRANSACTION_TTL_SECONDS: u64 = 300;
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FederationProtocolConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub inbound_providers: Vec<InboundProviderConfig>,
+    /// Lifetime, in seconds, of the browser-bound single-use proof issued for
+    /// inbound OIDC/social callbacks. The same value bounds the signed proof,
+    /// its browser cookie, and its single-use cache entry.
+    #[serde(default = "default_federation_transaction_ttl_seconds")]
+    pub transaction_ttl_seconds: u64,
+}
+
+fn default_federation_transaction_ttl_seconds() -> u64 {
+    DEFAULT_FEDERATION_TRANSACTION_TTL_SECONDS
+}
+
+impl Default for FederationProtocolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            inbound_providers: Vec::new(),
+            transaction_ttl_seconds: DEFAULT_FEDERATION_TRANSACTION_TTL_SECONDS,
+        }
+    }
 }
 
 /// Kerberos/SPNEGO inbound provider settings. Key material is referenced by a

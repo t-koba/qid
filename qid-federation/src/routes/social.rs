@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use qid_core::state::SharedState;
@@ -13,14 +13,26 @@ use crate::{HomeRealmDiscoveryRequest, route_inbound_provider, verify_inbound_id
 use super::oidc::{exchange_code_for_tokens, extract_claims_from_oidc_response};
 use super::{
     OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
-    providers_from_config,
+    providers_from_config, transaction,
 };
 
 pub async fn social_login_callback<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path((realm, provider_name)): Path<(String, String)>,
     Query(params): Query<OidcCallbackQuery>,
+    headers: HeaderMap,
 ) -> Response {
+    // Spend the browser-bound proof before token exchange, lookups or writes.
+    if let Err(error) = transaction::verify(
+        &state,
+        &headers,
+        &realm,
+        params.state.as_deref(),
+        Some(&provider_name),
+    ) {
+        return error.into_response();
+    }
+
     let realm_config = match state.config.realms.iter().find(|r| r.id == realm) {
         Some(cfg) => cfg,
         None => {
@@ -197,5 +209,126 @@ pub async fn social_login_callback<R: Repository>(
             Json(serde_json::json!({"error": "login_plan_execution_failed", "message": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, header};
+    use http_body_util::BodyExt;
+    use qid_core::tenant::RealmId;
+    use serde_json::Value;
+
+    use super::super::transaction::test_support as tx_test;
+
+    fn callback_headers(cookie: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(cookie) = cookie {
+            headers.insert(header::COOKIE, cookie.parse().unwrap());
+        }
+        headers
+    }
+
+    async fn callback(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        provider_name: &str,
+        proof: Option<&str>,
+        cookie: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let response = social_login_callback(
+            State(state.clone()),
+            Path(("test".to_string(), provider_name.to_string())),
+            Query(OidcCallbackQuery {
+                code: "provider-code".to_string(),
+                state: proof.map(str::to_string),
+            }),
+            callback_headers(cookie),
+        )
+        .await;
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn social_callback_completes_with_a_valid_transaction_and_spends_it() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture("corp-social", "social", &base_url).await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+
+        let (status, body) = callback(&fixture.state, "google", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "linked");
+        assert_eq!(body["provider"], "corp-social");
+
+        let realm = RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            fixture
+                .repo
+                .list_audit_events(Some(&realm), 100)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let (status, body) = callback(&fixture.state, "google", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_transaction");
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+
+        server.abort();
+        drop(fixture.state);
+        std::fs::remove_dir_all(&fixture.directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn social_callback_rejects_proof_failures_before_identity_effects() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture =
+            tx_test::fixture_with_providers(&["corp-social", "other-social"], "social", &base_url)
+                .await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+        let (other_proof, other_cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "other-social").await;
+
+        let cases: Vec<(Option<&str>, Option<&str>, &str)> = vec![
+            (None, Some(&cookie), "invalid_transaction"),
+            (Some(""), Some(&cookie), "invalid_transaction"),
+            (Some(&proof), None, "invalid_transaction"),
+            (
+                Some(&proof),
+                Some("__Host-qid-federation-tx=foreign-secret"),
+                "invalid_transaction",
+            ),
+            (
+                Some(&other_proof),
+                Some(&other_cookie),
+                "invalid_transaction",
+            ),
+        ];
+        for (proof, cookie, expected_error) in cases {
+            let (status, body) = callback(&fixture.state, "google", proof, cookie).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"], expected_error);
+        }
+        tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-social").await;
+
+        server.abort();
+        drop(fixture.state);
+        std::fs::remove_dir_all(&fixture.directory).unwrap();
     }
 }

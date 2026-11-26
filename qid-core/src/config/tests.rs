@@ -2844,6 +2844,30 @@ fn email_magic_link_defaults_validation_and_runtime_policy() {
 }
 
 #[test]
+fn federation_transaction_ttl_defaults_to_a_positive_policy() {
+    let config = minimal_config();
+    assert_eq!(
+        config.realms[0]
+            .protocols
+            .federation
+            .transaction_ttl_seconds,
+        DEFAULT_FEDERATION_TRANSACTION_TTL_SECONDS
+    );
+    let parsed: FederationProtocolConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(
+        parsed.transaction_ttl_seconds,
+        DEFAULT_FEDERATION_TRANSACTION_TTL_SECONDS
+    );
+
+    let mut invalid = config;
+    invalid.realms[0]
+        .protocols
+        .federation
+        .transaction_ttl_seconds = 0;
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
 fn inbound_oidc_trusted_audiences_are_defaulted_and_validated() {
     let mut config = minimal_config();
     config.realms[0].protocols.federation.enabled = true;

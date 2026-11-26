@@ -578,7 +578,7 @@ Validation rules:
 | `saml` | SAML IdP routes, metadata signing, assertion signing/encryption, SP registration, clock skew. SP signing certificates accept PEM or bare standard base64 DER; encryption certificates require a compact bare standard base64 DER value. |
 | `scim` | SCIM base path, cursor secret, and callback host allowlist. Only core User/Group and the Enterprise User extension are supported; `custom_schemas` entries are rejected. |
 | `fedcm` | FedCM route surface. The `enabled` switch decides whether a realm serves the FedCM routes and appears in the FedCM discovery documents; it is off unless the configuration sets it. |
-| `federation` | Inbound OIDC/SAML/social/Kerberos providers, claim mappings, and per-provider `trusted_audiences`. |
+| `federation` | Inbound OIDC/SAML/social/Kerberos providers, claim mappings, per-provider `trusted_audiences`, and `transaction_ttl_seconds` (default 300, must be positive). |
 | `directory` | LDAP, Active Directory, CSV HR pulls, and inbound HR webhook bindings; sync filters and attribute mapping apply only to pulls. |
 | `ciam` | Consent, progressive profile, identity proofing, privacy dashboard. |
 | `vc` | Dedicated issuer key reference and credential lifetime ceiling; the deployment serves the qid-private VC routes under the `vc` profile. |
@@ -595,6 +595,12 @@ token that pairs the `client_id` with an unlisted audience is rejected.
 Entries must be nonempty and unique, and malformed `aud` values fail closed.
 Setting this option on SAML, LDAP/AD, or Kerberos providers is a configuration
 error because those providers do not verify OIDC ID tokens.
+
+`realms[].protocols.federation.transaction_ttl_seconds` bounds the signed
+browser-bound proof issued by `GET /federation/:realm/transaction/start` for
+inbound OIDC/social callbacks. One positive value sets the JWT lifetime, the
+`__Host-qid-federation-tx` cookie `Max-Age`, and the single-use cache TTL;
+omitting it defaults to 300 seconds, and zero is rejected at realm validation.
 
 ### Inbound Kerberos/SPNEGO providers
 

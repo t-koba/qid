@@ -134,6 +134,8 @@ realms:
             require_sender_constraint: true
       federation:
         enabled: true
+        # Positive TTL for browser-bound inbound callback proofs; default 300.
+        # transaction_ttl_seconds: 300
     authentication:
       email_magic_link:
         enabled: false # Standalone primary auth, not MFA. Requires notification + HTTPS.

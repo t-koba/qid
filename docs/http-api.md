@@ -357,9 +357,10 @@ realms return HTTP 404.
 | `GET` | `/.well-known/openid-federation` | Federation entity statement. |
 | `POST` | `/federation/v1/trust-chain/validate` | Validate trust chain. |
 | `POST` | `/federation/:realm/discover` | Discover inbound provider. |
-| `GET` | `/federation/:realm/oidc/callback` | OIDC broker callback. |
+| `GET` | `/federation/:realm/transaction/start?provider=<id>` | Issue a browser-bound, single-use transaction proof for an enabled inbound OIDC/social provider; returns `{state, expires_in}` and sets `__Host-qid-federation-tx`. |
+| `GET` | `/federation/:realm/oidc/callback` | OIDC broker callback. Requires `state` to be the proof from `transaction/start` plus the matching cookie; proof failures are rejected before token exchange or identity writes. |
 | `POST` | `/federation/:realm/saml/acs` | SAML inbound ACS. |
-| `GET` | `/federation/:realm/social/:provider/callback` | Social login callback. |
+| `GET` | `/federation/:realm/social/:provider/callback` | Social login callback. Requires the same proof, bound to the path provider and matching cookie; proof failures are rejected before token exchange or identity writes. |
 | `POST` | `/api/v1/:realm/ciam/profile/plan` | CIAM profile plan. |
 | `POST` | `/api/v1/:realm/ciam/profile/submit` | Submit progressive profile. |
 | `POST` | `/api/v1/:realm/ciam/passwordless/migrate` | Passwordless migration. |

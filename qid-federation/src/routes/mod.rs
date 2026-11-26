@@ -24,6 +24,7 @@ pub mod oidc;
 pub mod saml;
 pub mod social;
 pub mod spnego;
+pub(crate) mod transaction;
 pub mod trust_chain;
 
 pub use oidc::{exchange_code_for_tokens, fetch_userinfo};
@@ -311,6 +312,7 @@ pub fn federation_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
             "/federation/:realm/social/:provider/callback",
             get(social::social_login_callback::<R>),
         )
+        .merge(transaction::routes::<R>())
 }
 
 #[derive(Debug, Deserialize)]

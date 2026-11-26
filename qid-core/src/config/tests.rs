@@ -3946,3 +3946,150 @@ fn public_url_scheme_falls_back_to_https() {
         assert_eq!(public_url_scheme(url), "https", "url {url}");
     }
 }
+
+#[test]
+fn inbound_provider_issuer_uniqueness_matches_kinds_case_insensitively() {
+    let config = config_with_two_inbound_providers("OIDC", "Social");
+    let providers = &config.realms[0].protocols.federation.inbound_providers;
+    validate_inbound_provider_issuer_uniqueness("corp", providers)
+        .unwrap_or_else(|err| panic!("unconfigured endpoints must match: {}", err.message()));
+
+    let mut conflict = providers.clone();
+    conflict[1].token_url = Some("https://other.example.com/token".to_string());
+    let message = validate_inbound_provider_issuer_uniqueness("corp", &conflict)
+        .unwrap_err()
+        .message()
+        .to_string();
+    assert!(
+        message.contains("registration-a") && message.contains("registration-b"),
+        "case-insensitive kinds must still be checked: {message}"
+    );
+}
+
+fn config_with_two_inbound_providers(first_kind: &str, second_kind: &str) -> QidConfig {
+    let mut config = config_with_provider_kind(first_kind);
+    let providers = &mut config.realms[0].protocols.federation.inbound_providers;
+    providers[0].id = "registration-a".to_string();
+    providers[0].enabled = true;
+    let mut second = providers[0].clone();
+    second.id = "registration-b".to_string();
+    second.kind = second_kind.to_string();
+    providers.push(second);
+    config
+}
+
+#[test]
+fn inbound_providers_sharing_issuer_with_different_upstream_endpoints_are_rejected() {
+    for (first_kind, second_kind) in [
+        ("oidc", "oidc"),
+        ("oidc", "social"),
+        ("social", "oidc"),
+        ("oidc", "entra_id"),
+        ("google_workspace", "okta"),
+        ("entra_id", "entra"),
+        ("entra_id", "azure_ad"),
+        ("entra_id", "google"),
+        ("google_workspace", "google"),
+    ] {
+        let mut config = config_with_two_inbound_providers(first_kind, second_kind);
+        for provider in &mut config.realms[0].protocols.federation.inbound_providers {
+            provider.token_url = Some("https://idp.example.com/token".to_string());
+            provider.userinfo_url = Some("https://idp.example.com/userinfo".to_string());
+            provider.jwks_uri = Some("https://idp.example.com/jwks".to_string());
+            provider.jwks = Some(serde_json::json!({"keys": [{"kty": "RSA"}]}));
+        }
+        for case in 0..5 {
+            let mut conflict = config.clone();
+            let second = &mut conflict.realms[0].protocols.federation.inbound_providers[1];
+            match case {
+                0 => second.token_url = Some("https://idp.example.com/token-v2".to_string()),
+                1 => second.userinfo_url = Some("https://idp.example.com/userinfo-v2".to_string()),
+                2 => second.jwks_uri = Some("https://idp.example.com/jwks-v2".to_string()),
+                3 => second.jwks = Some(serde_json::json!({"keys": []})),
+                4 => second.token_url = None,
+                _ => unreachable!(),
+            }
+            let message = conflict.validate().unwrap_err().message().to_string();
+            assert!(
+                message.contains("realm corp")
+                    && message.contains("registration-a")
+                    && message.contains("registration-b")
+                    && message.contains("https://idp.example.com")
+                    && message.contains("different upstream endpoints"),
+                "unexpected validation result for {first_kind}/{second_kind} case {case}: {message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn inbound_providers_sharing_issuer_and_upstream_endpoints_allow_multiple_registrations() {
+    for kind in [
+        "oidc",
+        "social",
+        "entra_id",
+        "entra",
+        "azure_ad",
+        "google_workspace",
+        "google",
+        "okta",
+    ] {
+        let mut config = config_with_two_inbound_providers(kind, kind);
+        let providers = &mut config.realms[0].protocols.federation.inbound_providers;
+        for (index, provider) in providers.iter_mut().enumerate() {
+            provider.client_id = Some(format!("client-{index}"));
+            provider.client_secret = Some(format!("secret-{index}"));
+            provider.domains = vec![format!("app{index}.example.com")];
+            provider.token_url = Some("https://idp.example.com/token".to_string());
+            provider.userinfo_url = Some("https://idp.example.com/userinfo".to_string());
+            provider.jwks_uri = Some("https://idp.example.com/jwks".to_string());
+        }
+        providers[0].jwks = Some(serde_json::json!({"keys": [], "extra": 1}));
+        providers[1].jwks = Some(serde_json::json!({"extra": 1, "keys": []}));
+        providers[1].social_provider = Some("google".to_string());
+        config.validate().unwrap_or_else(|err| {
+            panic!(
+                "multiple registrations at one upstream must be accepted: {}",
+                err.message()
+            )
+        });
+    }
+}
+
+#[test]
+fn disabled_inbound_provider_is_exempt_from_issuer_endpoint_uniqueness() {
+    let mut config = config_with_two_inbound_providers("oidc", "social");
+    let providers = &mut config.realms[0].protocols.federation.inbound_providers;
+    providers[0].token_url = Some("https://idp.example.com/token".to_string());
+    providers[1].enabled = false;
+    providers[1].token_url = Some("https://other.example.com/token".to_string());
+    config
+        .validate()
+        .unwrap_or_else(|err| panic!("disabled provider must not conflict: {}", err.message()));
+
+    config.realms[0].protocols.federation.inbound_providers[1].enabled = true;
+    let message = config.validate().unwrap_err().message().to_string();
+    assert!(
+        message.contains("different upstream endpoints"),
+        "enabled provider must conflict: {message}"
+    );
+}
+
+#[test]
+fn inbound_provider_issuer_uniqueness_ignores_non_front_channel_kinds() {
+    for kind in ["saml", "ldap"] {
+        let mut config = config_with_two_inbound_providers(kind, kind);
+        for provider in &mut config.realms[0].protocols.federation.inbound_providers {
+            provider.saml_signing_certificates = vec!["dummy-certificate".to_string()];
+            provider.token_url = Some("https://idp.example.com/token".to_string());
+        }
+        config.realms[0].protocols.federation.inbound_providers[1].token_url =
+            Some("https://idp.example.com/token-v2".to_string());
+        config.validate().unwrap_or_else(|err| {
+            panic!(
+                "{kind} providers are outside RFC 9207 front-channel validation: {}",
+                err.message()
+            )
+        });
+    }
+}

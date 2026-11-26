@@ -1323,6 +1323,68 @@ pub fn is_known_inbound_provider_kind(kind: &str) -> bool {
     )
 }
 
+/// Inbound provider kinds that complete a front-channel authorization code
+/// flow and therefore rely on the configured issuer for RFC 9207 binding.
+/// Aliases accepted by configuration load are included because they map to the
+/// same broker behavior as their canonical spellings.
+pub fn is_front_channel_inbound_provider_kind(kind: &str) -> bool {
+    [
+        "oidc",
+        "entra_id",
+        "entra",
+        "azure_ad",
+        "google_workspace",
+        "google",
+        "okta",
+        "social",
+    ]
+    .iter()
+    .any(|candidate| kind.eq_ignore_ascii_case(candidate))
+}
+
+/// RFC 9207 §4 requires one issuer identifier to designate one authorization
+/// server. Multiple client registrations at that server are valid; different
+/// upstream endpoints configured for the same issuer are not.
+fn validate_inbound_provider_issuer_uniqueness(
+    realm_id: &str,
+    providers: &[InboundProviderConfig],
+) -> QidResult<()> {
+    type UpstreamEndpoints<'a> = (
+        Option<&'a str>,
+        Option<&'a str>,
+        Option<&'a str>,
+        Option<&'a serde_json::Value>,
+    );
+    let mut by_issuer: std::collections::HashMap<
+        &str,
+        (&InboundProviderConfig, UpstreamEndpoints<'_>),
+    > = std::collections::HashMap::new();
+    for provider in providers.iter().filter(|provider| {
+        provider.enabled && is_front_channel_inbound_provider_kind(&provider.kind)
+    }) {
+        let endpoints: UpstreamEndpoints<'_> = (
+            provider.token_url.as_deref(),
+            provider.userinfo_url.as_deref(),
+            provider.jwks_uri.as_deref(),
+            provider.jwks.as_ref(),
+        );
+        if let Some((first, first_endpoints)) = by_issuer.get(provider.issuer.as_str())
+            && *first_endpoints != endpoints
+        {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} inbound providers {} and {} share issuer {} but configure different upstream endpoints",
+                    first.id, provider.id, provider.issuer
+                ),
+            });
+        }
+        by_issuer
+            .entry(&provider.issuer)
+            .or_insert((provider, endpoints));
+    }
+    Ok(())
+}
+
 impl RealmConfig {
     pub(crate) fn validate_iga_access_request(&self) -> QidResult<()> {
         if let Some(target) = &self.protocols.iga.access_request_audience
@@ -1740,6 +1802,10 @@ impl RealmConfig {
                 }
             }
         }
+        validate_inbound_provider_issuer_uniqueness(
+            &self.id,
+            &self.protocols.federation.inbound_providers,
+        )?;
         if !self.protocols.scim.custom_schemas.is_empty() {
             return Err(QidError::Config {
                 message: format!(

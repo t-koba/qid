@@ -358,9 +358,9 @@ realms return HTTP 404.
 | `POST` | `/federation/v1/trust-chain/validate` | Validate trust chain. |
 | `POST` | `/federation/:realm/discover` | Discover inbound provider. |
 | `GET` | `/federation/:realm/transaction/start?provider=<id>` | Issue a browser-bound, single-use transaction proof for an enabled inbound OIDC/social provider; returns `{state, expires_in}` and sets `__Host-qid-federation-tx`. |
-| `GET` | `/federation/:realm/oidc/callback` | OIDC broker callback. Requires `state` to be the proof from `transaction/start` plus the matching cookie; proof failures are rejected before token exchange or identity writes. |
+| `GET` | `/federation/:realm/oidc/callback` | OIDC broker callback. Requires `state` to be the proof from `transaction/start` plus the matching cookie; proof failures are rejected before token exchange or identity writes. `iss`, when supplied, must exactly match the issuer of the provider selected by the proof; it is required before exchange when several enabled OIDC providers share this callback. |
 | `POST` | `/federation/:realm/saml/acs` | SAML inbound ACS. |
-| `GET` | `/federation/:realm/social/:provider/callback` | Social login callback. Requires the same proof, bound to the path provider and matching cookie; proof failures are rejected before token exchange or identity writes. |
+| `GET` | `/federation/:realm/social/:provider/callback` | Social login callback. Requires the same proof, bound to the path provider and matching cookie; proof failures are rejected before token exchange or identity writes. `iss`, when supplied, must exactly match the issuer of the provider selected by the proof; it is required before exchange when several enabled providers share the path alias. |
 | `POST` | `/api/v1/:realm/ciam/profile/plan` | CIAM profile plan. |
 | `POST` | `/api/v1/:realm/ciam/profile/submit` | Submit progressive profile. |
 | `POST` | `/api/v1/:realm/ciam/passwordless/migrate` | Passwordless migration. |

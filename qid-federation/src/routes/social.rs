@@ -13,7 +13,7 @@ use crate::{HomeRealmDiscoveryRequest, InboundProviderKind, verify_inbound_idp_t
 use super::oidc::{exchange_code_for_tokens, extract_claims_from_oidc_response};
 use super::{
     OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
-    providers_from_config, transaction,
+    providers_from_config, transaction, verify_authorization_response_issuer,
 };
 
 pub async fn social_login_callback<R: Repository>(
@@ -86,6 +86,26 @@ pub async fn social_login_callback<R: Repository>(
             })),
         )
             .into_response();
+    }
+
+    // Several enabled providers can share one social alias; bind the upstream
+    // response before any credential lookup or exchange.
+    let ambiguous_target = providers
+        .iter()
+        .filter(|p| {
+            p.enabled
+                && p.social_provider
+                    .as_deref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(&provider_name))
+        })
+        .count()
+        > 1;
+    if let Err(error) = verify_authorization_response_issuer(
+        params.iss.as_deref(),
+        &provider.issuer,
+        ambiguous_target,
+    ) {
+        return error.into_response();
     }
 
     let request = HomeRealmDiscoveryRequest {
@@ -248,12 +268,23 @@ mod tests {
         proof: Option<&str>,
         cookie: Option<&str>,
     ) -> (StatusCode, Value) {
+        callback_with_iss(state, provider_name, proof, cookie, None).await
+    }
+
+    async fn callback_with_iss(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        provider_name: &str,
+        proof: Option<&str>,
+        cookie: Option<&str>,
+        issuer: Option<&str>,
+    ) -> (StatusCode, Value) {
         let response = social_login_callback(
             State(state.clone()),
             Path(("test".to_string(), provider_name.to_string())),
             Query(OidcCallbackQuery {
                 code: "provider-code".to_string(),
                 state: proof.map(str::to_string),
+                iss: issuer.map(str::to_string),
             }),
             callback_headers(cookie),
         )
@@ -343,9 +374,13 @@ mod tests {
     #[tokio::test]
     async fn social_callback_uses_transaction_provider_when_providers_share_an_alias() {
         let (base_url, server) = tx_test::provider_stub().await;
-        let fixture = tx_test::fixture_with_social_alias(
+        let fixture = tx_test::fixture_with_social_alias_and_issuers(
             &["corp-social", "other-social"],
             "google",
+            &[
+                "https://corp-social.example",
+                "https://other-social.example",
+            ],
             &base_url,
         )
         .await;
@@ -354,7 +389,14 @@ mod tests {
         // The transaction names the unconfigured provider: fail before exchange.
         let (proof, cookie) =
             tx_test::issue_transaction(&fixture.state, "test", "other-social").await;
-        let (status, body) = callback(&fixture.state, "google", Some(&proof), Some(&cookie)).await;
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            "google",
+            Some(&proof),
+            Some(&cookie),
+            Some("https://other-social.example"),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], "client_id_not_configured");
         tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
@@ -363,7 +405,14 @@ mod tests {
         // The transaction names the configured provider: complete against it.
         let (proof, cookie) =
             tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
-        let (status, body) = callback(&fixture.state, "google", Some(&proof), Some(&cookie)).await;
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            "google",
+            Some(&proof),
+            Some(&cookie),
+            Some("https://corp-social.example"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["provider"], "corp-social");
         assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
@@ -392,6 +441,42 @@ mod tests {
                 .len(),
             2
         );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn social_callback_requires_matching_issuer_for_a_shared_alias() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_social_alias(
+            &["corp-social", "other-social"],
+            "google",
+            &base_url,
+        )
+        .await;
+
+        for (issuer, message) in [
+            (None, "authorization response issuer required"),
+            (
+                Some("https://other.example"),
+                "authorization response issuer mismatch",
+            ),
+        ] {
+            let (proof, cookie) =
+                tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+            let (status, body) = callback_with_iss(
+                &fixture.state,
+                "google",
+                Some(&proof),
+                Some(&cookie),
+                issuer,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(body["error"].as_str().unwrap().contains(message), "{body}");
+        }
+        tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-social").await;
 
         server.abort();
     }

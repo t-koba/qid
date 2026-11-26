@@ -389,17 +389,36 @@ pub(crate) mod test_support {
         kind: &str,
         base_url: &str,
     ) -> Fixture {
-        fixture_with_alias(provider_ids, kind, base_url, None).await
+        fixture_with_alias(provider_ids, kind, base_url, None, None).await
+    }
+
+    /// Configure distinct issuers for providers sharing one callback target.
+    pub(crate) async fn fixture_with_issuers(
+        provider_ids: &[&str],
+        issuers: &[&str],
+        kind: &str,
+        base_url: &str,
+    ) -> Fixture {
+        fixture_with_alias(provider_ids, kind, base_url, None, Some(issuers)).await
     }
 
     /// Give every social provider the same callback alias, so only the verified
-    /// transaction can distinguish them.
+    /// transaction and its issuer distinguish them.
     pub(crate) async fn fixture_with_social_alias(
         provider_ids: &[&str],
         alias: &str,
         base_url: &str,
     ) -> Fixture {
-        fixture_with_alias(provider_ids, "social", base_url, Some(alias)).await
+        fixture_with_alias(provider_ids, "social", base_url, Some(alias), None).await
+    }
+
+    pub(crate) async fn fixture_with_social_alias_and_issuers(
+        provider_ids: &[&str],
+        alias: &str,
+        issuers: &[&str],
+        base_url: &str,
+    ) -> Fixture {
+        fixture_with_alias(provider_ids, "social", base_url, Some(alias), Some(issuers)).await
     }
 
     async fn fixture_with_alias(
@@ -407,6 +426,7 @@ pub(crate) mod test_support {
         kind: &str,
         base_url: &str,
         shared_social_alias: Option<&str>,
+        issuers: Option<&[&str]>,
     ) -> Fixture {
         let mut config = test_helpers::test_config();
         let federation = &mut config.realms[0].protocols.federation;
@@ -418,7 +438,10 @@ pub(crate) mod test_support {
                 let mut provider = serde_json::json!({
                     "id": id,
                     "kind": kind,
-                    "issuer": "https://provider.example.com",
+                    "issuer": issuers
+                        .and_then(|values| values.get(index))
+                        .copied()
+                        .unwrap_or("https://provider.example.com"),
                     "enabled": true,
                     "social_provider": if kind == "social" {
                         Some(

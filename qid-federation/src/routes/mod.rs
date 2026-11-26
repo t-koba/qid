@@ -320,6 +320,73 @@ pub(crate) struct OidcCallbackQuery {
     code: String,
     #[serde(default)]
     state: Option<String>,
+    #[serde(default)]
+    pub(crate) iss: Option<String>,
+}
+
+/// Bind an upstream authorization response to the provider selected by the
+/// verified transaction proof. `ambiguous_target` is true when several enabled
+/// providers share this callback target.
+pub(crate) fn verify_authorization_response_issuer(
+    received: Option<&str>,
+    expected: &str,
+    ambiguous_target: bool,
+) -> Result<(), QidError> {
+    match received {
+        Some(issuer) if issuer == expected => Ok(()),
+        Some(_) => Err(QidError::BadRequest {
+            message: "authorization response issuer mismatch".to_string(),
+        }),
+        None if ambiguous_target => Err(QidError::BadRequest {
+            message: "authorization response issuer required for this callback target".to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod issuer_binding_tests {
+    use super::verify_authorization_response_issuer;
+
+    #[test]
+    fn issuer_check_accepts_exact_match_and_unambiguous_absence() {
+        assert!(
+            verify_authorization_response_issuer(
+                Some("https://login.example"),
+                "https://login.example",
+                false
+            )
+            .is_ok()
+        );
+        assert!(verify_authorization_response_issuer(None, "https://login.example", false).is_ok());
+    }
+
+    #[test]
+    fn issuer_check_rejects_mismatch_and_ambiguous_absence() {
+        let expected = "https://login.example";
+        let cases = [
+            (
+                Some("https://login.example/"),
+                false,
+                "authorization response issuer mismatch",
+            ),
+            (
+                Some("https://other.example"),
+                true,
+                "authorization response issuer mismatch",
+            ),
+            (
+                None,
+                true,
+                "authorization response issuer required for this callback target",
+            ),
+        ];
+        for (received, ambiguous, message) in cases {
+            let error =
+                verify_authorization_response_issuer(received, expected, ambiguous).unwrap_err();
+            assert!(error.message().contains(message), "{error}");
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -8,11 +8,14 @@ use qid_core::{QidError, state::SharedState};
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
-use crate::{ExternalIdentityClaims, HomeRealmDiscoveryRequest, verify_inbound_idp_token};
+use crate::{
+    ExternalIdentityClaims, HomeRealmDiscoveryRequest, InboundProviderKind,
+    verify_inbound_idp_token,
+};
 
 use super::{
     OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
-    providers_from_config, transaction,
+    providers_from_config, transaction, verify_authorization_response_issuer,
 };
 
 /// Exchange an authorization code for tokens at the external provider's token endpoint.
@@ -225,6 +228,21 @@ pub async fn oidc_inbound_callback<R: Repository>(
         }
     };
 
+    // Bind the upstream response to the provider selected by the verified proof
+    // before any credential lookup, exchange, claim extraction or identity write.
+    let ambiguous_target = providers
+        .iter()
+        .filter(|p| p.enabled && p.kind == InboundProviderKind::Oidc)
+        .count()
+        > 1;
+    if let Err(error) = verify_authorization_response_issuer(
+        params.iss.as_deref(),
+        &provider.issuer,
+        ambiguous_target,
+    ) {
+        return error.into_response();
+    }
+
     let client_id = match &provider.client_id {
         Some(cid) => cid,
         None => {
@@ -381,12 +399,22 @@ mod tests {
         proof: Option<&str>,
         cookie: Option<&str>,
     ) -> (StatusCode, Value) {
+        callback_with_iss(state, proof, cookie, None).await
+    }
+
+    async fn callback_with_iss(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        proof: Option<&str>,
+        cookie: Option<&str>,
+        issuer: Option<&str>,
+    ) -> (StatusCode, Value) {
         let response = oidc_inbound_callback(
             State(state.clone()),
             Path("test".to_string()),
             Query(OidcCallbackQuery {
                 code: "provider-code".to_string(),
                 state: proof.map(str::to_string),
+                iss: issuer.map(str::to_string),
             }),
             callback_headers(cookie),
         )
@@ -451,30 +479,150 @@ mod tests {
         let (other_proof, other_cookie) =
             tx_test::issue_transaction(&fixture.state, "test", "other-oidc").await;
 
-        let cases: Vec<(Option<&str>, Option<&str>, &str)> = vec![
-            (None, Some(&cookie), "invalid_transaction"),
-            (Some(""), Some(&cookie), "invalid_transaction"),
-            (Some(&proof), None, "invalid_transaction"),
-            (
-                Some(&proof),
-                Some("__Host-qid-federation-tx=foreign-secret"),
-                "invalid_transaction",
-            ),
+        struct ProofCase<'a> {
+            proof: Option<&'a str>,
+            cookie: Option<&'a str>,
+            issuer: Option<&'a str>,
+            expected_error: &'a str,
+        }
+        let cases = [
+            ProofCase {
+                proof: None,
+                cookie: Some(&cookie),
+                issuer: None,
+                expected_error: "invalid_transaction",
+            },
+            ProofCase {
+                proof: Some(""),
+                cookie: Some(&cookie),
+                issuer: None,
+                expected_error: "invalid_transaction",
+            },
+            ProofCase {
+                proof: Some(&proof),
+                cookie: None,
+                issuer: None,
+                expected_error: "invalid_transaction",
+            },
+            ProofCase {
+                proof: Some(&proof),
+                cookie: Some("__Host-qid-federation-tx=foreign-secret"),
+                issuer: None,
+                expected_error: "invalid_transaction",
+            },
             // A valid proof for another configured provider selects that provider,
             // whose missing client configuration stops the exchange before writes.
-            (
-                Some(&other_proof),
-                Some(&other_cookie),
-                "client_id_not_configured",
-            ),
+            ProofCase {
+                proof: Some(&other_proof),
+                cookie: Some(&other_cookie),
+                issuer: Some("https://provider.example.com"),
+                expected_error: "client_id_not_configured",
+            },
         ];
-        for (proof, cookie, expected_error) in cases {
-            let (status, body) = callback(&fixture.state, proof, cookie).await;
+        for case in cases {
+            let (status, body) =
+                callback_with_iss(&fixture.state, case.proof, case.cookie, case.issuer).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-            assert_eq!(body["error"], expected_error);
+            assert_eq!(body["error"], case.expected_error);
         }
         tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
         tx_test::assert_no_identity_effects(&fixture, "other-oidc").await;
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_rejects_issuer_mismatch_before_identity_effects() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture("corp-oidc", "oidc", &base_url).await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            Some(&proof),
+            Some(&cookie),
+            Some("https://other.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer mismatch"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+
+        // A fresh proof with the exact configured issuer still completes.
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            Some(&proof),
+            Some(&cookie),
+            Some("https://provider.example.com"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-oidc");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_requires_matching_issuer_for_a_shared_target() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_issuers(
+            &["corp-oidc", "other-oidc"],
+            &["https://corp.example", "https://other.example"],
+            "oidc",
+            &base_url,
+        )
+        .await;
+
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (status, body) = callback(&fixture.state, Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer required"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-oidc").await;
+
+        // Another provider's issuer is not accepted for the selected provider.
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            Some(&proof),
+            Some(&cookie),
+            Some("https://other.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer mismatch"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+
+        // The selected provider's issuer binds correctly and completes.
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            Some(&proof),
+            Some(&cookie),
+            Some("https://corp.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-oidc");
 
         server.abort();
     }

@@ -1041,6 +1041,7 @@ fn deployment_profiles_enforce_required_capabilities() {
         id: "google".to_string(),
         kind: "social".to_string(),
         issuer: "https://accounts.google.com".to_string(),
+        authorization_response_iss_parameter_supported: false,
         enabled: true,
         domains: vec!["shop.example.com".to_string()],
         social_provider: Some("google".to_string()),
@@ -2896,6 +2897,26 @@ fn federation_transaction_ttl_defaults_to_a_positive_policy() {
 }
 
 #[test]
+fn inbound_provider_authorization_response_iss_parameter_defaults_false_and_deserializes_true() {
+    let defaults: InboundProviderConfig = serde_json::from_value(serde_json::json!({
+        "id": "default-oidc",
+        "kind": "oidc",
+        "issuer": "https://login.partner.example"
+    }))
+    .unwrap();
+    assert!(!defaults.authorization_response_iss_parameter_supported);
+
+    let supporting: InboundProviderConfig = serde_json::from_value(serde_json::json!({
+        "id": "rfc9207-oidc",
+        "kind": "oidc",
+        "issuer": "https://login.partner.example",
+        "authorization_response_iss_parameter_supported": true
+    }))
+    .unwrap();
+    assert!(supporting.authorization_response_iss_parameter_supported);
+}
+
+#[test]
 fn inbound_oidc_trusted_audiences_are_defaulted_and_validated() {
     let mut config = minimal_config();
     config.realms[0].protocols.federation.enabled = true;
@@ -3748,6 +3769,7 @@ fn config_with_provider_kind(kind: &str) -> QidConfig {
         id: "provider".to_string(),
         kind: kind.to_string(),
         issuer: "https://idp.example.com".to_string(),
+        authorization_response_iss_parameter_supported: false,
         enabled: false,
         domains: Vec::new(),
         social_provider: None,

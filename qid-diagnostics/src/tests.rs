@@ -355,6 +355,7 @@ fn ciam_profile_diagnostics_follow_shared_inbound_provider_requirement() {
             id: "social-google".to_string(),
             kind: "social".to_string(),
             issuer: "https://accounts.google.com".to_string(),
+            authorization_response_iss_parameter_supported: false,
             enabled: true,
             domains: vec!["example.com".to_string()],
             social_provider: Some("google".to_string()),

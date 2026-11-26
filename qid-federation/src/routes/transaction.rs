@@ -382,6 +382,17 @@ pub(crate) mod test_support {
         fixture_with_providers(&[provider_id], kind, base_url).await
     }
 
+    /// Configure a single provider that advertises RFC 9207 front-channel
+    /// issuer support, so callbacks must carry `iss`.
+    pub(crate) async fn fixture_with_issuer_support(
+        provider_id: &str,
+        kind: &str,
+        base_url: &str,
+        supported: bool,
+    ) -> Fixture {
+        fixture_with_alias_support(&[provider_id], kind, base_url, None, None, supported).await
+    }
+
     /// First provider is fully configured; later ones are enabled but lack the
     /// client settings so a callback selecting them fails before any exchange.
     pub(crate) async fn fixture_with_providers(
@@ -389,7 +400,7 @@ pub(crate) mod test_support {
         kind: &str,
         base_url: &str,
     ) -> Fixture {
-        fixture_with_alias(provider_ids, kind, base_url, None, None).await
+        fixture_with_alias_support(provider_ids, kind, base_url, None, None, false).await
     }
 
     /// Configure distinct issuers for providers sharing one callback target.
@@ -399,7 +410,7 @@ pub(crate) mod test_support {
         kind: &str,
         base_url: &str,
     ) -> Fixture {
-        fixture_with_alias(provider_ids, kind, base_url, None, Some(issuers)).await
+        fixture_with_alias_support(provider_ids, kind, base_url, None, Some(issuers), false).await
     }
 
     /// Give every social provider the same callback alias, so only the verified
@@ -409,7 +420,7 @@ pub(crate) mod test_support {
         alias: &str,
         base_url: &str,
     ) -> Fixture {
-        fixture_with_alias(provider_ids, "social", base_url, Some(alias), None).await
+        fixture_with_alias_support(provider_ids, "social", base_url, Some(alias), None, false).await
     }
 
     pub(crate) async fn fixture_with_social_alias_and_issuers(
@@ -418,15 +429,24 @@ pub(crate) mod test_support {
         issuers: &[&str],
         base_url: &str,
     ) -> Fixture {
-        fixture_with_alias(provider_ids, "social", base_url, Some(alias), Some(issuers)).await
+        fixture_with_alias_support(
+            provider_ids,
+            "social",
+            base_url,
+            Some(alias),
+            Some(issuers),
+            false,
+        )
+        .await
     }
 
-    async fn fixture_with_alias(
+    async fn fixture_with_alias_support(
         provider_ids: &[&str],
         kind: &str,
         base_url: &str,
         shared_social_alias: Option<&str>,
         issuers: Option<&[&str]>,
+        issuer_parameter_supported: bool,
     ) -> Fixture {
         let mut config = test_helpers::test_config();
         let federation = &mut config.realms[0].protocols.federation;
@@ -443,6 +463,7 @@ pub(crate) mod test_support {
                         .copied()
                         .unwrap_or("https://provider.example.com"),
                     "enabled": true,
+                    "authorization_response_iss_parameter_supported": issuer_parameter_supported,
                     "social_provider": if kind == "social" {
                         Some(
                             shared_social_alias.map(str::to_string).unwrap_or_else(|| {

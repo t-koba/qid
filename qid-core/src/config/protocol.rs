@@ -836,6 +836,11 @@ pub struct InboundProviderConfig {
     pub id: String,
     pub kind: String,
     pub issuer: String,
+    /// RFC 9207: when true, qid requires and validates `iss` in every
+    /// front-channel authorization response for this provider. The default
+    /// false means the provider is not known to advertise RFC 9207 support.
+    #[serde(default)]
+    pub authorization_response_iss_parameter_supported: bool,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]

@@ -328,18 +328,35 @@ pub(crate) struct OidcCallbackQuery {
     pub(crate) iss: Option<String>,
 }
 
+/// Whether the selected provider is configured as advertising RFC 9207
+/// front-channel issuer support.
+pub(crate) fn authorization_response_iss_supported(
+    cfgs: &[qid_core::config::InboundProviderConfig],
+    provider_id: &str,
+) -> bool {
+    cfgs.iter()
+        .find(|cfg| cfg.id == provider_id)
+        .is_some_and(|cfg| cfg.authorization_response_iss_parameter_supported)
+}
+
 /// Bind an upstream authorization response to the provider selected by the
 /// verified transaction proof. `ambiguous_target` is true when several enabled
-/// providers share this callback target.
+/// providers share this callback target. `supported` is the selected provider's
+/// RFC 9207 configuration: a provider that advertises support must supply `iss`
+/// even on an unambiguous callback target.
 pub(crate) fn verify_authorization_response_issuer(
     received: Option<&str>,
     expected: &str,
     ambiguous_target: bool,
+    supported: bool,
 ) -> Result<(), QidError> {
     match received {
         Some(issuer) if issuer == expected => Ok(()),
         Some(_) => Err(QidError::BadRequest {
             message: "authorization response issuer mismatch".to_string(),
+        }),
+        None if supported => Err(QidError::BadRequest {
+            message: "authorization response issuer required by provider configuration".to_string(),
         }),
         None if ambiguous_target => Err(QidError::BadRequest {
             message: "authorization response issuer required for this callback target".to_string(),
@@ -358,11 +375,43 @@ mod issuer_binding_tests {
             verify_authorization_response_issuer(
                 Some("https://login.example"),
                 "https://login.example",
-                false
+                false,
+                false,
             )
             .is_ok()
         );
-        assert!(verify_authorization_response_issuer(None, "https://login.example", false).is_ok());
+        assert!(
+            verify_authorization_response_issuer(None, "https://login.example", false, false)
+                .is_ok()
+        );
+        assert!(
+            verify_authorization_response_issuer(
+                Some("https://login.example"),
+                "https://login.example",
+                false,
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn issuer_check_requires_iss_when_provider_advertises_support() {
+        let error =
+            verify_authorization_response_issuer(None, "https://login.example", false, true)
+                .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("authorization response issuer required by provider configuration"),
+            "{error}"
+        );
+        assert!(
+            verify_authorization_response_issuer(None, "https://login.example", true, true)
+                .unwrap_err()
+                .message()
+                .contains("authorization response issuer required by provider configuration")
+        );
     }
 
     #[test]
@@ -372,22 +421,26 @@ mod issuer_binding_tests {
             (
                 Some("https://login.example/"),
                 false,
+                false,
                 "authorization response issuer mismatch",
             ),
             (
                 Some("https://other.example"),
+                true,
                 true,
                 "authorization response issuer mismatch",
             ),
             (
                 None,
                 true,
+                false,
                 "authorization response issuer required for this callback target",
             ),
         ];
-        for (received, ambiguous, message) in cases {
+        for (received, ambiguous, supported, message) in cases {
             let error =
-                verify_authorization_response_issuer(received, expected, ambiguous).unwrap_err();
+                verify_authorization_response_issuer(received, expected, ambiguous, supported)
+                    .unwrap_err();
             assert!(error.message().contains(message), "{error}");
         }
     }

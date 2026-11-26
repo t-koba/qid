@@ -375,6 +375,7 @@ fn saml_inbound_provider(issuer: &str, certificate: &str) -> InboundProviderConf
         id: "synthetic-saml-idp".to_string(),
         kind: "saml".to_string(),
         issuer: issuer.to_string(),
+        authorization_response_iss_parameter_supported: false,
         enabled: true,
         domains: Vec::new(),
         social_provider: None,

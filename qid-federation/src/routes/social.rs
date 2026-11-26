@@ -12,8 +12,9 @@ use crate::{HomeRealmDiscoveryRequest, InboundProviderKind, verify_inbound_idp_t
 
 use super::oidc::{exchange_code_for_tokens, extract_claims_from_oidc_response};
 use super::{
-    OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
-    providers_from_config, transaction, verify_authorization_response_issuer,
+    OidcCallbackQuery, authorization_response_iss_supported, broker_login_plan_error_response,
+    exec_broker_login_plan, plan_broker_login, providers_from_config, transaction,
+    verify_authorization_response_issuer,
 };
 
 pub async fn social_login_callback<R: Repository>(
@@ -102,10 +103,15 @@ pub async fn social_login_callback<R: Repository>(
         })
         .count()
         > 1;
+    let supported = authorization_response_iss_supported(
+        &realm_config.protocols.federation.inbound_providers,
+        &provider.id,
+    );
     if let Err(error) = verify_authorization_response_issuer(
         params.iss.as_deref(),
         &provider.issuer,
         ambiguous_target && !path_is_canonical,
+        supported,
     ) {
         return error.into_response();
     }
@@ -442,6 +448,52 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn social_callback_requires_iss_for_provider_advertising_rfc9207() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture =
+            tx_test::fixture_with_issuer_support("corp-social", "social", &base_url, true).await;
+
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+        let (status, body) =
+            callback_with_iss(&fixture.state, "google", Some(&proof), Some(&cookie), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer required by provider configuration"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
+
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            "google",
+            Some(&proof),
+            Some(&cookie),
+            Some("https://provider.example.com"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-social");
+        let realm = RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
+                .await
+                .unwrap()
+                .is_some()
         );
 
         server.abort();

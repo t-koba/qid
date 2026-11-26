@@ -14,8 +14,9 @@ use crate::{
 };
 
 use super::{
-    OidcCallbackQuery, broker_login_plan_error_response, exec_broker_login_plan, plan_broker_login,
-    providers_from_config, transaction, verify_authorization_response_issuer,
+    OidcCallbackQuery, authorization_response_iss_supported, broker_login_plan_error_response,
+    exec_broker_login_plan, plan_broker_login, providers_from_config, transaction,
+    verify_authorization_response_issuer,
 };
 
 /// Exchange an authorization code for tokens at the external provider's token endpoint.
@@ -267,11 +268,16 @@ async fn oidc_inbound_callback_inner<R: Repository>(
         .filter(|p| p.enabled && p.kind == InboundProviderKind::Oidc)
         .count()
         > 1;
+    let supported = authorization_response_iss_supported(
+        &realm_config.protocols.federation.inbound_providers,
+        &provider.id,
+    );
     if let Err(error) = verify_authorization_response_issuer(
         params.iss.as_deref(),
         &provider.issuer,
         // A matching provider-specific path binds the response when `iss` is absent.
         ambiguous_target && path_provider.is_none(),
+        supported,
     ) {
         return error.into_response();
     }
@@ -636,6 +642,49 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["provider"], "corp-oidc");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_requires_iss_for_provider_advertising_rfc9207() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture =
+            tx_test::fixture_with_issuer_support("corp-oidc", "oidc", &base_url, true).await;
+
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (status, body) =
+            callback_with_iss(&fixture.state, Some(&proof), Some(&cookie), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer required by provider configuration"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (status, body) = callback_with_iss(
+            &fixture.state,
+            Some(&proof),
+            Some(&cookie),
+            Some("https://provider.example.com"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-oidc");
+        let realm = RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-oidc", "user-123")
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         server.abort();
     }

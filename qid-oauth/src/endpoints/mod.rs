@@ -23,22 +23,6 @@ macro_rules! error_response_or_return {
 }
 pub(crate) use error_response_or_return;
 
-/// The grant types the token endpoint can actually redeem. Registration and
-/// management share this set so a registered grant is always redeemable.
-pub(crate) fn is_supported_grant_type(grant_type: &str) -> bool {
-    matches!(
-        grant_type,
-        "authorization_code"
-            | "client_credentials"
-            | "refresh_token"
-            | "urn:ietf:params:oauth:grant-type:token-exchange"
-            | "urn:ietf:params:oauth:grant-type:jwt-bearer"
-            | "urn:ietf:params:oauth:grant-type:saml2-bearer"
-            | "urn:ietf:params:oauth:grant-type:device_code"
-            | "urn:openid:params:grant-type:ciba"
-    )
-}
-
 /// Add OAuth endpoint routes with configurable paths.
 pub fn routes<R: Repository>(paths: &ServerPaths) -> Router<Arc<SharedState<R>>> {
     signed_routes::<R>(paths).merge(unsigned_routes::<R>(paths))

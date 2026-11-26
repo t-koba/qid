@@ -33,6 +33,7 @@ impl figment::providers::Format for Yaml {
 }
 
 use crate::error::{QidError, QidResult};
+use crate::oauth::is_supported_grant_type;
 
 /// Fixed CAPPORT route for binding a captive portal session.
 pub const CAPPORT_BIND_PATH: &str = "/api/v1/:realm/captive-portal/bind";
@@ -1949,6 +1950,18 @@ impl StaticClientConfig {
             return Err(QidError::Config {
                 message: format!(
                     "realm {realm_id} public static client {} cannot use client_credentials",
+                    self.client_id
+                ),
+            });
+        }
+        if let Some(grant) = self
+            .grant_types
+            .iter()
+            .find(|grant| !is_supported_grant_type(grant))
+        {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {realm_id} static client {} has unsupported grant_type: {grant}",
                     self.client_id
                 ),
             });

@@ -8,6 +8,7 @@ use base64::Engine;
 use qid_core::{
     error::{QidError, QidResult},
     models::{Client, ClientType, User},
+    oauth::is_supported_grant_type,
     state::SharedState,
 };
 use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use super::{
     TokenIssueClaims, TokenRequest, TokenResponse, access_token_type_for_cnf,
     authorization_code_grant, ciba_grant, client_credentials_grant, decode_access_token,
-    device_code_grant, is_supported_grant_type, issue_access_token, refresh_token_grant,
+    device_code_grant, issue_access_token, refresh_token_grant,
 };
 
 pub async fn token<R: Repository>(

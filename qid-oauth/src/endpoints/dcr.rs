@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use qid_core::oauth::is_supported_grant_type;
 use qid_core::web::JsonObject;
 use qid_core::{
     error::{QidError, QidResult},
@@ -17,9 +18,7 @@ use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::{
-    extract_basic_client_auth, is_supported_grant_type, oauth_feature_enabled, verify_client_secret,
-};
+use super::{extract_basic_client_auth, oauth_feature_enabled, verify_client_secret};
 
 #[derive(Debug, Deserialize)]
 pub struct DynamicClientRegistrationRequest {

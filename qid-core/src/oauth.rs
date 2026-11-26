@@ -7,6 +7,23 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+/// Grant types qid can redeem at the token endpoint. Registration and static
+/// client configuration share this set so that every configured grant is
+/// redeemable.
+pub fn is_supported_grant_type(grant_type: &str) -> bool {
+    matches!(
+        grant_type,
+        "authorization_code"
+            | "client_credentials"
+            | "refresh_token"
+            | "urn:ietf:params:oauth:grant-type:token-exchange"
+            | "urn:ietf:params:oauth:grant-type:jwt-bearer"
+            | "urn:ietf:params:oauth:grant-type:saml2-bearer"
+            | "urn:ietf:params:oauth:grant-type:device_code"
+            | "urn:openid:params:grant-type:ciba"
+    )
+}
+
 /// Reason a redirect URI was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedirectUriError {

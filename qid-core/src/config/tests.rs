@@ -395,6 +395,34 @@ fn static_client_config_rejects_weak_or_ambiguous_redirects() {
 }
 
 #[test]
+fn static_client_config_validates_grant_types_against_implemented_set() {
+    let mut config = minimal_config();
+    config.realms[0].clients = vec![StaticClientConfig {
+        client_id: "web".to_string(),
+        id: None,
+        client_type: ClientType::Public,
+        token_endpoint_auth_method: "none".to_string(),
+        client_secret: None,
+        client_secret_hash: None,
+        mtls_certificate_thumbprints: Vec::new(),
+        jwks: crate::models::default_client_jwks(),
+        redirect_uris: Vec::new(),
+        grant_types: vec!["urn:ietf:params:oauth:grant-type:jwt-bearer".to_string()],
+    }];
+    assert!(config.validate().is_ok());
+
+    config.realms[0].clients[0].grant_types = vec!["authorization_codee".to_string()];
+    let err = config.validate().unwrap_err();
+    assert!(
+        err.message().contains(
+            "realm corp static client web has unsupported grant_type: authorization_codee"
+        ),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
 fn test_duplicate_realm_rejected() {
     let config = QidConfig {
         include: Vec::new(),

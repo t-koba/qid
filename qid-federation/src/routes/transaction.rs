@@ -389,6 +389,25 @@ pub(crate) mod test_support {
         kind: &str,
         base_url: &str,
     ) -> Fixture {
+        fixture_with_alias(provider_ids, kind, base_url, None).await
+    }
+
+    /// Give every social provider the same callback alias, so only the verified
+    /// transaction can distinguish them.
+    pub(crate) async fn fixture_with_social_alias(
+        provider_ids: &[&str],
+        alias: &str,
+        base_url: &str,
+    ) -> Fixture {
+        fixture_with_alias(provider_ids, "social", base_url, Some(alias)).await
+    }
+
+    async fn fixture_with_alias(
+        provider_ids: &[&str],
+        kind: &str,
+        base_url: &str,
+        shared_social_alias: Option<&str>,
+    ) -> Fixture {
         let mut config = test_helpers::test_config();
         let federation = &mut config.realms[0].protocols.federation;
         federation.enabled = true;
@@ -402,7 +421,15 @@ pub(crate) mod test_support {
                     "issuer": "https://provider.example.com",
                     "enabled": true,
                     "social_provider": if kind == "social" {
-                        Some(if index == 0 { "google".to_string() } else { format!("google-{id}") })
+                        Some(
+                            shared_social_alias.map(str::to_string).unwrap_or_else(|| {
+                                if index == 0 {
+                                    "google".to_string()
+                                } else {
+                                    format!("google-{id}")
+                                }
+                            }),
+                        )
                     } else {
                         None
                     },

@@ -8,7 +8,7 @@ use qid_core::state::SharedState;
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
-use crate::{HomeRealmDiscoveryRequest, route_inbound_provider, verify_inbound_idp_token};
+use crate::{HomeRealmDiscoveryRequest, InboundProviderKind, verify_inbound_idp_token};
 
 use super::oidc::{exchange_code_for_tokens, extract_claims_from_oidc_response};
 use super::{
@@ -23,15 +23,16 @@ pub async fn social_login_callback<R: Repository>(
     headers: HeaderMap,
 ) -> Response {
     // Spend the browser-bound proof before token exchange, lookups or writes.
-    if let Err(error) = transaction::verify(
+    let proof = match transaction::verify(
         &state,
         &headers,
         &realm,
         params.state.as_deref(),
         Some(&provider_name),
     ) {
-        return error.into_response();
-    }
+        Ok(proof) => proof,
+        Err(error) => return error.into_response(),
+    };
 
     let realm_config = match state.config.realms.iter().find(|r| r.id == realm) {
         Some(cfg) => cfg,
@@ -54,33 +55,44 @@ pub async fn social_login_callback<R: Repository>(
 
     let providers = providers_from_config(&realm_config.protocols.federation.inbound_providers);
 
-    let request = HomeRealmDiscoveryRequest {
-        login_hint: None,
-        domain: None,
-        idp_hint: None,
-        social_provider: Some(provider_name.clone()),
-    };
-
-    let route = match route_inbound_provider(&providers, &request) {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "provider_routing_failed", "message": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    let provider = match providers.iter().find(|p| p.id == route.provider_id) {
+    // The verified proof, not the callback path alias, selects the provider.
+    let provider_id = proof.provider.as_str();
+    let provider = match providers
+        .iter()
+        .find(|p| p.id == provider_id && p.enabled && p.kind == InboundProviderKind::Social)
+    {
         Some(p) => p.clone(),
         None => {
             return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "provider_not_found"})),
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "provider_not_found",
+                    "message": format!("provider {provider_id} is not an enabled social provider")
+                })),
             )
                 .into_response();
         }
+    };
+    if !provider
+        .social_provider
+        .as_deref()
+        .is_some_and(|alias| alias.eq_ignore_ascii_case(&provider_name))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "social_provider_mismatch",
+                "message": format!("provider {provider_id} does not match callback {provider_name}")
+            })),
+        )
+            .into_response();
+    }
+
+    let request = HomeRealmDiscoveryRequest {
+        login_hint: None,
+        domain: None,
+        idp_hint: Some(provider.id.clone()),
+        social_provider: None,
     };
 
     let client_id = match &provider.client_id {
@@ -324,6 +336,81 @@ mod tests {
         }
         tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
         tx_test::assert_no_identity_effects(&fixture, "other-social").await;
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn social_callback_uses_transaction_provider_when_providers_share_an_alias() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_social_alias(
+            &["corp-social", "other-social"],
+            "google",
+            &base_url,
+        )
+        .await;
+        let realm = RealmId("test".to_string());
+
+        // The transaction names the unconfigured provider: fail before exchange.
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "other-social").await;
+        let (status, body) = callback(&fixture.state, "google", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "client_id_not_configured");
+        tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-social").await;
+
+        // The transaction names the configured provider: complete against it.
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+        let (status, body) = callback(&fixture.state, "google", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-social");
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "other-social", "user-123")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fixture
+                .repo
+                .list_audit_events(Some(&realm), 100)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn social_callback_rejects_callback_alias_outside_the_transaction_provider() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture =
+            tx_test::fixture_with_social_alias(&["corp-social"], "google", &base_url).await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+
+        // The path equals the proof's provider id, so verification passes; the
+        // callback alias still has to belong to that provider.
+        let (status, body) =
+            callback(&fixture.state, "corp-social", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "social_provider_mismatch");
+        tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
 
         server.abort();
     }

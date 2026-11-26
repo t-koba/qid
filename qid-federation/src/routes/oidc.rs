@@ -8,10 +8,7 @@ use qid_core::{QidError, state::SharedState};
 use qid_storage::prelude::*;
 use std::sync::Arc;
 
-use crate::{
-    ExternalIdentityClaims, HomeRealmDiscoveryRequest, InboundProviderKind,
-    verify_inbound_idp_token,
-};
+use crate::{ExternalIdentityClaims, HomeRealmDiscoveryRequest, verify_inbound_idp_token};
 
 use super::{
     OidcCallbackQuery, authorization_response_iss_supported, broker_login_plan_error_response,
@@ -251,6 +248,22 @@ async fn oidc_inbound_callback_inner<R: Repository>(
         }
     };
 
+    // Only providers that complete an authorization code flow through this
+    // callback family may be selected here, whichever callback path was used.
+    if !provider.kind.uses_oidc_code_callback() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "provider_kind_mismatch",
+                "message": format!(
+                    "provider {provider_id} kind {} does not use the OIDC code callback",
+                    provider.kind.as_str()
+                )
+            })),
+        )
+            .into_response();
+    }
+
     // Bind the upstream response to the provider selected by the verified proof
     // before any credential lookup, exchange, claim extraction or identity write.
     if let Some(path) = path_provider.filter(|path| *path != provider.id) {
@@ -265,7 +278,7 @@ async fn oidc_inbound_callback_inner<R: Repository>(
     }
     let ambiguous_target = providers
         .iter()
-        .filter(|p| p.enabled && p.kind == InboundProviderKind::Oidc)
+        .filter(|p| p.enabled && p.kind.uses_oidc_code_callback())
         .count()
         > 1;
     let supported = authorization_response_iss_supported(
@@ -436,6 +449,20 @@ mod tests {
             headers.insert(header::COOKIE, cookie.parse().unwrap());
         }
         headers
+    }
+
+    /// Retarget shared fixtures at specific inbound provider kinds without
+    /// changing the fixture factory used by other route tests.
+    fn set_provider_kinds(fixture: &mut tx_test::Fixture, kinds: &[&str]) {
+        let state = Arc::get_mut(&mut fixture.state).expect("fixture state is unique");
+        let providers = &mut state.config.realms[0]
+            .protocols
+            .federation
+            .inbound_providers;
+        assert_eq!(providers.len(), kinds.len());
+        for (provider, kind) in providers.iter_mut().zip(kinds) {
+            provider.kind = (*kind).to_string();
+        }
     }
 
     async fn callback(
@@ -871,6 +898,127 @@ mod tests {
             "{body}"
         );
         tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_mixed_oidc_kinds_requires_issuer_on_shared_target() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let mut fixture = tx_test::fixture_with_issuers(
+            &["corp-entra", "corp-oidc"],
+            &["https://entra.example", "https://corp.example"],
+            "oidc",
+            &base_url,
+        )
+        .await;
+        set_provider_kinds(&mut fixture, &["entra_id", "oidc"]);
+
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-entra").await;
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer required"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+        tx_test::assert_no_identity_effects(&fixture, "corp-entra").await;
+
+        // A matching issuer still binds the entra_id provider on the shared path.
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-entra").await;
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            Some("https://entra.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-entra");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_provider_path_without_issuer_completes_for_entra_id_provider() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let mut fixture = tx_test::fixture_with_issuers(
+            &["corp-entra", "corp-oidc"],
+            &["https://entra.example", "https://corp.example"],
+            "oidc",
+            &base_url,
+        )
+        .await;
+        set_provider_kinds(&mut fixture, &["entra_id", "oidc"]);
+
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-entra").await;
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/corp-entra/callback",
+            Some(&proof),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "linked");
+        assert_eq!(body["provider"], "corp-entra");
+        assert_eq!(body["provider_kind"], "entra_id");
+
+        let realm = RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-entra", "user-123")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-oidc", "user-123")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_rejects_social_provider_selection_before_exchange() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture("corp-social", "social", &base_url).await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "provider_kind_mismatch");
+        tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
 
         server.abort();
     }

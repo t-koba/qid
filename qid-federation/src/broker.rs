@@ -32,6 +32,15 @@ impl InboundProviderKind {
         }
     }
 
+    /// Whether this provider completes its authorization code flow through the
+    /// shared and provider-specific OIDC broker callbacks.
+    pub fn uses_oidc_code_callback(&self) -> bool {
+        matches!(
+            self,
+            Self::Oidc | Self::EntraId | Self::GoogleWorkspace | Self::Okta
+        )
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Oidc => "oidc",

@@ -2619,3 +2619,71 @@ async fn admin_routes_reject_invalid_source_sessions() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     db.close().await;
 }
+
+#[tokio::test]
+async fn admin_client_creation_validates_grant_types_before_persisting() {
+    let (app, state, db) = setup().await;
+    seed_saas_realm_client(&state).await;
+    let mut admin = state
+        .repo
+        .get_admin("tenant-saas", "admin@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    admin.roles.push("app.admin".to_string());
+    state.repo.upsert_admin(&admin).await.unwrap();
+    let realm = RealmId::from("realm-saas");
+
+    let invalid_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/realm-saas/clients",
+            r#"{
+                "client_id":"typo-grant-client",
+                "client_type":"confidential",
+                "client_secret":"secret",
+                "redirect_uris":["https://app.example.com/callback"],
+                "grant_types":["authorization_codee"]
+            }"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        state
+            .repo
+            .get_client_by_client_id(&realm, "typo-grant-client")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let valid_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/realm-saas/clients",
+            r#"{
+                "client_id":"jwt-bearer-client",
+                "client_type":"confidential",
+                "client_secret":"secret",
+                "redirect_uris":[],
+                "grant_types":["urn:ietf:params:oauth:grant-type:jwt-bearer"]
+            }"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(valid_response.status(), StatusCode::CREATED);
+    let persisted = state
+        .repo
+        .get_client_by_client_id(&realm, "jwt-bearer-client")
+        .await
+        .unwrap()
+        .expect("valid client was not persisted");
+    assert_eq!(
+        persisted.grant_types,
+        vec!["urn:ietf:params:oauth:grant-type:jwt-bearer".to_string()]
+    );
+    db.close().await;
+}

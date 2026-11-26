@@ -338,16 +338,14 @@ impl QidConfig {
                 });
             }
             realm.validate()?;
-            if realm.authentication.mfa.sms_recovery.enabled {
-                if !is_secure_https_url(&self.server.public_base_url)
+            if realm.authentication.mfa.sms_recovery.enabled
+                && (!is_secure_https_url(&self.server.public_base_url)
                     || self.server.notification.is_none()
-                    || self
-                        .realms
-                        .iter()
-                        .any(|r| r.sessions.browser.cookie_name == SMS_RECOVERY_BINDING_COOKIE_NAME)
-                {
-                    return Err(QidError::Config { message: "SMS recovery requires server.notification, a credential/query/fragment-free HTTPS public_base_url and a non-reserved session cookie".into() });
-                }
+                    || self.realms.iter().any(|r| {
+                        r.sessions.browser.cookie_name == SMS_RECOVERY_BINDING_COOKIE_NAME
+                    }))
+            {
+                return Err(QidError::Config { message: "SMS recovery requires server.notification, a credential/query/fragment-free HTTPS public_base_url and a non-reserved session cookie".into() });
             }
             if realm.authentication.email_magic_link.enabled {
                 if matches!(realm.id.as_str(), "." | "..") {

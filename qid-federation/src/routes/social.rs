@@ -73,10 +73,12 @@ pub async fn social_login_callback<R: Repository>(
                 .into_response();
         }
     };
-    if !provider
-        .social_provider
-        .as_deref()
-        .is_some_and(|alias| alias.eq_ignore_ascii_case(&provider_name))
+    let path_is_canonical = provider_name == provider.id;
+    if !path_is_canonical
+        && !provider
+            .social_provider
+            .as_deref()
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(&provider_name))
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -88,8 +90,8 @@ pub async fn social_login_callback<R: Repository>(
             .into_response();
     }
 
-    // Several enabled providers can share one social alias; bind the upstream
-    // response before any credential lookup or exchange.
+    // Several enabled providers can share one social alias; a canonical id path
+    // binds the response when they do, before any credential lookup or exchange.
     let ambiguous_target = providers
         .iter()
         .filter(|p| {
@@ -103,7 +105,7 @@ pub async fn social_login_callback<R: Repository>(
     if let Err(error) = verify_authorization_response_issuer(
         params.iss.as_deref(),
         &provider.issuer,
-        ambiguous_target,
+        ambiguous_target && !path_is_canonical,
     ) {
         return error.into_response();
     }
@@ -482,20 +484,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn social_callback_rejects_callback_alias_outside_the_transaction_provider() {
+    async fn social_callback_accepts_canonical_provider_id_path() {
         let (base_url, server) = tx_test::provider_stub().await;
         let fixture =
             tx_test::fixture_with_social_alias(&["corp-social"], "google", &base_url).await;
         let (proof, cookie) =
             tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
 
-        // The path equals the proof's provider id, so verification passes; the
-        // callback alias still has to belong to that provider.
+        // The canonical id is an alternative to the configured alias in the path.
         let (status, body) =
             callback(&fixture.state, "corp-social", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-social");
+        let realm = RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn social_callback_shared_alias_without_issuer_rejects_alias_path() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_social_alias(
+            &["corp-social", "other-social"],
+            "google",
+            &base_url,
+        )
+        .await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+
+        let (status, body) = callback(&fixture.state, "google", Some(&proof), Some(&cookie)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], "social_provider_mismatch");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer required"),
+            "{body}"
+        );
         tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-social").await;
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn social_callback_shared_alias_without_issuer_completes_via_canonical_id_path() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_social_alias(
+            &["corp-social", "other-social"],
+            "google",
+            &base_url,
+        )
+        .await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+
+        let (status, body) =
+            callback(&fixture.state, "corp-social", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-social");
+        let realm = RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "other-social", "user-123")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         server.abort();
     }

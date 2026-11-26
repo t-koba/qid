@@ -179,11 +179,33 @@ mod util {
     }
 }
 
+/// Shared callback: the verified proof selects the provider.
 pub async fn oidc_inbound_callback<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path(realm): Path<String>,
     Query(params): Query<OidcCallbackQuery>,
     headers: HeaderMap,
+) -> Response {
+    oidc_inbound_callback_inner(state, realm, params, headers, None).await
+}
+
+/// Provider-specific callback: the path is an alternative issuer binding for
+/// upstreams that omit the front-channel `iss`.
+pub async fn oidc_inbound_callback_for_provider<R: Repository>(
+    State(state): State<Arc<SharedState<R>>>,
+    Path((realm, provider)): Path<(String, String)>,
+    Query(params): Query<OidcCallbackQuery>,
+    headers: HeaderMap,
+) -> Response {
+    oidc_inbound_callback_inner(state, realm, params, headers, Some(&provider)).await
+}
+
+async fn oidc_inbound_callback_inner<R: Repository>(
+    state: Arc<SharedState<R>>,
+    realm: String,
+    params: OidcCallbackQuery,
+    headers: HeaderMap,
+    path_provider: Option<&str>,
 ) -> Response {
     // Spend the browser-bound proof before token exchange, lookups or writes.
     let proof = match transaction::verify(&state, &headers, &realm, params.state.as_deref(), None) {
@@ -230,6 +252,16 @@ pub async fn oidc_inbound_callback<R: Repository>(
 
     // Bind the upstream response to the provider selected by the verified proof
     // before any credential lookup, exchange, claim extraction or identity write.
+    if let Some(path) = path_provider.filter(|path| *path != provider.id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "provider_mismatch",
+                "message": format!("provider {provider_id} does not match callback {path}")
+            })),
+        )
+            .into_response();
+    }
     let ambiguous_target = providers
         .iter()
         .filter(|p| p.enabled && p.kind == InboundProviderKind::Oidc)
@@ -238,7 +270,8 @@ pub async fn oidc_inbound_callback<R: Repository>(
     if let Err(error) = verify_authorization_response_issuer(
         params.iss.as_deref(),
         &provider.issuer,
-        ambiguous_target,
+        // A matching provider-specific path binds the response when `iss` is absent.
+        ambiguous_target && path_provider.is_none(),
     ) {
         return error.into_response();
     }
@@ -274,10 +307,15 @@ pub async fn oidc_inbound_callback<R: Repository>(
         }
     };
 
+    let callback_path = match path_provider {
+        Some(provider) => format!("oidc/{}", urlencoding::encode(provider)),
+        None => "oidc".to_string(),
+    };
     let redirect_uri = format!(
-        "{}/federation/{}/oidc/callback",
+        "{}/federation/{}/{}/callback",
         state.plan.public_base_url.trim_end_matches('/'),
-        urlencoding::encode(&realm)
+        urlencoding::encode(&realm),
+        callback_path
     );
 
     let token_resp = match exchange_code_for_tokens(
@@ -419,6 +457,39 @@ mod tests {
             callback_headers(cookie),
         )
         .await;
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// Drive the registered route so the new callback path is covered too.
+    async fn routed_callback(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        path: &str,
+        proof: Option<&str>,
+        cookie: Option<&str>,
+        issuer: Option<&str>,
+    ) -> (StatusCode, Value) {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let mut uri = format!("/federation/test{path}?code=provider-code");
+        if let Some(proof) = proof {
+            uri.push_str(&format!("&state={}", urlencoding::encode(proof)));
+        }
+        if let Some(issuer) = issuer {
+            uri.push_str(&format!("&iss={}", urlencoding::encode(issuer)));
+        }
+        let mut request = Request::builder().uri(uri);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        let app = super::super::federation_routes::<qid_storage::FileRepository>()
+            .with_state(state.clone());
+        let response = app
+            .oneshot(request.body(Body::empty()).expect("request"))
+            .await
+            .expect("route response");
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&body).unwrap())
@@ -623,6 +694,134 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["provider"], "corp-oidc");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_shared_target_without_issuer_is_rejected_before_exchange() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_issuers(
+            &["corp-oidc", "other-oidc"],
+            &["https://corp.example", "https://other.example"],
+            "oidc",
+            &base_url,
+        )
+        .await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer required"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-oidc").await;
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_provider_path_without_issuer_completes_for_selected_provider() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_issuers(
+            &["corp-oidc", "other-oidc"],
+            &["https://corp.example", "https://other.example"],
+            "oidc",
+            &base_url,
+        )
+        .await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/corp-oidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "linked");
+        assert_eq!(body["provider"], "corp-oidc");
+
+        let realm = qid_core::tenant::RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-oidc", "user-123")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fixture
+                .repo
+                .get_ciam_identity_link_by_external_subject(&realm, "other-oidc", "user-123")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_provider_path_for_another_provider_rejects_before_exchange() {
+        let (base_url, server) = tx_test::provider_stub().await;
+        let fixture = tx_test::fixture_with_issuers(
+            &["corp-oidc", "other-oidc"],
+            &["https://corp.example", "https://other.example"],
+            "oidc",
+            &base_url,
+        )
+        .await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/other-oidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "provider_mismatch");
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-oidc").await;
+
+        // A matching path still requires an exact issuer when one is supplied.
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", "corp-oidc").await;
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/corp-oidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            Some("https://other.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer mismatch"),
+            "{body}"
+        );
+        tx_test::assert_no_identity_effects(&fixture, "corp-oidc").await;
 
         server.abort();
     }

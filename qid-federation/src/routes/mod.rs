@@ -301,6 +301,10 @@ pub fn federation_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
             get(oidc::oidc_inbound_callback::<R>),
         )
         .route(
+            "/federation/:realm/oidc/:provider/callback",
+            get(oidc::oidc_inbound_callback_for_provider::<R>),
+        )
+        .route(
             "/federation/:realm/saml/acs",
             post(saml::saml_inbound_acs::<R>),
         )

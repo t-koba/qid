@@ -169,6 +169,9 @@ impl Signer for LocalSigner {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_aud = true;
         validation.aud = Some(HashSet::from([expected_audience.to_string()]));
+        // validate_aud only checks an aud claim that is present; require it so
+        // an aud-less token cannot satisfy a caller's audience binding.
+        validation.set_required_spec_claims(&["exp", "aud"]);
         Ok(decode(token, &self.decoding_key, &validation)?)
     }
 
@@ -285,6 +288,9 @@ impl<T: RemoteSignerTransport + Send + Sync> Signer for RemoteJwtSigner<T> {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_aud = true;
         validation.aud = Some(HashSet::from([expected_audience.to_string()]));
+        // validate_aud only checks an aud claim that is present; require it so
+        // an aud-less token cannot satisfy a caller's audience binding.
+        validation.set_required_spec_claims(&["exp", "aud"]);
         Ok(decode(token, &self.decoding_key, &validation)?)
     }
 
@@ -1037,6 +1043,19 @@ mod tests {
         };
         let valid = signer.sign(&base).expect("signing failed");
         assert!(signer.decode_signature_only(&valid).is_ok());
+        assert!(signer.decode_with_aud(&valid, "audience").is_ok());
+
+        let missing_aud = JwtClaims {
+            aud: None,
+            ..base.clone()
+        };
+        let missing_aud_token = signer.sign(&missing_aud).expect("signing failed");
+        assert!(signer.decode_signature_only(&missing_aud_token).is_ok());
+        assert!(
+            signer
+                .decode_with_aud(&missing_aud_token, "audience")
+                .is_err()
+        );
 
         let expired = JwtClaims {
             exp: Some(1_000_000_000),
@@ -1090,6 +1109,19 @@ mod tests {
         };
         let valid = signer.sign(&base).expect("signing failed");
         assert!(signer.decode_signature_only(&valid).is_ok());
+        assert!(signer.decode_with_aud(&valid, "audience").is_ok());
+
+        let missing_aud = JwtClaims {
+            aud: None,
+            ..base.clone()
+        };
+        let missing_aud_token = signer.sign(&missing_aud).expect("signing failed");
+        assert!(signer.decode_signature_only(&missing_aud_token).is_ok());
+        assert!(
+            signer
+                .decode_with_aud(&missing_aud_token, "audience")
+                .is_err()
+        );
 
         let expired = JwtClaims {
             exp: Some(1_000_000_000),

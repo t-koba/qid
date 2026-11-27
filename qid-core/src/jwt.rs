@@ -153,8 +153,8 @@ pub trait Signer: Send + Sync {
     fn decode_signature_only(&self, token: &str) -> anyhow::Result<TokenData<JwtClaims>>;
 
     /// Verify the signature and enforce audience binding. The token's `aud` claim
-    /// (string or array form) must contain `expected_audience`. This is the
-    /// preferred entry point for production token validation.
+    /// (string or array form) must be present and contain `expected_audience`.
+    /// This is the preferred entry point for production token validation.
     fn decode_with_aud(
         &self,
         token: &str,

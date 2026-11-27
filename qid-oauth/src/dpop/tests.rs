@@ -374,6 +374,54 @@ fn dpop_wrong_htu_fails() {
     assert!(result.is_err(), "wrong htu should fail");
 }
 
+/// Validate a signed proof whose only varying claim is `htu`.
+fn htu_is_accepted(htu: &str) -> bool {
+    let signer = test_signer();
+    let payload = serde_json::json!({
+        "jti": "htu-normalization-proof",
+        "htm": "POST",
+        "htu": htu,
+        "iat": now_seconds(),
+    });
+    let proof = build_jwt(&dpop_header(), &payload);
+    validate_dpop_proof(
+        &DpopState::new(),
+        &proof,
+        "POST",
+        "https://id.example.com/token",
+        None,
+        &signer,
+    )
+    .is_ok()
+}
+
+#[test]
+fn dpop_htu_normalization_is_accepted() {
+    for htu in [
+        "https://ID.EXAMPLE.COM/token",
+        "https://id.example.com:443/token",
+        "https://id.example.com/token?client=one",
+        "https://id.example.com/token#section",
+    ] {
+        assert!(htu_is_accepted(htu), "normalized htu should match: {htu}");
+    }
+}
+
+#[test]
+fn dpop_htu_mismatches_are_rejected() {
+    for htu in [
+        "https://other.example.com/token",
+        "https://id.example.com/token/extra",
+        "https://id.example.com/token/",
+        "https://id.example.com:8443/token",
+        "http://id.example.com/token",
+        "ftp://id.example.com/token",
+        "not a url",
+    ] {
+        assert!(!htu_is_accepted(htu), "mismatched htu must fail: {htu}");
+    }
+}
+
 #[test]
 fn dpop_missing_typ_fails() {
     let signer = test_signer();

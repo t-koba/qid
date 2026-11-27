@@ -6,6 +6,7 @@ use qid_core::jwt::Signer;
 use qid_core::util::now_seconds;
 use qid_crypto::{Jwk, jwt::verify_jwt_signature_with_jwk};
 use qid_ops::{CacheKey, CachePut, RedisLikeCache, RedisLikeTransport};
+use url::Url;
 
 use super::parse_jwt_unverified;
 
@@ -148,7 +149,7 @@ fn validate_dpop_proof_claims(
         .ok_or_else(|| QidError::BadRequest {
             message: "DPoP proof missing htu claim".to_string(),
         })?;
-    if htu != expected_htu {
+    if !htu_matches(htu, expected_htu) {
         return Err(QidError::BadRequest {
             message: format!("DPoP proof htu mismatch: expected '{expected_htu}', got '{htu}'"),
         });
@@ -192,6 +193,30 @@ fn validate_dpop_proof_claims(
             .and_then(|v| v.as_str())
             .map(ToOwned::to_owned),
     })
+}
+
+/// Compare DPoP `htu` values using the normalization required by RFC 9449 §4.3.
+///
+/// Scheme and host are case-insensitive, query and fragment are ignored, and
+/// the effective port is compared. `Url` normalizes scheme/host case and drops
+/// explicitly specified default ports, so `port_or_known_default` compares the
+/// effective port on both sides. Unparsable or non-HTTP(S) URIs fail closed.
+fn htu_matches(actual: &str, expected: &str) -> bool {
+    let (Ok(actual), Ok(expected)) = (Url::parse(actual), Url::parse(expected)) else {
+        return false;
+    };
+    if !matches!(actual.scheme(), "http" | "https")
+        || !matches!(expected.scheme(), "http" | "https")
+    {
+        return false;
+    }
+    let (Some(actual_host), Some(expected_host)) = (actual.host_str(), expected.host_str()) else {
+        return false;
+    };
+    actual.scheme() == expected.scheme()
+        && actual_host == expected_host
+        && actual.port_or_known_default() == expected.port_or_known_default()
+        && actual.path() == expected.path()
 }
 
 fn verify_dpop_proof_signature(dpop_proof: &str, header: &serde_json::Value) -> QidResult<()> {

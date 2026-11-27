@@ -70,6 +70,23 @@ fn is_secure_https_url(value: &str) -> bool {
     })
 }
 
+/// Inbound issuer identifiers are compared byte-for-byte with the value
+/// supplied by the upstream, so a string that only becomes a URL after parser
+/// repair would never match. Reject those spellings at config load.
+fn is_exact_secure_https_issuer(value: &str) -> bool {
+    value.starts_with("https://")
+        && value.is_ascii()
+        && !value.bytes().any(|byte| {
+            byte.is_ascii_whitespace()
+                || byte.is_ascii_control()
+                || matches!(
+                    byte,
+                    b'<' | b'>' | b'"' | b'{' | b'}' | b'|' | b'\\' | b'^' | b'`'
+                )
+        })
+        && is_secure_https_url(value)
+}
+
 /// Top-level configuration for qid.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1339,7 +1356,7 @@ fn validate_inbound_provider_issuer_syntax(
     for provider in providers.iter().filter(|provider| {
         provider.enabled && is_front_channel_inbound_provider_kind(&provider.kind)
     }) {
-        if !is_secure_https_url(&provider.issuer) {
+        if !is_exact_secure_https_issuer(&provider.issuer) {
             return Err(QidError::Config {
                 message: format!(
                     "realm {realm_id} inbound provider {} issuer must be an HTTPS URL with a host and without credentials, query, or fragment",

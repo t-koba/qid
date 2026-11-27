@@ -4179,6 +4179,10 @@ fn front_channel_inbound_provider_rejects_unsafe_issuer_syntax() {
         "https://login.example.com/realms/partner#section",
         "https://user@login.example.com/realms/partner",
         "https://user:password@login.example.com/realms/partner",
+        "https://login.example.com/realms/part ner",
+        "https://login.example.com/realms/part\tner",
+        "https:login.example.com/realms/partner",
+        "https://login.example.com/realms/part<ner>",
     ] {
         let mut config = config_with_provider_kind("oidc");
         let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];

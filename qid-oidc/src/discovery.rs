@@ -775,6 +775,9 @@ async fn userinfo<R: Repository>(
     if is_dpop_scheme && dpop_binding.is_none() {
         return invalid_token("DPoP scheme requires a sender-constrained access token");
     }
+    if !is_dpop_scheme && dpop_binding.is_some() {
+        return invalid_token("sender-constrained access token requires the DPoP scheme");
+    }
     if !realm.protocols.oidc.enabled || !realm.protocols.oidc.userinfo {
         return qid_http::error_response(bad_request("OIDC UserInfo is disabled for token realm"));
     }

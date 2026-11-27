@@ -2762,7 +2762,7 @@ async fn userinfo_requires_unique_mapping_for_explicit_resource() {
 }
 
 #[tokio::test]
-async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
+async fn userinfo_enforces_dpop_scheme_for_bound_tokens() {
     // RFC 9449 section 7.1: an issued DPoP-bound token must work with the
     // DPoP authorization scheme, with proof, key, and ath enforced.
     let mut config = test_helpers::test_config();
@@ -2849,6 +2849,15 @@ async fn userinfo_accepts_dpop_scheme_with_valid_proof() {
     )
     .await
     .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // RFC 9449 section 7.1: a bound token cannot be presented with the
+    // Bearer scheme, with or without an otherwise valid DPoP proof.
+    let response = get_userinfo("Bearer", &bound_token, Some(valid_proof()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = get_userinfo("Bearer", &bound_token, None).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // Ordinary Bearer presentation of the unbound token still works.

@@ -357,7 +357,10 @@ pub fn apply_metadata_policy(
     metadata: &OpenIdRelyingPartyMetadata,
     allowed_redirect_hosts: &[String],
 ) -> Result<OpenIdRelyingPartyMetadata, QidError> {
-    let allowed: HashSet<&str> = allowed_redirect_hosts.iter().map(String::as_str).collect();
+    let allowed: HashSet<String> = allowed_redirect_hosts
+        .iter()
+        .map(|host| host.to_ascii_lowercase())
+        .collect();
     let mut redirect_uris = Vec::new();
     for redirect_uri in &metadata.redirect_uris {
         if let Err(reason) = qid_core::oauth::validate_redirect_uri(redirect_uri) {
@@ -372,18 +375,26 @@ pub fn apply_metadata_policy(
                 &format!("redirect_uri {redirect_uri} rejected: {reason:?}"),
             ));
         }
-        let (_, rest) = redirect_uri.split_once("://").ok_or_else(|| {
+        let parsed = url::Url::parse(redirect_uri).map_err(|_| {
             error(
                 "invalid_redirect_uri",
-                &format!("redirect_uri {redirect_uri} has no scheme"),
+                &format!("redirect_uri {redirect_uri} has no valid URL"),
             )
         })?;
-        let host = rest.split('/').next().unwrap_or_default();
-        if !allowed.is_empty() && !allowed.contains(host) {
+        if !parsed.username().is_empty() || parsed.password().is_some() {
             return Err(error(
-                "redirect_host_not_allowed",
-                "Relying party redirect URI host is not allowed by metadata policy",
+                "invalid_redirect_uri",
+                &format!("redirect_uri {redirect_uri} rejected: userinfo is not allowed"),
             ));
+        }
+        if !allowed.is_empty() {
+            let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+            if !allowed.contains(&host) {
+                return Err(error(
+                    "redirect_host_not_allowed",
+                    "Relying party redirect URI host is not allowed by metadata policy",
+                ));
+            }
         }
         redirect_uris.push(redirect_uri.clone());
     }

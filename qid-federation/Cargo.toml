@@ -22,6 +22,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 urlencoding = { workspace = true }
+url = { workspace = true }
 tracing = { workspace = true }
 time = { workspace = true }
 ulid = { workspace = true }
@@ -40,7 +41,6 @@ qid-crypto = { workspace = true }
 zeroize = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true }
-url = { workspace = true }
 
 [lints]
 workspace = true

@@ -226,6 +226,42 @@ fn metadata_policy_rejects_untrusted_redirect_host_and_strips_weak_grants() {
 }
 
 #[test]
+fn metadata_policy_matches_parsed_redirect_hosts_and_preserves_uris() {
+    let uris = [
+        "https://rp.example?return=home",
+        "https://rp.example:8443/cb",
+        "https://RP.EXAMPLE/cb",
+    ];
+    let metadata = OpenIdRelyingPartyMetadata {
+        redirect_uris: uris.iter().map(|uri| uri.to_string()).collect(),
+        grant_types: vec!["authorization_code".to_string()],
+    };
+
+    for allow_host in ["rp.example", "RP.EXAMPLE"] {
+        let filtered =
+            apply_metadata_policy(&metadata, &[allow_host.to_string()]).unwrap_or_else(|err| {
+                panic!("allowlist entry {allow_host} should accept the URIs: {err:?}")
+            });
+        assert_eq!(filtered.redirect_uris, metadata.redirect_uris);
+    }
+}
+
+#[test]
+fn metadata_policy_rejects_redirect_uri_userinfo() {
+    for uri in [
+        "https://user@rp.example/cb",
+        "https://user:pass@rp.example/cb",
+    ] {
+        let metadata = OpenIdRelyingPartyMetadata {
+            redirect_uris: vec![uri.to_string()],
+            grant_types: vec!["authorization_code".to_string()],
+        };
+        let err = apply_metadata_policy(&metadata, &["rp.example".to_string()]).unwrap_err();
+        assert_eq!(federation_error_code(&err), "invalid_redirect_uri", "{uri}");
+    }
+}
+
+#[test]
 fn metadata_policy_rejects_spoofed_loopback_redirect_uri() {
     for uri in [
         "http://localhost.evil.example/cb",

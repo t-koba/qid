@@ -14,6 +14,7 @@ rust-version.workspace = true
 sha2 = { workspace = true }
 axum = { workspace = true }
 qid-core = { workspace = true }
+qid-http = { workspace = true }
 qid-saml = { workspace = true }
 qid-storage = { workspace = true }
 reqwest = { workspace = true }

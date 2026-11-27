@@ -171,19 +171,6 @@ pub(crate) async fn start<R: Repository>(
     response
 }
 
-fn cookie_value(headers: &HeaderMap) -> Option<String> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_header.split(';') {
-        let Some((name, value)) = pair.trim().split_once('=') else {
-            continue;
-        };
-        if name.trim() == COOKIE_NAME {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
-
 fn string_claim<'a>(claims: &'a JwtClaims, name: &str) -> Result<&'a str, TransactionError> {
     claims
         .extra
@@ -246,7 +233,8 @@ pub(crate) fn verify<R: Repository>(
         return Err(TransactionError("transaction proof expired"));
     }
 
-    let cookie = cookie_value(headers).ok_or(TransactionError("missing transaction cookie"))?;
+    let cookie = qid_http::extract_cookie(headers, COOKIE_NAME)
+        .ok_or(TransactionError("missing transaction cookie"))?;
     if !util::constant_time_eq(util::sha256_base64url(cookie.as_bytes()), verifier) {
         return Err(TransactionError("transaction cookie mismatch"));
     }
@@ -655,6 +643,14 @@ pub(crate) mod test_support {
             issue_transaction(&fixture.state, "test", "configured-provider").await;
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, cookie.parse().expect("cookie"));
+        let mut duplicate = HeaderMap::new();
+        duplicate.insert(
+            header::COOKIE,
+            format!("{cookie}; {cookie}")
+                .parse()
+                .expect("duplicate cookie"),
+        );
+        assert!(verify(&fixture.state, &duplicate, "test", Some(&token), None).is_err());
         let verified = verify(&fixture.state, &headers, "test", Some(&token), None)
             .expect("first use succeeds");
         assert_eq!(verified.provider, "configured-provider");

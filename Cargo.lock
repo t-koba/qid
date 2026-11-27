@@ -3668,6 +3668,7 @@ dependencies = [
  "krb5",
  "qid-core",
  "qid-crypto",
+ "qid-http",
  "qid-saml",
  "qid-storage",
  "rand 0.8.8",

@@ -71,7 +71,9 @@ registered `protocols.oauth.resource_servers` target. A realm without resource
 servers has no registered targets: untargeted grants keep the client-id
 audience fallback, while explicit targets are rejected. A resource server that
 verifies tokens locally should not accept an audience qid did not validate
-against its configuration.
+against its configuration. Re-resolution applies when a refresh token mints a
+new access token; it does not revoke access tokens already issued, which an
+offline verifier may continue to accept until they expire.
 
 ### Migrating `private_key_jwt` client assertions
 

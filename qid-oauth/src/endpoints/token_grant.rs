@@ -544,6 +544,8 @@ pub async fn refresh_token_grant<R: Repository>(
     // that never named a target retain the implicit client-id audience;
     // later registration of unrelated servers cannot change that grant, and
     // re-resolution never adds an audience that was not originally granted.
+    // This checks only tokens minted by this refresh: access tokens already
+    // issued keep their claims until expiry and are not revoked here.
     let implicit_client_audience = family.resource.is_empty()
         && family
             .audience

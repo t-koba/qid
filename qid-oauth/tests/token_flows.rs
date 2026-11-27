@@ -3742,6 +3742,17 @@ async fn dynamic_client_registration_management_requires_client_auth() {
     assert_eq!(unauthenticated_response.status(), StatusCode::UNAUTHORIZED);
 }
 
+fn confidential_device_client(client_id: &str, auth_method: &str) -> Client {
+    let mut client = base_test_client(
+        client_id,
+        ClientType::Confidential,
+        auth_method,
+        vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+    );
+    client.client_secret_hash = Some(util::client_secret_hash("secret"));
+    client
+}
+
 fn device_test_client(id: &str, client_id: &str) -> Client {
     let mut client = base_test_client(
         client_id,
@@ -3807,6 +3818,277 @@ async fn device_authorization_returns_codes_for_known_client() {
     let fragment_2 = user_2.strip_prefix("QID-").unwrap();
     assert!(!device_2.contains(user_fragment));
     assert!(!device_code.contains(fragment_2));
+}
+
+#[tokio::test]
+async fn device_authorization_authenticates_confidential_clients_and_stores_authenticated_id() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    for client in [
+        confidential_device_client("device-post", "client_secret_post"),
+        confidential_device_client("device-basic", "client_secret_basic"),
+        device_test_client("device-public-id", "device-public"),
+    ] {
+        state.repo.create_client(&client).await.unwrap();
+    }
+
+    let cases = [
+        (
+            "device-post",
+            vec![],
+            "client_id=device-post&client_secret=secret&scope=api",
+        ),
+        (
+            "device-basic",
+            vec![(
+                "Authorization",
+                format!("Basic {}", basic_auth_header("device-basic", "secret")),
+            )],
+            "client_id=device-basic&scope=api",
+        ),
+        ("device-public", vec![], "client_id=device-public&scope=api"),
+    ];
+    for (client_id, headers, body) in cases {
+        let response = token_with_headers(
+            app.clone(),
+            &state.paths.device_authorization,
+            headers,
+            body.into(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "client {client_id}");
+        let json = json_body(response).await;
+        let grant = state
+            .repo
+            .get_device_authorization_grant(&util::sha256_base64url(
+                json["device_code"].as_str().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(grant.client_id, client_id);
+    }
+}
+
+#[tokio::test]
+async fn device_authorization_refuses_credentials_a_client_must_not_use() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&confidential_device_client(
+            "device-secret",
+            "client_secret_post",
+        ))
+        .await
+        .unwrap();
+    state
+        .repo
+        .create_client(&device_test_client("device-open-id", "device-open"))
+        .await
+        .unwrap();
+
+    for body in [
+        "client_id=device-secret&scope=api",
+        "client_id=device-secret&client_secret=wrong&scope=api",
+        "client_id=device-open&client_secret=secret&scope=api",
+    ] {
+        assert_eq!(
+            post_form(app.clone(), &state.paths.device_authorization, body)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "refused request: {body}"
+        );
+    }
+    // A public client must not authenticate with Basic either, and a Basic
+    // identity cannot name a different client in the form.
+    for (headers, body) in [
+        (
+            vec![(
+                "Authorization",
+                format!("Basic {}", basic_auth_header("device-open", "secret")),
+            )],
+            "client_id=device-open&scope=api".to_string(),
+        ),
+        (
+            vec![(
+                "Authorization",
+                format!("Basic {}", basic_auth_header("device-secret", "secret")),
+            )],
+            "client_id=device-open&scope=api".to_string(),
+        ),
+    ] {
+        let response = token_with_headers(
+            app.clone(),
+            &state.paths.device_authorization,
+            headers,
+            body,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // The refusals did not change either client's registration: the correct
+    // credential and the bare public client_id still issue codes.
+    assert_eq!(
+        post_form(
+            app.clone(),
+            &state.paths.device_authorization,
+            "client_id=device-secret&client_secret=secret&scope=api",
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post_form(
+            app,
+            &state.paths.device_authorization,
+            "client_id=device-open&scope=api",
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn device_authorization_accepts_private_key_jwt_only_when_realm_enables_it() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    config.realms[0].protocols.oauth.private_key_jwt.enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    let mut client = private_key_jwt_client("device-pkjwt");
+    client.grant_types = vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()];
+    state.repo.create_client(&client).await.unwrap();
+
+    let assertion = build_client_assertion("device-pkjwt", "device-pkjwt-1");
+    let body = format!(
+        "client_id=device-pkjwt&scope=api&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}"
+    );
+    let response = post_form(app.clone(), &state.paths.device_authorization, body.clone()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    let grant = state
+        .repo
+        .get_device_authorization_grant(&util::sha256_base64url(
+            json["device_code"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grant.client_id, "device-pkjwt");
+    // The shared assertion replay cache also covers device authorization.
+    assert_eq!(
+        post_form(app, &state.paths.device_authorization, body)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let mut disabled_config = test_helpers::test_config();
+    disabled_config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    let disabled_state = Arc::new(
+        SharedState::new(
+            disabled_config,
+            state.repo.clone(),
+            state.signer.clone(),
+            state.jwks.clone(),
+        )
+        .unwrap(),
+    );
+    let disabled_app = qid_oauth::routes(&disabled_state.paths).with_state(disabled_state);
+    let assertion = build_client_assertion("device-pkjwt", "device-pkjwt-2");
+    assert_eq!(
+        post_form(
+            disabled_app,
+            &state.paths.device_authorization,
+            format!(
+                "client_id=device-pkjwt&scope=api&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}"
+            ),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn device_authorization_authenticates_mtls_client() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    config.realms[0].protocols.oauth.mtls.enabled = true;
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations = vec![PepRegistrationConfig {
+        name: "egress-main".to_string(),
+        audience: Some("qid-pep-adapter".to_string()),
+        capabilities: Vec::new(),
+        assertion: Default::default(),
+        decision: Default::default(),
+        auth: Default::default(),
+    }];
+    let (app, _, state) = setup_with_config(config).await;
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "mtls-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client
+        .grant_types
+        .push("urn:ietf:params:oauth:grant-type:device_code".to_string());
+    state.repo.update_client(&client).await.unwrap();
+
+    let thumbprint = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    let adapter_auth =
+        build_adapter_auth_token(&state, "egress-main", "qid-pep-adapter", thumbprint);
+    let response = token_with_headers(
+        app.clone(),
+        &state.paths.device_authorization,
+        vec![
+            (
+                "x-qid-pep-adapter-authorization",
+                format!("Bearer {adapter_auth}"),
+            ),
+            ("x-qid-mtls-x5t-s256", thumbprint.to_string()),
+        ],
+        "client_id=mtls-client&scope=api".to_string(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    let grant = state
+        .repo
+        .get_device_authorization_grant(&util::sha256_base64url(
+            json["device_code"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grant.client_id, "mtls-client");
 }
 
 #[tokio::test]

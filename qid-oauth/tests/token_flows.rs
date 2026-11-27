@@ -908,7 +908,7 @@ async fn token_exchange_requires_active_access_token_subject() {
     assert_eq!(claims.aud_primary(), Some("exchange-client"));
     assert_eq!(claims.extra["client_id"], "exchange-client");
     assert_eq!(claims.extra["scope"], "payments");
-    assert!(claims.extra.get("resource").is_none());
+    assert!(!claims.extra.contains_key("resource"));
     assert!(claims.extra["cnf"]["jkt"].is_string());
     assert_eq!(claims.extra["token_type"], "DPoP");
 }

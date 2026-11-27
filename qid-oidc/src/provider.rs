@@ -71,10 +71,10 @@ struct AuthorizeParameters {
     authorization_details: Option<serde_json::Value>,
     nonce: Option<String>,
     prompt: Option<String>,
-    /// DPoP proof JWT (RFC 9449) extracted from the `DPoP` HTTP
-    /// header on the original authorization request. Carried
-    /// through the call chain so the JARM response can embed the
-    /// matching `apv` JWK thumbprint per FAPI 2.0 Message Signing.
+    /// DPoP proof JWT (RFC 9449) extracted from the `DPoP` HTTP header on
+    /// the original authorization request. It is used only as a best-effort
+    /// source for the JARM `apv` hint; the proof is not validated here and
+    /// no key binding to the later token request is asserted.
     #[serde(skip)]
     pub dpop_proof: Option<String>,
     #[serde(default)]
@@ -1401,12 +1401,12 @@ async fn authorization_response_redirect<R: Repository>(
             "code".to_string(),
             serde_json::Value::String(code.to_string()),
         )];
-        // FAPI 2.0 Message Signing: when the client sent a DPoP key (or
-        // any other key bound to the request), embed the JWK thumbprint in
-        // the JARM response under the `apv` claim so the client can verify
-        // the response was produced for the same key. The DPoP header is
-        // propagated by the caller (authorize_get / authorize_post) so
-        // apv resolution works for both flows.
+        // Embed a best-effort `apv` hint when one was resolved from the
+        // authorize/PAR request's DPoP header or registered JWK. The header
+        // value is not proof-verified here, and the hint is not bound to the
+        // key used at the token endpoint; clients must not treat it as a
+        // sender-constraint assertion. docs/standards.md remains authoritative
+        // for what qid does and does not claim.
         if let Some(apv) = req
             .dpop_apv
             .clone()
@@ -1446,22 +1446,20 @@ async fn authorization_response_redirect<R: Repository>(
     Ok(Redirect::temporary(&redirect_url).into_response())
 }
 
-/// Look up the DPoP JWK thumbprint associated with the in-flight
-/// authorization request so it can be embedded in the JARM `apv` claim.
+/// Build a best-effort JWK thumbprint hint for the JARM `apv` claim.
 ///
-/// FAPI 2.0 Message Signing requires the JARM response to carry an
-/// `apv` claim whose value is the SHA-256 JWK thumbprint of the
-/// DPoP key bound to the request. The binding ensures the client can
-/// prove the response was produced for the same key that signed the
-/// original authorization request.
+/// This is not a sender-constraint check: the DPoP header's signature,
+/// htm/htu, nonce and freshness are not verified here, and the result is
+/// not compared with any key presented later at the token endpoint. A
+/// client must not infer that `apv` proves the response was produced for
+/// the same key that will prove possession of the authorization code.
 ///
-/// We resolve the DPoP key from two sources, in priority order:
-///   1. The `DPoP` HTTP header on the in-flight authorization request
-///      (per RFC 9449 §9). When present, the JWK embedded in the
-///      proof is used directly.
-///   2. The first `jwk` entry in the registered client metadata
-///      (used as a static fallback for clients that bind a key once
-///      at registration time and never re-enroll).
+/// The hint uses two sources, in priority order:
+///   1. The JWK in the `DPoP` header of the authorize or PAR request,
+///      hashed without validating the proof (RFC 9449 §4.1 defines the
+///      header; §10 defines code binding, which qid does not implement).
+///   2. The first JWK in registered client metadata, as a static fallback.
+/// No FAPI message-signing conformance is claimed; see docs/standards.md.
 fn dpop_apv_for_request(client: &Client, dpop_header: Option<&str>) -> Option<String> {
     if let Some(proof) = dpop_header
         && let Some(jwt_thumbprint) = extract_dpop_jkt_from_proof(proof)

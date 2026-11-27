@@ -360,18 +360,24 @@ pub fn apply_metadata_policy(
     let allowed: HashSet<&str> = allowed_redirect_hosts.iter().map(String::as_str).collect();
     let mut redirect_uris = Vec::new();
     for redirect_uri in &metadata.redirect_uris {
-        let (scheme, rest) = redirect_uri.split_once("://").ok_or_else(|| {
+        if let Err(reason) = qid_core::oauth::validate_redirect_uri(redirect_uri) {
+            let code = match reason {
+                qid_core::oauth::RedirectUriError::InsecureScheme => {
+                    "redirect_uri_scheme_not_allowed"
+                }
+                _ => "invalid_redirect_uri",
+            };
+            return Err(error(
+                code,
+                &format!("redirect_uri {redirect_uri} rejected: {reason:?}"),
+            ));
+        }
+        let (_, rest) = redirect_uri.split_once("://").ok_or_else(|| {
             error(
                 "invalid_redirect_uri",
                 &format!("redirect_uri {redirect_uri} has no scheme"),
             )
         })?;
-        if scheme != "https" && !(scheme == "http" && rest.starts_with("localhost")) {
-            return Err(error(
-                "redirect_uri_scheme_not_allowed",
-                &format!("redirect_uri {redirect_uri} must be https or http://localhost"),
-            ));
-        }
         let host = rest.split('/').next().unwrap_or_default();
         if !allowed.is_empty() && !allowed.contains(host) {
             return Err(error(

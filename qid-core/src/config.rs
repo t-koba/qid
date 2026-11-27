@@ -77,9 +77,21 @@ fn is_exact_secure_https_issuer(value: &str) -> bool {
     let Some((scheme, authority_and_path)) = value.split_once("://") else {
         return false;
     };
+    let authority_end = authority_and_path
+        .find('/')
+        .unwrap_or(authority_and_path.len());
+    let authority = &authority_and_path[..authority_end];
+    let path = &authority_and_path[authority_end..];
+    let has_no_information_repair = authority.contains('@')
+        || authority.ends_with(':')
+        || path.split('/').any(|segment| {
+            let decoded = segment.to_ascii_lowercase().replace("%2e", ".");
+            decoded == "." || decoded == ".."
+        });
     scheme.eq_ignore_ascii_case("https")
-        && !authority_and_path.is_empty()
+        && !authority.is_empty()
         && value.is_ascii()
+        && !has_no_information_repair
         && !value.bytes().any(|byte| {
             byte.is_ascii_whitespace()
                 || byte.is_ascii_control()

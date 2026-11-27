@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::{
-    TokenIssueClaims, TokenRequest, TokenResponse, access_token_type_for_cnf,
-    extract_basic_client_auth, issue_token_pair, oauth_feature_enabled, verify_client_secret,
+    ClientCredentials, TokenIssueClaims, TokenRequest, TokenResponse, access_token_type_for_cnf,
+    client_assertion_client_id, extract_basic_client_auth, extract_mtls_client_thumbprint,
+    issue_token_pair, oauth_feature_enabled, reject_client_id_mismatch,
+    validate_client_authentication,
 };
 
 #[derive(Debug, Deserialize)]
@@ -143,57 +145,27 @@ async fn authenticate_device_client<R: Repository>(
     req: &DeviceAuthorizationRequest,
 ) -> QidResult<Client> {
     let basic_client_auth = extract_basic_client_auth(headers);
-    let mtls_x5t_s256 = if state
-        .config
-        .realms
-        .iter()
-        .any(|realm| realm.protocols.oauth.mtls.enabled)
-    {
-        crate::mtls::extract_mtls_x5t_s256(headers, state)?
-    } else {
-        None
+    let mtls_x5t_s256 = extract_mtls_client_thumbprint(state, headers)?;
+    let assertion_client_id = client_assertion_client_id(
+        req.client_assertion.as_deref(),
+        req.client_assertion_type.as_deref(),
+    )?;
+    let credentials = ClientCredentials {
+        client_assertion: req.client_assertion.as_deref(),
+        asserted_client_id: assertion_client_id.as_deref(),
+        basic: basic_client_auth.as_ref(),
+        form_client_secret: req.client_secret.as_deref(),
+        mtls_x5t_s256: mtls_x5t_s256.as_deref(),
     };
-    let assertion_client_id = if let Some(assertion) = req.client_assertion.as_deref() {
-        let assertion_type = req
-            .client_assertion_type
-            .as_deref()
-            .unwrap_or("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-        if assertion_type == "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
-            Some(crate::dpop::extract_client_id_from_assertion(assertion)?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let authenticated_client_id = assertion_client_id
-        .as_deref()
-        .or(basic_client_auth
-            .as_ref()
-            .map(|auth| auth.client_id.as_str()))
+    let authenticated_client_id = credentials
+        .routed_client_id(Some(req.client_id.as_str()))
         .unwrap_or(req.client_id.as_str());
-    if authenticated_client_id != req.client_id {
-        return Err(QidError::Unauthorized {
-            message: "authenticated client does not match request client_id".to_string(),
-        });
-    }
+    reject_client_id_mismatch(authenticated_client_id, Some(req.client_id.as_str()))?;
     let client = super::find_client_across_realms(state, authenticated_client_id).await?;
-    let used_auth_method = if assertion_client_id.is_some() {
-        "private_key_jwt"
-    } else if basic_client_auth.is_some() {
-        "client_secret_basic"
-    } else if req.client_secret.is_some() {
-        "client_secret_post"
-    } else if mtls_x5t_s256.is_some()
-        && matches!(
-            client.token_endpoint_auth_method.as_str(),
-            "tls_client_auth" | "self_signed_tls_client_auth"
-        )
-    {
-        client.token_endpoint_auth_method.as_str()
-    } else {
-        "none"
-    };
+    let used_auth_method = credentials.used_auth_method(&client);
+
+    // Device authorization refuses any second credential, even at the token
+    // endpoint's preferred precedence.
     if req.client_secret.is_some() && basic_client_auth.is_some() {
         return Err(QidError::Unauthorized {
             message: "multiple client authentication methods are not allowed".to_string(),
@@ -208,92 +180,28 @@ async fn authenticate_device_client<R: Repository>(
             message: "invalid client assertion authentication".to_string(),
         });
     }
-    let realm_config = super::token::oauth_realm_config(state, &client.realm_id)?;
-    if mtls_x5t_s256.is_some() && !realm_config.protocols.oauth.mtls.enabled {
-        return Err(QidError::BadRequest {
-            message: "mTLS is disabled for client realm".to_string(),
-        });
-    }
-    match client.client_type {
-        ClientType::Public => {
-            if client.token_endpoint_auth_method != "none" || used_auth_method != "none" {
-                return Err(QidError::Unauthorized {
-                    message: "public client must not use confidential authentication".to_string(),
-                });
-            }
-        }
-        ClientType::Confidential => {
-            let expected = client.token_endpoint_auth_method.as_str();
-            if expected != used_auth_method {
-                return Err(QidError::Unauthorized {
-                    message: format!("confidential client must authenticate with {expected}"),
-                });
-            }
-            match expected {
-                "client_secret_basic" => verify_client_secret(
-                    &client,
-                    basic_client_auth
-                        .as_ref()
-                        .map(|auth| auth.client_secret.as_str()),
-                )?,
-                "client_secret_post" => {
-                    verify_client_secret(&client, req.client_secret.as_deref())?;
-                }
-                "private_key_jwt" => {
-                    if !realm_config.protocols.oauth.private_key_jwt.enabled {
-                        return Err(QidError::BadRequest {
-                            message: "private_key_jwt is disabled for client realm".to_string(),
-                        });
-                    }
-                    let assertion =
-                        req.client_assertion
-                            .as_deref()
-                            .ok_or_else(|| QidError::Unauthorized {
-                                message: "client_assertion is required".to_string(),
-                            })?;
-                    crate::dpop::extract_private_key_jwt(
-                        assertion,
-                        &client.client_id,
-                        &realm_config.issuer,
-                        &client.jwks,
-                        &state.assertion_replay_cache,
-                    )?;
-                }
-                "tls_client_auth" | "self_signed_tls_client_auth" => {
-                    verify_device_mtls_thumbprint(&client, mtls_x5t_s256.as_deref())?;
-                }
-                _ => {
-                    return Err(QidError::Unauthorized {
-                        message: format!(
-                            "device authorization does not support client authentication method {expected}"
-                        ),
-                    });
-                }
-            }
-        }
-    }
-    Ok(client)
-}
 
-fn verify_device_mtls_thumbprint(client: &Client, presented: Option<&str>) -> QidResult<()> {
-    let presented = presented.ok_or_else(|| QidError::Unauthorized {
-        message: "mTLS client certificate is required".to_string(),
-    })?;
-    if client.mtls_certificate_thumbprints.is_empty() {
-        return Err(QidError::Unauthorized {
-            message: "mTLS certificate thumbprint is not configured".to_string(),
-        });
-    }
-    if !client
-        .mtls_certificate_thumbprints
-        .iter()
-        .any(|expected| qid_core::util::constant_time_eq(expected, presented))
+    // Unlike the token endpoint, device authorization has no use for an
+    // unauthenticated confidential client, whatever its registered method.
+    if client.client_type == ClientType::Confidential
+        && !matches!(
+            client.token_endpoint_auth_method.as_str(),
+            "client_secret_basic"
+                | "client_secret_post"
+                | "private_key_jwt"
+                | "tls_client_auth"
+                | "self_signed_tls_client_auth"
+        )
     {
         return Err(QidError::Unauthorized {
-            message: "mTLS certificate thumbprint is not allowed".to_string(),
+            message: format!(
+                "device authorization does not support client authentication method {}",
+                client.token_endpoint_auth_method
+            ),
         });
     }
-    Ok(())
+    validate_client_authentication(state, &client, &credentials)?;
+    Ok(client)
 }
 
 /// Opaque device secret with 128 independent random bits. It shares nothing

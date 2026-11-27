@@ -38,16 +38,8 @@ pub async fn token<R: Repository>(
             .iter()
             .any(|realm| realm.protocols.oauth.dpop.nonce);
     let basic_client_auth = extract_basic_client_auth(&headers);
-    let mtls_x5t_s256 = if state
-        .config
-        .realms
-        .iter()
-        .any(|realm| realm.protocols.oauth.mtls.enabled)
-    {
-        super::error_response_or_return!(crate::mtls::extract_mtls_x5t_s256(&headers, &state))
-    } else {
-        None
-    };
+    let mtls_x5t_s256 =
+        super::error_response_or_return!(super::extract_mtls_client_thumbprint(&state, &headers));
     match handle_token(&state, &req, dpop_header, mtls_x5t_s256, basic_client_auth).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) if should_challenge_dpop_nonce => token_error_with_fresh_dpop_nonce(&state, e),
@@ -62,27 +54,18 @@ async fn handle_token<R: Repository>(
     mtls_x5t_s256: Option<String>,
     basic_client_auth: Option<BasicClientAuth>,
 ) -> QidResult<TokenResponse> {
-    let assertion_client_id = if let Some(ref assertion) = req.client_assertion {
-        let assertion_type = req
-            .client_assertion_type
-            .as_deref()
-            .unwrap_or("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-        if assertion_type == "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
-            let client_id = crate::dpop::extract_client_id_from_assertion(assertion)?;
-            Some(client_id)
-        } else {
-            None
-        }
-    } else {
-        None
+    let assertion_client_id = client_assertion_client_id(
+        req.client_assertion.as_deref(),
+        req.client_assertion_type.as_deref(),
+    )?;
+    let credentials = ClientCredentials {
+        client_assertion: req.client_assertion.as_deref(),
+        asserted_client_id: assertion_client_id.as_deref(),
+        basic: basic_client_auth.as_ref(),
+        form_client_secret: req.client_secret.as_deref(),
+        mtls_x5t_s256: mtls_x5t_s256.as_deref(),
     };
-
-    let presented_client_id = assertion_client_id
-        .as_deref()
-        .or(basic_client_auth
-            .as_ref()
-            .map(|auth| auth.client_id.as_str()))
-        .or(req.client_id.as_deref());
+    let presented_client_id = credentials.routed_client_id(req.client_id.as_deref());
     let inferred_client_id =
         if presented_client_id.unwrap_or("").is_empty() && req.grant_type == "authorization_code" {
             infer_authorization_code_client_id(state, req).await?
@@ -103,24 +86,6 @@ async fn handle_token<R: Repository>(
         });
     }
     let client = super::find_client_across_realms(state, effective_client_id).await?;
-    // A trusted certificate fingerprint may bind the issued token without
-    // replacing the client's configured token-endpoint authentication method.
-    let used_auth_method = if assertion_client_id.is_some() {
-        "private_key_jwt"
-    } else if basic_client_auth.is_some() {
-        "client_secret_basic"
-    } else if req.client_secret.is_some() {
-        "client_secret_post"
-    } else if mtls_x5t_s256.is_some()
-        && matches!(
-            client.token_endpoint_auth_method.as_str(),
-            "tls_client_auth" | "self_signed_tls_client_auth"
-        )
-    {
-        client.token_endpoint_auth_method.as_str()
-    } else {
-        "none"
-    };
     let realm_config = oauth_realm_config(state, &client.realm_id)?;
     let dpop_jkt = if let Some(ref dpop) = dpop_header {
         if !realm_config.protocols.oauth.dpop.enabled {
@@ -143,11 +108,6 @@ async fn handle_token<R: Repository>(
     } else {
         None
     };
-    if mtls_x5t_s256.is_some() && !realm_config.protocols.oauth.mtls.enabled {
-        return Err(QidError::BadRequest {
-            message: "mTLS is disabled for client realm".to_string(),
-        });
-    }
     let mut cnf_claims = Map::new();
     if let Some(jkt) = &dpop_jkt {
         cnf_claims.insert("jkt".to_string(), serde_json::Value::String(jkt.clone()));
@@ -164,15 +124,7 @@ async fn handle_token<R: Repository>(
         mtls_x5t_s256: mtls_x5t_s256.as_deref(),
     };
 
-    validate_client_auth_method(
-        state,
-        req,
-        &client,
-        used_auth_method,
-        basic_client_auth.as_ref(),
-        mtls_x5t_s256.as_deref(),
-    )
-    .await?;
+    validate_client_auth_method(state, req, &client, &credentials)?;
 
     // A supplied form client_id is untrusted routing: when it disagrees with
     // the authenticated client (Basic or private_key_jwt take precedence
@@ -181,14 +133,8 @@ async fn handle_token<R: Repository>(
     if matches!(
         req.grant_type.as_str(),
         "urn:ietf:params:oauth:grant-type:device_code" | "urn:openid:params:grant-type:ciba"
-    ) && req
-        .client_id
-        .as_deref()
-        .is_some_and(|form| form != client.client_id)
-    {
-        return Err(QidError::Unauthorized {
-            message: "authenticated client does not match request client_id".to_string(),
-        });
+    ) {
+        reject_client_id_mismatch(&client.client_id, req.client_id.as_deref())?;
     }
 
     let metric_start = std::time::Instant::now();
@@ -991,7 +937,164 @@ pub(crate) fn verify_client_secret(
     Ok(())
 }
 
-fn verify_mtls_thumbprint(client: &Client, presented_thumbprint: Option<&str>) -> QidResult<()> {
+/// Certificate metadata is collected only when a realm enables mTLS; the
+/// client's own realm is enforced with its authentication method.
+pub(crate) fn extract_mtls_client_thumbprint<R: Repository>(
+    state: &SharedState<R>,
+    headers: &HeaderMap,
+) -> QidResult<Option<String>> {
+    if state
+        .config
+        .realms
+        .iter()
+        .any(|realm| realm.protocols.oauth.mtls.enabled)
+    {
+        crate::mtls::extract_mtls_x5t_s256(headers, state)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Credentials presented at a client-authenticated OAuth endpoint. Both the
+/// token endpoint and device authorization resolve the same precedence here;
+/// grant-specific checks stay at their endpoints.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ClientCredentials<'a> {
+    pub(crate) client_assertion: Option<&'a str>,
+    pub(crate) asserted_client_id: Option<&'a str>,
+    pub(crate) basic: Option<&'a BasicClientAuth>,
+    pub(crate) form_client_secret: Option<&'a str>,
+    pub(crate) mtls_x5t_s256: Option<&'a str>,
+}
+
+impl<'a> ClientCredentials<'a> {
+    /// A JWT assertion outranks Basic, which outranks the form `client_id`.
+    pub(crate) fn routed_client_id(&self, form_client_id: Option<&'a str>) -> Option<&'a str> {
+        self.asserted_client_id
+            .or_else(|| self.basic.map(|auth| auth.client_id.as_str()))
+            .or(form_client_id)
+    }
+
+    /// A trusted certificate binds an issued token but does not replace the
+    /// client's configured client-authentication method.
+    pub(crate) fn used_auth_method<'c>(&self, client: &'c Client) -> &'c str {
+        if self.asserted_client_id.is_some() {
+            "private_key_jwt"
+        } else if self.basic.is_some() {
+            "client_secret_basic"
+        } else if self.form_client_secret.is_some() {
+            "client_secret_post"
+        } else if self.mtls_x5t_s256.is_some()
+            && matches!(
+                client.token_endpoint_auth_method.as_str(),
+                "tls_client_auth" | "self_signed_tls_client_auth"
+            )
+        {
+            client.token_endpoint_auth_method.as_str()
+        } else {
+            "none"
+        }
+    }
+}
+
+pub(crate) fn client_assertion_client_id(
+    assertion: Option<&str>,
+    assertion_type: Option<&str>,
+) -> QidResult<Option<String>> {
+    const JWT_BEARER: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+    let Some(assertion) = assertion else {
+        return Ok(None);
+    };
+    if assertion_type.unwrap_or(JWT_BEARER) != JWT_BEARER {
+        return Ok(None);
+    }
+    Ok(Some(crate::dpop::extract_client_id_from_assertion(
+        assertion,
+    )?))
+}
+
+/// A stronger credential identifies the client; the form `client_id` is only
+/// routing data and must not redirect its grant or authorization request.
+pub(crate) fn reject_client_id_mismatch(
+    authenticated_client_id: &str,
+    form_client_id: Option<&str>,
+) -> QidResult<()> {
+    if form_client_id.is_some_and(|form| form != authenticated_client_id) {
+        return Err(QidError::Unauthorized {
+            message: "authenticated client does not match request client_id".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Verify the method a client is registered for at either OAuth endpoint.
+pub(crate) fn validate_client_authentication<R: Repository>(
+    state: &SharedState<R>,
+    client: &Client,
+    credentials: &ClientCredentials<'_>,
+) -> QidResult<()> {
+    let used_auth_method = credentials.used_auth_method(client);
+    let realm_config = oauth_realm_config(state, &client.realm_id)?;
+    if credentials.mtls_x5t_s256.is_some() && !realm_config.protocols.oauth.mtls.enabled {
+        return Err(QidError::BadRequest {
+            message: "mTLS is disabled for client realm".to_string(),
+        });
+    }
+    match client.client_type {
+        ClientType::Public => {
+            if client.token_endpoint_auth_method != "none" || used_auth_method != "none" {
+                return Err(QidError::Unauthorized {
+                    message: "public client must not use confidential authentication".to_string(),
+                });
+            }
+        }
+        ClientType::Confidential => {
+            let expected = client.token_endpoint_auth_method.as_str();
+            if expected != used_auth_method {
+                return Err(QidError::Unauthorized {
+                    message: format!("confidential client must authenticate with {expected}"),
+                });
+            }
+            if matches!(expected, "client_secret_basic" | "client_secret_post") {
+                let presented_secret = if expected == "client_secret_basic" {
+                    credentials.basic.map(|auth| auth.client_secret.as_str())
+                } else {
+                    credentials.form_client_secret
+                };
+                verify_client_secret(client, presented_secret)?;
+            }
+            if matches!(expected, "tls_client_auth" | "self_signed_tls_client_auth") {
+                verify_mtls_thumbprint(client, credentials.mtls_x5t_s256)?;
+            }
+            if expected == "private_key_jwt" {
+                if !realm_config.protocols.oauth.private_key_jwt.enabled {
+                    return Err(QidError::BadRequest {
+                        message: "private_key_jwt is disabled for client realm".to_string(),
+                    });
+                }
+                let assertion =
+                    credentials
+                        .client_assertion
+                        .ok_or_else(|| QidError::Unauthorized {
+                            message: "client_assertion is required".to_string(),
+                        })?;
+                crate::dpop::extract_private_key_jwt(
+                    assertion,
+                    &client.client_id,
+                    &realm_config.issuer,
+                    &client.jwks,
+                    &state.assertion_replay_cache,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_mtls_thumbprint(
+    client: &Client,
+    presented_thumbprint: Option<&str>,
+) -> QidResult<()> {
     let presented_thumbprint = presented_thumbprint.ok_or_else(|| QidError::Unauthorized {
         message: "mTLS client certificate is required".to_string(),
     })?;
@@ -1012,20 +1115,17 @@ fn verify_mtls_thumbprint(client: &Client, presented_thumbprint: Option<&str>) -
     Ok(())
 }
 
-async fn validate_client_auth_method<R: Repository>(
+fn validate_client_auth_method<R: Repository>(
     state: &SharedState<R>,
     req: &TokenRequest,
     client: &Client,
-    used_auth_method: &str,
-    basic_client_auth: Option<&BasicClientAuth>,
-    mtls_x5t_s256: Option<&str>,
+    credentials: &ClientCredentials<'_>,
 ) -> QidResult<()> {
     if client.client_id.is_empty() {
         return Err(QidError::BadRequest {
             message: "client_id required".to_string(),
         });
     }
-
     if !client
         .grant_types
         .iter()
@@ -1035,6 +1135,7 @@ async fn validate_client_auth_method<R: Repository>(
             message: "grant type not allowed for client".to_string(),
         });
     }
+    let used_auth_method = credentials.used_auth_method(client);
     if req.client_secret.is_some() && used_auth_method == "client_secret_basic" {
         return Err(QidError::Unauthorized {
             message: "multiple client authentication methods are not allowed".to_string(),
@@ -1045,62 +1146,7 @@ async fn validate_client_auth_method<R: Repository>(
             message: "invalid client assertion authentication".to_string(),
         });
     }
-
-    match client.client_type {
-        ClientType::Public => {
-            if client.token_endpoint_auth_method != "none" || used_auth_method != "none" {
-                return Err(QidError::Unauthorized {
-                    message: "public client must not use confidential authentication".to_string(),
-                });
-            }
-        }
-        ClientType::Confidential => {
-            let expected = client.token_endpoint_auth_method.as_str();
-            if expected != used_auth_method {
-                return Err(QidError::Unauthorized {
-                    message: format!("confidential client must authenticate with {expected}"),
-                });
-            }
-            if matches!(expected, "client_secret_basic" | "client_secret_post") {
-                let presented_secret = if expected == "client_secret_basic" {
-                    basic_client_auth.map(|auth| auth.client_secret.as_str())
-                } else {
-                    req.client_secret.as_deref()
-                };
-                verify_client_secret(client, presented_secret)?;
-            }
-            if matches!(expected, "tls_client_auth" | "self_signed_tls_client_auth") {
-                verify_mtls_thumbprint(client, mtls_x5t_s256)?;
-            }
-            if expected == "private_key_jwt" {
-                if !oauth_realm_config(state, &client.realm_id)?
-                    .protocols
-                    .oauth
-                    .private_key_jwt
-                    .enabled
-                {
-                    return Err(QidError::BadRequest {
-                        message: "private_key_jwt is disabled for client realm".to_string(),
-                    });
-                }
-                let assertion =
-                    req.client_assertion
-                        .as_deref()
-                        .ok_or_else(|| QidError::Unauthorized {
-                            message: "client_assertion is required".to_string(),
-                        })?;
-                crate::dpop::extract_private_key_jwt(
-                    assertion,
-                    &client.client_id,
-                    &oauth_realm_config(state, &client.realm_id)?.issuer,
-                    &client.jwks,
-                    &state.assertion_replay_cache,
-                )?;
-            }
-        }
-    }
-
-    Ok(())
+    validate_client_authentication(state, client, credentials)
 }
 
 /// Validate OAuth SAML inputs only against the issuer-bound inbound federation trust
@@ -1236,6 +1282,120 @@ async fn infer_authorization_code_client_id<R: Repository>(
         .get_authorization_code(&code_hash)
         .await?
         .map(|code| code.client_id))
+}
+
+#[cfg(test)]
+mod client_auth_tests {
+    use super::*;
+
+    fn client_with_method(method: &str) -> Client {
+        serde_json::from_value(serde_json::json!({
+            "id": "client-id",
+            "realm_id": "realm",
+            "client_id": "client",
+            "client_type": "confidential",
+            "token_endpoint_auth_method": method,
+            "redirect_uris": [],
+            "grant_types": [],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn credential_precedence_and_method_resolution_are_shared() {
+        let basic = BasicClientAuth {
+            client_id: "basic-client".to_string(),
+            client_secret: "secret".to_string(),
+        };
+        let mtls_client = client_with_method("tls_client_auth");
+        let all = ClientCredentials {
+            client_assertion: Some("assertion"),
+            asserted_client_id: Some("jwt-client"),
+            basic: Some(&basic),
+            form_client_secret: Some("form-secret"),
+            mtls_x5t_s256: Some("thumbprint"),
+        };
+        assert_eq!(
+            all.routed_client_id(Some("form-client")),
+            Some("jwt-client")
+        );
+        assert_eq!(all.used_auth_method(&mtls_client), "private_key_jwt");
+
+        let without_assertion = ClientCredentials {
+            asserted_client_id: None,
+            ..all
+        };
+        assert_eq!(
+            without_assertion.routed_client_id(Some("form-client")),
+            Some("basic-client")
+        );
+        assert_eq!(
+            without_assertion.used_auth_method(&mtls_client),
+            "client_secret_basic"
+        );
+
+        let without_basic = ClientCredentials {
+            basic: None,
+            ..without_assertion
+        };
+        assert_eq!(
+            without_basic.routed_client_id(Some("form-client")),
+            Some("form-client")
+        );
+        assert_eq!(
+            without_basic.used_auth_method(&client_with_method("client_secret_post")),
+            "client_secret_post"
+        );
+
+        let certificate_only = ClientCredentials {
+            form_client_secret: None,
+            ..without_basic
+        };
+        assert_eq!(
+            certificate_only.used_auth_method(&mtls_client),
+            "tls_client_auth"
+        );
+        // A certificate binds a token but never replaces a different method.
+        assert_eq!(
+            certificate_only.used_auth_method(&client_with_method("client_secret_basic")),
+            "none"
+        );
+    }
+
+    #[test]
+    fn stronger_credential_must_match_routed_client_id() {
+        assert!(reject_client_id_mismatch("client", None).is_ok());
+        assert!(reject_client_id_mismatch("client", Some("client")).is_ok());
+        let error = reject_client_id_mismatch("client", Some("other")).unwrap_err();
+        assert_eq!(
+            error.message(),
+            "unauthorized: authenticated client does not match request client_id"
+        );
+    }
+
+    #[test]
+    fn shared_mtls_verifier_requires_a_registered_thumbprint() {
+        let mut client = client_with_method("tls_client_auth");
+        client.mtls_certificate_thumbprints = vec!["registered".to_string()];
+        assert!(verify_mtls_thumbprint(&client, Some("registered")).is_ok());
+        assert_eq!(
+            verify_mtls_thumbprint(&client, None).unwrap_err().message(),
+            "unauthorized: mTLS client certificate is required"
+        );
+        assert_eq!(
+            verify_mtls_thumbprint(&client, Some("other"))
+                .unwrap_err()
+                .message(),
+            "unauthorized: mTLS certificate thumbprint is not allowed"
+        );
+        client.mtls_certificate_thumbprints.clear();
+        assert_eq!(
+            verify_mtls_thumbprint(&client, Some("registered"))
+                .unwrap_err()
+                .message(),
+            "unauthorized: mTLS certificate thumbprint is not configured"
+        );
+    }
 }
 
 #[cfg(test)]

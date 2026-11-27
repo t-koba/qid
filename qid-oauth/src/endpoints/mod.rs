@@ -248,7 +248,11 @@ pub use introspect::{
 };
 pub use revoke::revoke;
 pub use token::token;
-pub(crate) use token::{extract_basic_client_auth, verify_client_secret};
+pub(crate) use token::{
+    ClientCredentials, client_assertion_client_id, extract_basic_client_auth,
+    extract_mtls_client_thumbprint, reject_client_id_mismatch, validate_client_authentication,
+    verify_client_secret,
+};
 pub use token_grant::{authorization_code_grant, client_credentials_grant, refresh_token_grant};
 pub use token_issue::{
     TokenIssueClaims, access_token_type_for_cnf, decode_opaque_access_token,

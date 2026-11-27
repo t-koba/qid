@@ -237,6 +237,17 @@ fn test_server(
     }
 }
 
+fn unrestricted_server(audience: &str, resources: &[&str]) -> OAuthResourceServerConfig {
+    OAuthResourceServerConfig {
+        audience: audience.to_string(),
+        resources: resources.iter().map(|value| (*value).to_string()).collect(),
+        scopes: Vec::new(),
+        introspection_client_ids: Vec::new(),
+        require_sender_constraint: false,
+        high_risk: false,
+    }
+}
+
 async fn post_introspect(
     app: Router,
     introspect_path: &str,
@@ -605,6 +616,18 @@ async fn client_credentials_grant_succeeds() {
 }
 
 #[tokio::test]
+async fn client_credentials_rejects_unregistered_audience_without_resource_servers() {
+    let (app, token_path, _) = setup().await;
+    let status = post_token_status(
+        app,
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&audience=api%3A%2F%2Funregistered".to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn client_credentials_grant_rejects_wrong_client_secret_post() {
     let (app, token_path, _) = setup().await;
 
@@ -865,7 +888,7 @@ async fn token_exchange_requires_active_access_token_subject() {
     let subject_token = subject_json["access_token"].as_str().unwrap();
 
     let exchange_body = format!(
-        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://payments&resource=https://api.example.com/payments&scope=payments",
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&scope=payments",
         urlencoding::encode(subject_token)
     );
     let exchange_request = Request::builder()
@@ -882,13 +905,10 @@ async fn token_exchange_requires_active_access_token_subject() {
     let exchanged_token = exchange_json["access_token"].as_str().unwrap();
     let claims = decode_claims(&state, exchanged_token);
     assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
-    assert_eq!(claims.aud_primary(), Some("api://payments"));
+    assert_eq!(claims.aud_primary(), Some("exchange-client"));
     assert_eq!(claims.extra["client_id"], "exchange-client");
     assert_eq!(claims.extra["scope"], "payments");
-    assert_eq!(
-        claims.extra["resource"],
-        serde_json::json!(["https://api.example.com/payments"])
-    );
+    assert!(claims.extra.get("resource").is_none());
     assert!(claims.extra["cnf"]["jkt"].is_string());
     assert_eq!(claims.extra["token_type"], "DPoP");
 }
@@ -1024,7 +1044,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
             app.clone(),
             &token_path,
             format!(
-                "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://payments&resource=https%3A%2F%2Fapi.example.com%2Fpayments&scope=payments",
+                "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&scope=payments",
                 urlencoding::encode(subject)
             ),
         )
@@ -1036,7 +1056,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
         app.clone(),
         &token_path,
         format!(
-            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&actor_token_type=urn:ietf:params:oauth:token-type:access_token&actor_token={}&audience=api://delegated&scope=delegated",
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&actor_token_type=urn:ietf:params:oauth:token-type:access_token&actor_token={}&scope=delegated",
             urlencoding::encode(&own_token),
             urlencoding::encode(&foreign_jwt)
         ),
@@ -1048,7 +1068,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
         app.clone(),
         &token_path,
         format!(
-            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://payments&resource=https%3A%2F%2Fapi.example.com%2Fpayments&scope=payments",
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&scope=payments",
             urlencoding::encode(&own_token)
         ),
     )
@@ -1118,7 +1138,13 @@ async fn client_credentials_rejects_scope_outside_any_target_ceiling() {
 async fn jwt_bearer_does_not_inherit_client_asserted_auth_context() {
     // A client-signed assertion proves the client's identity; it is not a user
     // authentication event, so none of its auth_time/acr/amr context is inherited.
-    let (app, token_path, state) = setup().await;
+    let (app, token_path, state) = setup_with_oauth(|oauth| {
+        oauth.resource_servers = vec![
+            unrestricted_server("api://workload", &[]),
+            unrestricted_server("api://payments", &["https://api.example.com/payments"]),
+        ]
+    })
+    .await;
     let now = util::now_seconds();
     let token_url = format!("https://id.example.com{token_path}");
     let (private_pem, jwk) = dpop_private_pem_and_jwk();
@@ -1198,7 +1224,10 @@ async fn jwt_bearer_does_not_inherit_client_asserted_auth_context() {
 
 #[tokio::test]
 async fn jwt_bearer_client_assertion_cannot_supply_phishing_resistant_context() {
-    let (app, token_path, state) = setup().await;
+    let (app, token_path, state) = setup_with_oauth(|oauth| {
+        oauth.resource_servers = vec![unrestricted_server("api://workload", &[])]
+    })
+    .await;
     let now = util::now_seconds();
     let token_url = format!("https://id.example.com{token_path}");
     let (private_pem, jwk) = dpop_private_pem_and_jwk();
@@ -1259,7 +1288,10 @@ async fn token_exchange_rejects_unknown_subject_token() {
 
 #[tokio::test]
 async fn jwt_bearer_grant_validates_assertion_and_uses_subject() {
-    let (app, token_path, state) = setup().await;
+    let (app, token_path, state) = setup_with_oauth(|oauth| {
+        oauth.resource_servers = vec![unrestricted_server("api://workload", &[])]
+    })
+    .await;
     let now = util::now_seconds();
     let token_url = format!("https://id.example.com{token_path}");
     let mut extra = HashMap::new();
@@ -2804,7 +2836,13 @@ async fn setup_introspection_rate_limit_test(caller: &str) -> (Router, String, S
 
 #[tokio::test]
 async fn authorization_code_grant_succeeds() {
-    let (app, token_path, state) = setup().await;
+    let (app, token_path, state) = setup_with_oauth(|oauth| {
+        oauth.resource_servers = vec![unrestricted_server(
+            "api://code-flow",
+            &["https://api.example.com"],
+        )]
+    })
+    .await;
 
     // Prepare: create a user and an authorization code in the repository.
     let user = User {

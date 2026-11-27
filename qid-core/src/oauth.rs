@@ -125,7 +125,7 @@ pub fn resolve_token_audience(
     cnf: Option<&serde_json::Value>,
 ) -> QidResult<Vec<String>> {
     if realm.protocols.oauth.resource_servers.is_empty() {
-        return Ok(requested_audiences.to_vec());
+        return resolve_authorization_audience(realm, requested_audiences, resources, scopes);
     }
     let audiences = resolve_authorization_audience(realm, requested_audiences, resources, scopes)?;
     for audience in &audiences {
@@ -153,7 +153,12 @@ pub fn resolve_authorization_audience(
                 message: format!("unknown resource indicator: {resource}"),
             });
         }
-        return Ok(requested_audiences.to_vec());
+        if let Some(audience) = requested_audiences.first() {
+            return Err(QidError::Unauthorized {
+                message: format!("unknown resource server audience: {audience}"),
+            });
+        }
+        return Ok(Vec::new());
     }
     let mut audiences = BTreeSet::new();
     let mut selected_servers = Vec::new();
@@ -392,6 +397,52 @@ mod tests {
                 &[],
                 &["payments".to_string()],
                 Some(&cnf),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_targets_require_registered_resource_servers() {
+        let realm = realm_with_resource_servers(Vec::new());
+        // Untargeted grants keep the client-audience fallback at issuance;
+        // the resolver returns no target for issuance to fill in.
+        assert_eq!(
+            super::resolve_token_audience(&realm, &[], &[], &[], None).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            super::resolve_authorization_audience(&realm, &[], &[], &[]).unwrap(),
+            Vec::<String>::new()
+        );
+        // An explicitly chosen target must be checked against a registration,
+        // even when the realm has no resource servers at all.
+        assert!(
+            super::resolve_token_audience(
+                &realm,
+                &["api://unregistered".to_string()],
+                &[],
+                &[],
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            super::resolve_token_audience(
+                &realm,
+                &[],
+                &["https://api.example.com/unregistered".to_string()],
+                &[],
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            super::resolve_authorization_audience(
+                &realm,
+                &["api://unregistered".to_string()],
+                &[],
+                &[],
             )
             .is_err()
         );

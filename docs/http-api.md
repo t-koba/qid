@@ -66,6 +66,13 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | `/oauth2/challenge` | OAuth challenge helper. |
 | `POST` | configurable `par`, default `/oauth2/par` | Pushed Authorization Request, installed when PAR is enabled. |
 
+An explicit `audience` or `resource` at the token endpoint must match a
+registered `protocols.oauth.resource_servers` target. A realm without resource
+servers has no registered targets: untargeted grants keep the client-id
+audience fallback, while explicit targets are rejected. A resource server that
+verifies tokens locally should not accept an audience qid did not validate
+against its configuration.
+
 ### Migrating `private_key_jwt` client assertions
 
 At the token and PAR endpoints, set `aud` to the exact issuer identifier advertised by the authenticated client's realm, either as a string or as a one-element array. The issuer is matched exactly, including any trailing slash. Assertions using a token or PAR endpoint URL, a different realm's issuer, or an array containing additional values are rejected. Clients previously using endpoint audiences must update their assertion configuration before upgrading; there is no endpoint-audience fallback. A missing JWT `typ` header remains accepted; clients may send `typ=client-authentication+jwt`. Existing signature, expiration and replay requirements continue to apply.

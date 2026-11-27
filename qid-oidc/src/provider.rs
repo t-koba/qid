@@ -1295,6 +1295,13 @@ fn form_post_response(redirect_uri: &str, params: &[(&str, &str)]) -> Response {
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
+/// Append response parameters to a registered redirect URI without parsing
+/// or normalizing it: registration uses exact string matching.
+fn redirect_with_query(redirect_uri: &str, query: &str) -> String {
+    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
+    format!("{redirect_uri}{separator}{query}")
+}
+
 fn authorization_issuer<'a, R: Repository>(state: &'a SharedState<R>, client: &Client) -> &'a str {
     state
         .realm(&client.realm_id)
@@ -1326,11 +1333,13 @@ fn authorization_error_response<R: Repository>(
             ],
         ) {
             Ok((issuer, response)) => {
-                let redirect_url = format!(
-                    "{}?response={}&iss={}",
-                    req.redirect_uri,
-                    urlencoding::encode(&response),
-                    urlencoding::encode(&issuer)
+                let redirect_url = redirect_with_query(
+                    &req.redirect_uri,
+                    &format!(
+                        "response={}&iss={}",
+                        urlencoding::encode(&response),
+                        urlencoding::encode(&issuer)
+                    ),
                 );
                 return Redirect::temporary(&redirect_url).into_response();
             }
@@ -1350,7 +1359,7 @@ fn authorization_error_response<R: Repository>(
         .map(|(key, value)| format!("{key}={}", urlencoding::encode(value)))
         .collect::<Vec<_>>()
         .join("&");
-    Redirect::temporary(&format!("{}?{query}", req.redirect_uri)).into_response()
+    Redirect::temporary(&redirect_with_query(&req.redirect_uri, &query)).into_response()
 }
 
 fn sign_jarm_response<R: Repository>(
@@ -1418,11 +1427,13 @@ async fn authorization_response_redirect<R: Repository>(
         // RFC 9207 §2.1: a JARM response MUST include the `iss` parameter on
         // the redirect when the client did not suppress it. We always include
         // it because the OP advertises `authorization_response_iss_parameter_supported`.
-        let redirect_url = format!(
-            "{}?response={}&iss={}",
-            req.redirect_uri,
-            urlencoding::encode(&response),
-            urlencoding::encode(&issuer)
+        let redirect_url = redirect_with_query(
+            &req.redirect_uri,
+            &format!(
+                "response={}&iss={}",
+                urlencoding::encode(&response),
+                urlencoding::encode(&issuer)
+            ),
         );
         return Ok(Redirect::temporary(&redirect_url).into_response());
     }
@@ -1437,7 +1448,10 @@ async fn authorization_response_redirect<R: Repository>(
         return Ok(form_post_response(&req.redirect_uri, &params));
     }
 
-    let mut redirect_url = format!("{}?code={}", req.redirect_uri, urlencoding::encode(code));
+    let mut redirect_url = redirect_with_query(
+        &req.redirect_uri,
+        &format!("code={}", urlencoding::encode(code)),
+    );
     // RFC 9207 §2.1: include the same issuer identifier as discovery and errors.
     redirect_url.push_str(&format!("&iss={}", urlencoding::encode(issuer)));
     if let Some(state_param) = &req.state {

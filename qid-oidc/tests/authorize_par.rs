@@ -1020,6 +1020,107 @@ async fn authorize_get_uses_browser_session_cookie_to_issue_code() {
     assert_eq!(stored_code.nonce.as_deref(), Some("session-nonce"));
 }
 
+/// Register one exact, query-bearing redirect URI on the shared test client.
+async fn register_query_bearing_redirect_uri(
+    state: &Arc<SharedState<SqlRepository>>,
+    redirect_uri: &str,
+) {
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&"test".into(), "par-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.redirect_uris = vec![redirect_uri.to_string()];
+    state.repo.update_client(&client).await.unwrap();
+}
+
+#[tokio::test]
+async fn authorize_success_appends_query_to_registered_redirect_with_query() {
+    let (app, state) = setup().await;
+    let registered = "https://app.example.com/callback?tenant=acme";
+    register_query_bearing_redirect_uri(&state, registered).await;
+    create_browser_session(&state, "sid-query-success").await;
+
+    let response = get_uri(
+        app,
+        format!(
+            "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=query-state&nonce=query-nonce&code_challenge={}&code_challenge_method=S256",
+            state.paths.authorize,
+            urlencoding::encode(registered),
+            util::sha256_base64url(PKCE_VERIFIER)
+        ),
+        Some("__Host-qid=sid-query-success"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = redirect_location(&response);
+    assert!(
+        location.starts_with(&format!("{registered}&")),
+        "{location}"
+    );
+    assert_eq!(location.matches('?').count(), 1, "{location}");
+    assert_eq!(
+        extract_query_param(&location, "tenant").as_deref(),
+        Some("acme")
+    );
+    let code = extract_query_param(&location, "code").expect("code is a query parameter");
+    assert!(code.starts_with("ac_"), "{code}");
+    assert_eq!(
+        extract_query_param(&location, "iss").as_deref(),
+        Some(state.realm("test").unwrap().issuer.as_str())
+    );
+    assert_eq!(
+        extract_query_param(&location, "state").as_deref(),
+        Some("query-state")
+    );
+}
+
+#[tokio::test]
+async fn authorize_error_appends_query_to_registered_redirect_with_query() {
+    let (app, state) = setup().await;
+    let registered = "https://app.example.com/callback?tenant=acme";
+    register_query_bearing_redirect_uri(&state, registered).await;
+
+    // No browser session is available and `prompt=none` forbids showing a
+    // login page, so the validated redirect receives an ordinary error.
+    let response = get_uri(
+        app,
+        format!(
+            "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=query-error-state&nonce=query-nonce&prompt=none&code_challenge={}&code_challenge_method=S256",
+            state.paths.authorize,
+            urlencoding::encode(registered),
+            util::sha256_base64url(PKCE_VERIFIER)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = redirect_location(&response);
+    assert!(
+        location.starts_with(&format!("{registered}&")),
+        "{location}"
+    );
+    assert_eq!(location.matches('?').count(), 1, "{location}");
+    assert_eq!(
+        extract_query_param(&location, "error").as_deref(),
+        Some("login_required")
+    );
+    assert!(
+        extract_query_param(&location, "error_description")
+            .unwrap()
+            .starts_with("current authentication is required")
+    );
+    assert_eq!(
+        extract_query_param(&location, "iss").as_deref(),
+        Some(state.realm("test").unwrap().issuer.as_str())
+    );
+    assert_eq!(
+        extract_query_param(&location, "state").as_deref(),
+        Some("query-error-state")
+    );
+}
+
 #[tokio::test]
 async fn magic_link_session_resumes_oidc_authorization() {
     use qid_core::notification::{

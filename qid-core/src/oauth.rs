@@ -60,6 +60,18 @@ pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError>
     if parsed.fragment().is_some() {
         return Err(RedirectUriError::Fragment);
     }
+    // Use the parser's credentials rather than the raw string: the WHATWG
+    // parser accepts userinfo in omitted-slash, backslash and uppercase
+    // spellings that a `://` authority scan would miss.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(RedirectUriError::InvalidUrl(
+            "redirect_uri must not contain userinfo".to_string(),
+        ));
+    }
+    // An empty userinfo (`https://@rp.example/cb`) is normalized away by the
+    // parser, leaving no credential for an accessor to see. Keep rejecting
+    // that spelling in the canonical `://` form, where the authority is
+    // unambiguous, without reimplementing the parser's authority handling.
     if let Some((_, after_scheme)) = redirect_uri.split_once("://") {
         let authority = after_scheme
             .split(['/', '?', '#'])
@@ -67,7 +79,7 @@ pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError>
             .unwrap_or_default();
         if authority.contains('@') {
             return Err(RedirectUriError::InvalidUrl(
-                "redirect_uri authority must not contain userinfo".to_string(),
+                "redirect_uri authority must not contain empty userinfo".to_string(),
             ));
         }
     }
@@ -362,6 +374,12 @@ mod tests {
             "https://user@rp.example/cb",
             "https://@rp.example/cb",
             "https://user:pass@rp.example/cb",
+            "https:user@rp.example/cb",
+            "HTTPS:user@rp.example/cb",
+            "https:/user@rp.example/cb",
+            r"https:\user@rp.example/cb",
+            r"https:\\user@rp.example/cb",
+            "https:///@user@rp.example/cb",
         ] {
             assert!(
                 matches!(

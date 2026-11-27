@@ -1343,14 +1343,10 @@ fn authorization_error_response<R: Repository>(
                 ),
             ],
         ) {
-            Ok((issuer, response)) => {
+            Ok(response) => {
                 let redirect_url = redirect_with_query(
                     &req.redirect_uri,
-                    &format!(
-                        "response={}&iss={}",
-                        urlencoding::encode(&response),
-                        urlencoding::encode(&issuer)
-                    ),
+                    &format!("response={}", urlencoding::encode(&response)),
                 );
                 return Redirect::temporary(&redirect_url).into_response();
             }
@@ -1378,7 +1374,7 @@ fn sign_jarm_response<R: Repository>(
     req: &AuthorizeParameters,
     client: &Client,
     entries: Vec<(String, serde_json::Value)>,
-) -> QidResult<(String, String)> {
+) -> QidResult<String> {
     let issuer = authorization_issuer(state, client).to_string();
     let now = qid_core::util::now_seconds();
     let mut extra = HashMap::new();
@@ -1406,7 +1402,7 @@ fn sign_jarm_response<R: Repository>(
         .map_err(|e| QidError::Crypto {
             message: format!("failed to sign authorization response: {e}"),
         })?;
-    Ok((issuer, response))
+    Ok(response)
 }
 
 async fn authorization_response_redirect<R: Repository>(
@@ -1434,17 +1430,13 @@ async fn authorization_response_redirect<R: Repository>(
         {
             entries.push(("apv".to_string(), serde_json::Value::String(apv)));
         }
-        let (issuer, response) = sign_jarm_response(state, req, client, entries)?;
-        // RFC 9207 §2.1: a JARM response MUST include the `iss` parameter on
-        // the redirect when the client did not suppress it. We always include
-        // it because the OP advertises `authorization_response_iss_parameter_supported`.
+        let response = sign_jarm_response(state, req, client, entries)?;
+        // JARM carries all response parameters, including `iss`, inside the
+        // signed JWT. RFC 9207 §2.4 treats the JWT `iss` claim as satisfying
+        // issuer identification, so no extra external `iss` is appended.
         let redirect_url = redirect_with_query(
             &req.redirect_uri,
-            &format!(
-                "response={}&iss={}",
-                urlencoding::encode(&response),
-                urlencoding::encode(&issuer)
-            ),
+            &format!("response={}", urlencoding::encode(&response)),
         );
         return Ok(Redirect::temporary(&redirect_url).into_response());
     }

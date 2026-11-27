@@ -2422,6 +2422,17 @@ fn extract_query_param(url: &str, name: &str) -> Option<String> {
     })
 }
 
+/// A JARM redirect carries only `response`; `iss` belongs to the signed JWT.
+fn assert_jarm_issuer_only_in_jwt(location: &str, claims: &JwtClaims, issuer: &str) {
+    assert_eq!(location.matches('?').count(), 1, "{location}");
+    let url = reqwest::Url::parse(location).unwrap();
+    let query: Vec<_> = url.query_pairs().into_owned().collect();
+    assert_eq!(query.len(), 1, "{location}");
+    assert_eq!(query[0].0.as_str(), "response", "{location}");
+    assert!(extract_query_param(location, "iss").is_none(), "{location}");
+    assert_eq!(claims.iss.as_deref(), Some(issuer));
+}
+
 #[tokio::test]
 async fn authorize_accepts_signed_request_object() {
     let (app, state) = setup().await;
@@ -2532,19 +2543,54 @@ async fn authorize_can_return_signed_jarm_response() {
     .await;
     assert_eq!(post_response.status(), StatusCode::TEMPORARY_REDIRECT);
     let location = redirect_location(&post_response);
-    assert!(location.starts_with("https://app.example.com/callback?response="));
     let response = extract_query_param(&location, "response").expect("JARM response is required");
     let response_claims = state
         .signer
         .decode_signature_only(&response)
         .unwrap()
         .claims;
+    assert_jarm_issuer_only_in_jwt(
+        &location,
+        &response_claims,
+        &state.realm("test").unwrap().issuer,
+    );
     assert_eq!(response_claims.aud, Some(Audience::single("par-client")));
     assert_eq!(response_claims.extra["state"], "state-from-jarm");
     let code = response_claims.extra["code"].as_str().unwrap();
     assert!(code.starts_with("ac_"));
 
     redeem_code(app, state.paths.token.clone(), code, PKCE_VERIFIER).await;
+}
+
+#[tokio::test]
+async fn authorize_jarm_error_keeps_issuer_in_signed_response() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].authentication.passkeys.enabled = true;
+    config.realms[0].authentication.passwordless_only = true;
+    let (app, state) = setup_with_config(config).await;
+
+    // Valid credentials, but this realm refuses password authentication.
+    let response = post_form(
+        app,
+        authorize_query(&state, "&response_mode=jwt"),
+        LOGIN_FORM,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = redirect_location(&response);
+    let response_jwt =
+        extract_query_param(&location, "response").expect("JARM response is required");
+    let claims = state
+        .signer
+        .decode_signature_only(&response_jwt)
+        .unwrap()
+        .claims;
+    assert_jarm_issuer_only_in_jwt(&location, &claims, &state.realm("test").unwrap().issuer);
+    assert_eq!(claims.extra["error"], "access_denied");
+    assert_eq!(
+        claims.extra["error_description"],
+        "password authentication is disabled for this realm"
+    );
 }
 
 #[tokio::test]

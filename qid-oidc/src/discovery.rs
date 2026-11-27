@@ -711,9 +711,8 @@ fn select_resource_server<'a>(
 /// `enforce_sender_constrained_access_token`; other credential surfaces keep
 /// using the shared Bearer-only extractor unchanged.
 fn extract_userinfo_token(headers: &axum::http::HeaderMap) -> QidResult<(&str, bool)> {
-    let value = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
+    let value = qid_http::sole_header_value(headers, &axum::http::header::AUTHORIZATION)
+        .map_err(|_| unauthorized("ambiguous Authorization header"))?
         .ok_or_else(|| unauthorized("bearer access token is required"))?
         .trim();
     let Some((scheme, token)) = value.split_once(' ') else {

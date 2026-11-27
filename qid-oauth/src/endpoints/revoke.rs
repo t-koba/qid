@@ -75,7 +75,7 @@ async fn authenticate_revocation_client<R: Repository>(
     headers: &HeaderMap,
     req: &RevokeRequest,
 ) -> QidResult<Client> {
-    let basic_client_auth = extract_basic_client_auth(headers);
+    let basic_client_auth = extract_basic_client_auth(headers)?;
     let (client_id, presented_secret, used_auth_method) = match basic_client_auth.as_ref() {
         Some(auth) => (
             auth.client_id.as_str(),

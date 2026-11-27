@@ -2902,6 +2902,35 @@ async fn userinfo_checks_realm_resource_and_audience_before_claims() {
 }
 
 #[tokio::test]
+async fn userinfo_rejects_duplicate_authorization_headers() {
+    let (app, state) = setup().await;
+    let token = issue_userinfo_token(&state, Default::default()).await;
+
+    let single = Request::builder()
+        .method(Method::GET)
+        .uri(&state.paths.userinfo)
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let single_response = app.clone().oneshot(single).await.unwrap();
+    assert_eq!(single_response.status(), StatusCode::OK);
+    assert_eq!(json_body(single_response).await["sub"], "par-user");
+
+    let duplicate = Request::builder()
+        .method(Method::GET)
+        .uri(&state.paths.userinfo)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", "Bearer second-token")
+        .body(Body::empty())
+        .unwrap();
+    let duplicate_response = app.oneshot(duplicate).await.unwrap();
+    assert_eq!(duplicate_response.status(), StatusCode::UNAUTHORIZED);
+    let json = json_body(duplicate_response).await;
+    assert_eq!(json["error"], "invalid_token");
+    assert!(json.get("sub").is_none());
+}
+
+#[tokio::test]
 async fn userinfo_requires_unique_mapping_for_explicit_resource() {
     let userinfo_url = "https://id.example.com/oidc/userinfo";
     for mapping_count in [0, 1, 2] {

@@ -34,7 +34,7 @@ pub async fn token<R: Repository>(
             .realms
             .iter()
             .any(|realm| realm.protocols.oauth.dpop.nonce);
-    let basic_client_auth = extract_basic_client_auth(&headers);
+    let basic_client_auth = super::error_response_or_return!(extract_basic_client_auth(&headers));
     let mtls_x5t_s256 =
         super::error_response_or_return!(super::extract_mtls_client_thumbprint(&state, &headers));
     match handle_token(&state, &req, dpop_header, mtls_x5t_s256, basic_client_auth).await {
@@ -894,16 +894,24 @@ pub(crate) struct BasicClientAuth {
     pub(crate) client_secret: String,
 }
 
-pub(crate) fn extract_basic_client_auth(headers: &HeaderMap) -> Option<BasicClientAuth> {
-    let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
-    let encoded = value.strip_prefix("Basic ")?;
-    let decoded =
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).ok()?;
-    let text = String::from_utf8(decoded).ok()?;
-    text.split_once(':').map(|(id, secret)| BasicClientAuth {
+pub(crate) fn extract_basic_client_auth(headers: &HeaderMap) -> QidResult<Option<BasicClientAuth>> {
+    let Some(value) = qid_http::sole_header_value(headers, &AUTHORIZATION)? else {
+        return Ok(None);
+    };
+    let Some(encoded) = value.strip_prefix("Basic ") else {
+        return Ok(None);
+    };
+    let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+    else {
+        return Ok(None);
+    };
+    let Ok(text) = String::from_utf8(decoded) else {
+        return Ok(None);
+    };
+    Ok(text.split_once(':').map(|(id, secret)| BasicClientAuth {
         client_id: id.to_string(),
         client_secret: secret.to_string(),
-    })
+    }))
 }
 
 pub(crate) fn verify_client_secret(

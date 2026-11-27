@@ -3,10 +3,12 @@
 
 use axum::{
     Json,
-    http::{HeaderName, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header::AsHeaderName},
     response::{IntoResponse, Response},
 };
+use qid_core::error::{QidError, QidResult};
 use serde_json::json;
+use std::fmt::Display;
 
 pub mod middleware;
 pub mod ratelimit;
@@ -183,4 +185,82 @@ pub fn combined_cookie_header(headers: &axum::http::HeaderMap) -> Option<String>
 /// Read a named cookie from the `Cookie` headers of an HTTP request.
 pub fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     parse_cookie(&combined_cookie_header(headers)?, name)
+}
+
+/// Return the sole value of a request header, failing closed when the field
+/// set is ambiguous.
+///
+/// Absence is `Ok(None)` so optional credentials keep their own missing-value
+/// handling; more than one field and any non-UTF-8 value are errors. RFC 6749
+/// section 2.3 forbids using more than one client authentication method per
+/// request, so selecting the first value would hide a second credential.
+/// Callers map the error to the `QidError` variant used by their surface.
+pub fn sole_header_value(
+    headers: &HeaderMap,
+    name: impl AsHeaderName + Display + Copy,
+) -> QidResult<Option<&str>> {
+    let mut values = headers.get_all(name).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(QidError::BadRequest {
+            message: format!("multiple {name} headers are not allowed"),
+        });
+    }
+    value.to_str().map(Some).map_err(|_| QidError::BadRequest {
+        message: format!("{name} header is not valid UTF-8"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::{AUTHORIZATION, COOKIE};
+
+    #[test]
+    fn sole_header_value_accepts_one_field_and_rejects_duplicates() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(sole_header_value(&headers, &AUTHORIZATION).unwrap(), None);
+
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer first"));
+        assert_eq!(
+            sole_header_value(&headers, &AUTHORIZATION).unwrap(),
+            Some("Bearer first")
+        );
+        // The helper also covers custom credential headers by static name.
+        headers.insert(
+            "x-qid-pep-adapter-authorization",
+            HeaderValue::from_static("Bearer pep"),
+        );
+        assert_eq!(
+            sole_header_value(&headers, "x-qid-pep-adapter-authorization").unwrap(),
+            Some("Bearer pep")
+        );
+
+        headers.append(AUTHORIZATION, HeaderValue::from_static("Basic second"));
+        assert_eq!(
+            sole_header_value(&headers, &AUTHORIZATION).unwrap_err(),
+            QidError::BadRequest {
+                message: "multiple authorization headers are not allowed".to_string()
+            }
+        );
+        assert_eq!(
+            sole_header_value(&headers, &COOKIE).unwrap(),
+            None,
+            "an ambiguous Authorization field must not affect other headers"
+        );
+    }
+
+    #[test]
+    fn sole_header_value_rejects_non_utf8_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_bytes(&[0xff]).unwrap());
+        assert_eq!(
+            sole_header_value(&headers, &AUTHORIZATION).unwrap_err(),
+            QidError::BadRequest {
+                message: "authorization header is not valid UTF-8".to_string()
+            }
+        );
+    }
 }

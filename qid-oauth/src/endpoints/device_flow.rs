@@ -144,7 +144,7 @@ async fn authenticate_device_client<R: Repository>(
     headers: &HeaderMap,
     req: &DeviceAuthorizationRequest,
 ) -> QidResult<Client> {
-    let basic_client_auth = extract_basic_client_auth(headers);
+    let basic_client_auth = extract_basic_client_auth(headers)?;
     let mtls_x5t_s256 = extract_mtls_client_thumbprint(state, headers)?;
     let assertion_client_id = client_assertion_client_id(
         req.client_assertion.as_deref(),

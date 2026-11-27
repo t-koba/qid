@@ -114,13 +114,22 @@ pub fn enforce_sender_constrained_access_token<R: Repository>(
 }
 
 pub fn extract_bearer_token(headers: &HeaderMap) -> QidResult<&str> {
-    let value = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
+    let value = qid_http::sole_header_value(headers, &axum::http::header::AUTHORIZATION)
+        .map_err(|_| QidError::Unauthorized {
+            message: "ambiguous Authorization header".to_string(),
+        })?
         .ok_or_else(|| QidError::Unauthorized {
             message: "bearer access token is required".to_string(),
-        })?
-        .trim();
+        })?;
+    bearer_token_from_value(value)
+}
+
+/// Parse a Bearer credential from one Authorization field value.
+///
+/// Shared by required Bearer intake and optional initial-access-token intake
+/// so both reject malformed credentials identically.
+pub fn bearer_token_from_value(value: &str) -> QidResult<&str> {
+    let value = value.trim();
     let Some((scheme, token)) = value.split_once(' ') else {
         return Err(QidError::Unauthorized {
             message: "Authorization header must use the Bearer scheme".to_string(),
@@ -252,7 +261,10 @@ async fn authenticate_introspection_client<R: Repository>(
     headers: &HeaderMap,
     req: &IntrospectRequest,
 ) -> QidResult<IntrospectionCaller> {
-    let basic_client_auth = extract_basic_client_auth(headers);
+    let basic_client_auth =
+        extract_basic_client_auth(headers).map_err(|_| QidError::Unauthorized {
+            message: "ambiguous Authorization header".to_string(),
+        })?;
     let (client_id, presented_secret, used_auth_method) = match basic_client_auth.as_ref() {
         Some(auth) => (
             auth.client_id.as_str(),
@@ -548,4 +560,25 @@ pub async fn decode_access_token<R: Repository>(
 
 fn optional_vec<T>(value: Vec<T>) -> Option<Vec<T>> {
     if value.is_empty() { None } else { Some(value) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
+
+    #[test]
+    fn bearer_extractor_rejects_ambiguous_authorization_fields() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer token"));
+        assert_eq!(extract_bearer_token(&headers).unwrap(), "token");
+
+        headers.append(AUTHORIZATION, HeaderValue::from_static("Basic other"));
+        assert_eq!(
+            extract_bearer_token(&headers).unwrap_err(),
+            QidError::Unauthorized {
+                message: "ambiguous Authorization header".to_string()
+            }
+        );
+    }
 }

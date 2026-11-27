@@ -161,7 +161,7 @@ pub async fn dynamic_client_registration<R: Repository>(
     headers: HeaderMap,
     JsonObject(req): JsonObject<DynamicClientRegistrationRequest>,
 ) -> Response {
-    let realm = match extract_bearer_token(&headers) {
+    let realm = match super::error_response_or_return!(extract_bearer_token(&headers)) {
         Some(token) if !token.is_empty() => {
             let data = match state.signer.decode_signature_only(token) {
                 Ok(data) => data,
@@ -649,7 +649,7 @@ async fn authenticate_dcr_management_client<R: Repository>(
     realm_id: &str,
     client_id: &str,
 ) -> QidResult<Client> {
-    if let Some(token) = extract_bearer_token(headers) {
+    if let Some(token) = extract_bearer_token(headers)? {
         validate_dcr_registration_access_token(state, token, client_id)?;
         return state
             .repo
@@ -660,7 +660,7 @@ async fn authenticate_dcr_management_client<R: Repository>(
             });
     }
     let basic_client_auth =
-        extract_basic_client_auth(headers).ok_or_else(|| QidError::Unauthorized {
+        extract_basic_client_auth(headers)?.ok_or_else(|| QidError::Unauthorized {
             message: "DCR management requires client authentication".to_string(),
         })?;
     if basic_client_auth.client_id != client_id {
@@ -684,8 +684,15 @@ async fn authenticate_dcr_management_client<R: Repository>(
     Ok(client)
 }
 
-fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
-    super::extract_bearer_token(headers).ok()
+fn extract_bearer_token(headers: &HeaderMap) -> QidResult<Option<&str>> {
+    let Some(value) = qid_http::sole_header_value(headers, &axum::http::header::AUTHORIZATION)
+        .map_err(|_| QidError::Unauthorized {
+            message: "ambiguous Authorization header".to_string(),
+        })?
+    else {
+        return Ok(None);
+    };
+    Ok(super::bearer_token_from_value(value).ok())
 }
 
 fn validate_dcr_registration_access_token<R: Repository>(
@@ -976,6 +983,17 @@ pub async fn dynamic_client_registration_delete<R: Repository>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
+
+    #[test]
+    fn dcr_bearer_extractor_rejects_ambiguous_authorization_fields() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer token"));
+        assert_eq!(extract_bearer_token(&headers).unwrap(), Some("token"));
+
+        headers.append(AUTHORIZATION, HeaderValue::from_static("Basic other"));
+        assert!(extract_bearer_token(&headers).is_err());
+    }
 
     #[test]
     fn dcr_rejects_rsa_jwk_by_actual_modulus_bits() {

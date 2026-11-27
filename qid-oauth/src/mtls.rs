@@ -57,12 +57,14 @@ pub fn extract_mtls_x5t_s256<R: Repository>(
         return Ok(None);
     }
 
-    let token = bearer_token_from_header(headers, MTLS_ADAPTER_AUTHORIZATION_HEADER).ok_or_else(
-        || QidError::Unauthorized {
+    let token = bearer_token_from_header(headers, MTLS_ADAPTER_AUTHORIZATION_HEADER)
+        .map_err(|_| QidError::Unauthorized {
+            message: "ambiguous PEP mTLS metadata adapter authorization".to_string(),
+        })?
+        .ok_or_else(|| QidError::Unauthorized {
             message: "OAuth mTLS requires native peer certificate binding or authenticated PEP mTLS metadata"
                 .to_string(),
-        },
-    )?;
+        })?;
     let mut authenticated_thumbprint = None;
     for adapter in state
         .config
@@ -133,12 +135,19 @@ fn authenticated_native_thumbprint<R: Repository>(
     }
 }
 
-fn bearer_token_from_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    let value = headers.get(name)?.to_str().ok()?.trim();
-    let (scheme, token) = value.split_once(' ')?;
+fn bearer_token_from_header<'a>(
+    headers: &'a HeaderMap,
+    name: &'static str,
+) -> QidResult<Option<&'a str>> {
+    let Some(value) = qid_http::sole_header_value(headers, name)? else {
+        return Ok(None);
+    };
+    let Some((scheme, token)) = value.trim().split_once(' ') else {
+        return Ok(None);
+    };
     if !scheme.eq_ignore_ascii_case("Bearer") {
-        return None;
+        return Ok(None);
     }
     let token = token.trim();
-    (!token.is_empty() && !token.contains(' ')).then_some(token)
+    Ok((!token.is_empty() && !token.contains(' ')).then_some(token))
 }

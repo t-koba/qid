@@ -664,6 +664,46 @@ async fn client_credentials_grant_accepts_client_secret_basic() {
 }
 
 #[tokio::test]
+async fn duplicate_authorization_headers_are_rejected_at_token_endpoint() {
+    let (app, token_path, _) = setup().await;
+    let credentials = base64::engine::general_purpose::STANDARD.encode("basic-client:secret");
+
+    let single = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Authorization", format!("Basic {credentials}"))
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=basic-client&scope=api",
+        ))
+        .unwrap();
+    let single_response = app.clone().oneshot(single).await.unwrap();
+    assert_eq!(single_response.status(), StatusCode::OK);
+    assert!(json_body(single_response).await["access_token"].is_string());
+
+    // The body carries valid credentials, but an ambiguous Authorization
+    // field must be rejected before any client-auth method is chosen.
+    let duplicate = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Authorization", format!("Basic {credentials}"))
+        .header("Authorization", "Bearer second-credential")
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+        ))
+        .unwrap();
+    let duplicate_response = app.oneshot(duplicate).await.unwrap();
+    assert_eq!(duplicate_response.status(), StatusCode::BAD_REQUEST);
+    let json = json_body(duplicate_response).await;
+    assert_eq!(
+        json["error"],
+        "bad request: multiple authorization headers are not allowed"
+    );
+    assert!(json.get("access_token").is_none());
+}
+
+#[tokio::test]
 async fn client_credentials_grant_accepts_private_key_jwt() {
     let (app, token_path, _) = setup_with_oauth(|oauth| oauth.private_key_jwt.enabled = true).await;
     let assertion = build_client_assertion("pkjwt-client", "pkjwt-success-1");
@@ -2174,6 +2214,62 @@ async fn duplicate_dpop_headers_are_rejected() {
         nonce_json["error"],
         "bad request: multiple DPoP headers are not allowed"
     );
+}
+
+#[tokio::test]
+async fn duplicate_authorization_headers_are_rejected_at_introspection() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://default",
+        &[],
+        "introspection-basic-client",
+    )];
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&client_credentials_client(
+            "introspection-basic-client",
+            "client_secret_basic",
+        ))
+        .await
+        .unwrap();
+    let token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault",
+    )
+    .await;
+    let body = format!("token={}", urlencoding::encode(&token));
+    let credentials =
+        base64::engine::general_purpose::STANDARD.encode("introspection-basic-client:secret");
+
+    let single = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Authorization", format!("Basic {credentials}"))
+        .body(Body::from(body.clone()))
+        .unwrap();
+    let single_response = app.clone().oneshot(single).await.unwrap();
+    assert_eq!(single_response.status(), StatusCode::OK);
+    assert_eq!(json_body(single_response).await["active"], true);
+
+    let duplicate = Request::builder()
+        .method(Method::POST)
+        .uri(&state.paths.introspect)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Authorization", format!("Basic {credentials}"))
+        .header("Authorization", "Bearer second-credential")
+        .body(Body::from(body))
+        .unwrap();
+    let duplicate_response = app.oneshot(duplicate).await.unwrap();
+    assert_eq!(duplicate_response.status(), StatusCode::UNAUTHORIZED);
+    let json = json_body(duplicate_response).await;
+    assert_eq!(
+        json["error"],
+        "unauthorized: ambiguous Authorization header"
+    );
+    assert!(json.get("active").is_none());
 }
 
 #[tokio::test]

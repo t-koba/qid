@@ -1131,3 +1131,55 @@ fn inbound_kerberos_provider_conversion_carries_keytab_reference() {
     );
     assert_eq!(kerberos.keytab_path, "/etc/qid/corp.keytab");
 }
+
+#[test]
+fn inbound_broker_rejects_unstable_social_aliases_and_keeps_case_insensitive_routes() {
+    for alias in ["", " google", "google ", ".", "..", "%2e"] {
+        let mut providers = inbound_providers();
+        providers[2].social_provider = Some(alias.to_string());
+        let err = route_inbound_provider(
+            &providers,
+            &HomeRealmDiscoveryRequest {
+                idp_hint: Some("partner-saml".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            federation_error_code(&err),
+            "invalid_social_provider",
+            "alias {alias:?} must be rejected: {}",
+            err.message()
+        );
+    }
+
+    let mut providers = inbound_providers();
+    providers[2].social_provider = None;
+    let err = route_inbound_provider(
+        &providers,
+        &HomeRealmDiscoveryRequest {
+            idp_hint: Some("partner-saml".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        federation_error_code(&err) == "invalid_social_provider"
+            && err.message().contains("requires social_provider"),
+        "missing alias must keep its own error: {}",
+        err.message()
+    );
+
+    let mut providers = inbound_providers();
+    providers[2].social_provider = Some("GoOgLe".to_string());
+    let route = route_inbound_provider(
+        &providers,
+        &HomeRealmDiscoveryRequest {
+            social_provider: Some("gOoGlE".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(route.provider_id, "google-social");
+    assert_eq!(route.reason, "social_provider");
+}

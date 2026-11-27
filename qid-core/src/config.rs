@@ -1753,6 +1753,20 @@ impl RealmConfig {
                 });
             }
             if provider.enabled
+                && provider.kind == "social"
+                && provider
+                    .social_provider
+                    .as_deref()
+                    .is_some_and(|alias| !is_stable_provider_id(alias))
+            {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} inbound provider {} social_provider alias must be exact and callback-safe",
+                        self.id, provider.id
+                    ),
+                });
+            }
+            if provider.enabled
                 && provider.kind.eq_ignore_ascii_case("saml")
                 && provider.saml_signing_certificates.is_empty()
             {

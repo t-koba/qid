@@ -727,14 +727,19 @@ fn validate_inbound_providers(providers: &[InboundIdentityProvider]) -> Result<(
                 "Enabled provider issuer must not be empty",
             ));
         }
-        if provider.enabled
-            && provider.kind == InboundProviderKind::Social
-            && provider.social_provider.is_none()
-        {
-            return Err(broker_error(
-                "invalid_social_provider",
-                "Social provider routing requires social_provider",
-            ));
+        if provider.enabled && provider.kind == InboundProviderKind::Social {
+            let Some(alias) = provider.social_provider.as_deref() else {
+                return Err(broker_error(
+                    "invalid_social_provider",
+                    "Social provider routing requires social_provider",
+                ));
+            };
+            if !qid_core::config::is_stable_provider_id(alias) {
+                return Err(broker_error(
+                    "invalid_social_provider",
+                    "Social provider alias must be exact and callback-safe",
+                ));
+            }
         }
         if !provider.trusted_audiences.is_empty()
             && !matches!(

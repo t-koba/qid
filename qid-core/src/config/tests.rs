@@ -4278,3 +4278,40 @@ fn inbound_provider_ids_must_be_exact_and_callback_safe() {
             .unwrap_or_else(|err| panic!("canonical id {id} must be accepted: {}", err.message()));
     }
 }
+
+#[test]
+fn enabled_social_provider_aliases_must_be_exact_and_callback_safe() {
+    for alias in ["", " google", "google ", ".", "..", "%2e"] {
+        let mut config = config_with_provider_kind("social");
+        let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+        provider.enabled = true;
+        provider.social_provider = Some(alias.to_string());
+        let message = config.validate().unwrap_err().message();
+        assert!(
+            message.contains("realm corp inbound provider provider")
+                && message.contains("social_provider alias must be exact and callback-safe"),
+            "alias {alias:?} must be rejected with a realm/provider-specific message: {message}"
+        );
+    }
+
+    let mut config = config_with_provider_kind("social");
+    let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+    provider.enabled = true;
+    provider.social_provider = Some("Google".to_string());
+    config
+        .validate()
+        .unwrap_or_else(|err| panic!("mixed-case alias must be accepted: {}", err.message()));
+
+    for (kind, enabled) in [("social", false), ("oidc", true)] {
+        let mut config = config_with_provider_kind(kind);
+        let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+        provider.enabled = enabled;
+        provider.social_provider = Some("..".to_string());
+        config.validate().unwrap_or_else(|err| {
+            panic!(
+                "{kind} provider with enabled={enabled} is exempt: {}",
+                err.message()
+            )
+        });
+    }
+}

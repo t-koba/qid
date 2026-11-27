@@ -159,6 +159,10 @@ async fn handle_token<R: Repository>(
         );
     }
     let cnf = (!cnf_claims.is_empty()).then_some(serde_json::Value::Object(cnf_claims));
+    let exchange_proof = ExchangeProof {
+        dpop_jkt: dpop_jkt.as_deref(),
+        mtls_x5t_s256: mtls_x5t_s256.as_deref(),
+    };
 
     validate_client_auth_method(
         state,
@@ -195,13 +199,37 @@ async fn handle_token<R: Repository>(
         "client_credentials" => client_credentials_grant(state, req, &client, cnf.as_ref()).await,
         "refresh_token" => refresh_token_grant(state, req, &client, cnf.as_ref()).await,
         "urn:ietf:params:oauth:grant-type:token-exchange" => {
-            advanced_subject_grant(state, req, &client, "token-exchange", cnf.as_ref()).await
+            advanced_subject_grant(
+                state,
+                req,
+                &client,
+                "token-exchange",
+                cnf.as_ref(),
+                exchange_proof,
+            )
+            .await
         }
         "urn:ietf:params:oauth:grant-type:jwt-bearer" => {
-            advanced_subject_grant(state, req, &client, "jwt-bearer", cnf.as_ref()).await
+            advanced_subject_grant(
+                state,
+                req,
+                &client,
+                "jwt-bearer",
+                cnf.as_ref(),
+                exchange_proof,
+            )
+            .await
         }
         "urn:ietf:params:oauth:grant-type:saml2-bearer" => {
-            advanced_subject_grant(state, req, &client, "saml2-bearer", cnf.as_ref()).await
+            advanced_subject_grant(
+                state,
+                req,
+                &client,
+                "saml2-bearer",
+                cnf.as_ref(),
+                exchange_proof,
+            )
+            .await
         }
         "urn:ietf:params:oauth:grant-type:device_code" => {
             device_code_grant(state, req, cnf.as_ref()).await
@@ -301,12 +329,66 @@ fn oauth_jwt_subject_id(realm_id: &str, issuer: &str, subject: &str) -> String {
     format!("jwt:v1:{}", qid_core::util::sha256_base64url(encoded))
 }
 
+/// Sender proofs presented by the token-exchange request itself.
+#[derive(Clone, Copy)]
+struct ExchangeProof<'a> {
+    dpop_jkt: Option<&'a str>,
+    mtls_x5t_s256: Option<&'a str>,
+}
+
+/// qid token-exchange policy: a constrained subject may be exchanged only
+/// when the exchange proves every sender constraint the subject carries.
+/// Unknown or malformed `cnf` members fail closed; an unconstrained subject
+/// may acquire a fresh proof. This is not a general RFC 8693 requirement.
+fn validate_exchange_sender_constraint(
+    inherited_cnf: Option<&serde_json::Value>,
+    proof: ExchangeProof<'_>,
+) -> QidResult<()> {
+    let Some(cnf) = inherited_cnf else {
+        return Ok(());
+    };
+    let Some(members) = cnf.as_object() else {
+        return Err(QidError::Unauthorized {
+            message: "subject_token cnf must be an object".to_string(),
+        });
+    };
+    if members.is_empty() {
+        return Err(QidError::Unauthorized {
+            message: "subject_token cnf has no supported sender constraint".to_string(),
+        });
+    }
+    for (member, expected) in members {
+        let (presented, proof_name) = match member.as_str() {
+            "jkt" => (proof.dpop_jkt, "DPoP proof jkt"),
+            "x5t#S256" => (proof.mtls_x5t_s256, "mTLS certificate thumbprint"),
+            _ => {
+                return Err(QidError::Unauthorized {
+                    message: format!("unsupported subject_token cnf member: {member}"),
+                });
+            }
+        };
+        let expected = expected.as_str().ok_or_else(|| QidError::Unauthorized {
+            message: format!("invalid subject_token cnf member: {member}"),
+        })?;
+        let presented = presented.ok_or_else(|| QidError::Unauthorized {
+            message: format!("token exchange requires matching {proof_name} for subject_token cnf"),
+        })?;
+        if presented != expected {
+            return Err(QidError::Unauthorized {
+                message: format!("token exchange {proof_name} does not match subject_token cnf"),
+            });
+        }
+    }
+    Ok(())
+}
+
 async fn advanced_subject_grant<R: Repository>(
     state: &SharedState<R>,
     req: &TokenRequest,
     client: &Client,
     grant_name: &str,
     cnf: Option<&serde_json::Value>,
+    proof: ExchangeProof<'_>,
 ) -> QidResult<TokenResponse> {
     if req
         .requested_token_type
@@ -474,6 +556,7 @@ async fn advanced_subject_grant<R: Repository>(
                 });
             }
         }
+        validate_exchange_sender_constraint(inherited_cnf.as_ref(), proof)?;
         actor_claim = validate_token_exchange_actor(state, req, &realm.id).await?;
     }
     if grant_name == "jwt-bearer" {

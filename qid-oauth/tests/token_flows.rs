@@ -277,9 +277,8 @@ fn dpop_private_pem_and_jwk() -> (String, Jwk) {
     .clone()
 }
 
-fn build_dpop_proof_with_nonce(jti: &str, nonce: Option<&str>) -> String {
+fn sign_dpop_proof(jti: &str, nonce: Option<&str>, key: &(String, Jwk)) -> String {
     let now = util::now_seconds();
-    let (private_pem, jwk) = dpop_private_pem_and_jwk();
     let mut payload = serde_json::json!({
         "jti": jti,
         "htm": "POST",
@@ -289,8 +288,12 @@ fn build_dpop_proof_with_nonce(jti: &str, nonce: Option<&str>) -> String {
     if let Some(nonce) = nonce {
         payload["nonce"] = serde_json::json!(nonce);
     }
-    sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "dpop+jwt", &payload)
+    sign_es256_jwt_with_jwk_header(key.0.as_bytes(), &key.1, "dpop+jwt", &payload)
         .expect("DPoP proof signing failed")
+}
+
+fn build_dpop_proof_with_nonce(jti: &str, nonce: Option<&str>) -> String {
+    sign_dpop_proof(jti, nonce, &dpop_private_pem_and_jwk())
 }
 
 fn build_dpop_proof_with_ath(jti: &str, access_token: &str) -> String {
@@ -871,6 +874,239 @@ async fn client_credentials_reuses_client_id_after_service_account_outlives_clie
         .unwrap()
         .unwrap();
     assert_ne!(service_a.id, service_b.id);
+}
+
+fn exchange_subject_form(subject_token: &str, scope: Option<&str>) -> String {
+    let mut form = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}",
+        urlencoding::encode(subject_token)
+    );
+    if let Some(scope) = scope {
+        form.push_str(&format!("&scope={scope}"));
+    }
+    form
+}
+
+fn exchange_jwt_subject_form(assertion: &str) -> String {
+    format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:jwt&subject_token={}",
+        urlencoding::encode(assertion)
+    )
+}
+
+async fn mint_dpop_bound_subject(app: Router, token_path: &str, proof: &str) -> String {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", proof)
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=api%20payments",
+        ))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_dpop_bound_subject_without_proof() {
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.dpop.enabled = true).await;
+    let subject = mint_dpop_bound_subject(
+        app.clone(),
+        &token_path,
+        &build_dpop_proof("exchange-subject-noproof"),
+    )
+    .await;
+    let response = post_form(
+        app,
+        &token_path,
+        exchange_subject_form(&subject, Some("api")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_dpop_bound_subject_with_different_key() {
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.dpop.enabled = true).await;
+    let subject_proof = build_dpop_proof("exchange-subject-key");
+    let subject = mint_dpop_bound_subject(app.clone(), &token_path, &subject_proof).await;
+    let generated = generate_es256("exchange-other-key").unwrap();
+    let other_key = (generated.private_pem, generated.public_jwk);
+    let other_proof = sign_dpop_proof("exchange-other-key-proof", None, &other_key);
+    assert_ne!(
+        qid_oauth::dpop::dpop_jkt_from_proof(&other_proof).unwrap(),
+        qid_oauth::dpop::dpop_jkt_from_proof(&subject_proof).unwrap()
+    );
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", other_proof)
+        .body(Body::from(exchange_subject_form(&subject, Some("api"))))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn token_exchange_with_matching_dpop_proof_preserves_binding() {
+    let (app, token_path, state) = setup_with_oauth(|oauth| oauth.dpop.enabled = true).await;
+    let subject_proof = build_dpop_proof("exchange-matching-subject");
+    let subject = mint_dpop_bound_subject(app.clone(), &token_path, &subject_proof).await;
+    let expected_jkt = qid_oauth::dpop::dpop_jkt_from_proof(&subject_proof).unwrap();
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", build_dpop_proof("exchange-matching-request"))
+        .body(Body::from(exchange_subject_form(&subject, Some("api"))))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    assert_eq!(json["token_type"], "DPoP");
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(
+        claims.extra["cnf"],
+        serde_json::json!({"jkt": expected_jkt})
+    );
+    assert_eq!(claims.extra["scope"], "api");
+}
+
+#[tokio::test]
+async fn token_exchange_allows_unconstrained_subject_to_bind_new_dpop_proof() {
+    let (app, token_path, state) = setup_with_oauth(|oauth| oauth.dpop.enabled = true).await;
+    let subject = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=api",
+    )
+    .await;
+    assert!(!decode_claims(&state, &subject).extra.contains_key("cnf"));
+    let proof = build_dpop_proof("exchange-unconstrained-proof");
+    let expected_jkt = qid_oauth::dpop::dpop_jkt_from_proof(&proof).unwrap();
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", proof)
+        .body(Body::from(exchange_subject_form(&subject, Some("api"))))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    assert_eq!(json["token_type"], "DPoP");
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(
+        claims.extra["cnf"],
+        serde_json::json!({"jkt": expected_jkt})
+    );
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_mtls_bound_subject_without_matching_certificate() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.mtls.enabled = true;
+    config.realms[0].pep_registrations.enabled = true;
+    config.realms[0].pep_registrations.registrations = vec![PepRegistrationConfig {
+        name: "egress-main".to_string(),
+        audience: Some("qid-pep-adapter".to_string()),
+        capabilities: Vec::new(),
+        assertion: Default::default(),
+        decision: Default::default(),
+        auth: Default::default(),
+    }];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let thumbprint = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    let now = util::now_seconds();
+    let (private_pem, jwk) = dpop_private_pem_and_jwk();
+    let assertion_for = |jti: &str| {
+        let payload = serde_json::json!({
+            "iss": "exchange-client",
+            "sub": "workload-123",
+            "aud": format!("https://id.example.com{token_path}"),
+            "exp": now + 300,
+            "nbf": now - 1,
+            "iat": now,
+            "jti": jti,
+            "cnf": { "x5t#S256": thumbprint },
+        });
+        sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "JWT", &payload).unwrap()
+    };
+    let subject = assertion_for("exchange-mtls-subject-without-cert");
+    let matching_subject = assertion_for("exchange-mtls-subject-with-cert");
+
+    let response = post_form(
+        app.clone(),
+        &token_path,
+        exchange_jwt_subject_form(&subject),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let adapter_auth =
+        build_adapter_auth_token(&state, "egress-main", "qid-pep-adapter", thumbprint);
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header(
+            "x-qid-pep-adapter-authorization",
+            format!("Bearer {adapter_auth}"),
+        )
+        .header("x-qid-mtls-x5t-s256", thumbprint)
+        .body(Body::from(exchange_jwt_subject_form(&matching_subject)))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    let json = json_body(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["token_type"], "Bearer");
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(
+        claims.extra["cnf"],
+        serde_json::json!({"x5t#S256": thumbprint})
+    );
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_unknown_subject_cnf_member() {
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.dpop.enabled = true).await;
+    let proof = build_dpop_proof("exchange-unknown-cnf-proof");
+    let jkt = qid_oauth::dpop::dpop_jkt_from_proof(&proof).unwrap();
+    let now = util::now_seconds();
+    let (private_pem, jwk) = dpop_private_pem_and_jwk();
+    let payload = serde_json::json!({
+        "iss": "exchange-client",
+        "sub": "workload-123",
+        "aud": format!("https://id.example.com{token_path}"),
+        "exp": now + 300,
+        "nbf": now - 1,
+        "iat": now,
+        "jti": "exchange-unknown-cnf-assertion",
+        "cnf": { "jkt": jkt, "unexpected": "value" },
+    });
+    let assertion =
+        sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "JWT", &payload).unwrap();
+    let subject = assertion;
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", proof)
+        .body(Body::from(exchange_jwt_subject_form(&subject)))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

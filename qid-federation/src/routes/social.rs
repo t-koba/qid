@@ -298,12 +298,98 @@ async fn social_login_callback_inner<R: Repository>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{HeaderMap, header};
+    use axum::{
+        Router,
+        extract::Form,
+        http::{HeaderMap, header},
+        routing::{get, post},
+    };
     use http_body_util::BodyExt;
     use qid_core::tenant::RealmId;
     use serde_json::Value;
+    use std::sync::Mutex;
+    use tower::ServiceExt;
 
     use super::super::transaction::test_support as tx_test;
+
+    #[derive(serde::Deserialize)]
+    struct TokenRequestForm {
+        redirect_uri: String,
+    }
+
+    /// Token/userinfo stub that records the `redirect_uri` posted by the
+    /// callback, so the generated URL can be checked as a browser sees it.
+    async fn recording_provider_stub() -> (
+        String,
+        Arc<Mutex<Option<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let recorded = Arc::new(Mutex::new(None));
+        let token_recorded = Arc::clone(&recorded);
+        let app = Router::new()
+            .route(
+                "/token",
+                post(move |Form(form): Form<TokenRequestForm>| {
+                    let recorded = Arc::clone(&token_recorded);
+                    async move {
+                        *recorded.lock().expect("redirect mutex") = Some(form.redirect_uri);
+                        Json(serde_json::json!({"access_token": "stub-access-token"}))
+                    }
+                }),
+            )
+            .route(
+                "/userinfo",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "sub": "user-123",
+                        "email": "user@example.com",
+                        "email_verified": true
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("stub listener");
+        let address = listener.local_addr().expect("stub address");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{address}"), recorded, handle)
+    }
+
+    /// Drive a callback URL path through the production federation router so
+    /// URL parsing and route matching are exercised, not bypassed.
+    async fn callback_via_router(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        path: &str,
+        proof: &str,
+        cookie: &str,
+    ) -> (StatusCode, Value) {
+        let app =
+            crate::federation_routes::<qid_storage::FileRepository>().with_state(state.clone());
+        let uri = format!(
+            "{path}?code=provider-code&state={}",
+            urlencoding::encode(proof)
+        );
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .header(axum::http::header::COOKIE, cookie)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        (status, serde_json::from_slice(&body).expect("json body"))
+    }
 
     fn callback_headers(cookie: Option<&str>) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -601,22 +687,52 @@ mod tests {
 
     #[tokio::test]
     async fn social_callback_accepts_canonical_provider_id_path() {
-        let (base_url, server) = tx_test::provider_stub().await;
-        let fixture =
-            tx_test::fixture_with_social_alias(&["corp-social"], "google", &base_url).await;
-        let (proof, cookie) =
-            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+        // An accepted id that needs percent-encoding in a URL path segment must
+        // still be reachable at the callback route the handler generates.
+        const PROVIDER_ID: &str = "corp+social";
+        assert!(qid_core::config::is_stable_provider_id(PROVIDER_ID));
+
+        let (base_url, redirect_uri, server) = recording_provider_stub().await;
+        let fixture = tx_test::fixture_with_social_alias(&[PROVIDER_ID], "google", &base_url).await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", PROVIDER_ID).await;
 
         let (status, body) =
-            callback_for_provider(&fixture.state, "corp-social", Some(&proof), Some(&cookie)).await;
+            callback_for_provider(&fixture.state, PROVIDER_ID, Some(&proof), Some(&cookie)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["provider"], "corp-social");
-        let realm = RealmId("test".to_string());
-        assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
+        assert_eq!(body["provider"], PROVIDER_ID);
+
+        // The URL actually posted to the upstream token endpoint must survive
+        // URL parsing and match the production route with the exact provider id.
+        let redirect_uri = redirect_uri
+            .lock()
+            .expect("redirect mutex")
+            .clone()
+            .expect("callback posts redirect_uri to the token endpoint");
+        let url = url::Url::parse(&redirect_uri).expect("absolute redirect_uri");
+        let segments: Vec<&str> = url.path().trim_start_matches('/').split('/').collect();
+        assert_eq!(
+            segments,
+            [
+                "federation",
+                "test",
+                "social",
+                "id",
+                "corp%2Bsocial",
+                "callback"
+            ],
+            "callback path segments: {redirect_uri}"
+        );
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", PROVIDER_ID).await;
+        let (status, body) = callback_via_router(&fixture.state, url.path(), &proof, &cookie).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], PROVIDER_ID);
+
+        let realm_id = RealmId("test".to_string());
+        assert_eq!(fixture.repo.list_users(&realm_id).await.unwrap().len(), 1);
         assert!(
             fixture
                 .repo
-                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
+                .get_ciam_identity_link_by_external_subject(&realm_id, PROVIDER_ID, "user-123")
                 .await
                 .unwrap()
                 .is_some()

@@ -13,6 +13,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use qid_core::config::{CorsConfig, HstsConfig, ServerPaths};
+use qid_core::util::has_valid_percent_escapes;
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use tracing::{Instrument, info, warn};
 
@@ -310,6 +311,9 @@ fn valid_authority(authority: &Authority) -> bool {
 /// else browsers send and WHATWG URL preserves (including `[ ] { } | \ ^`
 /// backtick, `#`, `?`, and non-ASCII bytes) is accepted.
 fn valid_url_suffix(suffix: &str) -> bool {
+    if !has_valid_percent_escapes(suffix) {
+        return false;
+    }
     let bytes = suffix.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
@@ -320,12 +324,6 @@ fn valid_url_suffix(suffix: &str) -> bool {
             || byte == b'"'
             || byte == b'<'
             || byte == b'>'
-        {
-            return false;
-        }
-        if byte == b'%'
-            && (!bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
-                || !bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit))
         {
             return false;
         }

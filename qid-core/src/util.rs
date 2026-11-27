@@ -19,6 +19,25 @@ pub fn now_seconds() -> u64 {
     }
 }
 
+/// Whether every `%` in a raw string introduces two hexadecimal digits
+/// (RFC 3986 §2.1). `Url::parse` tolerates malformed escapes and preserves
+/// them, so exact identifiers checked after parsing need this raw rule too.
+pub fn has_valid_percent_escapes(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && (index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit())
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 /// Encode bytes as unpadded base64url.
 pub fn base64_url_encode(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)

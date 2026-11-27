@@ -374,8 +374,8 @@ fn dpop_wrong_htu_fails() {
     assert!(result.is_err(), "wrong htu should fail");
 }
 
-/// Validate a signed proof whose only varying claim is `htu`.
-fn htu_is_accepted(htu: &str) -> bool {
+/// Validate a signed proof against the expected HTTP URI provided by the caller.
+fn htu_is_accepted_against(htu: &str, expected: &str) -> bool {
     let signer = test_signer();
     let payload = serde_json::json!({
         "jti": "htu-normalization-proof",
@@ -384,15 +384,12 @@ fn htu_is_accepted(htu: &str) -> bool {
         "iat": now_seconds(),
     });
     let proof = build_jwt(&dpop_header(), &payload);
-    validate_dpop_proof(
-        &DpopState::new(),
-        &proof,
-        "POST",
-        "https://id.example.com/token",
-        None,
-        &signer,
-    )
-    .is_ok()
+    validate_dpop_proof(&DpopState::new(), &proof, "POST", expected, None, &signer).is_ok()
+}
+
+/// Validate a signed proof whose only varying claim is `htu`.
+fn htu_is_accepted(htu: &str) -> bool {
+    htu_is_accepted_against(htu, "https://id.example.com/token")
 }
 
 #[test]
@@ -419,6 +416,54 @@ fn dpop_htu_mismatches_are_rejected() {
         "not a url",
     ] {
         assert!(!htu_is_accepted(htu), "mismatched htu must fail: {htu}");
+    }
+}
+
+#[test]
+fn dpop_htu_percent_encoding_normalization_is_accepted() {
+    for (htu, expected) in [
+        (
+            "https://id.example.com/to%6ben",
+            "https://id.example.com/token",
+        ),
+        (
+            "https://id.example.com/%7Efoo",
+            "https://id.example.com/~foo",
+        ),
+        (
+            "https://id.example.com/a/%2E%2E/token",
+            "https://id.example.com/token",
+        ),
+        (
+            "https://id.example.com/%2e/token",
+            "https://id.example.com/token",
+        ),
+        (
+            "https://id.example.com/x/%2f/y",
+            "https://id.example.com/x/%2F/y",
+        ),
+        (
+            "https://id.example.com/x/%3a/y",
+            "https://id.example.com/x/%3A/y",
+        ),
+    ] {
+        assert!(
+            htu_is_accepted_against(htu, expected),
+            "normalized htu should match: {htu} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn dpop_htu_reserved_escapes_are_not_literal_separators() {
+    for (htu, expected) in [
+        ("https://id.example.com/a%2Fb", "https://id.example.com/a/b"),
+        ("https://id.example.com/a%3Ab", "https://id.example.com/a:b"),
+    ] {
+        assert!(
+            !htu_is_accepted_against(htu, expected),
+            "reserved escape must not match literal separator: {htu} vs {expected}"
+        );
     }
 }
 

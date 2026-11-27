@@ -200,7 +200,10 @@ fn validate_dpop_proof_claims(
 /// Scheme and host are case-insensitive, query and fragment are ignored, and
 /// the effective port is compared. `Url` normalizes scheme/host case and drops
 /// explicitly specified default ports, so `port_or_known_default` compares the
-/// effective port on both sides. Unparsable or non-HTTP(S) URIs fail closed.
+/// effective port on both sides. Paths additionally follow RFC 3986 §6.2.2:
+/// percent-encoded unreserved octets are decoded, remaining escape hex digits
+/// are uppercased, and dot segments are removed afterwards. Unparsable or
+/// non-HTTP(S) URIs fail closed.
 fn htu_matches(actual: &str, expected: &str) -> bool {
     let (Ok(actual), Ok(expected)) = (Url::parse(actual), Url::parse(expected)) else {
         return false;
@@ -216,7 +219,52 @@ fn htu_matches(actual: &str, expected: &str) -> bool {
     actual.scheme() == expected.scheme()
         && actual_host == expected_host
         && actual.port_or_known_default() == expected.port_or_known_default()
-        && actual.path() == expected.path()
+        && normalized_path(&actual) == normalized_path(&expected)
+}
+
+/// Decode unreserved `%XX` octets and uppercase the hex digits of the escapes
+/// that remain, per RFC 3986 §6.2.2.1–.2. Reserved escapes stay encoded.
+fn normalize_path_escapes(path: &str) -> String {
+    let mut normalized = String::with_capacity(path.len());
+    let mut chars = path.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            normalized.push(ch);
+            continue;
+        }
+        let Some(hi) = chars.next() else {
+            normalized.push('%');
+            break;
+        };
+        let Some(lo) = chars.next() else {
+            normalized.push('%');
+            normalized.push(hi);
+            break;
+        };
+        let Some((high, low)) = hi.to_digit(16).zip(lo.to_digit(16)) else {
+            normalized.push('%');
+            normalized.push(hi);
+            normalized.push(lo);
+            continue;
+        };
+        let byte = (high * 16 + low) as u8;
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            normalized.push(byte as char);
+        } else {
+            normalized.push('%');
+            normalized.push(hi.to_ascii_uppercase());
+            normalized.push(lo.to_ascii_uppercase());
+        }
+    }
+    normalized
+}
+
+/// Apply path percent-encoding normalization, then let `Url` remove dot
+/// segments from the decoded path (RFC 3986 §6.2.2.3).
+fn normalized_path(url: &Url) -> String {
+    let mut normalized = url.clone();
+    normalized.set_path(&normalize_path_escapes(url.path()));
+    normalized.path().to_owned()
 }
 
 fn verify_dpop_proof_signature(dpop_proof: &str, header: &serde_json::Value) -> QidResult<()> {

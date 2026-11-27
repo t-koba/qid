@@ -1459,6 +1459,7 @@ async fn authorization_response_redirect<R: Repository>(
 ///      hashed without validating the proof (RFC 9449 §4.1 defines the
 ///      header; §10 defines code binding, which qid does not implement).
 ///   2. The first JWK in registered client metadata, as a static fallback.
+///
 /// No FAPI message-signing conformance is claimed; see docs/standards.md.
 fn dpop_apv_for_request(client: &Client, dpop_header: Option<&str>) -> Option<String> {
     if let Some(proof) = dpop_header

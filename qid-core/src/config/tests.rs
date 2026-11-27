@@ -4221,7 +4221,9 @@ fn front_channel_inbound_provider_rejects_unsafe_issuer_syntax() {
         let message = config.validate().unwrap_err().message().to_string();
         assert!(
             message.contains("realm corp inbound provider provider")
-                && message.contains("issuer must be an HTTPS URL with a host and without credentials, query, or fragment"),
+                && message.contains("issuer must be an exact ASCII HTTPS URL")
+                && message.contains("well-formed percent escapes")
+                && message.contains("no dot-path segments"),
             "issuer {issuer} must be rejected with a realm/provider-specific message: {message}"
         );
     }

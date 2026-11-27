@@ -1383,7 +1383,7 @@ fn validate_inbound_provider_issuer_syntax(
         if !is_exact_secure_https_issuer(&provider.issuer) {
             return Err(QidError::Config {
                 message: format!(
-                    "realm {realm_id} inbound provider {} issuer must be an HTTPS URL with a host and without credentials, query, or fragment",
+                    "realm {realm_id} inbound provider {} issuer must be an exact ASCII HTTPS URL with a host, well-formed percent escapes, and no dot-path segments, whitespace, control characters, credentials, query, or fragment",
                     provider.id
                 ),
             });

@@ -609,11 +609,16 @@ selects one provider.
 Enabled front-channel inbound providers (`oidc`, `entra_id`/`entra`/`azure_ad`,
 `google_workspace`/`google`, `okta`, `social`) must set `issuer` to an HTTPS URL
 with a host and without credentials, query, or fragment, so it is a usable RFC
-8414 issuer identifier for RFC 9207 binding. Disabled providers and other kinds
-are exempt. Enabled providers sharing one `issuer` must also configure the same
-`token_url`, `userinfo_url`, and `jwks_uri` values; multiple client
-registrations at one authorization server remain valid. Inline `jwks` is local
-verification configuration, so its key-array order does not distinguish servers.
+8414 issuer identifier for RFC 9207 binding. The value is compared byte-for-byte
+with the upstream `iss`, so its raw spelling must be exact: ASCII only, with
+well-formed `%XX` escapes, no whitespace or control characters, and no path
+segment that decodes to `.` or `..`, including percent-encoded spellings. A URL
+that only becomes valid after parser repair is rejected. Disabled providers and
+other kinds are exempt. Enabled providers sharing one `issuer` must also
+configure the same `token_url`, `userinfo_url`, and `jwks_uri` values; multiple
+client registrations at one authorization server remain valid. Inline `jwks` is
+local verification configuration, so its key-array order does not distinguish
+servers.
 
 Enabled `social` providers use `social_provider` as a routing alias, compared
 case-insensitively in hint routing and callback paths. Providers may share an

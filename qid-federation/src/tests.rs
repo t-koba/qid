@@ -245,11 +245,18 @@ fn metadata_policy_rejects_spoofed_loopback_redirect_uri() {
             "http://localhost:3000/cb".to_string(),
             "http://127.0.0.1:8080/cb".to_string(),
             "http://[::1]/cb".to_string(),
+            "HTTPS://rp.example/cb".to_string(),
         ],
         grant_types: vec!["authorization_code".to_string()],
     };
     let filtered = apply_metadata_policy(&metadata, &[]).unwrap();
     assert_eq!(filtered.redirect_uris, metadata.redirect_uris);
+
+    let metadata = OpenIdRelyingPartyMetadata {
+        redirect_uris: vec!["https://rp.example@evil.example/cb".to_string()],
+        grant_types: vec!["authorization_code".to_string()],
+    };
+    assert!(apply_metadata_policy(&metadata, &["rp.example".to_string()]).is_err());
 }
 
 #[test]

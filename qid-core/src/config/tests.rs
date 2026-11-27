@@ -4076,53 +4076,19 @@ fn disabled_inbound_provider_is_exempt_from_issuer_endpoint_uniqueness() {
 }
 
 #[test]
-fn enabled_social_providers_reject_case_colliding_social_provider_aliases() {
+fn enabled_social_providers_allow_shared_aliases() {
     for (first_alias, second_alias) in [("Google", "google"), ("google", "google")] {
         let mut config = config_with_two_inbound_providers("social", "social");
         let providers = &mut config.realms[0].protocols.federation.inbound_providers;
         providers[0].social_provider = Some(first_alias.to_string());
         providers[1].social_provider = Some(second_alias.to_string());
-        let message = config.validate().unwrap_err().message().to_string();
-        assert!(
-            message.contains("realm corp")
-                && message.contains("registration-a")
-                && message.contains("registration-b")
-                && message.contains("social_provider")
-                && message.contains("unique case-insensitively"),
-            "aliases {first_alias}/{second_alias} must be rejected: {message}"
-        );
+        config.validate().unwrap_or_else(|err| {
+            panic!(
+                "aliases {first_alias}/{second_alias} may share a callback path: {}",
+                err.message()
+            )
+        });
     }
-}
-
-#[test]
-fn distinct_social_provider_aliases_are_accepted() {
-    let mut config = config_with_two_inbound_providers("social", "social");
-    let providers = &mut config.realms[0].protocols.federation.inbound_providers;
-    providers[0].social_provider = Some("google".to_string());
-    providers[1].social_provider = Some("github".to_string());
-    config
-        .validate()
-        .unwrap_or_else(|err| panic!("distinct aliases must be accepted: {}", err.message()));
-}
-
-#[test]
-fn disabled_and_non_social_providers_are_exempt_from_social_alias_uniqueness() {
-    let mut config = config_with_two_inbound_providers("social", "social");
-    let providers = &mut config.realms[0].protocols.federation.inbound_providers;
-    providers[0].social_provider = Some("google".to_string());
-    providers[1].social_provider = Some("GOOGLE".to_string());
-    providers[1].enabled = false;
-    config
-        .validate()
-        .unwrap_or_else(|err| panic!("disabled provider must be exempt: {}", err.message()));
-
-    let mut config = config_with_two_inbound_providers("oidc", "oidc");
-    for provider in &mut config.realms[0].protocols.federation.inbound_providers {
-        provider.social_provider = Some("google".to_string());
-    }
-    config
-        .validate()
-        .unwrap_or_else(|err| panic!("non-social providers must be exempt: {}", err.message()));
 }
 
 #[test]

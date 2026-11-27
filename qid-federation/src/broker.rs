@@ -178,22 +178,26 @@ pub fn route_inbound_provider(
     }
 
     if let Some(social_provider) = normalized_optional(&request.social_provider) {
-        let provider = providers
-            .iter()
-            .find(|provider| {
-                provider.enabled
-                    && provider.kind == InboundProviderKind::Social
-                    && provider
-                        .social_provider
-                        .as_deref()
-                        .is_some_and(|value| value.eq_ignore_ascii_case(&social_provider))
-            })
-            .ok_or_else(|| {
-                broker_error(
-                    "unknown_social_provider",
-                    "Social provider is not configured",
-                )
-            })?;
+        let mut matches = providers.iter().filter(|provider| {
+            provider.enabled
+                && provider.kind == InboundProviderKind::Social
+                && provider
+                    .social_provider
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(&social_provider))
+        });
+        let Some(provider) = matches.next() else {
+            return Err(broker_error(
+                "unknown_social_provider",
+                "Social provider is not configured",
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(broker_error(
+                "ambiguous_social_provider",
+                "Social provider hint matches more than one enabled provider",
+            ));
+        }
         return Ok(route_decision(provider, "social_provider"));
     }
 

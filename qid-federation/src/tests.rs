@@ -439,6 +439,36 @@ fn inbound_broker_rejects_ambiguous_domains_and_unknown_routes() {
 }
 
 #[test]
+fn inbound_broker_rejects_ambiguous_social_hints_and_keeps_exact_id_selection() {
+    let mut providers = inbound_providers();
+    let mut second = providers[2].clone();
+    second.id = "google-social-2".to_string();
+    second.social_provider = Some("GOOGLE".to_string());
+    providers.push(second);
+
+    let err = route_inbound_provider(
+        &providers,
+        &HomeRealmDiscoveryRequest {
+            social_provider: Some("Google".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(federation_error_code(&err), "ambiguous_social_provider");
+
+    let route = route_inbound_provider(
+        &providers,
+        &HomeRealmDiscoveryRequest {
+            idp_hint: Some("google-social-2".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(route.provider_id, "google-social-2");
+    assert_eq!(route.reason, "idp_hint");
+}
+
+#[test]
 fn inbound_login_plan_normalizes_claims_and_uses_jit_or_account_linking() {
     let providers = inbound_providers();
     let external = ExternalIdentityClaims {

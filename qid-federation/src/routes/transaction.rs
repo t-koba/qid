@@ -454,6 +454,7 @@ pub(crate) mod test_support {
         let mut config = test_helpers::test_config();
         let federation = &mut config.realms[0].protocols.federation;
         federation.enabled = true;
+        let valid_shared_alias = shared_social_alias.is_some() && issuers.is_none();
         let providers: Vec<serde_json::Value> = provider_ids
             .iter()
             .enumerate()
@@ -481,7 +482,7 @@ pub(crate) mod test_support {
                         None
                     },
                 });
-                if index == 0 {
+                if index == 0 || valid_shared_alias {
                     let object = provider.as_object_mut().expect("provider object");
                     object.insert("client_id".into(), serde_json::json!("qid-broker-client"));
                     object.insert(
@@ -504,6 +505,9 @@ pub(crate) mod test_support {
             .collect();
         federation.inbound_providers =
             serde_json::from_value(serde_json::Value::Array(providers)).expect("provider config");
+        if valid_shared_alias {
+            config.validate().expect("shared-alias fixture config");
+        }
         let directory = TestDirectory::new(kind);
         let repo = Arc::new(
             FileRepository::new(directory.0.join("store.json").to_str().expect("utf8 path"))

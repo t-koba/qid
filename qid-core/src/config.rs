@@ -1411,35 +1411,6 @@ fn validate_inbound_provider_issuer_uniqueness(
     Ok(())
 }
 
-/// Social hint routing and callback path matching compare `social_provider`
-/// aliases case-insensitively, so two enabled social providers sharing an
-/// alias would have no unambiguous target. Reject that at config load.
-fn validate_social_provider_alias_uniqueness(
-    realm_id: &str,
-    providers: &[InboundProviderConfig],
-) -> QidResult<()> {
-    let mut first_id_by_alias = std::collections::HashMap::new();
-    for provider in providers
-        .iter()
-        .filter(|provider| provider.enabled && provider.kind == "social")
-    {
-        let Some(alias) = provider.social_provider.as_deref() else {
-            continue;
-        };
-        let key = alias.to_ascii_lowercase();
-        if let Some(first_id) = first_id_by_alias.get(&key) {
-            return Err(QidError::Config {
-                message: format!(
-                    "realm {realm_id} inbound providers {first_id} and {} have social_provider aliases that must be unique case-insensitively",
-                    provider.id
-                ),
-            });
-        }
-        first_id_by_alias.insert(key, &provider.id);
-    }
-    Ok(())
-}
-
 impl RealmConfig {
     pub(crate) fn validate_iga_access_request(&self) -> QidResult<()> {
         if let Some(target) = &self.protocols.iga.access_request_audience
@@ -1862,10 +1833,6 @@ impl RealmConfig {
             &self.protocols.federation.inbound_providers,
         )?;
         validate_inbound_provider_issuer_uniqueness(
-            &self.id,
-            &self.protocols.federation.inbound_providers,
-        )?;
-        validate_social_provider_alias_uniqueness(
             &self.id,
             &self.protocols.federation.inbound_providers,
         )?;

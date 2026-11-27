@@ -258,6 +258,11 @@ impl TokenRepository for FileRepository {
         .ok_or(QidError::NotFound {
             resource: "device authorization grant".into(),
         })?;
+        if grant.user_id.is_some() || grant.approved_at.is_some() {
+            return Err(QidError::Conflict {
+                message: "device authorization grant is already approved".to_string(),
+            });
+        }
         grant.user_id = Some(user_id.to_string());
         grant.approved_at = Some(approved_at);
         drop(store);

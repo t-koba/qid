@@ -4532,6 +4532,117 @@ async fn device_browser_verification_and_approval_use_grant_realm_feature_flag()
 }
 
 #[tokio::test]
+async fn device_approval_from_a_second_same_realm_session_conflicts() {
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .device_authorization
+        .enabled = true;
+    let (app, _, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&device_test_client(
+            "device-approvers-id",
+            "device-approvers",
+        ))
+        .await
+        .unwrap();
+    for (id, email) in [
+        ("device-approver-one", "device-approver-one@example.com"),
+        ("device-approver-two", "device-approver-two@example.com"),
+    ] {
+        state
+            .repo
+            .create_user(&User {
+                id: id.to_string(),
+                realm_id: "test".to_string(),
+                email: Some(email.to_string()),
+                email_verified: true,
+                display_name: None,
+                failed_login_attempts: 0,
+                locked_until: None,
+                org: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let authorization = post_form(
+        app.clone(),
+        &state.paths.device_authorization,
+        "client_id=device-approvers&scope=api",
+    )
+    .await;
+    assert_eq!(authorization.status(), StatusCode::OK);
+    let authorization = json_body(authorization).await;
+    let user_code = authorization["user_code"].as_str().unwrap().to_string();
+
+    let sessions = SessionManager::new(state.repo.clone(), 60, 24);
+    let first = sessions
+        .create("test", "device-approver-one", "password", &[])
+        .await
+        .unwrap();
+    let second = sessions
+        .create("test", "device-approver-two", "password", &[])
+        .await
+        .unwrap();
+    assert!(state.repo.get_session(&second.id).await.unwrap().is_some());
+
+    let cookie_name = &state.config.realms[0].sessions.browser.cookie_name;
+    let approve_path = format!("{}/approve", state.paths.device_authorization);
+    let approval_body = format!(r#"{{"user_code":"{user_code}"}}"#);
+    let approval_request = |session_id: &str| {
+        Request::post(&approve_path)
+            .header("Content-Type", "application/json")
+            .header("Cookie", format!("{cookie_name}={session_id}"))
+            .body(Body::from(approval_body.clone()))
+            .unwrap()
+    };
+
+    let first_response = app
+        .clone()
+        .oneshot(approval_request(&first.id))
+        .await
+        .unwrap();
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let first_grant = state
+        .repo
+        .get_device_authorization_grant_by_user_code(&user_code)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_grant.user_id.as_deref(), Some("device-approver-one"));
+
+    let second_response = app
+        .clone()
+        .oneshot(approval_request(&second.id))
+        .await
+        .unwrap();
+    assert_eq!(second_response.status(), StatusCode::CONFLICT);
+    let error = json_body(second_response).await;
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("device authorization grant is already approved"),
+        "unexpected conflict body: {error}"
+    );
+
+    let stored = state
+        .repo
+        .get_device_authorization_grant_by_user_code(&user_code)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.device_code_hash, first_grant.device_code_hash);
+    assert_eq!(stored.user_code, user_code);
+    assert_eq!(stored.user_id.as_deref(), Some("device-approver-one"));
+    assert_eq!(stored.approved_at, first_grant.approved_at);
+    assert!(!stored.consumed);
+}
+
+#[tokio::test]
 async fn device_code_grant_requires_approval_then_consumes_code() {
     let mut config = test_helpers::test_config();
     config.realms[0]

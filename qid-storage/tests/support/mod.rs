@@ -4358,6 +4358,97 @@ where
     assert_eq!(stored.last_poll_at, Some(1100));
 }
 
+/// A device authorization grant is approved once: a second approval from a
+/// different user conflicts and leaves the first approver and user code intact.
+pub async fn assert_device_authorization_grant_approval_is_one_time<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + TokenRepository,
+{
+    let realm = RealmId("realm-device-approval-contract".to_string());
+    repo.create_realm(
+        &TenantId("tenant-device-approval-contract".to_string()),
+        &realm,
+        "https://device-approval-contract.example.com",
+        None,
+    )
+    .await
+    .expect("create device approval contract realm failed");
+    for (id, email) in [
+        ("device-approval-first", "device-approval-first@example.com"),
+        (
+            "device-approval-second",
+            "device-approval-second@example.com",
+        ),
+    ] {
+        repo.create_user(&User {
+            id: id.to_string(),
+            realm_id: realm.0.clone(),
+            email: Some(email.to_string()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .expect("create device approval contract user failed");
+    }
+    let grant = DeviceAuthorizationGrant {
+        resource: Vec::new(),
+        audience: Vec::new(),
+        device_code_hash: "device-approval-contract-hash".into(),
+        user_code: "DEVICE-APPROVAL-CONTRACT".into(),
+        client_id: "device-approval-contract-client".into(),
+        realm_id: realm.0.clone(),
+        scopes: vec!["read".to_string()],
+        user_id: None,
+        expires_at: 3000,
+        approved_at: None,
+        consumed: false,
+        last_poll_at: None,
+        poll_interval_seconds: 5,
+        created_at: 1,
+    };
+    repo.store_device_authorization_grant(&grant)
+        .await
+        .expect("store pending device grant");
+
+    repo.approve_device_authorization_grant(&grant.user_code, "device-approval-first", 1200)
+        .await
+        .expect("first approval must succeed");
+    let error = repo
+        .approve_device_authorization_grant(&grant.user_code, "device-approval-second", 1300)
+        .await
+        .expect_err("second approval must conflict");
+    assert!(
+        matches!(error, QidError::Conflict { .. }),
+        "second approval returned {error:?}"
+    );
+    let stored = repo
+        .get_device_authorization_grant_by_user_code(&grant.user_code)
+        .await
+        .expect("get approved device grant")
+        .expect("approved device grant missing");
+    assert_eq!(stored.device_code_hash, grant.device_code_hash);
+    assert_eq!(stored.user_code, grant.user_code);
+    assert_eq!(stored.user_id.as_deref(), Some("device-approval-first"));
+    assert_eq!(stored.approved_at, Some(1200));
+    assert!(!stored.consumed);
+
+    let error = repo
+        .approve_device_authorization_grant(
+            "DEVICE-APPROVAL-UNKNOWN",
+            "device-approval-second",
+            1400,
+        )
+        .await
+        .expect_err("approval of an unknown user code must fail");
+    assert!(
+        matches!(error, QidError::NotFound { .. }),
+        "unknown user code returned {error:?}"
+    );
+}
+
 /// The create-only contract of a backchannel authentication grant: the
 /// `auth_req_id_hash` names one grant, so a second grant with the same hash
 /// is refused with `Conflict` and the incumbent keeps its owner, payload,

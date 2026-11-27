@@ -242,6 +242,11 @@ pub trait TokenRepository: Send + Sync + 'static {
         &self,
         user_code: &str,
     ) -> QidResult<Option<DeviceAuthorizationGrant>>;
+    /// Approve a pending grant exactly once: the first caller becomes its
+    /// owner. A grant that already has an approver is refused with `Conflict`
+    /// and left unchanged; an unknown `user_code` is `NotFound`. The check and
+    /// write form one atomic transition, so a later approver cannot replace
+    /// the first one before the device redeems its code.
     async fn approve_device_authorization_grant(
         &self,
         user_code: &str,

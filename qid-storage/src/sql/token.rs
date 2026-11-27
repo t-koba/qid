@@ -356,7 +356,7 @@ impl TokenRepository for SqlRepository {
         approved_at: u64,
     ) -> QidResult<()> {
         let result = sqlx::query(
-            "UPDATE device_authorization_grants SET user_id = $1, approved_at = $2 WHERE user_code = $3",
+            "UPDATE device_authorization_grants SET user_id = $1, approved_at = $2 WHERE user_code = $3 AND user_id IS NULL AND approved_at IS NULL",
         )
         .bind(user_id)
         .bind(approved_at as i64)
@@ -364,10 +364,24 @@ impl TokenRepository for SqlRepository {
         .execute(&self.pool)
         .await
         .map_err(storage_to_qid_error)?;
-        crate::ownership::ensure_row_present(result.rows_affected(), || {
-            "device authorization grant".to_string()
-        })?;
-        Ok(())
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
+        // The guarded update also affects no row when the user code is gone.
+        // Distinguish that case so a missing grant stays a NotFound.
+        let present = sqlx::query("SELECT 1 FROM device_authorization_grants WHERE user_code = $1")
+            .bind(user_code)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_to_qid_error)?;
+        if present.is_none() {
+            return Err(QidError::NotFound {
+                resource: "device authorization grant".to_string(),
+            });
+        }
+        Err(QidError::Conflict {
+            message: "device authorization grant is already approved".to_string(),
+        })
     }
 
     async fn record_device_authorization_poll(

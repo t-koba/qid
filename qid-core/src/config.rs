@@ -1391,12 +1391,7 @@ fn validate_inbound_provider_issuer_uniqueness(
     realm_id: &str,
     providers: &[InboundProviderConfig],
 ) -> QidResult<()> {
-    type UpstreamEndpoints<'a> = (
-        Option<&'a str>,
-        Option<&'a str>,
-        Option<&'a str>,
-        Option<&'a serde_json::Value>,
-    );
+    type UpstreamEndpoints<'a> = (Option<&'a str>, Option<&'a str>, Option<&'a str>);
     let mut by_issuer: std::collections::HashMap<
         &str,
         (&InboundProviderConfig, UpstreamEndpoints<'_>),
@@ -1408,7 +1403,6 @@ fn validate_inbound_provider_issuer_uniqueness(
             provider.token_url.as_deref(),
             provider.userinfo_url.as_deref(),
             provider.jwks_uri.as_deref(),
-            provider.jwks.as_ref(),
         );
         if let Some((first, first_endpoints)) = by_issuer.get(provider.issuer.as_str())
             && *first_endpoints != endpoints

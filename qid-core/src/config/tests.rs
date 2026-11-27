@@ -4005,7 +4005,7 @@ fn inbound_providers_sharing_issuer_with_different_upstream_endpoints_are_reject
                 0 => second.token_url = Some("https://idp.example.com/token-v2".to_string()),
                 1 => second.userinfo_url = Some("https://idp.example.com/userinfo-v2".to_string()),
                 2 => second.jwks_uri = Some("https://idp.example.com/jwks-v2".to_string()),
-                3 => second.jwks = Some(serde_json::json!({"keys": []})),
+                3 => second.jwks_uri = None,
                 4 => second.token_url = None,
                 _ => unreachable!(),
             }
@@ -4044,8 +4044,20 @@ fn inbound_providers_sharing_issuer_and_upstream_endpoints_allow_multiple_regist
             provider.userinfo_url = Some("https://idp.example.com/userinfo".to_string());
             provider.jwks_uri = Some("https://idp.example.com/jwks".to_string());
         }
-        providers[0].jwks = Some(serde_json::json!({"keys": [], "extra": 1}));
-        providers[1].jwks = Some(serde_json::json!({"extra": 1, "keys": []}));
+        let first_keys = serde_json::json!({
+            "keys": [
+                {"kty": "RSA", "kid": "key-a"},
+                {"kty": "EC", "kid": "key-b"}
+            ]
+        });
+        let reordered_keys = serde_json::json!({
+            "keys": [
+                {"kid": "key-b", "kty": "EC"},
+                {"kid": "key-a", "kty": "RSA"}
+            ]
+        });
+        providers[0].jwks = Some(first_keys);
+        providers[1].jwks = Some(reordered_keys);
         providers[1].social_provider = Some("google".to_string());
         config.validate().unwrap_or_else(|err| {
             panic!(

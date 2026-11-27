@@ -540,12 +540,11 @@ pub async fn refresh_token_grant<R: Repository>(
     // Re-resolve the stored target against the current realm registration
     // before consuming the refresh hash. A registered audience that was
     // removed, restricted to fewer scopes, or newly sender-constrained ends
-    // the lineage instead of issuing tokens for a stale target. The implicit
-    // client audience applies only when no resource server is configured and
-    // the family never named one; re-resolution never adds an audience that
-    // was not part of the original grant.
+    // the lineage instead of issuing tokens for a stale target. Only families
+    // that never named a target retain the implicit client-id audience;
+    // later registration of unrelated servers cannot change that grant, and
+    // re-resolution never adds an audience that was not originally granted.
     let implicit_client_audience = family.resource.is_empty()
-        && realm.protocols.oauth.resource_servers.is_empty()
         && family
             .audience
             .iter()

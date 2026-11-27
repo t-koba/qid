@@ -2474,6 +2474,71 @@ async fn refresh_keeps_registered_audience_when_config_is_unchanged() {
 }
 
 #[tokio::test]
+async fn refresh_keeps_implicit_client_audience_after_unrelated_server_registration() {
+    // A family minted without any resource server has no target to re-resolve.
+    // Registering an unrelated server later must not invalidate that lineage.
+    let config = test_helpers::test_config();
+    assert!(config.realms[0].protocols.oauth.resource_servers.is_empty());
+    let (app, token_path, state) = setup_with_config(config.clone()).await;
+    let code = "implicit-audience-code";
+    let verifier = "f1e2d3c4b5a60718293a4b5c6d7e8f9012345678abcdef";
+    create_user_with_code(
+        &state,
+        "implicit-audience-user",
+        code,
+        verifier,
+        vec!["api".to_string()],
+        None,
+        None,
+        vec![],
+        Vec::new(),
+    )
+    .await;
+    let issued = post_token_json(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={}",
+            urlencoding::encode(code),
+            urlencoding::encode(verifier)
+        ),
+    )
+    .await;
+    let refresh_token = issued["refresh_token"].as_str().unwrap().to_string();
+    let family_id = decode_claims(&state, &refresh_token).extra["family_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let family = state
+        .repo
+        .get_token_family(&family_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(family.audience, ["test-client"]);
+    assert!(family.resource.is_empty());
+
+    let mut changed = config;
+    changed.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://added-later",
+        &["api"],
+        "introspection-client",
+    )];
+    let response = post_form(
+        app_with_changed_config(changed, &state),
+        &token_path,
+        refresh_body(&refresh_token),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let access = decode_claims(
+        &state,
+        json_body(response).await["access_token"].as_str().unwrap(),
+    );
+    assert_eq!(access.aud_primary(), Some("test-client"));
+}
+
+#[tokio::test]
 async fn refresh_preserves_original_scope_ceiling() {
     // RFC 6749 section 6: omitted scope means the original grant, explicit
     // scope must be a subset, and the replacement refresh token keeps the

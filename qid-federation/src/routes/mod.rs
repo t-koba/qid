@@ -313,6 +313,10 @@ pub fn federation_routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
             post(spnego::spnego_negotiate::<R>),
         )
         .route(
+            "/federation/:realm/social/id/:provider/callback",
+            get(social::social_login_callback_for_provider::<R>),
+        )
+        .route(
             "/federation/:realm/social/:provider/callback",
             get(social::social_login_callback::<R>),
         )

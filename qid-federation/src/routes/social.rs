@@ -20,9 +20,34 @@ use super::{
     verify_authorization_response_issuer,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SocialCallbackPath {
+    Alias,
+    Canonical,
+}
+
 pub async fn social_login_callback<R: Repository>(
+    state: State<Arc<SharedState<R>>>,
+    path: Path<(String, String)>,
+    params: Query<OidcCallbackQuery>,
+    headers: HeaderMap,
+) -> Response {
+    social_login_callback_inner(state, path, SocialCallbackPath::Alias, params, headers).await
+}
+
+pub async fn social_login_callback_for_provider<R: Repository>(
+    state: State<Arc<SharedState<R>>>,
+    path: Path<(String, String)>,
+    params: Query<OidcCallbackQuery>,
+    headers: HeaderMap,
+) -> Response {
+    social_login_callback_inner(state, path, SocialCallbackPath::Canonical, params, headers).await
+}
+
+async fn social_login_callback_inner<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     Path((realm, provider_name)): Path<(String, String)>,
+    path_kind: SocialCallbackPath,
     Query(params): Query<OidcCallbackQuery>,
     headers: HeaderMap,
 ) -> Response {
@@ -77,13 +102,25 @@ pub async fn social_login_callback<R: Repository>(
                 .into_response();
         }
     };
-    // A callback path addresses a provider by canonical id or social alias.
-    let path_matches = |p: &InboundIdentityProvider| {
-        p.id == provider_name
-            || p.social_provider
-                .as_deref()
-                .is_some_and(|alias| alias.eq_ignore_ascii_case(&provider_name))
+    // Canonical ids and aliases are separate namespaces, so a shared alias
+    // can never take away the provider's distinct canonical callback path.
+    let path_matches = |p: &InboundIdentityProvider| match path_kind {
+        SocialCallbackPath::Alias => p
+            .social_provider
+            .as_deref()
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(&provider_name)),
+        SocialCallbackPath::Canonical => p.id == provider_name,
     };
+    if path_kind == SocialCallbackPath::Canonical && proof.provider != provider_name {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "social_provider_mismatch",
+                "message": format!("provider {} does not match callback {provider_name}", proof.provider)
+            })),
+        )
+            .into_response();
+    }
     if !path_matches(&provider) {
         return (
             StatusCode::BAD_REQUEST,
@@ -154,11 +191,17 @@ pub async fn social_login_callback<R: Repository>(
         }
     };
 
+    let callback_path = match path_kind {
+        SocialCallbackPath::Alias => format!("social/{}", urlencoding::encode(&provider_name)),
+        SocialCallbackPath::Canonical => {
+            format!("social/id/{}", urlencoding::encode(&provider_name))
+        }
+    };
     let redirect_uri = format!(
-        "{}/federation/{}/social/{}/callback",
+        "{}/federation/{}/{}/callback",
         state.plan.public_base_url.trim_end_matches('/'),
         urlencoding::encode(&realm),
-        urlencoding::encode(&provider_name),
+        callback_path,
     );
 
     let token_resp = match exchange_code_for_tokens(
@@ -276,7 +319,7 @@ mod tests {
         proof: Option<&str>,
         cookie: Option<&str>,
     ) -> (StatusCode, Value) {
-        callback_with_iss(state, provider_name, proof, cookie, None).await
+        callback_inner(state, provider_name, proof, cookie, None, false).await
     }
 
     async fn callback_with_iss(
@@ -286,17 +329,38 @@ mod tests {
         cookie: Option<&str>,
         issuer: Option<&str>,
     ) -> (StatusCode, Value) {
-        let response = social_login_callback(
-            State(state.clone()),
-            Path(("test".to_string(), provider_name.to_string())),
-            Query(OidcCallbackQuery {
-                code: "provider-code".to_string(),
-                state: proof.map(str::to_string),
-                iss: issuer.map(str::to_string),
-            }),
-            callback_headers(cookie),
-        )
-        .await;
+        callback_inner(state, provider_name, proof, cookie, issuer, false).await
+    }
+
+    async fn callback_for_provider(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        provider_name: &str,
+        proof: Option<&str>,
+        cookie: Option<&str>,
+    ) -> (StatusCode, Value) {
+        callback_inner(state, provider_name, proof, cookie, None, true).await
+    }
+
+    async fn callback_inner(
+        state: &Arc<SharedState<qid_storage::FileRepository>>,
+        provider_name: &str,
+        proof: Option<&str>,
+        cookie: Option<&str>,
+        issuer: Option<&str>,
+        canonical_path: bool,
+    ) -> (StatusCode, Value) {
+        let path = Path(("test".to_string(), provider_name.to_string()));
+        let query = Query(OidcCallbackQuery {
+            code: "provider-code".to_string(),
+            state: proof.map(str::to_string),
+            iss: issuer.map(str::to_string),
+        });
+        let headers = callback_headers(cookie);
+        let response = if canonical_path {
+            social_login_callback_for_provider(State(state.clone()), path, query, headers).await
+        } else {
+            social_login_callback(State(state.clone()), path, query, headers).await
+        };
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&body).unwrap())
@@ -543,9 +607,8 @@ mod tests {
         let (proof, cookie) =
             tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
 
-        // The canonical id is an alternative to the configured alias in the path.
         let (status, body) =
-            callback(&fixture.state, "corp-social", Some(&proof), Some(&cookie)).await;
+            callback_for_provider(&fixture.state, "corp-social", Some(&proof), Some(&cookie)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["provider"], "corp-social");
         let realm = RealmId("test".to_string());
@@ -594,23 +657,37 @@ mod tests {
         let (base_url, server) = tx_test::provider_stub().await;
         let fixture = tx_test::fixture_with_social_alias(
             &["corp-social", "other-social"],
-            "google",
+            "other-social",
             &base_url,
         )
         .await;
         let (proof, cookie) =
-            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+            tx_test::issue_transaction(&fixture.state, "test", "other-social").await;
 
         let (status, body) =
-            callback(&fixture.state, "corp-social", Some(&proof), Some(&cookie)).await;
+            callback(&fixture.state, "other-social", Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("authorization response issuer required"),
+            "{body}"
+        );
+
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "other-social").await;
+        let (status, body) =
+            callback_for_provider(&fixture.state, "other-social", Some(&proof), Some(&cookie))
+                .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["provider"], "corp-social");
+        assert_eq!(body["provider"], "other-social");
         let realm = RealmId("test".to_string());
         assert_eq!(fixture.repo.list_users(&realm).await.unwrap().len(), 1);
         assert!(
             fixture
                 .repo
-                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
+                .get_ciam_identity_link_by_external_subject(&realm, "other-social", "user-123")
                 .await
                 .unwrap()
                 .is_some()
@@ -618,7 +695,7 @@ mod tests {
         assert!(
             fixture
                 .repo
-                .get_ciam_identity_link_by_external_subject(&realm, "other-social", "user-123")
+                .get_ciam_identity_link_by_external_subject(&realm, "corp-social", "user-123")
                 .await
                 .unwrap()
                 .is_none()
@@ -628,10 +705,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn social_callback_colliding_canonical_id_alias_path_requires_issuer() {
+    async fn social_callback_shared_alias_equal_to_a_canonical_id_requires_issuer() {
         let (base_url, server) = tx_test::provider_stub().await;
-        // The selected provider's canonical id is also the other provider's
-        // alias, so that path matches two enabled providers.
+        // Both providers use the selected provider's canonical id as their
+        // alias, so the alias callback target is shared.
         let fixture = tx_test::fixture_with_social_alias_and_issuers(
             &["corp-social", "other-social"],
             "corp-social",
@@ -657,6 +734,21 @@ mod tests {
             "{body}"
         );
         tx_test::assert_no_identity_effects(&fixture, "corp-social").await;
+        tx_test::assert_no_identity_effects(&fixture, "other-social").await;
+
+        // A canonical path must not accept a proof selected by that shared
+        // alias alone.
+        let (alias_proof, alias_cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "other-social").await;
+        let (status, body) = callback_for_provider(
+            &fixture.state,
+            "corp-social",
+            Some(&alias_proof),
+            Some(&alias_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "social_provider_mismatch");
         tx_test::assert_no_identity_effects(&fixture, "other-social").await;
 
         let (proof, cookie) =

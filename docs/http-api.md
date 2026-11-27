@@ -75,7 +75,7 @@ against its configuration.
 
 ### Migrating `private_key_jwt` client assertions
 
-At the token and PAR endpoints, set `aud` to the exact issuer identifier advertised by the authenticated client's realm, either as a string or as a one-element array. The issuer is matched exactly, including any trailing slash. Assertions using a token or PAR endpoint URL, a different realm's issuer, or an array containing additional values are rejected. Clients previously using endpoint audiences must update their assertion configuration before upgrading; there is no endpoint-audience fallback. A missing JWT `typ` header remains accepted; clients may send `typ=client-authentication+jwt`. Existing signature, expiration and replay requirements continue to apply.
+At the token, PAR, and device authorization endpoints, set `aud` to the exact issuer identifier advertised by the authenticated client's realm, either as a string or as a one-element array. The issuer is matched exactly, including any trailing slash. Assertions using a token, PAR, or device authorization endpoint URL, a different realm's issuer, or an array containing additional values are rejected. Clients previously using endpoint audiences must update their assertion configuration before upgrading; there is no endpoint-audience fallback. A missing JWT `typ` header remains accepted; clients may send `typ=client-authentication+jwt`. Existing signature, expiration and replay requirements continue to apply.
 
 ## Session, email magic link, SMS recovery, WebAuthn, TOTP, and push MFA
 

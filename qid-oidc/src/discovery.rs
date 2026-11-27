@@ -963,11 +963,14 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
                 if let Some(claims_sid) = claims.extra.get("sid").and_then(|v| v.as_str()) {
                     let current_sid = state.realm(&realm.id).and_then(|runtime_realm| {
                         cookie_header.and_then(|cookie| {
-                            parse_cookie(cookie, &runtime_realm.browser_session.cookie_name)
+                            qid_http::parse_cookie(
+                                cookie,
+                                &runtime_realm.browser_session.cookie_name,
+                            )
                         })
                     });
                     if let Some(current_sid) = current_sid
-                        && claims_sid != current_sid
+                        && claims_sid != current_sid.as_str()
                     {
                         return qid_http::error_response(bad_request(
                             "id_token_hint sid does not match current session",
@@ -1033,17 +1036,18 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
         Err(error) => return qid_http::error_response(error),
     };
 
-    let mut session_id = cookie_header.and_then(|c| parse_cookie(c, &cookie_name));
+    let mut session_id = cookie_header.and_then(|c| qid_http::parse_cookie(c, &cookie_name));
     let mut foreign_session = false;
 
-    let session = match terminate_browser_session(sessions, session_id, realm_id, |sid| {
-        state.session_cache_delete(sid)
-    })
-    .await
-    {
-        Ok(session) => session,
-        Err(error) => return qid_http::error_response(error),
-    };
+    let session =
+        match terminate_browser_session(sessions, session_id.as_deref(), realm_id, |sid| {
+            state.session_cache_delete(sid)
+        })
+        .await
+        {
+            Ok(session) => session,
+            Err(error) => return qid_http::error_response(error),
+        };
     let user_id = session.and_then(|session| {
         if Some(session.realm_id.as_str()) != logout_realm_id.as_deref() {
             foreign_session = true;
@@ -1091,7 +1095,7 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
     // server-side backchannel delivery runs before any redirect or page
     // completes the logout. Delivery is best-effort; failures are logged
     // and never block session termination or the completion target.
-    let sid = session_id;
+    let sid = session_id.as_deref();
     let mut iframes = String::new();
     if let Some(issuer) = logout_issuer.as_deref() {
         for client in &clients_with_logout_uris {
@@ -1431,16 +1435,6 @@ async fn logout_client_realm<'a, R: Repository>(
         }
     }
     found.ok_or_else(|| bad_request("unknown logout client"))
-}
-
-fn parse_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some(value) = pair.strip_prefix(&format!("{}=", name)) {
-            return Some(value.trim().trim_matches('"'));
-        }
-    }
-    None
 }
 
 /// WebFinger (RFC 7033) endpoint for OIDC issuer discovery.

@@ -5055,6 +5055,25 @@ async fn ciba_flow_requires_approval_then_consumes_auth_req_id() {
     let cookie_value = format!("{}={}", cookie_name, session.id);
 
     let approve_path = format!("{}/approve", state.paths.backchannel_authentication);
+    // A repeated session cookie is ambiguous: never select the first value,
+    // even when that value names a live session for the approving user.
+    let duplicate_cookie = format!("{cookie_name}={}; {cookie_name}=other", session.id);
+    let duplicate_request = Request::builder()
+        .method(Method::POST)
+        .uri(&approve_path)
+        .header("Content-Type", "application/json")
+        .header(axum::http::header::COOKIE, &duplicate_cookie)
+        .body(Body::from(
+            serde_json::json!({
+                "auth_req_id": auth_req_id,
+                "user_id": "ciba-user"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let duplicate_response = app.clone().oneshot(duplicate_request).await.unwrap();
+    assert_eq!(duplicate_response.status(), StatusCode::UNAUTHORIZED);
+
     let approve_request = Request::builder()
         .method(Method::POST)
         .uri(&approve_path)

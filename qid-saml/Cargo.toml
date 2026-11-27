@@ -26,6 +26,7 @@ hex = { workspace = true }
 metrics = { workspace = true }
 p256 = { workspace = true }
 qid-core = { workspace = true }
+qid-http = { workspace = true }
 qid-storage = { workspace = true }
 rand = { workspace = true }
 roxmltree = { workspace = true }

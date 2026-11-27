@@ -4022,6 +4022,7 @@ dependencies = [
  "metrics",
  "p256",
  "qid-core",
+ "qid-http",
  "qid-storage",
  "rand 0.8.8",
  "roxmltree",

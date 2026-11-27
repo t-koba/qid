@@ -169,17 +169,6 @@ async fn create_backchannel_authentication_grant<R: Repository>(
     })
 }
 
-fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
-    for pair in cookie.split(';') {
-        let mut parts = pair.splitn(2, '=');
-        if parts.next()?.trim() == name {
-            return Some(parts.next()?.trim());
-        }
-    }
-    None
-}
-
 pub async fn backchannel_authentication_approve<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
@@ -306,7 +295,7 @@ async fn authorize_ciba_browser_session<R: Repository>(
         });
     };
     let cookie_name = &realm_cfg.browser_session.cookie_name;
-    let Some(session_id) = extract_cookie(headers, cookie_name) else {
+    let Some(session_id) = qid_http::extract_cookie(headers, cookie_name) else {
         return Err(QidError::Unauthorized {
             message: "authentication required: missing session cookie".to_string(),
         });
@@ -314,7 +303,7 @@ async fn authorize_ciba_browser_session<R: Repository>(
     let session =
         state
             .repo
-            .get_session(session_id)
+            .get_session(&session_id)
             .await?
             .ok_or_else(|| QidError::Unauthorized {
                 message: "invalid or expired session".to_string(),

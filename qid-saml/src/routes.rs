@@ -6,6 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use qid_core::{models::Session, state::SharedState};
+use qid_http::extract_cookie;
 use qid_storage::prelude::*;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -145,14 +146,6 @@ fn load_session_index_key(
         .as_deref()
         .ok_or_else(|| "SAML SessionIndex binding requires idp_signing_key_pem_path".to_owned())?;
     std::fs::read(path).map_err(|err| format!("failed to read SAML IdP signing key: {err}"))
-}
-
-pub(crate) fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
-    cookie.split(';').find_map(|part| {
-        let (cookie_name, cookie_value) = part.trim().split_once('=')?;
-        (cookie_name == name).then(|| cookie_value.to_string())
-    })
 }
 
 pub(crate) fn is_active_session_for_realm(session: &Session, realm: &str) -> bool {

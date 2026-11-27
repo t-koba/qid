@@ -139,16 +139,28 @@ pub fn dpop_nonce_error_response(
     response
 }
 
-/// Read the first named cookie from the Cookie header without decoding its value.
-pub fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+/// Read a named cookie from a raw `Cookie` header without decoding its value.
+///
+/// A repeated name is ambiguous: browsers may order same-named cookies by path,
+/// so the first value is not necessarily the one the server issued. Fail closed
+/// instead of selecting one. Values are otherwise returned verbatim apart from
+/// surrounding whitespace.
+pub fn parse_cookie(cookie_header: &str, name: &str) -> Option<String> {
+    let mut found: Option<&str> = None;
     for pair in cookie_header.split(';') {
         let pair = pair.trim();
         if let Some((key, value)) = pair.split_once('=')
             && key.trim() == name
+            && found.replace(value.trim()).is_some()
         {
-            return Some(value.trim().to_string());
+            return None;
         }
     }
-    None
+    found.map(str::to_owned)
+}
+
+/// Read a named cookie from the `Cookie` header of an HTTP request.
+pub fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    parse_cookie(cookie_header, name)
 }

@@ -402,18 +402,13 @@ async fn assert_session_failure(response: Response) {
     );
 }
 
-async fn browser_logout(
+async fn browser_logout_with_cookie(
     state: &SharedState<qid_storage::FileRepository>,
     sessions: &FaultySessions,
-    sid: &str,
+    cookie: &str,
 ) -> Response {
-    let cookie = &state
-        .realm("logout-issuer")
-        .unwrap()
-        .browser_session
-        .cookie_name;
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(header::COOKIE, format!("{cookie}={sid}").parse().unwrap());
+    headers.insert(header::COOKIE, cookie.parse().unwrap());
     logout_with_sessions(
         state,
         sessions,
@@ -426,6 +421,37 @@ async fn browser_logout(
         },
     )
     .await
+}
+
+async fn browser_logout(
+    state: &SharedState<qid_storage::FileRepository>,
+    sessions: &FaultySessions,
+    sid: &str,
+) -> Response {
+    let cookie = &state
+        .realm("logout-issuer")
+        .unwrap()
+        .browser_session
+        .cookie_name;
+    browser_logout_with_cookie(state, sessions, &format!("{cookie}={sid}")).await
+}
+
+#[tokio::test]
+async fn duplicate_browser_session_cookies_terminate_no_session() {
+    let (_file, state) = logout_state().await;
+    let sessions = faulty_sessions(&state).await;
+    let cookie_name = &state
+        .realm("logout-issuer")
+        .unwrap()
+        .browser_session
+        .cookie_name;
+    let cookie = format!("{cookie_name}=local-a; {cookie_name}=local-b");
+    let response = browser_logout_with_cookie(&state, &sessions, &cookie).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    for sid in ["local-a", "local-b"] {
+        assert!(!sessions.revoked(sid));
+        assert!(state.session_cache_get(sid).is_some());
+    }
 }
 
 #[tokio::test]

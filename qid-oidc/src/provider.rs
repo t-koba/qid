@@ -18,6 +18,7 @@ use qid_core::{
     tenant::RealmId,
 };
 use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
+use qid_http::parse_cookie;
 
 use qid_session::{
     PasswordAttemptLimiter,
@@ -254,18 +255,6 @@ fn prompt_requires_login(prompt: Option<&str>) -> bool {
                 .any(|value| value == "login")
         })
         .unwrap_or(false)
-}
-
-fn parse_cookie(cookie_header: &str, name: &str) -> Option<String> {
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once('=')
-            && key.trim() == name
-        {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
 }
 
 /// Handle POST /oauth2/authorize by accepting credentials and redirecting.

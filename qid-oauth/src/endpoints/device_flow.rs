@@ -360,14 +360,14 @@ async fn approve_device_authorization<R: Repository>(
 
     let cookie_name = &realm_cfg.browser_session.cookie_name;
     let session_id =
-        extract_cookie(headers, cookie_name).ok_or_else(|| QidError::Unauthorized {
+        qid_http::extract_cookie(headers, cookie_name).ok_or_else(|| QidError::Unauthorized {
             message: "authentication required: missing session cookie".to_string(),
         })?;
 
     let session =
         state
             .repo
-            .get_session(session_id)
+            .get_session(&session_id)
             .await?
             .ok_or_else(|| QidError::Unauthorized {
                 message: "invalid or expired session".to_string(),
@@ -399,19 +399,6 @@ async fn approve_device_authorization<R: Repository>(
         .repo
         .approve_device_authorization_grant(&req.user_code, &user_id, qid_core::util::now_seconds())
         .await
-}
-
-fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    let cookie_str = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_str.split(';') {
-        let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once('=')
-            && key.trim() == name
-        {
-            return Some(value.trim());
-        }
-    }
-    None
 }
 
 pub(crate) async fn device_code_grant<R: Repository>(
@@ -908,31 +895,48 @@ mod tests {
             .unwrap()
             .browser_session
             .cookie_name;
-        for (session_id, site, expected) in [
+        for (cookie_header, site, expected) in [
             (None, "same-origin", StatusCode::UNAUTHORIZED),
-            (Some("missing"), "same-origin", StatusCode::UNAUTHORIZED),
             (
-                Some(revoked.id.as_str()),
+                Some(format!("{cookie_name}=missing")),
                 "same-origin",
                 StatusCode::UNAUTHORIZED,
             ),
             (
-                Some(wrong_realm.id.as_str()),
+                Some(format!("{cookie_name}={}", revoked.id)),
                 "same-origin",
                 StatusCode::UNAUTHORIZED,
             ),
             (
-                Some(active.id.as_str()),
+                Some(format!("{cookie_name}={}", wrong_realm.id)),
+                "same-origin",
+                StatusCode::UNAUTHORIZED,
+            ),
+            // A repeated name is ambiguous, so not even a valid first value is accepted.
+            (
+                Some(format!(
+                    "{cookie_name}={}; {cookie_name}={}",
+                    active.id, wrong_realm.id
+                )),
+                "same-origin",
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                Some(format!("{cookie_name}={}", active.id)),
                 "cross-site",
                 StatusCode::FORBIDDEN,
             ),
-            (Some(active.id.as_str()), "same-origin", StatusCode::OK),
+            (
+                Some(format!("{cookie_name}={}", active.id)),
+                "same-origin",
+                StatusCode::OK,
+            ),
         ] {
             let mut request = Request::post(&path)
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("sec-fetch-site", site);
-            if let Some(id) = session_id {
-                request = request.header(header::COOKIE, format!("{cookie_name}={id}"));
+            if let Some(cookie_header) = cookie_header {
+                request = request.header(header::COOKIE, cookie_header);
             }
             let response = app
                 .clone()

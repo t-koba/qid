@@ -1,9 +1,10 @@
 use super::*;
-use crate::routes::{extract_cookie, is_active_session_for_realm};
+use crate::routes::is_active_session_for_realm;
 use axum::http::{HeaderMap, header};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use qid_core::config::SamlServiceProviderConfig;
 use qid_core::models::{Session, User};
+use qid_http::extract_cookie;
 
 pub(crate) use crate::test_support::sign_saml_test_document;
 pub(crate) fn external_ec_cert() -> String {
@@ -506,6 +507,12 @@ fn cookie_and_session_checks_are_strict() {
         Some("sid-1")
     );
     assert!(extract_cookie(&headers, "missing").is_none());
+
+    headers.insert(
+        header::COOKIE,
+        "qid_session=sid-1; qid_session=sid-2".parse().unwrap(),
+    );
+    assert!(extract_cookie(&headers, "qid_session").is_none());
 
     let mut session = test_session(None, &[]);
     assert!(is_active_session_for_realm(&session, "corp"));

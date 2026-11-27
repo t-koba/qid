@@ -982,6 +982,28 @@ async fn oidc_authorization_code_disabled_hides_authorize_metadata_and_rejects_a
 }
 
 #[tokio::test]
+async fn authorize_get_rejects_duplicate_browser_session_cookies() {
+    let (app, state) = setup().await;
+    // Both values name real sessions: selecting either one would reuse a session.
+    create_browser_session(&state, "sid-first").await;
+    create_browser_session(&state, "sid-second").await;
+    let cookie_name = &state.realm("test").unwrap().browser_session.cookie_name;
+    let cookie = format!("{cookie_name}=sid-first; {cookie_name}=sid-second");
+    let response = get_uri(
+        app,
+        format!(
+            "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=duplicate-cookie&nonce=session-nonce&code_challenge={}&code_challenge_method=S256",
+            state.paths.authorize,
+            urlencoding::encode("https://app.example.com/callback"),
+            util::sha256_base64url(PKCE_VERIFIER)
+        ),
+        Some(&cookie),
+    )
+    .await;
+    assert_login_challenge(response).await;
+}
+
+#[tokio::test]
 async fn authorize_get_uses_browser_session_cookie_to_issue_code() {
     let (app, state) = setup().await;
     let auth_time = create_browser_session(&state, "sid-authorize").await;

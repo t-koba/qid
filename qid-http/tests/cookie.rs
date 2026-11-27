@@ -11,7 +11,8 @@ fn cookie_extraction_preserves_exact_name_and_opaque_value() {
             .parse()
             .unwrap(),
     );
-    assert_eq!(extract_cookie(&headers, "session"), Some("a=b%20".into()));
+    // A spaced name is not an RFC 6265 token and must not normalize to `session`.
+    assert_eq!(extract_cookie(&headers, "session"), None);
     assert_eq!(extract_cookie(&headers, "missing"), None);
     headers.insert(COOKIE, "session= ".parse().unwrap());
     assert_eq!(extract_cookie(&headers, "session"), Some(String::new()));
@@ -30,9 +31,19 @@ fn duplicate_cookie_names_fail_closed() {
     assert_eq!(extract_cookie(&headers, "qid_session"), None);
     assert_eq!(extract_cookie(&headers, "theme"), Some("dark".into()));
 
-    // Whitespace around the key must not let one of the duplicates through.
+    // A non-token spelling is ignored rather than normalized into the name.
     assert_eq!(
-        parse_cookie(" qid_session=a; qid_session =b", "qid_session"),
+        parse_cookie("qid_session=a; qid_session =b", "qid_session"),
+        Some("a".into())
+    );
+
+    // Unicode whitespace can make a browser-non-prefixed cookie normalize to
+    // a configured __Host- name; such names must never be read by qid.
+    assert_eq!(
+        parse_cookie(
+            "\u{2000}__Host-qid-federation-tx=attacker",
+            "__Host-qid-federation-tx"
+        ),
         None
     );
 }

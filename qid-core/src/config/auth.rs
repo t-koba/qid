@@ -516,12 +516,7 @@ impl BrowserSessionConfig {
     /// each must be one token: an embedded separator could add cookie
     /// attributes the operator never configured.
     pub(crate) fn validate(&self, realm_id: &str) -> QidResult<()> {
-        let valid_name = !self.cookie_name.is_empty()
-            && self
-                .cookie_name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte));
-        if !valid_name {
+        if !crate::util::is_cookie_name_token(&self.cookie_name) {
             return Err(QidError::Config {
                 message: format!(
                     "realm {realm_id} sessions.browser.cookie_name must be a nonempty RFC 6265 cookie-name token"

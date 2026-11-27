@@ -148,10 +148,13 @@ pub fn dpop_nonce_error_response(
 pub fn parse_cookie(cookie_header: &str, name: &str) -> Option<String> {
     let mut found: Option<&str> = None;
     for pair in cookie_header.split(';') {
-        let pair = pair.trim();
+        // Only ASCII separators are trimmed. str::trim would also remove
+        // Unicode whitespace prefixes that browsers do not treat as __Host-.
+        let pair = pair.trim_ascii();
         if let Some((key, value)) = pair.split_once('=')
-            && key.trim() == name
-            && found.replace(value.trim()).is_some()
+            && qid_core::util::is_cookie_name_token(key)
+            && key == name
+            && found.replace(value.trim_ascii()).is_some()
         {
             return None;
         }

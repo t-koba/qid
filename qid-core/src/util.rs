@@ -38,6 +38,16 @@ pub fn has_valid_percent_escapes(value: &str) -> bool {
     true
 }
 
+/// Whether a string is an RFC 6265 cookie-name token. Names outside this
+/// alphabet are never issued by qid; accepting them in a Cookie header would
+/// let a non-prefixed name normalize to a protected `__Host-` name.
+pub fn is_cookie_name_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
 /// Encode bytes as unpadded base64url.
 pub fn base64_url_encode(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)

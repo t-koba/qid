@@ -520,7 +520,7 @@ Remote signer JWKs must include `kty`, `kid`, and `alg`; `kid` must match the ke
 
 Each realm requires:
 
-- `id`: URL-safe path segment using `[A-Za-z0-9._~-]`.
+- `id`: URL-safe, callback-stable path segment using `[A-Za-z0-9._~-]`; dot segments (`.` and `..`) are rejected because URL parsers normalize them away.
 - `issuer`: valid URL.
 
 Optional realm fields include:
@@ -1147,8 +1147,7 @@ in-process challenge map or additional rate limiter is used.
 
 Send sets/reuses `__Host-qid_email_magic_binding`, a random 32-byte browser cookie
 with HttpOnly, Secure, SameSite=Lax, Path=/ and a renewed one-hour Max-Age. That
-name is reserved when enabling this feature. Realm IDs `.` and `..` are refused
-for this feature because browsers normalize URL dot segments. Outstanding links share the existing
+name is reserved when enabling this feature. Outstanding links share the existing
 well-formed binding; clearing/losing the cookie invalidates them. The email tells
 the user to open the link in **the same browser**, then explicitly confirm. An
 invalid, missing or malformed browser binding does not spend token attempts or

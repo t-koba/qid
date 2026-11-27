@@ -1144,6 +1144,17 @@ fn validate_authorize_request<R: Repository>(
         );
         return Err(unauthorized("authorization request is not allowed"));
     }
+    // Storage and import paths can predate shared validation. Re-check the
+    // exact registered URI here so a reserved query name cannot collide with
+    // the response parameters appended below.
+    if qid_core::oauth::validate_redirect_uri(&req.redirect_uri).is_err() {
+        tracing::warn!(
+            client_id = %client.client_id,
+            realm = %client.realm_id,
+            "authorization request redirect_uri failed validation"
+        );
+        return Err(unauthorized("authorization request is not allowed"));
+    }
 
     if !client
         .grant_types

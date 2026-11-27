@@ -1122,6 +1122,37 @@ async fn authorize_error_appends_query_to_registered_redirect_with_query() {
 }
 
 #[tokio::test]
+async fn authorize_rejects_reserved_query_name_in_registered_redirect() {
+    let (app, state) = setup().await;
+    let registered = "https://app.example.com/callback?state=attacker";
+    // Storage/import can predate shared validation; the authorize path must
+    // re-check the exact registered URI before appending its own parameters.
+    register_query_bearing_redirect_uri(&state, registered).await;
+    create_browser_session(&state, "sid-reserved-query").await;
+
+    let response = get_uri(
+        app,
+        format!(
+            "{}?client_id=par-client&response_type=code&redirect_uri={}&scope=openid&state=legit&nonce=reserved-nonce&code_challenge={}&code_challenge_method=S256",
+            state.paths.authorize,
+            urlencoding::encode(registered),
+            util::sha256_base64url(PKCE_VERIFIER)
+        ),
+        Some("__Host-qid=sid-reserved-query"),
+    )
+    .await;
+    assert_ne!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert!(response.headers().get("location").is_none());
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not allowed")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn magic_link_session_resumes_oidc_authorization() {
     use qid_core::notification::{
         NotificationRequest, NotificationResponse, NotificationTransport,

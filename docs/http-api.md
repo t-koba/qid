@@ -47,6 +47,8 @@ form bodies.
 | `GET` | `/realms/:realm/session/check` | Realm-scoped session check. |
 | `GET` | `/.well-known/webfinger` | WebFinger discovery. |
 
+Registered redirect URIs are validated: no wildcards, fragments or userinfo, HTTPS except true loopback HTTP, and no reserved response parameter name (`code`, `state`, `iss`, `error`, `error_description`, `response`) in the query; registrations carrying such a query are rejected.
+
 ## OAuth
 
 Routes below are installed for OAuth. When `server.http_message_signatures.enabled` is true, token/introspection/revocation/DCR routes are placed behind HTTP Message Signature verification; public browser and approval routes remain unsigned.

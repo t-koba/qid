@@ -37,9 +37,20 @@ pub enum RedirectUriError {
     InsecureScheme,
 }
 
+/// Response parameters qid appends to redirect URIs. A registered URI that
+/// already carries one would let the client's value collide with qid's.
+const RESERVED_REDIRECT_QUERY_KEYS: [&str; 6] = [
+    "code",
+    "state",
+    "iss",
+    "error",
+    "error_description",
+    "response",
+];
+
 /// Validate a redirect URI: no `*` wildcards, a valid URL without userinfo or
-/// a fragment, and HTTPS except for true loopback HTTP (`localhost`,
-/// `127.0.0.0/8`, or `::1`).
+/// a fragment, no reserved response parameter in its query, and HTTPS except
+/// for true loopback HTTP (`localhost`, `127.0.0.0/8`, or `::1`).
 pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError> {
     if redirect_uri.contains('*') {
         return Err(RedirectUriError::Wildcard);
@@ -59,6 +70,14 @@ pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError>
                 "redirect_uri authority must not contain userinfo".to_string(),
             ));
         }
+    }
+    if parsed
+        .query_pairs()
+        .any(|(key, _)| RESERVED_REDIRECT_QUERY_KEYS.contains(&key.as_ref()))
+    {
+        return Err(RedirectUriError::InvalidUrl(
+            "redirect_uri query must not contain a reserved response parameter".to_string(),
+        ));
     }
     if parsed.scheme() == "https" {
         return Ok(());
@@ -354,6 +373,34 @@ mod tests {
         }
         validate_redirect_uri("https://client.example.com/cb?next=%2Fhome")
             .expect("a query in a normal redirect URI is allowed");
+    }
+
+    #[test]
+    fn redirect_uri_rejects_reserved_response_parameters_in_query() {
+        for name in [
+            "code",
+            "state",
+            "iss",
+            "error",
+            "error_description",
+            "response",
+            "%63ode",
+        ] {
+            let uri = format!("https://client.example.com/cb?{name}=injected");
+            assert!(
+                matches!(
+                    validate_redirect_uri(&uri),
+                    Err(RedirectUriError::InvalidUrl(_))
+                ),
+                "{uri} should be rejected as a reserved response parameter"
+            );
+        }
+        for uri in [
+            "https://client.example.com/cb?tenant=acme",
+            "https://client.example.com/cb?tenant=acme&next=%2Fhome&code_challenge=abc",
+        ] {
+            validate_redirect_uri(uri).expect(uri);
+        }
     }
 
     #[test]

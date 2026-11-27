@@ -2300,6 +2300,179 @@ async fn mtls_bound_token_introspects_without_presented_certificate() {
     );
 }
 
+/// Issue a refresh family for a registered resource-server audience so the
+/// audience policy can be changed between issuance and refresh.
+async fn refresh_audience_fixture() -> (
+    Router,
+    String,
+    Arc<SharedState<SqlRepository>>,
+    QidConfig,
+    String,
+    String,
+) {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://refresh",
+        &["api"],
+        "introspection-client",
+    )];
+    let (app, token_path, state) = setup_with_config(config.clone()).await;
+    let code = "refresh-audience-code";
+    let verifier = "d1e2f3a4b5c60718293a4b5c6d7e8f9012345678abcdef";
+    create_user_with_code(
+        &state,
+        "refresh-audience-user",
+        code,
+        verifier,
+        vec!["api".to_string()],
+        None,
+        None,
+        vec![],
+        vec!["https://api.example.com/refresh".to_string()],
+    )
+    .await;
+    let issued = post_token_json(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={}",
+            urlencoding::encode(code),
+            urlencoding::encode(verifier)
+        ),
+    )
+    .await;
+    let refresh_token = issued["refresh_token"].as_str().unwrap().to_string();
+    let family_id = decode_claims(&state, &refresh_token).extra["family_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let family = state
+        .repo
+        .get_token_family(&family_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(family.audience, ["api://refresh"]);
+    assert_eq!(family.resource, ["https://api.example.com/refresh"]);
+    (app, token_path, state, config, refresh_token, family_id)
+}
+
+fn refresh_body(refresh_token: &str) -> String {
+    format!(
+        "grant_type=refresh_token&client_id=test-client&refresh_token={}",
+        urlencoding::encode(refresh_token)
+    )
+}
+
+/// Rebuild the endpoint over the same storage and keys with a changed realm
+/// policy, as an operator reload would.
+fn app_with_changed_config(config: QidConfig, state: &Arc<SharedState<SqlRepository>>) -> Router {
+    let changed = Arc::new(
+        SharedState::new(
+            config,
+            state.repo.clone(),
+            state.signer.clone(),
+            state.jwks.clone(),
+        )
+        .unwrap(),
+    );
+    qid_oauth::routes(&changed.paths).with_state(changed)
+}
+
+#[tokio::test]
+async fn refresh_rejects_removed_audience_without_consuming() {
+    let (app, token_path, state, config, refresh_token, family_id) =
+        refresh_audience_fixture().await;
+    let before = state
+        .repo
+        .get_token_family(&family_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_refresh_hash;
+    let mut changed = config;
+    changed.realms[0].protocols.oauth.resource_servers.clear();
+    let status = post_token_status(
+        app_with_changed_config(changed, &state),
+        &token_path,
+        refresh_body(&refresh_token),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status:?}");
+    let after = state
+        .repo
+        .get_token_family(&family_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_refresh_hash;
+    assert_eq!(after, before, "a rejected refresh must consume nothing");
+    // The same refresh token is still live under the issuance configuration.
+    let retry = post_form(app.clone(), &token_path, refresh_body(&refresh_token)).await;
+    assert_eq!(retry.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn refresh_requires_sender_constraint_added_after_issuance() {
+    let (app, token_path, state, config, refresh_token, family_id) =
+        refresh_audience_fixture().await;
+    let before = state
+        .repo
+        .get_token_family(&family_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_refresh_hash;
+    let mut changed = config;
+    changed.realms[0].protocols.oauth.resource_servers[0].require_sender_constraint = true;
+    let status = post_token_status(
+        app_with_changed_config(changed, &state),
+        &token_path,
+        refresh_body(&refresh_token),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status:?}");
+    assert_eq!(
+        state
+            .repo
+            .get_token_family(&family_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_refresh_hash,
+        before
+    );
+    let retry = post_form(app.clone(), &token_path, refresh_body(&refresh_token)).await;
+    assert_eq!(retry.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn refresh_keeps_registered_audience_when_config_is_unchanged() {
+    let (app, token_path, state, _, refresh_token, family_id) = refresh_audience_fixture().await;
+    let before = state
+        .repo
+        .get_token_family(&family_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_refresh_hash;
+    let response = post_form(app.clone(), &token_path, refresh_body(&refresh_token)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = json_body(response).await;
+    let access = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(access.audiences(), ["api://refresh"]);
+    assert_ne!(
+        state
+            .repo
+            .get_token_family(&family_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_refresh_hash,
+        before
+    );
+}
+
 #[tokio::test]
 async fn refresh_preserves_original_scope_ceiling() {
     // RFC 6749 section 6: omitted scope means the original grant, explicit

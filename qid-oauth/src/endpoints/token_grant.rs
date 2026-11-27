@@ -449,7 +449,14 @@ pub async fn refresh_token_grant<R: Repository>(
         });
     }
 
-    let realm = state.require_realm(&family.realm_id)?;
+    let realm = state
+        .config
+        .realms
+        .iter()
+        .find(|r| r.id == family.realm_id)
+        .ok_or_else(|| QidError::NotFound {
+            resource: format!("realm {}", family.realm_id),
+        })?;
 
     let issuer = realm.issuer.clone();
     // RFC 6749 section 6: refresh preserves the original scope ceiling.
@@ -530,15 +537,43 @@ pub async fn refresh_token_grant<R: Repository>(
         }
     }
 
+    // Re-resolve the stored target against the current realm registration
+    // before consuming the refresh hash. A registered audience that was
+    // removed, restricted to fewer scopes, or newly sender-constrained ends
+    // the lineage instead of issuing tokens for a stale target. The implicit
+    // client audience applies only when no resource server is configured and
+    // the family never named one; re-resolution never adds an audience that
+    // was not part of the original grant.
+    let implicit_client_audience = family.resource.is_empty()
+        && realm.protocols.oauth.resource_servers.is_empty()
+        && family
+            .audience
+            .iter()
+            .all(|audience| audience == &family.client_id);
+    let family_audience = if implicit_client_audience {
+        vec![family.client_id.clone()]
+    } else {
+        let resolved = qid_core::oauth::resolve_token_audience(
+            realm,
+            &family.audience,
+            &family.resource,
+            &family.scopes,
+            cnf,
+        )?;
+        if resolved
+            .iter()
+            .any(|audience| !family.audience.contains(audience))
+        {
+            return Err(QidError::Unauthorized {
+                message: "refresh target audience is no longer granted".to_string(),
+            });
+        }
+        resolved
+    };
+
     let new_access_jti = generate_jti();
     let new_refresh_jti = generate_jti();
     let new_hash = qid_core::util::sha256_base64url(&new_refresh_jti);
-    let family_audience = if family.audience.is_empty() {
-        vec![family.client_id.clone()]
-    } else {
-        family.audience.clone()
-    };
-
     // Atomically consume the presented refresh hash before issuing anything:
     // only one overlapping redemption can win; the loser is handled as reuse
     // below and leaves no usable access token behind.

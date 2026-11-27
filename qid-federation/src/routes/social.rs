@@ -691,6 +691,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn social_callback_alias_path_redirect_uri_survives_url_parsing() {
+        // Aliases use a separate callback path from canonical provider ids and
+        // must survive the same URL serialization and route matching.
+        const ALIAS: &str = "corp+social";
+        let (base_url, redirect_uri, server) = tx_test::recording_provider_stub().await;
+        let fixture = tx_test::fixture_with_social_alias(&["corp-social"], ALIAS, &base_url).await;
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+
+        let (status, body) = callback(&fixture.state, ALIAS, Some(&proof), Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-social");
+
+        let redirect_uri = redirect_uri
+            .lock()
+            .expect("redirect mutex")
+            .clone()
+            .expect("callback posts redirect_uri to the token endpoint");
+        let url = url::Url::parse(&redirect_uri).expect("absolute redirect_uri");
+        let segments: Vec<&str> = url.path().trim_start_matches('/').split('/').collect();
+        assert_eq!(
+            segments,
+            ["federation", "test", "social", "corp%2Bsocial", "callback"],
+            "callback path segments: {redirect_uri}"
+        );
+        let (proof, cookie) =
+            tx_test::issue_transaction(&fixture.state, "test", "corp-social").await;
+        let (status, body) = callback_via_router(&fixture.state, url.path(), &proof, &cookie).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "corp-social");
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn social_callback_shared_alias_without_issuer_rejects_alias_path() {
         let (base_url, server) = tx_test::provider_stub().await;
         let fixture = tx_test::fixture_with_social_alias(

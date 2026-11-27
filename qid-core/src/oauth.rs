@@ -37,8 +37,8 @@ pub enum RedirectUriError {
     InsecureScheme,
 }
 
-/// Validate a redirect URI: no `*` wildcards, a valid URL without a
-/// fragment, and HTTPS except for true loopback HTTP (`localhost`,
+/// Validate a redirect URI: no `*` wildcards, a valid URL without userinfo or
+/// a fragment, and HTTPS except for true loopback HTTP (`localhost`,
 /// `127.0.0.0/8`, or `::1`).
 pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError> {
     if redirect_uri.contains('*') {
@@ -48,6 +48,17 @@ pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError>
         url::Url::parse(redirect_uri).map_err(|e| RedirectUriError::InvalidUrl(e.to_string()))?;
     if parsed.fragment().is_some() {
         return Err(RedirectUriError::Fragment);
+    }
+    if let Some((_, after_scheme)) = redirect_uri.split_once("://") {
+        let authority = after_scheme
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default();
+        if authority.contains('@') {
+            return Err(RedirectUriError::InvalidUrl(
+                "redirect_uri authority must not contain userinfo".to_string(),
+            ));
+        }
     }
     if parsed.scheme() == "https" {
         return Ok(());
@@ -324,6 +335,25 @@ mod tests {
             validate_redirect_uri("http://app.example.com/cb"),
             Err(RedirectUriError::InsecureScheme)
         );
+    }
+
+    #[test]
+    fn redirect_uri_rejects_userinfo_and_accepts_query() {
+        for uri in [
+            "https://user@rp.example/cb",
+            "https://@rp.example/cb",
+            "https://user:pass@rp.example/cb",
+        ] {
+            assert!(
+                matches!(
+                    validate_redirect_uri(uri),
+                    Err(RedirectUriError::InvalidUrl(_))
+                ),
+                "{uri} should be rejected as userinfo"
+            );
+        }
+        validate_redirect_uri("https://client.example.com/cb?next=%2Fhome")
+            .expect("a query in a normal redirect URI is allowed");
     }
 
     #[test]

@@ -247,11 +247,25 @@ fn metadata_policy_matches_parsed_redirect_hosts_and_preserves_uris() {
 }
 
 #[test]
-fn metadata_policy_rejects_redirect_uri_userinfo() {
+fn shared_redirect_uri_validator_rejects_userinfo() {
     for uri in [
         "https://user@rp.example/cb",
+        "https://@rp.example/cb",
         "https://user:pass@rp.example/cb",
     ] {
+        assert!(
+            matches!(
+                qid_core::oauth::validate_redirect_uri(uri),
+                Err(qid_core::oauth::RedirectUriError::InvalidUrl(_))
+            ),
+            "{uri} should be rejected by the shared validator"
+        );
+    }
+}
+
+#[test]
+fn metadata_policy_delegates_redirect_uri_userinfo_validation() {
+    for uri in ["https://user@rp.example/cb", "https://@rp.example/cb"] {
         let metadata = OpenIdRelyingPartyMetadata {
             redirect_uris: vec![uri.to_string()],
             grant_types: vec!["authorization_code".to_string()],

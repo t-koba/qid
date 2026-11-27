@@ -381,12 +381,6 @@ pub fn apply_metadata_policy(
                 &format!("redirect_uri {redirect_uri} has no valid URL"),
             )
         })?;
-        if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(error(
-                "invalid_redirect_uri",
-                &format!("redirect_uri {redirect_uri} rejected: userinfo is not allowed"),
-            ));
-        }
         if !allowed.is_empty() {
             let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
             if !allowed.contains(&host) {

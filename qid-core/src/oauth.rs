@@ -83,10 +83,11 @@ pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError>
             ));
         }
     }
-    if parsed
-        .query_pairs()
-        .any(|(key, _)| RESERVED_REDIRECT_QUERY_KEYS.contains(&key.as_ref()))
-    {
+    if parsed.query_pairs().any(|(key, _)| {
+        RESERVED_REDIRECT_QUERY_KEYS
+            .iter()
+            .any(|reserved| key.eq_ignore_ascii_case(reserved))
+    }) {
         return Err(RedirectUriError::InvalidUrl(
             "redirect_uri query must not contain a reserved response parameter".to_string(),
         ));
@@ -403,6 +404,12 @@ mod tests {
             "error_description",
             "response",
             "%63ode",
+            "State",
+            "CODE",
+            "Response",
+            "Error",
+            "ISS",
+            "Error_Description",
         ] {
             let uri = format!("https://client.example.com/cb?{name}=injected");
             assert!(

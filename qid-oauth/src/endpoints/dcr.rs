@@ -462,35 +462,34 @@ fn sign_dcr_registration_access_token<R: Repository>(
     })
 }
 
+/// Both registered redirect URIs and post-logout return URIs become browser
+/// navigation targets, so registration applies one shared syntax policy to both.
+fn validate_registered_redirect_uri(uri: &str, field: &str) -> QidResult<()> {
+    match qid_core::oauth::validate_redirect_uri(uri) {
+        Ok(()) => Ok(()),
+        Err(qid_core::oauth::RedirectUriError::Wildcard) => Err(QidError::BadRequest {
+            message: format!("{field} {uri} must not contain wildcards"),
+        }),
+        Err(qid_core::oauth::RedirectUriError::InvalidUrl(_)) => Err(QidError::BadRequest {
+            message: format!("{field} {uri} is not a valid URL"),
+        }),
+        Err(qid_core::oauth::RedirectUriError::Fragment) => Err(QidError::BadRequest {
+            message: format!("{field} {uri} must not contain a fragment"),
+        }),
+        Err(qid_core::oauth::RedirectUriError::InsecureScheme) => Err(QidError::BadRequest {
+            message: format!("{field} {uri} must use https except loopback http"),
+        }),
+    }
+}
+
 fn validate_dynamic_client_metadata(
     req: &DynamicClientRegistrationRequest,
 ) -> QidResult<DynamicClientMetadata> {
     for redirect_uri in &req.redirect_uris {
-        match qid_core::oauth::validate_redirect_uri(redirect_uri) {
-            Ok(()) => {}
-            Err(qid_core::oauth::RedirectUriError::Wildcard) => {
-                return Err(QidError::BadRequest {
-                    message: format!("redirect_uri {redirect_uri} must not contain wildcards"),
-                });
-            }
-            Err(qid_core::oauth::RedirectUriError::InvalidUrl(_)) => {
-                return Err(QidError::BadRequest {
-                    message: format!("redirect_uri {redirect_uri} is not a valid URL"),
-                });
-            }
-            Err(qid_core::oauth::RedirectUriError::Fragment) => {
-                return Err(QidError::BadRequest {
-                    message: format!("redirect_uri {redirect_uri} must not contain a fragment"),
-                });
-            }
-            Err(qid_core::oauth::RedirectUriError::InsecureScheme) => {
-                return Err(QidError::BadRequest {
-                    message: format!(
-                        "redirect_uri {redirect_uri} must use https except loopback http"
-                    ),
-                });
-            }
-        }
+        validate_registered_redirect_uri(redirect_uri, "redirect_uri")?;
+    }
+    for redirect_uri in &req.post_logout_redirect_uris {
+        validate_registered_redirect_uri(redirect_uri, "post_logout_redirect_uri")?;
     }
     let auth_method = req
         .token_endpoint_auth_method
@@ -1034,6 +1033,43 @@ mod tests {
     fn dcr_accepts_https_and_localhost_http_redirect_uris() {
         for redirect_uri in ["https://client.example.com/cb", "http://localhost:3000/cb"] {
             let req = dcr_request_with_redirect_uri(redirect_uri);
+            validate_dynamic_client_metadata(&req).unwrap();
+        }
+    }
+
+    fn dcr_request_with_post_logout_redirect_uri(uri: &str) -> DynamicClientRegistrationRequest {
+        serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://client.example.com/cb"],
+            "post_logout_redirect_uris": [uri],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dcr_rejects_unsafe_post_logout_redirect_uri() {
+        for (uri, reason) in [
+            (
+                "https://client.example.com/cb#frag",
+                "must not contain a fragment",
+            ),
+            ("https://*.example.com/cb", "must not contain wildcards"),
+            ("http://127.evil.example/cb", "must use https"),
+            ("not a url", "is not a valid URL"),
+        ] {
+            let req = dcr_request_with_post_logout_redirect_uri(uri);
+            let err = validate_dynamic_client_metadata(&req).unwrap_err();
+            assert!(
+                err.to_string().contains("post_logout_redirect_uri"),
+                "{uri}: {err}"
+            );
+            assert!(err.to_string().contains(reason), "{uri}: {err}");
+        }
+    }
+
+    #[test]
+    fn dcr_accepts_https_and_localhost_http_post_logout_redirect_uris() {
+        for uri in ["https://client.example.com/cb", "http://localhost:3000/cb"] {
+            let req = dcr_request_with_post_logout_redirect_uri(uri);
             validate_dynamic_client_metadata(&req).unwrap();
         }
     }

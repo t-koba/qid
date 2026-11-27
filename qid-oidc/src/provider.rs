@@ -18,7 +18,7 @@ use qid_core::{
     tenant::RealmId,
 };
 use qid_crypto::{Jwk, jwk::matching_jwk_candidates, jwt::verify_jwt_signature_with_jwk};
-use qid_http::parse_cookie;
+use qid_http::{combined_cookie_header, parse_cookie};
 
 use qid_session::{
     PasswordAttemptLimiter,
@@ -147,10 +147,8 @@ async fn authorize_with_browser_session<R: Repository>(
     let realm = state
         .realm(&client.realm_id)
         .ok_or_else(|| not_found(format!("realm {}", client.realm_id)))?;
-    let Some(session_id) = headers
-        .get(header::COOKIE)
-        .and_then(|cookie| cookie.to_str().ok())
-        .and_then(|cookie| parse_cookie(cookie, &realm.browser_session.cookie_name))
+    let Some(session_id) = combined_cookie_header(headers)
+        .and_then(|cookie| parse_cookie(&cookie, &realm.browser_session.cookie_name))
     else {
         return Ok(None);
     };

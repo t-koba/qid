@@ -1,5 +1,5 @@
 use axum::http::{HeaderMap, HeaderValue, header::COOKIE};
-use qid_http::{extract_cookie, parse_cookie};
+use qid_http::{combined_cookie_header, extract_cookie, parse_cookie};
 
 #[test]
 fn cookie_extraction_preserves_exact_name_and_opaque_value() {
@@ -46,4 +46,28 @@ fn duplicate_cookie_names_fail_closed() {
         ),
         None
     );
+}
+
+#[test]
+fn cookies_split_across_headers_are_combined() {
+    let mut headers = HeaderMap::new();
+    assert_eq!(combined_cookie_header(&headers), None);
+
+    headers.append(COOKIE, "theme=dark".parse().unwrap());
+    headers.append(COOKIE, "qid_session=sid".parse().unwrap());
+    assert_eq!(
+        combined_cookie_header(&headers).as_deref(),
+        Some("theme=dark; qid_session=sid")
+    );
+    assert_eq!(extract_cookie(&headers, "theme"), Some("dark".into()));
+    assert_eq!(extract_cookie(&headers, "qid_session"), Some("sid".into()));
+
+    // The duplicate spans headers, so only a combined view can fail closed.
+    headers.append(COOKIE, "qid_session=attacker".parse().unwrap());
+    assert_eq!(extract_cookie(&headers, "qid_session"), None);
+    assert_eq!(extract_cookie(&headers, "theme"), Some("dark".into()));
+
+    headers.append(COOKIE, HeaderValue::from_bytes(b"broken=\xff").unwrap());
+    assert_eq!(combined_cookie_header(&headers), None);
+    assert_eq!(extract_cookie(&headers, "theme"), None);
 }

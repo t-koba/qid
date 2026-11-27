@@ -928,7 +928,7 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
     let mut logout_realm_id = None;
     let mut logout_issuer = None;
 
-    let cookie_header = headers.get(header::COOKIE).and_then(|c| c.to_str().ok());
+    let cookie_header = qid_http::combined_cookie_header(&headers);
 
     // RP-Initiated Logout 1.0 §2.4: validate id_token_hint if present
     if let Some(ref hint) = form.id_token_hint {
@@ -962,7 +962,7 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
                 // validate it matches the current browser session.
                 if let Some(claims_sid) = claims.extra.get("sid").and_then(|v| v.as_str()) {
                     let current_sid = state.realm(&realm.id).and_then(|runtime_realm| {
-                        cookie_header.and_then(|cookie| {
+                        cookie_header.as_deref().and_then(|cookie| {
                             qid_http::parse_cookie(
                                 cookie,
                                 &runtime_realm.browser_session.cookie_name,
@@ -1036,7 +1036,9 @@ async fn logout_with_sessions<R: Repository, S: SessionRepository>(
         Err(error) => return qid_http::error_response(error),
     };
 
-    let mut session_id = cookie_header.and_then(|c| qid_http::parse_cookie(c, &cookie_name));
+    let mut session_id = cookie_header
+        .as_deref()
+        .and_then(|c| qid_http::parse_cookie(c, &cookie_name));
     let mut foreign_session = false;
 
     let session =

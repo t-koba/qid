@@ -134,10 +134,8 @@ async fn resume<R: Repository>(
     headers: &HeaderMap,
     req: CompleteRequest,
 ) -> QidResult<Response> {
-    let binding = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| parse_cookie(v, COOKIE))
+    let binding = qid_http::combined_cookie_header(headers)
+        .and_then(|cookie| parse_cookie(&cookie, COOKIE))
         .filter(|v| v.len() == 43 && URL_SAFE_NO_PAD.decode(v).is_ok_and(|b| b.len() == 32))
         .ok_or_else(invalid)?;
     let realm_id = req.realm_id.clone().into();
@@ -238,10 +236,8 @@ async fn resend_bound<R: Repository>(
     {
         return Err(invalid());
     }
-    let binding = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| parse_cookie(v, COOKIE))
+    let binding = qid_http::combined_cookie_header(headers)
+        .and_then(|cookie| parse_cookie(&cookie, COOKIE))
         .filter(|v| v.len() == 43 && URL_SAFE_NO_PAD.decode(v).is_ok_and(|b| b.len() == 32))
         .ok_or_else(invalid)?;
     // No continuation retrieval/consumption: the client is bound by its verifier.

@@ -402,13 +402,11 @@ async fn assert_session_failure(response: Response) {
     );
 }
 
-async fn browser_logout_with_cookie(
+async fn browser_logout_with_headers(
     state: &SharedState<qid_storage::FileRepository>,
     sessions: &FaultySessions,
-    cookie: &str,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(header::COOKIE, cookie.parse().unwrap());
     logout_with_sessions(
         state,
         sessions,
@@ -421,6 +419,16 @@ async fn browser_logout_with_cookie(
         },
     )
     .await
+}
+
+async fn browser_logout_with_cookie(
+    state: &SharedState<qid_storage::FileRepository>,
+    sessions: &FaultySessions,
+    cookie: &str,
+) -> Response {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(header::COOKIE, cookie.parse().unwrap());
+    browser_logout_with_headers(state, sessions, headers).await
 }
 
 async fn browser_logout(
@@ -452,6 +460,54 @@ async fn duplicate_browser_session_cookies_terminate_no_session() {
         assert!(!sessions.revoked(sid));
         assert!(state.session_cache_get(sid).is_some());
     }
+}
+
+#[tokio::test]
+async fn browser_session_cookie_split_across_headers_terminates_no_session() {
+    let (_file, state) = logout_state().await;
+    let sessions = faulty_sessions(&state).await;
+    let cookie_name = &state
+        .realm("logout-issuer")
+        .unwrap()
+        .browser_session
+        .cookie_name;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(
+        header::COOKIE,
+        format!("{cookie_name}=local-a").parse().unwrap(),
+    );
+    headers.append(
+        header::COOKIE,
+        format!("{cookie_name}=local-b").parse().unwrap(),
+    );
+    let response = browser_logout_with_headers(&state, &sessions, headers).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    for sid in ["local-a", "local-b"] {
+        assert!(!sessions.revoked(sid));
+        assert!(state.session_cache_get(sid).is_some());
+    }
+}
+
+#[tokio::test]
+async fn browser_session_cookie_in_second_header_terminates_session() {
+    let (_file, state) = logout_state().await;
+    let sessions = faulty_sessions(&state).await;
+    let cookie_name = &state
+        .realm("logout-issuer")
+        .unwrap()
+        .browser_session
+        .cookie_name;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(header::COOKIE, "theme=dark".parse().unwrap());
+    headers.append(
+        header::COOKIE,
+        format!("{cookie_name}=local-b").parse().unwrap(),
+    );
+    let response = browser_logout_with_headers(&state, &sessions, headers).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(sessions.revoked("local-b"));
+    assert!(state.session_cache_get("local-b").is_none());
+    assert!(!sessions.revoked("local-a"));
 }
 
 #[tokio::test]

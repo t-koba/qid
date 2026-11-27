@@ -162,8 +162,25 @@ pub fn parse_cookie(cookie_header: &str, name: &str) -> Option<String> {
     found.map(str::to_owned)
 }
 
-/// Read a named cookie from the `Cookie` header of an HTTP request.
+/// Combine every `Cookie` header value into a single header string.
+///
+/// RFC 6265bis section 4.2.1 permits a user agent to split cookies over
+/// multiple `Cookie` fields (for example when HTTP/2 is used), in which case
+/// the values are concatenated with "; ". Reading only the first field would
+/// hide cookies and let a duplicate name escape `parse_cookie`'s fail-closed
+/// check. Any non-UTF-8 value makes the whole header unusable.
+pub fn combined_cookie_header(headers: &axum::http::HeaderMap) -> Option<String> {
+    let mut values = headers.get_all(axum::http::header::COOKIE).iter();
+    let first = values.next()?.to_str().ok()?;
+    let mut combined = first.to_owned();
+    for value in values {
+        combined.push_str("; ");
+        combined.push_str(value.to_str().ok()?);
+    }
+    Some(combined)
+}
+
+/// Read a named cookie from the `Cookie` headers of an HTTP request.
 pub fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
-    parse_cookie(cookie_header, name)
+    parse_cookie(&combined_cookie_header(headers)?, name)
 }

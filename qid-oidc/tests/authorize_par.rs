@@ -2853,12 +2853,36 @@ async fn userinfo_enforces_dpop_scheme_for_bound_tokens() {
 
     // RFC 9449 section 7.1: a bound token cannot be presented with the
     // Bearer scheme, with or without an otherwise valid DPoP proof.
-    let response = get_userinfo("Bearer", &bound_token, Some(valid_proof()))
-        .await
-        .unwrap();
+    // A fresh jti is essential: reusing the successful proof's jti would make
+    // the replay guard reject this request before the scheme decision.
+    let response = get_userinfo(
+        "Bearer",
+        &bound_token,
+        Some(dpop_proof(
+            "userinfo-bound-bearer",
+            "GET",
+            &userinfo_htu,
+            Some(&ath),
+            None,
+        )),
+    )
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        json_body(response).await["error_description"]
+            .as_str()
+            .unwrap()
+            .contains("requires the DPoP scheme")
+    );
     let response = get_userinfo("Bearer", &bound_token, None).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        json_body(response).await["error_description"]
+            .as_str()
+            .unwrap()
+            .contains("requires the DPoP scheme")
+    );
 
     // Ordinary Bearer presentation of the unbound token still works.
     let bearer_response = app

@@ -241,3 +241,32 @@ async fn par_private_key_jwt_requires_only_the_client_realm_issuer() {
         );
     }
 }
+
+#[tokio::test]
+async fn par_rejects_duplicate_json_members() {
+    let (app, _) = setup().await;
+    let authorization = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("par-client:secret")
+    );
+    for body in [
+        // Without strict parsing the first client_id is silently dropped.
+        r#"{"client_id":"other-client","client_id":"par-client","response_type":"code","redirect_uri":"https://app.example.com/callback"}"#,
+        // Without strict parsing the first redirect_uri is silently dropped.
+        r#"{"client_id":"par-client","response_type":"code","redirect_uri":"https://attacker.example/callback","redirect_uri":"https://app.example.com/callback"}"#,
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/oauth2/par")
+            .header("Content-Type", "application/json")
+            .header("Authorization", &authorization)
+            .body(Body::from(body))
+            .expect("the request is built");
+        let response = app.clone().oneshot(request).await.expect("a response");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "accepted duplicate members in {body}"
+        );
+    }
+}

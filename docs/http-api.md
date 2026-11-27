@@ -14,9 +14,12 @@ Many paths are configurable through `server.paths`. The table marks those as `co
 
 Every JSON request body is a JSON object. A JSON body that is an array, or any
 other shape, is rejected with HTTP 400 instead of being mapped positionally onto
-the request fields. The form-encoded endpoints - the token, revocation,
-introspection, CIBA, device authorization, SAML and OIDC logout endpoints - take
-form bodies.
+the request fields. Bodies read through qid's shared object extractor require
+unique member names at any depth: a duplicate name is rejected with HTTP 400
+instead of keeping its last value. PAR bodies and signed request object payloads
+use the same strict parser. The form-encoded
+endpoints - the token, revocation, introspection, CIBA, device authorization,
+SAML and OIDC logout endpoints - take form bodies.
 
 ## Health, readiness, keys
 

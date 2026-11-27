@@ -784,7 +784,7 @@ fn parse_request_object_payload(request_object: &str) -> QidResult<serde_json::V
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(parts[1])
         .map_err(|e| unauthorized(format!("invalid request object payload encoding: {e}")))?;
-    serde_json::from_slice(&payload)
+    qid_core::web::parse_strict_json_value(&payload)
         .map_err(|e| unauthorized(format!("invalid request object payload: {e}")))
 }
 
@@ -1526,4 +1526,24 @@ fn jwk_thumbprint(key: &serde_json::Value) -> Option<String> {
     let canonical = serde_json::to_string(&members).ok()?;
     let digest = Sha256::digest(canonical.as_bytes());
     Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_request_object_payload;
+    use base64::Engine;
+
+    #[test]
+    fn rejects_duplicate_request_object_payload_members() {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            br#"{"client_id":"client","redirect_uri":"https://one.example/callback","redirect_uri":"https://two.example/callback"}"#,
+        );
+        let error = parse_request_object_payload(&format!("header.{payload}.signature"))
+            .expect_err("a duplicate payload member is rejected");
+        assert!(
+            error.message().contains("invalid request object payload"),
+            "unexpected error: {}",
+            error.message()
+        );
+    }
 }

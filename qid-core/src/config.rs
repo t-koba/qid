@@ -74,7 +74,11 @@ fn is_secure_https_url(value: &str) -> bool {
 /// supplied by the upstream, so a string that only becomes a URL after parser
 /// repair would never match. Reject those spellings at config load.
 fn is_exact_secure_https_issuer(value: &str) -> bool {
-    value.starts_with("https://")
+    let Some((scheme, authority_and_path)) = value.split_once("://") else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("https")
+        && !authority_and_path.is_empty()
         && value.is_ascii()
         && !value.bytes().any(|byte| {
             byte.is_ascii_whitespace()

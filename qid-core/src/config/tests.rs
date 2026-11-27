@@ -4136,6 +4136,17 @@ fn front_channel_inbound_provider_accepts_https_issuer_with_path() {
 }
 
 #[test]
+fn front_channel_inbound_provider_accepts_uppercase_https_scheme() {
+    let mut config = config_with_provider_kind("oidc");
+    let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+    provider.enabled = true;
+    provider.issuer = "HTTPS://login.example.com/realms/partner".to_string();
+    config
+        .validate()
+        .unwrap_or_else(|err| panic!("scheme names are case-insensitive: {}", err.message()));
+}
+
+#[test]
 fn front_channel_inbound_provider_rejects_unsafe_issuer_syntax() {
     for issuer in [
         "http://login.example.com/realms/partner",

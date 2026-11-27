@@ -619,8 +619,10 @@ Enabled `social` providers use `social_provider` as a routing alias, compared
 case-insensitively in hint routing and callback paths. Providers may share an
 alias: an alias hint that matches more than one enabled provider is rejected,
 while an exact canonical `idp_hint` still selects one provider. Shared callback
-paths require a matching issuer; canonical provider ids remain exact, and
-aliasing does not change federated subject matching.
+paths require a matching issuer, and aliasing does not change federated subject
+matching. Canonical provider ids are exact and callback-safe: no empty or
+whitespace-padded ids, and no ids that percent-decode to `.` or `..`; other
+dotted ids such as `partner.v2` remain valid.
 
 `realms[].protocols.federation.transaction_ttl_seconds` bounds the signed
 browser-bound proof issued by `GET /federation/:realm/transaction/start` for

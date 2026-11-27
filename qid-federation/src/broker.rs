@@ -164,7 +164,7 @@ pub fn route_inbound_provider(
     request: &HomeRealmDiscoveryRequest,
 ) -> Result<BrokerRouteDecision, QidError> {
     validate_inbound_providers(providers)?;
-    if let Some(idp_hint) = normalized_optional(&request.idp_hint) {
+    if let Some(idp_hint) = request.idp_hint.as_deref() {
         let provider = providers
             .iter()
             .find(|provider| provider.enabled && provider.id == idp_hint)
@@ -707,6 +707,12 @@ fn validate_inbound_providers(providers: &[InboundIdentityProvider]) -> Result<(
             return Err(broker_error(
                 "invalid_provider",
                 "Provider id must not be empty",
+            ));
+        }
+        if !qid_core::config::is_stable_provider_id(&provider.id) {
+            return Err(broker_error(
+                "invalid_provider",
+                "Provider id must be canonical and callback-safe",
             ));
         }
         if !ids.insert(provider.id.as_str()) {

@@ -469,6 +469,40 @@ fn inbound_broker_rejects_ambiguous_social_hints_and_keeps_exact_id_selection() 
 }
 
 #[test]
+fn inbound_broker_rejects_unstable_provider_ids() {
+    let mut providers = inbound_providers();
+    providers[0].id = "%2E%2e".to_string();
+
+    let err = route_inbound_provider(
+        &providers,
+        &HomeRealmDiscoveryRequest {
+            idp_hint: Some("partner-saml".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(federation_error_code(&err), "invalid_provider");
+}
+
+#[test]
+fn inbound_broker_idp_hint_is_byte_exact() {
+    let providers = inbound_providers();
+
+    for hint in [" partner-saml", "partner-saml "] {
+        let err = route_inbound_provider(
+            &providers,
+            &HomeRealmDiscoveryRequest {
+                idp_hint: Some(hint.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(federation_error_code(&err), "unknown_idp_hint");
+    }
+}
+
+#[test]
 fn inbound_login_plan_normalizes_claims_and_uses_jit_or_account_linking() {
     let providers = inbound_providers();
     let external = ExternalIdentityClaims {

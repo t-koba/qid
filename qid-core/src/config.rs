@@ -71,6 +71,21 @@ fn is_secure_https_url(value: &str) -> bool {
     })
 }
 
+/// Whether a path segment is a dot segment after case-insensitive percent
+/// decoding, including the escaped spellings a URL parser may normalize.
+fn is_dot_segment(segment: &str) -> bool {
+    matches!(
+        segment.to_ascii_lowercase().replace("%2e", ".").as_str(),
+        "." | ".."
+    )
+}
+
+/// Canonical provider ids are used verbatim in callback paths, so empty,
+/// whitespace-padded and dot-path spellings are not safe to configure.
+pub fn is_stable_provider_id(id: &str) -> bool {
+    !id.is_empty() && id.trim() == id && !is_dot_segment(id)
+}
+
 /// Inbound issuer identifiers are compared byte-for-byte with the value
 /// supplied by the upstream, so a string that only becomes a URL after parser
 /// repair would never match. Reject those spellings at config load.
@@ -83,12 +98,8 @@ fn is_exact_secure_https_issuer(value: &str) -> bool {
         .unwrap_or(authority_and_path.len());
     let authority = &authority_and_path[..authority_end];
     let path = &authority_and_path[authority_end..];
-    let has_no_information_repair = authority.contains('@')
-        || authority.ends_with(':')
-        || path.split('/').any(|segment| {
-            let decoded = segment.to_ascii_lowercase().replace("%2e", ".");
-            decoded == "." || decoded == ".."
-        });
+    let has_no_information_repair =
+        authority.contains('@') || authority.ends_with(':') || path.split('/').any(is_dot_segment);
     scheme.eq_ignore_ascii_case("https")
         && !authority.is_empty()
         && value.is_ascii()
@@ -1730,6 +1741,14 @@ impl RealmConfig {
             });
         }
         for provider in &self.protocols.federation.inbound_providers {
+            if !is_stable_provider_id(&provider.id) {
+                return Err(QidError::Config {
+                    message: format!(
+                        "realm {} inbound provider {} has an unstable id; canonical provider ids must be exact and callback-safe",
+                        self.id, provider.id
+                    ),
+                });
+            }
             if !is_known_inbound_provider_kind(&provider.kind) {
                 return Err(QidError::Config {
                     message: format!(

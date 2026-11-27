@@ -4223,3 +4223,25 @@ fn disabled_and_non_front_channel_providers_are_exempt_from_issuer_syntax() {
         .validate()
         .unwrap_or_else(|err| panic!("SAML provider must be exempt: {}", err.message()));
 }
+
+#[test]
+fn inbound_provider_ids_must_be_exact_and_callback_safe() {
+    for id in ["", " partner", "partner ", ".", "..", "%2e", "%2E%2e"] {
+        let mut config = config_with_provider_kind("oidc");
+        config.realms[0].protocols.federation.inbound_providers[0].id = id.to_string();
+        let message = config.validate().unwrap_err().message().to_string();
+        assert!(
+            message.contains("realm corp inbound provider")
+                && message.contains("canonical provider ids must be exact and callback-safe"),
+            "id {id:?} must be rejected with a realm/provider-specific message: {message}"
+        );
+    }
+
+    for id in ["partner.v2", "partner-1"] {
+        let mut config = config_with_provider_kind("oidc");
+        config.realms[0].protocols.federation.inbound_providers[0].id = id.to_string();
+        config
+            .validate()
+            .unwrap_or_else(|err| panic!("canonical id {id} must be accepted: {}", err.message()));
+    }
+}

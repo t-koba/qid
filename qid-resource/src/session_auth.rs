@@ -42,14 +42,14 @@ async fn load_active_session<R: Repository>(
         })
     })?;
     let cookie_name = &realm_cfg.browser_session.cookie_name;
-    let session_id = extract_cookie(headers, cookie_name).ok_or_else(|| {
+    let session_id = qid_http::extract_cookie(headers, cookie_name).ok_or_else(|| {
         qid_http::error_response(QidError::Unauthorized {
             message: "authentication required: missing session cookie".to_string(),
         })
     })?;
     let session = state
         .repo
-        .get_session(session_id)
+        .get_session(&session_id)
         .await
         .map_err(qid_http::error_response)?
         .ok_or_else(|| {
@@ -71,17 +71,6 @@ async fn load_active_session<R: Repository>(
         }));
     }
     Ok(session)
-}
-
-fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
-    for pair in cookie.split(';') {
-        let mut parts = pair.splitn(2, '=');
-        if parts.next()?.trim() == name {
-            return Some(parts.next()?.trim());
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -155,6 +144,20 @@ mod tests {
         assert_eq!(
             require_any_session(&target, &state, "test").await.unwrap(),
             "target"
+        );
+        let mut duplicate = HeaderMap::new();
+        duplicate.insert(
+            COOKIE,
+            format!("{cookie_name}=target; {cookie_name}=survivor")
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            require_any_session(&duplicate, &state, "test")
+                .await
+                .unwrap_err()
+                .status(),
+            StatusCode::UNAUTHORIZED
         );
         repo.delete_user("target", None).await.unwrap();
         assert_eq!(

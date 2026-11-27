@@ -27,10 +27,7 @@ pub async fn token<R: Repository>(
     headers: HeaderMap,
     Form(req): Form<TokenRequest>,
 ) -> Response {
-    let dpop_header = headers
-        .get("dpop")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let dpop_header = super::error_response_or_return!(crate::dpop::extract_dpop_header(&headers));
     let should_challenge_dpop_nonce = dpop_header.is_some()
         && state
             .config

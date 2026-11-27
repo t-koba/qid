@@ -98,10 +98,10 @@ pub async fn authorize_get<R: Repository>(
     headers: HeaderMap,
     Query(req): Query<AuthorizeRequest>,
 ) -> Response {
-    let dpop_proof = headers
-        .get("dpop")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
+    let dpop_proof = match qid_oauth::dpop::extract_dpop_header(&headers) {
+        Ok(proof) => proof,
+        Err(e) => return qid_http::error_response(e),
+    };
     match resolve_and_validate_authorize_request(&state, &req, false).await {
         Ok((mut resolved, client)) => {
             let realm = match state.require_realm(&client.realm_id) {
@@ -263,10 +263,10 @@ pub async fn authorize_post<R: Repository>(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let dpop_proof = headers
-        .get("dpop")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
+    let dpop_proof = match qid_oauth::dpop::extract_dpop_header(&headers) {
+        Ok(proof) => proof,
+        Err(e) => return qid_http::error_response(e),
+    };
     let (mut resolved, client) =
         match resolve_and_validate_authorize_request(&state, &req, true).await {
             Ok(result) => result,

@@ -1,8 +1,10 @@
 //! DPoP and private_key_jwt tests.
 
+use axum::http::{HeaderMap, HeaderValue};
 use base64::Engine;
 use qid_core::cache::SharedCache;
 use qid_core::dpop::DpopState;
+use qid_core::error::QidError;
 use qid_core::util::now_seconds;
 use qid_crypto::{Jwk, LocalSigner, jwk::generate_es256, jwt::sign_es256_jwt_with_jwk_header};
 use qid_ops::{
@@ -12,8 +14,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{
-    dpop_jkt_from_proof, extract_dpop_jkt, extract_private_key_jwt_at as extract_private_key_jwt,
-    validate_dpop_proof, validate_dpop_proof_with_cache,
+    dpop_jkt_from_proof, extract_dpop_header, extract_dpop_jkt,
+    extract_private_key_jwt_at as extract_private_key_jwt, validate_dpop_proof,
+    validate_dpop_proof_with_cache,
 };
 
 fn test_signer() -> LocalSigner {
@@ -1227,4 +1230,14 @@ fn private_key_jwt_accepts_only_one_exact_issuer_audience() {
         );
         assert_eq!(result.is_ok(), expected, "aud={aud}");
     }
+}
+
+#[test]
+fn non_utf8_dpop_header_is_rejected() {
+    let mut headers = HeaderMap::new();
+    headers.insert("dpop", HeaderValue::from_bytes(&[0xff]).unwrap());
+    assert!(matches!(
+        extract_dpop_header(&headers),
+        Err(QidError::BadRequest { .. })
+    ));
 }

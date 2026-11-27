@@ -2115,6 +2115,68 @@ async fn dpop_nonce_challenge_requires_nonce_retry() {
 }
 
 #[tokio::test]
+async fn duplicate_dpop_headers_are_rejected() {
+    let (app, token_path, _) = setup_with_oauth(|oauth| oauth.dpop.enabled = true).await;
+    let single = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", build_dpop_proof("single-dpop-header-ok"))
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api",
+        ))
+        .unwrap();
+    let single_response = app.clone().oneshot(single).await.unwrap();
+    assert_eq!(single_response.status(), StatusCode::OK);
+
+    let duplicate = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("DPoP", build_dpop_proof("duplicate-dpop-header-valid"))
+        .header("DPoP", "second-proof")
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api",
+        ))
+        .unwrap();
+    let duplicate_response = app.clone().oneshot(duplicate).await.unwrap();
+    assert_eq!(duplicate_response.status(), StatusCode::BAD_REQUEST);
+    let json = json_body(duplicate_response).await;
+    assert_eq!(
+        json["error"],
+        "bad request: multiple DPoP headers are not allowed"
+    );
+    assert!(json.get("access_token").is_none());
+
+    // A nonce realm must not relabel the header error as a nonce challenge.
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.dpop.enabled = true;
+    config.realms[0].protocols.oauth.dpop.nonce = true;
+    let (nonce_app, nonce_token_path, _) = setup_with_config(config).await;
+    let duplicate_in_nonce_realm = Request::builder()
+        .method(Method::POST)
+        .uri(&nonce_token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header(
+            "DPoP",
+            build_dpop_proof("duplicate-dpop-header-nonce-realm"),
+        )
+        .header("DPoP", "second-proof")
+        .body(Body::from(
+            "grant_type=client_credentials&client_id=dpop-client&client_secret=secret&scope=api",
+        ))
+        .unwrap();
+    let nonce_response = nonce_app.oneshot(duplicate_in_nonce_realm).await.unwrap();
+    assert_eq!(nonce_response.status(), StatusCode::BAD_REQUEST);
+    let nonce_json = json_body(nonce_response).await;
+    assert_ne!(nonce_json["error"], "use_dpop_nonce");
+    assert_eq!(
+        nonce_json["error"],
+        "bad request: multiple DPoP headers are not allowed"
+    );
+}
+
+#[tokio::test]
 async fn mtls_client_credentials_rejects_certificate_headers() {
     let (app, token_path, _) = setup_with_oauth(|oauth| oauth.mtls.enabled = true).await;
     let thumbprint_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";

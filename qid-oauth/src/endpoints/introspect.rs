@@ -73,9 +73,9 @@ pub fn enforce_sender_constrained_access_token<R: Repository>(
         });
     }
     if let Some(expected_jkt) = dpop_jkt {
-        let proof = headers
-            .get("dpop")
-            .and_then(|value| value.to_str().ok())
+        let dpop_header = crate::dpop::extract_dpop_header(headers)?;
+        let proof = dpop_header
+            .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| QidError::Unauthorized {

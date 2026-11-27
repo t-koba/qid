@@ -51,6 +51,28 @@ pub(crate) fn parse_jwt_unverified(
     Ok((header, payload))
 }
 
+/// Read the single optional `DPoP` field of a request.
+///
+/// RFC 9449 section 4.3 requires a bad-request response when more than one
+/// `DPoP` field is present; choosing one value would let a second proof escape
+/// verification. A field that is not valid UTF-8 is likewise unusable, so it
+/// is rejected instead of being silently dropped.
+pub fn extract_dpop_header(headers: &axum::http::HeaderMap) -> QidResult<Option<String>> {
+    let mut values = headers.get_all("dpop").iter();
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(QidError::BadRequest {
+            message: "multiple DPoP headers are not allowed".to_string(),
+        });
+    }
+    let value = first.to_str().map_err(|_| QidError::BadRequest {
+        message: "DPoP header must be valid UTF-8".to_string(),
+    })?;
+    Ok(Some(value.to_owned()))
+}
+
 /// Extract the raw DPoP proof JWT from a `DPoP` HTTP header value.
 ///
 /// RFC 9449 defines the field value as the proof JWT itself.

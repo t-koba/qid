@@ -753,11 +753,13 @@ async fn saml_oauth_subject_is_scoped_to_trusted_issuer_and_stable_across_paths(
 
 #[tokio::test]
 async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
-    let (app, token_path, state, db) = setup_with_saml_trust(
+    let mut config = config_with_saml_trust(
         "https://saml-idp.example.com",
         include_str!("../../qid-oauth/tests/data/test-sp.crt"),
-    )
-    .await;
+    );
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://saml", &["saml"], "introspection-client")];
+    let (app, token_path, state, db) = setup_with_config(config).await;
     let token_url = format!("https://id.example.com{token_path}");
     let assertion =
         build_saml_bearer_assertion("saml-subject-123", &token_url, util::now_seconds() + 300);
@@ -794,11 +796,13 @@ async fn saml_bearer_grant_validates_assertion_and_uses_subject() {
 #[tokio::test]
 async fn saml_bearer_grant_rejects_assertion_replay() {
     let issuer = "https://saml-idp.example.com";
-    let (app, token_path, _, db) = setup_with_saml_trust(
+    let mut config = config_with_saml_trust(
         issuer,
         include_str!("../../qid-oauth/tests/data/test-sp.crt"),
-    )
-    .await;
+    );
+    config.realms[0].protocols.oauth.resource_servers =
+        vec![test_server("api://saml", &["saml"], "introspection-client")];
+    let (app, token_path, _, db) = setup_with_config(config).await;
     let audience = format!("https://id.example.com{token_path}");
     let assertion = build_saml_bearer_assertion_with_id(
         "saml-replay-subject",

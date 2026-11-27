@@ -70,6 +70,25 @@ fn is_secure_https_url(value: &str) -> bool {
     })
 }
 
+/// RFC 3986 §2.1 requires every `%` to introduce two hexadecimal digits.
+/// `Url::parse` tolerates malformed escapes and keeps them verbatim, so an
+/// issuer containing one could never match a conforming upstream `iss`.
+fn has_valid_percent_escapes(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && (index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit())
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 /// Inbound issuer identifiers are compared byte-for-byte with the value
 /// supplied by the upstream, so a string that only becomes a URL after parser
 /// repair would never match. Reject those spellings at config load.
@@ -91,6 +110,7 @@ fn is_exact_secure_https_issuer(value: &str) -> bool {
     scheme.eq_ignore_ascii_case("https")
         && !authority.is_empty()
         && value.is_ascii()
+        && has_valid_percent_escapes(value)
         && !has_no_information_repair
         && !value.bytes().any(|byte| {
             byte.is_ascii_whitespace()

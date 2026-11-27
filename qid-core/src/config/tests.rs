@@ -4177,6 +4177,9 @@ fn front_channel_inbound_provider_rejects_unsafe_issuer_syntax() {
         "https://login.example.com:/realms/partner",
         "https://login.example.com/a/../issuer",
         "https://login.example.com/realms/partner/%2e%2e/x",
+        "https://login.example.com/realms/partner%",
+        "https://login.example.com/realms/partner%2",
+        "https://login.example.com/realms/part%2Gner",
     ] {
         let mut config = config_with_provider_kind("oidc");
         let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
@@ -4189,6 +4192,17 @@ fn front_channel_inbound_provider_rejects_unsafe_issuer_syntax() {
             "issuer {issuer} must be rejected with a realm/provider-specific message: {message}"
         );
     }
+}
+
+#[test]
+fn front_channel_inbound_provider_accepts_valid_percent_escapes() {
+    let mut config = config_with_provider_kind("oidc");
+    let provider = &mut config.realms[0].protocols.federation.inbound_providers[0];
+    provider.enabled = true;
+    provider.issuer = "https://login.example.com/realms/part%20ner".to_string();
+    config
+        .validate()
+        .unwrap_or_else(|err| panic!("valid percent escape must be preserved: {}", err.message()));
 }
 
 #[test]

@@ -179,6 +179,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_escaped_duplicate_member_name() {
+        let error = parse_strict_json_value(br#"{"sub":"x","\u0073ub":"y"}"#)
+            .expect_err("an escaped spelling of the same member is a duplicate");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate JSON member name: sub"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn rejects_duplicate_nested_member() {
         let error = parse_strict_json_value(br#"{"claims":{"acr":"one","acr":"two"}}"#)
             .expect_err("a duplicate nested member is rejected");

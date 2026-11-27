@@ -342,6 +342,15 @@ async fn advanced_subject_grant<R: Repository>(
         .ok_or_else(|| QidError::Config {
             message: format!("realm {} not found for client", client.realm_id),
         })?;
+    let realm_config = state
+        .config
+        .realms
+        .iter()
+        .find(|candidate| candidate.id == realm.id)
+        .ok_or_else(|| QidError::NotFound {
+            resource: format!("realm {}", realm.id),
+        })?;
+    let mut subject_token_scopes: Option<Vec<String>> = None;
     let mut subject_user = User {
         id: format!(
             "{}:{}",
@@ -376,6 +385,27 @@ async fn advanced_subject_grant<R: Repository>(
                         message: "subject_token realm does not match client realm".to_string(),
                     });
                 }
+                if decoded.client_id != client.client_id
+                    && !decoded.aud.iter().any(|audience| {
+                        realm_config
+                            .protocols
+                            .oauth
+                            .resource_servers
+                            .iter()
+                            .any(|server| audience == &server.audience)
+                    })
+                {
+                    return Err(QidError::BadRequest {
+                        message: "subject_token is not owned by the exchange client or targeted to a registered resource server".to_string(),
+                    });
+                }
+                subject_token_scopes = Some(
+                    decoded
+                        .scope
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect(),
+                );
                 subject_user = User {
                     id: decoded.user_id,
                     realm_id: realm.id.clone(),
@@ -509,11 +539,26 @@ async fn advanced_subject_grant<R: Repository>(
         inherited_acr = Some("urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified".to_string());
         inherited_amr = vec!["saml".to_string()];
     }
-    let scopes = req
+    let requested_scopes = req
         .scope
         .as_deref()
-        .map(|s| s.split(' ').map(String::from).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![realm.oauth_default_scope.clone()]);
+        .map(|s| s.split(' ').map(String::from).collect::<Vec<_>>());
+    let scopes = match (subject_token_scopes.as_ref(), requested_scopes) {
+        (Some(subject_scopes), Some(requested)) => {
+            if requested
+                .iter()
+                .any(|scope| !subject_scopes.contains(scope))
+            {
+                return Err(QidError::BadRequest {
+                    message: "requested scope is outside subject_token scopes".to_string(),
+                });
+            }
+            requested
+        }
+        (Some(subject_scopes), None) => subject_scopes.clone(),
+        (None, Some(requested)) => requested,
+        (None, None) => vec![realm.oauth_default_scope.clone()],
+    };
     let resources = req.resource.iter().cloned().collect::<Vec<_>>();
     if let Some(details) = &req.authorization_details {
         qid_core::oauth::validate_authorization_details(details)?;
@@ -530,14 +575,6 @@ async fn advanced_subject_grant<R: Repository>(
         })
         .unwrap_or_default();
     let token_cnf = cnf.or(inherited_cnf.as_ref());
-    let realm_config = state
-        .config
-        .realms
-        .iter()
-        .find(|candidate| candidate.id == realm.id)
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("realm {}", realm.id),
-        })?;
     let audiences = qid_core::oauth::resolve_token_audience(
         realm_config,
         &audiences,

@@ -245,7 +245,10 @@ fn token_exchange_client(client_id: &str) -> Client {
         client_id,
         ClientType::Confidential,
         "client_secret_post",
-        vec!["urn:ietf:params:oauth:grant-type:token-exchange".to_string()],
+        vec![
+            "client_credentials".to_string(),
+            "urn:ietf:params:oauth:grant-type:token-exchange".to_string(),
+        ],
     );
     client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
     client.jwks = private_key_jwt_jwks();
@@ -1017,7 +1020,7 @@ async fn token_exchange_saml_actor_rejects_without_inbound_trust() {
     let subject_token = mint_access_token(
         app.clone(),
         &token_path,
-        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+        "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=delegated",
     )
     .await;
     let actor_assertion = build_saml_bearer_assertion(

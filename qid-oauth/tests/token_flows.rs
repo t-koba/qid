@@ -570,7 +570,10 @@ fn token_exchange_client(client_id: &str) -> Client {
         client_id,
         ClientType::Confidential,
         "client_secret_post",
-        vec!["urn:ietf:params:oauth:grant-type:token-exchange".to_string()],
+        vec![
+            "client_credentials".to_string(),
+            "urn:ietf:params:oauth:grant-type:token-exchange".to_string(),
+        ],
     );
     client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
     client.jwks = private_key_jwt_jwks();
@@ -879,7 +882,7 @@ async fn token_exchange_requires_active_access_token_subject() {
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+            "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=api%20payments",
         ))
         .unwrap();
     let subject_response = app.clone().oneshot(subject_request).await.unwrap();
@@ -904,13 +907,152 @@ async fn token_exchange_requires_active_access_token_subject() {
     assert_eq!(exchange_json["token_type"], "DPoP");
     let exchanged_token = exchange_json["access_token"].as_str().unwrap();
     let claims = decode_claims(&state, exchanged_token);
-    assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
+    assert_eq!(claims.sub.as_deref(), Some("service:exchange-client"));
     assert_eq!(claims.aud_primary(), Some("exchange-client"));
     assert_eq!(claims.extra["client_id"], "exchange-client");
     assert_eq!(claims.extra["scope"], "payments");
     assert!(!claims.extra.contains_key("resource"));
     assert!(claims.extra["cnf"]["jkt"].is_string());
     assert_eq!(claims.extra["token_type"], "DPoP");
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_unowned_untargeted_access_token_subject() {
+    let (app, token_path, _) = setup().await;
+    // service-client's token names only that client as audience, so no
+    // registered resource server allows exchange-client to present it.
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+    )
+    .await;
+
+    let response = post_form(
+        app,
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&scope=api",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("not owned by the exchange client"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn token_exchange_uses_subject_scopes_as_ceiling_and_default() {
+    let (app, token_path, state) = setup().await;
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=read%20write",
+    )
+    .await;
+
+    let json = post_token_json(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&scope=read",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(json["scope"], "read");
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.sub.as_deref(), Some("service:exchange-client"));
+    assert_eq!(claims.extra["client_id"], "exchange-client");
+
+    // An omitted scope inherits the subject token's scopes instead of the
+    // realm default.
+    let json = post_token_json(
+        app,
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(json["scope"], "read write");
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.extra["scope"], "read write");
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_scope_outside_subject_token_scopes() {
+    let (app, token_path, _) = setup().await;
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=read",
+    )
+    .await;
+
+    let response = post_form(
+        app,
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&scope=read%20admin",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("subject_token scopes"),
+        "{body}"
+    );
+    assert!(body.get("access_token").is_none());
+}
+
+#[tokio::test]
+async fn token_exchange_accepts_subject_targeted_to_registered_resource_server() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://exchange-target",
+        &["read", "write"],
+        "introspection-client",
+    )];
+    let (app, token_path, state) = setup_with_config(config).await;
+
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=read%20write&resource=https%3A%2F%2Fapi.example.com%2Fexchange-target",
+    )
+    .await;
+    let subject_claims = decode_claims(&state, &subject_token);
+    assert_eq!(subject_claims.aud_primary(), Some("api://exchange-target"));
+    assert_eq!(subject_claims.extra["client_id"], "service-client");
+
+    let json = post_token_json(
+        app,
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://exchange-target&scope=read",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(json["scope"], "read");
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
+    assert_eq!(claims.aud_primary(), Some("api://exchange-target"));
+    assert_eq!(claims.extra["client_id"], "exchange-client");
 }
 
 #[tokio::test]
@@ -925,7 +1067,7 @@ async fn token_exchange_with_actor_token_emits_actor_claim() {
         .uri(&token_path)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdelegated",
+            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api%20delegated&resource=https%3A%2F%2Fapi.example.com%2Fdelegated",
         ))
         .unwrap();
     let subject_response = app.clone().oneshot(subject_request).await.unwrap();
@@ -1034,7 +1176,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
     let own_token = mint_access_token(
         app.clone(),
         &token_path,
-        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api",
+        "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=api%20payments",
     )
     .await;
 
@@ -1063,7 +1205,7 @@ async fn token_exchange_rejects_foreign_realm_tokens() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    // Same-realm exchange still succeeds: the gate is a boundary, not a block.
+    // Same-realm exchange of an owned subject still succeeds: the gate is a boundary, not a block.
     let status = post_token_status(
         app.clone(),
         &token_path,

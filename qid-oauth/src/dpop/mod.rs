@@ -116,6 +116,29 @@ pub fn validate_dpop_ath(dpop_proof: &str, access_token: &str) -> QidResult<()> 
     Ok(())
 }
 
+/// Private JWK members forbidden in a DPoP proof by RFC 9449 §4.3 item 7.
+const DPOP_PRIVATE_JWK_MEMBERS: &[&str] = &["d", "p", "q", "dp", "dq", "qi", "oth", "k"];
+
+/// Reject a proof JWK that carries private key material.
+///
+/// RFC 9449 §4.3 item 7 requires the `jwk` header to contain only public key
+/// members. This checks the raw JSON because `Jwk` intentionally accepts other
+/// members for JWKS and configuration intake, silently dropping them on
+/// deserialization. The list above is exhaustive for this check; unrelated
+/// members are not rejected.
+pub(crate) fn reject_private_dpop_jwk(jwk: &serde_json::Value) -> QidResult<()> {
+    if let Some(object) = jwk.as_object()
+        && let Some(member) = DPOP_PRIVATE_JWK_MEMBERS
+            .iter()
+            .find(|member| object.contains_key(**member))
+    {
+        return Err(QidError::BadRequest {
+            message: format!("DPoP proof jwk header must not contain private member {member}"),
+        });
+    }
+    Ok(())
+}
+
 /// Compute a DPoP public key thumbprint from the proof JWT header JWK.
 ///
 /// The thumbprint is computed per RFC 7638 §3.1: serialize the required
@@ -130,6 +153,7 @@ pub fn dpop_jkt_from_proof(dpop_proof: &str) -> QidResult<String> {
     let object = jwk.as_object().ok_or_else(|| QidError::BadRequest {
         message: "DPoP proof jwk header must be an object".to_string(),
     })?;
+    reject_private_dpop_jwk(jwk)?;
     let kty = object
         .get("kty")
         .and_then(|v| v.as_str())

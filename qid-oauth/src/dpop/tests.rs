@@ -38,6 +38,30 @@ fn b64_encode_json(val: &serde_json::Value) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes())
 }
 
+/// Sign a JWT over the caller's exact header JSON text.
+///
+/// Unlike `build_jwt`, this preserves header members that `Jwk` does not model,
+/// such as private key members in a proof's embedded JWK.
+fn build_jwt_with_raw_header(header_json: &str, payload: &serde_json::Value) -> String {
+    use p256::{
+        ecdsa::{Signature, SigningKey, signature::Signer},
+        pkcs8::DecodePrivateKey,
+    };
+    let (private_pem, _) = dpop_private_pem_and_jwk();
+    let signing_input = format!(
+        "{}.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(header_json.as_bytes()),
+        b64_encode_json(payload)
+    );
+    let signature: Signature = SigningKey::from_pkcs8_pem(&private_pem)
+        .expect("test DPoP key should parse")
+        .sign(signing_input.as_bytes());
+    format!(
+        "{signing_input}.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    )
+}
+
 /// Build an unvalidated three-part JWT from header and payload JSON values.
 fn build_jwt(header: &serde_json::Value, payload: &serde_json::Value) -> String {
     let (private_pem, _) = dpop_private_pem_and_jwk();
@@ -213,6 +237,76 @@ fn valid_dpop_proof_succeeds() {
         result
     );
     assert_eq!(result.unwrap(), "unique-proof-id");
+}
+
+#[test]
+fn dpop_proof_with_private_jwk_members_is_rejected() {
+    let signer = test_signer();
+    let htu = "https://id.example.com/token";
+    let payload = serde_json::json!({
+        "jti": "private-jwk-proof",
+        "htm": "POST",
+        "htu": htu,
+        "iat": now_seconds(),
+    });
+    let public_header = dpop_header();
+    let public_header_json =
+        serde_json::to_string(&public_header).expect("header serialization failed");
+
+    for member in ["d", "p", "q", "dp", "dq", "qi", "oth", "k"] {
+        let mut header = public_header.clone();
+        header["jwk"][member] = serde_json::json!("private-material");
+        let proof = build_jwt_with_raw_header(
+            &serde_json::to_string(&header).expect("header serialization failed"),
+            &payload,
+        );
+        assert!(
+            matches!(
+                validate_dpop_proof(&DpopState::new(), &proof, "POST", htu, None, &signer),
+                Err(QidError::BadRequest { .. })
+            ),
+            "jwk member {member} must be rejected"
+        );
+        assert!(
+            matches!(
+                dpop_jkt_from_proof(&proof),
+                Err(QidError::BadRequest { .. })
+            ),
+            "jkt extraction must reject jwk member {member}"
+        );
+    }
+
+    // An escaped JSON member name still decodes to a forbidden member.
+    let escaped_header =
+        public_header_json.replace("\"kid\":", "\"\\u0064\":\"private-material\",\"kid\":");
+    assert_ne!(
+        escaped_header, public_header_json,
+        "escaped member was not inserted"
+    );
+    let escaped_proof = build_jwt_with_raw_header(&escaped_header, &payload);
+    assert!(matches!(
+        validate_dpop_proof(
+            &DpopState::new(),
+            &escaped_proof,
+            "POST",
+            htu,
+            None,
+            &signer
+        ),
+        Err(QidError::BadRequest { .. })
+    ));
+    assert!(matches!(
+        dpop_jkt_from_proof(&escaped_proof),
+        Err(QidError::BadRequest { .. })
+    ));
+
+    // A public-only JWK remains usable on both paths.
+    let public_proof = build_jwt(&public_header, &payload);
+    assert_eq!(
+        validate_dpop_proof(&DpopState::new(), &public_proof, "POST", htu, None, &signer).unwrap(),
+        "private-jwk-proof"
+    );
+    assert!(dpop_jkt_from_proof(&public_proof).is_ok());
 }
 
 #[test]

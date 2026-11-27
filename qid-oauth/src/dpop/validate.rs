@@ -8,7 +8,7 @@ use qid_crypto::{Jwk, jwt::verify_jwt_signature_with_jwk};
 use qid_ops::{CacheKey, CachePut, RedisLikeCache, RedisLikeTransport};
 use url::Url;
 
-use super::parse_jwt_unverified;
+use super::{parse_jwt_unverified, reject_private_dpop_jwk};
 
 /// Maximum acceptable clock skew in seconds for DPoP proof iat.
 const MAX_CLOCK_SKEW_SECS: u64 = 60;
@@ -127,6 +127,7 @@ fn validate_dpop_proof_claims(
             message: "DPoP proof jwk header must be an object".to_string(),
         });
     }
+    reject_private_dpop_jwk(jwk)?;
     verify_dpop_proof_signature(dpop_proof, &header)?;
 
     // Validate htm (HTTP method)

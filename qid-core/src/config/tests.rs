@@ -553,6 +553,39 @@ fn realm_id_must_be_url_path_segment_safe() {
 }
 
 #[test]
+fn dot_segment_realm_ids_are_rejected_for_every_realm() {
+    for id in [".", ".."] {
+        let mut plain = minimal_config();
+        plain.realms[0].id = id.into();
+        let message = plain.validate().unwrap_err().message().to_string();
+        assert!(
+            message.contains(&format!(
+                "realm {id} id must be a non-dot-segment URL path segment"
+            )),
+            "realm id {id:?} must be rejected: {message}"
+        );
+
+        let mut federated = config_with_provider_kind("social");
+        federated.realms[0].protocols.federation.enabled = true;
+        let provider = &mut federated.realms[0].protocols.federation.inbound_providers[0];
+        provider.enabled = true;
+        provider.social_provider = Some("google".into());
+        federated.realms[0].id = id.into();
+        let message = federated.validate().unwrap_err().message().to_string();
+        assert!(
+            message.contains(&format!(
+                "realm {id} id must be a non-dot-segment URL path segment"
+            )),
+            "federated realm id {id:?} must be rejected: {message}"
+        );
+    }
+
+    let mut valid = minimal_config();
+    valid.realms[0].id = "corp.v2".into();
+    valid.validate().unwrap();
+}
+
+#[test]
 fn multi_realm_issuer_must_match_realm_scoped_discovery_route() {
     let mut config = minimal_config();
     config.realms.push(RealmConfig {

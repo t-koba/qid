@@ -394,11 +394,6 @@ impl QidConfig {
                 return Err(QidError::Config { message: "SMS recovery requires server.notification, a credential/query/fragment-free HTTPS public_base_url and a non-reserved session cookie".into() });
             }
             if realm.authentication.email_magic_link.enabled {
-                if matches!(realm.id.as_str(), "." | "..") {
-                    return Err(QidError::Config {
-                        message: "email magic link realm id must not be a URL dot segment".into(),
-                    });
-                }
                 if !is_secure_https_url(&self.server.public_base_url)
                     || self.server.notification.is_none()
                 {
@@ -1494,7 +1489,7 @@ impl RealmConfig {
         if !is_url_safe_realm_id(&self.id) {
             return Err(QidError::Config {
                 message: format!(
-                    "realm {} id must contain only unreserved URL path segment characters [A-Za-z0-9._~-]",
+                    "realm {} id must be a non-dot-segment URL path segment of unreserved characters [A-Za-z0-9._~-]",
                     self.id
                 ),
             });
@@ -1994,7 +1989,7 @@ impl RealmConfig {
 fn is_url_safe_realm_id(realm_id: &str) -> bool {
     realm_id.bytes().all(
         |byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' | b'-'),
-    )
+    ) && !is_dot_segment(realm_id)
 }
 
 fn validate_multi_realm_issuer_routes(config: &QidConfig) -> QidResult<()> {

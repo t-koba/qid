@@ -2621,6 +2621,85 @@ async fn admin_routes_reject_invalid_source_sessions() {
 }
 
 #[tokio::test]
+async fn admin_client_creation_validates_redirect_uris_before_persisting() {
+    let (app, state, db) = setup().await;
+    seed_saas_realm_client(&state).await;
+    let mut admin = state
+        .repo
+        .get_admin("tenant-saas", "admin@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    admin.roles.push("app.admin".to_string());
+    state.repo.upsert_admin(&admin).await.unwrap();
+    let realm = RealmId::from("realm-saas");
+
+    let invalid_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/realm-saas/clients",
+            r#"{
+                "client_id":"reserved-query-client",
+                "client_type":"confidential",
+                "client_secret":"secret",
+                "redirect_uris":[
+                    "https://app.example.com/cb",
+                    "https://app.example.com/cb?state=attacker"
+                ],
+                "grant_types":["authorization_code"]
+            }"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(invalid_response).await;
+    let message = body["error"]
+        .as_str()
+        .expect("no error message in response");
+    assert!(
+        message.contains("https://app.example.com/cb?state=attacker"),
+        "{message}"
+    );
+    assert!(
+        state
+            .repo
+            .get_client_by_client_id(&realm, "reserved-query-client")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let valid_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/api/v1/realm-saas/clients",
+            r#"{
+                "client_id":"tenant-query-client",
+                "client_type":"confidential",
+                "client_secret":"secret",
+                "redirect_uris":["https://app.example.com/cb?tenant=acme"],
+                "grant_types":["authorization_code"]
+            }"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(valid_response.status(), StatusCode::CREATED);
+    let persisted = state
+        .repo
+        .get_client_by_client_id(&realm, "tenant-query-client")
+        .await
+        .unwrap()
+        .expect("valid client was not persisted");
+    assert_eq!(
+        persisted.redirect_uris,
+        vec!["https://app.example.com/cb?tenant=acme".to_string()]
+    );
+    db.close().await;
+}
+
+#[tokio::test]
 async fn admin_client_creation_validates_grant_types_before_persisting() {
     let (app, state, db) = setup().await;
     seed_saas_realm_client(&state).await;

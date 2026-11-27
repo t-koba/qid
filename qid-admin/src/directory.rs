@@ -1,6 +1,6 @@
 use super::AdminPermission as Perm;
 use super::*;
-use qid_core::oauth::is_supported_grant_type;
+use qid_core::oauth::{RedirectUriError, is_supported_grant_type, validate_redirect_uri};
 use qid_core::web::JsonObject;
 
 pub(crate) async fn list_realms<R: Repository>(
@@ -439,6 +439,28 @@ fn validate_client_grant_types(
     Ok(())
 }
 
+fn validate_client_redirect_uris(
+    realm: &str,
+    client_id: &str,
+    redirect_uris: &[String],
+) -> QidResult<()> {
+    for uri in redirect_uris {
+        let reason = match validate_redirect_uri(uri) {
+            Ok(()) => continue,
+            Err(RedirectUriError::Wildcard) => "must not contain wildcards".to_string(),
+            Err(RedirectUriError::Fragment) => "must not contain a fragment".to_string(),
+            Err(RedirectUriError::InsecureScheme) => {
+                "must use https except loopback http".to_string()
+            }
+            Err(RedirectUriError::InvalidUrl(detail)) => format!("is not valid: {detail}"),
+        };
+        return Err(QidError::BadRequest {
+            message: format!("realm {realm} client {client_id} redirect_uri {uri} {reason}"),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub(crate) struct CreateClientRequest {
     client_id: String,
@@ -456,6 +478,9 @@ pub(crate) async fn create_client<R: Repository>(
 ) -> impl IntoResponse {
     let (_admin, _elevation) = admin_mutation!(state, &headers, Perm::AppAdmin, Some(&realm));
     if let Err(e) = validate_client_grant_types(&realm, &req.client_id, &req.grant_types) {
+        return qid_http::error_response(e);
+    }
+    if let Err(e) = validate_client_redirect_uris(&realm, &req.client_id, &req.redirect_uris) {
         return qid_http::error_response(e);
     }
     let token_endpoint_auth_method = match req.client_type {

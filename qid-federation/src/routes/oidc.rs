@@ -1002,6 +1002,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oidc_callback_provider_path_redirect_uri_survives_url_parsing() {
+        // An accepted id that needs percent-encoding must still produce a
+        // callback URL that parses back to the exact provider path.
+        const PROVIDER_ID: &str = "corp+oidc";
+        assert!(qid_core::config::is_stable_provider_id(PROVIDER_ID));
+
+        let (base_url, redirect_uri, server) = tx_test::recording_provider_stub().await;
+        let fixture = tx_test::fixture(PROVIDER_ID, "oidc", &base_url).await;
+        let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", PROVIDER_ID).await;
+
+        let (status, body) = routed_callback(
+            &fixture.state,
+            "/oidc/corp%2Boidc/callback",
+            Some(&proof),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], PROVIDER_ID);
+
+        let redirect_uri = redirect_uri
+            .lock()
+            .expect("redirect mutex")
+            .clone()
+            .expect("callback posts redirect_uri to the token endpoint");
+        let url = url::Url::parse(&redirect_uri).expect("absolute redirect_uri");
+        assert_eq!(
+            url.path(),
+            "/federation/test/oidc/corp%2Boidc/callback",
+            "callback path: {redirect_uri}"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn oidc_callback_rejects_social_provider_selection_before_exchange() {
         let (base_url, server) = tx_test::provider_stub().await;
         let fixture = tx_test::fixture("corp-social", "social", &base_url).await;

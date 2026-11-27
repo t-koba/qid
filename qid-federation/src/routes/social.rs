@@ -298,64 +298,13 @@ async fn social_login_callback_inner<R: Repository>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{
-        Router,
-        extract::Form,
-        http::{HeaderMap, header},
-        routing::{get, post},
-    };
+    use axum::http::{HeaderMap, header};
     use http_body_util::BodyExt;
     use qid_core::tenant::RealmId;
     use serde_json::Value;
-    use std::sync::Mutex;
     use tower::ServiceExt;
 
     use super::super::transaction::test_support as tx_test;
-
-    #[derive(serde::Deserialize)]
-    struct TokenRequestForm {
-        redirect_uri: String,
-    }
-
-    /// Token/userinfo stub that records the `redirect_uri` posted by the
-    /// callback, so the generated URL can be checked as a browser sees it.
-    async fn recording_provider_stub() -> (
-        String,
-        Arc<Mutex<Option<String>>>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let recorded = Arc::new(Mutex::new(None));
-        let token_recorded = Arc::clone(&recorded);
-        let app = Router::new()
-            .route(
-                "/token",
-                post(move |Form(form): Form<TokenRequestForm>| {
-                    let recorded = Arc::clone(&token_recorded);
-                    async move {
-                        *recorded.lock().expect("redirect mutex") = Some(form.redirect_uri);
-                        Json(serde_json::json!({"access_token": "stub-access-token"}))
-                    }
-                }),
-            )
-            .route(
-                "/userinfo",
-                get(|| async {
-                    Json(serde_json::json!({
-                        "sub": "user-123",
-                        "email": "user@example.com",
-                        "email_verified": true
-                    }))
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("stub listener");
-        let address = listener.local_addr().expect("stub address");
-        let handle = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-        (format!("http://{address}"), recorded, handle)
-    }
 
     /// Drive a callback URL path through the production federation router so
     /// URL parsing and route matching are exercised, not bypassed.
@@ -692,7 +641,7 @@ mod tests {
         const PROVIDER_ID: &str = "corp+social";
         assert!(qid_core::config::is_stable_provider_id(PROVIDER_ID));
 
-        let (base_url, redirect_uri, server) = recording_provider_stub().await;
+        let (base_url, redirect_uri, server) = tx_test::recording_provider_stub().await;
         let fixture = tx_test::fixture_with_social_alias(&[PROVIDER_ID], "google", &base_url).await;
         let (proof, cookie) = tx_test::issue_transaction(&fixture.state, "test", PROVIDER_ID).await;
 

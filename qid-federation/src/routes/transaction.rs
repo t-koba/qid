@@ -275,11 +275,57 @@ pub(crate) fn routes<R: Repository>() -> Router<Arc<SharedState<R>>> {
 pub(crate) mod test_support {
     use super::*;
     use axum::response::Response as AxumResponse;
+    use axum::{extract::Form, routing::post};
     use http_body_util::BodyExt;
     use qid_core::{tenant::RealmId, test_helpers};
     use qid_crypto::LocalSigner;
     use qid_storage::FileRepository;
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Mutex};
+
+    #[derive(serde::Deserialize)]
+    pub(crate) struct TokenRequestForm {
+        redirect_uri: String,
+    }
+
+    /// Token/userinfo stub that records the `redirect_uri` posted by the
+    /// callback, so the generated URL can be checked as a browser sees it.
+    pub(crate) async fn recording_provider_stub() -> (
+        String,
+        Arc<Mutex<Option<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let recorded = Arc::new(Mutex::new(None));
+        let token_recorded = Arc::clone(&recorded);
+        let app = Router::new()
+            .route(
+                "/token",
+                post(move |Form(form): Form<TokenRequestForm>| {
+                    let recorded = Arc::clone(&token_recorded);
+                    async move {
+                        *recorded.lock().expect("redirect mutex") = Some(form.redirect_uri);
+                        Json(serde_json::json!({"access_token": "stub-access-token"}))
+                    }
+                }),
+            )
+            .route(
+                "/userinfo",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "sub": "user-123",
+                        "email": "user@example.com",
+                        "email_verified": true
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("stub listener");
+        let address = listener.local_addr().expect("stub address");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{address}"), recorded, handle)
+    }
 
     /// Issue a proof through the production start handler and return its
     /// `state` value plus a `Cookie` header suitable for the callback.

@@ -1150,3 +1150,211 @@ async fn saml_bearer_grant_rejects_wrong_audience() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     db.close().await;
 }
+
+fn chained_exchange_form(
+    subject_token: &str,
+    actor_token: Option<&str>,
+    audience: &str,
+    scope: &str,
+) -> String {
+    let actor = actor_token
+        .map(|token| {
+            format!(
+                "&actor_token_type=urn:ietf:params:oauth:token-type:access_token&actor_token={}",
+                urlencoding::encode(token)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}{}&audience={}&scope={}",
+        urlencoding::encode(subject_token),
+        actor,
+        urlencoding::encode(audience),
+        urlencoding::encode(scope),
+    )
+}
+
+async fn chained_exchange_setup() -> (
+    Router,
+    String,
+    Arc<SharedState<SqlRepository>>,
+    TestDatabase,
+) {
+    let mut config = test_helpers::test_config();
+    let mut delegated = test_server(
+        "api://delegated",
+        &["delegated", "other"],
+        "introspection-client",
+    );
+    delegated.token_exchange_requester_client_ids = vec!["exchange-client".to_string()];
+    config.realms[0].protocols.oauth.resource_servers = vec![
+        delegated,
+        test_server("api://other", &["delegated"], "introspection-client"),
+    ];
+    setup_with_config(config).await
+}
+
+async fn delegated_subject_and_actor_tokens(app: Router, token_path: &str) -> (String, String) {
+    let subject = mint_access_token(
+        app.clone(),
+        token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=delegated&resource=https%3A%2F%2Fapi.example.com%2Fdelegated",
+    )
+    .await;
+    let actor = mint_access_token(
+        app,
+        token_path,
+        "grant_type=client_credentials&client_id=introspection-client&client_secret=secret&scope=delegated&resource=https%3A%2F%2Fapi.example.com%2Fdelegated",
+    )
+    .await;
+    (subject, actor)
+}
+
+#[tokio::test]
+async fn token_exchange_preserves_and_nests_actor_across_chained_exchanges() {
+    let (app, token_path, state, db) = chained_exchange_setup().await;
+    let (subject_token, actor_token) =
+        delegated_subject_and_actor_tokens(app.clone(), &token_path).await;
+
+    let first = post_token_json(
+        app.clone(),
+        &token_path,
+        chained_exchange_form(
+            &subject_token,
+            Some(&actor_token),
+            "api://delegated",
+            "delegated",
+        ),
+    )
+    .await;
+    let first_claims = decode_claims(&state, first["access_token"].as_str().unwrap());
+    let first_act = first_claims.extra["act"].clone();
+    assert_eq!(first_act["sub"], "service:introspection-client");
+    assert_eq!(first_act["client_id"], "introspection-client");
+
+    // No new actor: the prior act claim is carried into the issued token.
+    let second = post_token_json(
+        app.clone(),
+        &token_path,
+        chained_exchange_form(
+            first["access_token"].as_str().unwrap(),
+            None,
+            "api://delegated",
+            "delegated",
+        ),
+    )
+    .await;
+    let second_claims = decode_claims(&state, second["access_token"].as_str().unwrap());
+    assert_eq!(second_claims.extra["act"], first_act);
+    assert_eq!(second_claims.extra["client_id"], "exchange-client");
+
+    // A new actor becomes outermost, and the prior act becomes nested history.
+    let second_actor = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=delegated&resource=https%3A%2F%2Fapi.example.com%2Fdelegated",
+    )
+    .await;
+    let third = post_token_json(
+        app,
+        &token_path,
+        chained_exchange_form(
+            second["access_token"].as_str().unwrap(),
+            Some(&second_actor),
+            "api://delegated",
+            "delegated",
+        ),
+    )
+    .await;
+    let third_claims = decode_claims(&state, third["access_token"].as_str().unwrap());
+    let current_act = &third_claims.extra["act"];
+    assert_eq!(current_act["sub"], "service:service-client");
+    assert_eq!(current_act["client_id"], "service-client");
+    assert_eq!(current_act["scope"], "delegated");
+    assert_eq!(current_act["act"], first_act);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_exchange_chained_subject_cannot_broaden_scope_or_audience() {
+    let (app, token_path, state, db) = chained_exchange_setup().await;
+    let (subject_token, actor_token) =
+        delegated_subject_and_actor_tokens(app.clone(), &token_path).await;
+    let first = post_token_json(
+        app.clone(),
+        &token_path,
+        chained_exchange_form(
+            &subject_token,
+            Some(&actor_token),
+            "api://delegated",
+            "delegated",
+        ),
+    )
+    .await;
+    let first_claims = decode_claims(&state, first["access_token"].as_str().unwrap());
+    assert!(first_claims.extra["act"].is_object());
+    let delegated_token = first["access_token"].as_str().unwrap();
+
+    for (form, expected_error) in [
+        (
+            chained_exchange_form(delegated_token, None, "api://delegated", "other"),
+            "subject_token scopes",
+        ),
+        (
+            chained_exchange_form(delegated_token, None, "api://other", "delegated"),
+            "requested audience is not authorized",
+        ),
+    ] {
+        let response = post_form(app.clone(), &token_path, form).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(response).await;
+        assert!(body.get("access_token").is_none());
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(expected_error)),
+            "{body}"
+        );
+    }
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_non_object_subject_act() {
+    let (app, token_path, state, db) = chained_exchange_setup().await;
+    let (subject_token, actor_token) =
+        delegated_subject_and_actor_tokens(app.clone(), &token_path).await;
+    let first = post_token_json(
+        app.clone(),
+        &token_path,
+        chained_exchange_form(
+            &subject_token,
+            Some(&actor_token),
+            "api://delegated",
+            "delegated",
+        ),
+    )
+    .await;
+    let mut claims = decode_claims(&state, first["access_token"].as_str().unwrap());
+    claims
+        .extra
+        .insert("act".to_string(), serde_json::json!("not-an-object"));
+    let malformed_token = state.signer.sign_with_typ(&claims, "at+jwt").unwrap();
+
+    let response = post_form(
+        app,
+        &token_path,
+        chained_exchange_form(&malformed_token, None, "api://delegated", "delegated"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(body.get("access_token").is_none());
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("act claim must be a JSON object")),
+        "{body}"
+    );
+    db.close().await;
+}

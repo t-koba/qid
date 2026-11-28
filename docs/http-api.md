@@ -80,6 +80,19 @@ against its configuration. Re-resolution applies when a refresh token mints a
 new access token; it does not revoke access tokens already issued, which an
 offline verifier may continue to accept until they expire.
 
+### Token exchange actor chains
+
+For token exchange with an `access_token` subject token, qid reads the `act`
+claim of JWT-format subject tokens. When the exchange has no `actor_token`, the
+prior `act` is carried into the issued token. When it has a validated
+`actor_token`, the prior `act` is nested under the new actor object's `act`
+member: the new actor is outermost and earlier actors remain nested history
+(RFC 8693 section 4.1). A non-object `act` is rejected with 400. Opaque-format
+qid access tokens carry no `act` claim for `decode_access_token` to read, so
+there is no prior actor to preserve when an opaque token is the subject. This
+describes qid's handling of its own tokens; broader RFC 8693 conformance is not
+claimed.
+
 ### Migrating `private_key_jwt` client assertions
 
 At the token, PAR, and device authorization endpoints, set `aud` to the exact issuer identifier advertised by the authenticated client's realm, either as a string or as a one-element array. The issuer is matched exactly, including any trailing slash. Assertions using a token, PAR, or device authorization endpoint URL, a different realm's issuer, or an array containing additional values are rejected. Clients previously using endpoint audiences must update their assertion configuration before upgrading; there is no endpoint-audience fallback. A missing JWT `typ` header remains accepted; clients may send `typ=client-authentication+jwt`. Existing signature, expiration and replay requirements continue to apply.

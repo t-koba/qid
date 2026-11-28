@@ -401,6 +401,11 @@ async fn advanced_subject_grant<R: Repository>(
     let mut inherited_acr = None;
     let mut inherited_amr = Vec::new();
     let mut actor_claim = None;
+    // RFC 8693 section 4.1 nests prior actors under the current actor. Only
+    // JWT-format access tokens carry an `act` claim; opaque qid access tokens
+    // have no claim for decode_access_token to read, so a chained exchange of
+    // an opaque subject token has no prior actor to preserve.
+    let mut prior_act = None;
     if grant_name == "token-exchange" {
         let subject_token_type =
             req.subject_token_type
@@ -411,6 +416,14 @@ async fn advanced_subject_grant<R: Repository>(
         match subject_token_type {
             "urn:ietf:params:oauth:token-type:access_token" => {
                 let decoded = decode_access_token(state, subject_material).await?;
+                if let Some(act) = decoded.act.as_ref()
+                    && !act.is_object()
+                {
+                    return Err(QidError::BadRequest {
+                        message: "subject_token act claim must be a JSON object".to_string(),
+                    });
+                }
+                prior_act = decoded.act.clone();
                 if decoded.realm_id != realm.id {
                     return Err(QidError::BadRequest {
                         message: "subject_token realm does not match client realm".to_string(),
@@ -525,7 +538,19 @@ async fn advanced_subject_grant<R: Repository>(
             }
         }
         validate_exchange_sender_constraint(inherited_cnf.as_ref(), proof)?;
-        actor_claim = validate_token_exchange_actor(state, req, &realm.id).await?;
+        let new_actor = validate_token_exchange_actor(state, req, &realm.id).await?;
+        actor_claim = match (prior_act, new_actor) {
+            (Some(prior), Some(mut current)) => {
+                let object = current
+                    .as_object_mut()
+                    .ok_or_else(|| QidError::BadRequest {
+                        message: "actor claim must be a JSON object".to_string(),
+                    })?;
+                object.insert("act".to_string(), prior);
+                Some(current)
+            }
+            (prior, current) => prior.or(current),
+        };
     }
     if grant_name == "jwt-bearer" {
         if req

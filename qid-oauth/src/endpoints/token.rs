@@ -50,6 +50,7 @@ pub async fn token<R: Repository>(
 enum TokenEndpointError {
     InvalidClient(QidError),
     InvalidRequest(QidError),
+    InvalidGrant(QidError),
     MalformedRequest(QidError),
     UnauthorizedClient(QidError),
     UnsupportedGrantType(QidError),
@@ -147,6 +148,14 @@ fn token_error_response<R: Repository>(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "The request is malformed or uses more than one client authentication method.",
+            None,
+            diagnostic,
+        ),
+        TokenEndpointError::InvalidGrant(diagnostic) => categorical_token_error(
+            nonce.as_deref(),
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "The authorization code or refresh token is invalid, expired, revoked, or does not match the request.",
             None,
             diagnostic,
         ),
@@ -396,6 +405,26 @@ async fn handle_token<R: Repository>(
 /// §5.2 code. Grant validity, expiry, revocation and policy failures keep
 /// qid's existing response rather than being guessed from a message.
 fn categorize_grant_error(err: QidError) -> TokenEndpointError {
+    // These are the RFC 6749 §5.2 invalid-grant conditions for the base
+    // authorization-code and refresh-token flows. Extension grants keep their
+    // own authorization_pending, slow_down and expired_token values.
+    const INVALID_GRANT_MESSAGES: &[&str] = &[
+        "invalid code",
+        "invalid code_verifier",
+        "authorization code user realm mismatch",
+        "invalid refresh token",
+        "refresh token was not issued to authenticated client",
+        "refresh token family revoked",
+        "refresh token family expired",
+        "refresh token family session ended",
+        "refresh token user realm mismatch",
+    ];
+    if matches!(
+        &err,
+        QidError::Unauthorized { message } if INVALID_GRANT_MESSAGES.contains(&message.as_str())
+    ) {
+        return TokenEndpointError::InvalidGrant(err);
+    }
     let QidError::BadRequest { message } = &err else {
         return TokenEndpointError::Other(err);
     };

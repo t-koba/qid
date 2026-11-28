@@ -87,8 +87,10 @@ scheme (`Basic realm="qid"` for Basic); a missing, duplicated or malformed
 header yields no challenge, and no Bearer invalid-token challenge is emitted
 here. The same §5.2 vocabulary is used for a small set of unambiguous token
 errors: `unsupported_grant_type` for an unknown grant, `invalid_request` for a
-missing or malformed token parameter (including form extraction failures), and
-`invalid_scope` when a requested scope exceeds the grant's ceiling. Errors
+missing or malformed token parameter (including form extraction failures),
+`invalid_grant` for an invalid, expired, revoked or mismatched authorization
+code or refresh token, and `invalid_scope` when a requested scope exceeds the
+grant's ceiling. Errors
 outside this explicit mapping keep qid's existing values, and DPoP-Nonce
 challenges are unchanged. This is scoped §5.2 behavior only, not a broader RFC
 6749 conformance claim.

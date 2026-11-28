@@ -3466,7 +3466,7 @@ async fn refresh_rejects_cross_client_caller_without_consuming() {
         )))
         .unwrap();
     let foreign_form_response = app.clone().oneshot(foreign_form).await.unwrap();
-    assert_eq!(foreign_form_response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(foreign_form_response.status(), StatusCode::BAD_REQUEST);
 
     // Basic selection must win over a spoofed form client_id.
     let basic = base64::engine::general_purpose::STANDARD.encode("foreign-refresh-client:secret");
@@ -3733,7 +3733,7 @@ async fn revocation_can_revoke_refresh_token_family() {
         )))
         .unwrap();
     let refresh_response = app.oneshot(refresh_request).await.unwrap();
-    assert_eq!(refresh_response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(refresh_response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -4139,7 +4139,7 @@ async fn authorization_code_grant_wrong_verifier_fails() {
         "A".repeat(43)
     );
     let response = post_form(app.clone(), &token_path, body).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let stored = state
         .repo
         .get_authorization_code(&code_hash)
@@ -4152,7 +4152,7 @@ async fn authorization_code_grant_wrong_verifier_fails() {
         code
     );
     let response = post_form(app, &token_path, replay).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -6108,7 +6108,7 @@ async fn authorization_code_used_twice_fails() {
 
     // Second use with same code - should fail
     let resp2 = post_form(app, &token_path, body).await;
-    assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -6164,7 +6164,7 @@ async fn authorization_code_expired_fails() {
         code, verifier
     );
     let response = post_form(app, &token_path, body).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

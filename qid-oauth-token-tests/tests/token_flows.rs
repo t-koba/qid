@@ -8,6 +8,7 @@ use axum::{
 use http_body_util::BodyExt;
 use qid_core::{
     config::{InboundProviderConfig, QidConfig},
+    jwt::Audience,
     models::{Client, ClientType},
     state::SharedState,
     test_helpers, util,
@@ -20,7 +21,10 @@ use qid_storage::{SqlRepository, prelude::*};
 #[allow(dead_code)]
 mod sqlite_fixture;
 use sqlite_fixture::{SqliteTestFixture, TestDatabase};
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 use tower::ServiceExt;
 
 static DATABASES: SqliteTestFixture = SqliteTestFixture::new("oauth_saml");
@@ -198,6 +202,48 @@ async fn setup_with_config(
     let token_path = state.paths.token.clone();
     let app = qid_oauth::routes(&state.paths).with_state(state.clone());
     (app, token_path, state, db)
+}
+
+async fn setup_with_invalid_grant_client() -> (
+    Router,
+    String,
+    Arc<SharedState<SqlRepository>>,
+    TestDatabase,
+) {
+    let (app, token_path, state, db) = setup().await;
+    let mut client = base_test_client(
+        "invalid-grant-client",
+        ClientType::Confidential,
+        "client_secret_post",
+        vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ],
+    );
+    client.client_secret_hash = Some(qid_core::util::client_secret_hash("secret"));
+    state.repo.create_client(&client).await.unwrap();
+    (app, token_path, state, db)
+}
+
+fn refresh_token_with_unknown_family(
+    state: &Arc<SharedState<SqlRepository>>,
+    client_id: &str,
+) -> String {
+    let now = util::now_seconds() as usize;
+    let claims = JwtClaims {
+        iss: Some("https://id.example.com".to_string()),
+        sub: Some("user-1".to_string()),
+        aud: Some(Audience::single(client_id)),
+        exp: Some(now + 300),
+        nbf: Some(0),
+        iat: Some(now),
+        jti: Some("unknown-family-refresh".to_string()),
+        extra: HashMap::from([(
+            "family_id".to_string(),
+            serde_json::Value::String("missing-family".to_string()),
+        )]),
+    };
+    state.signer.sign(&claims).unwrap()
 }
 
 fn base_test_client(
@@ -1527,6 +1573,56 @@ async fn token_disallowed_grant_is_unauthorized_client() {
     assert_no_store_headers(&response);
     let body = json_body(response).await;
     assert_eq!(body["error"], "unauthorized_client");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_invalid_authorization_code_uses_invalid_grant() {
+    let (app, token_path, _, db) = setup_with_invalid_grant_client().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=authorization_code&client_id=invalid-grant-client&client_secret=secret&code=unknown&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&code_verifier=verifier",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_grant");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_invalid_refresh_token_uses_invalid_grant() {
+    let (app, token_path, state, db) = setup_with_invalid_grant_client().await;
+    let token = refresh_token_with_unknown_family(&state, "invalid-grant-client");
+    let refresh_token = urlencoding::encode(&token);
+    let response = post_form(
+        app,
+        &token_path,
+        format!(
+            "grant_type=refresh_token&client_id=invalid-grant-client&client_secret=secret&refresh_token={refresh_token}"
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_grant");
     assert!(
         body["error_description"]
             .as_str()

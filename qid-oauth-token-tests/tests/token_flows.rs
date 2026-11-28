@@ -1336,7 +1336,7 @@ async fn token_exchange_chained_subject_cannot_broaden_scope_or_audience() {
     for (form, expected_error) in [
         (
             chained_exchange_form(delegated_token, None, "api://delegated", "other"),
-            "subject_token scopes",
+            "invalid_scope",
         ),
         (
             chained_exchange_form(delegated_token, None, "api://other", "delegated"),
@@ -1538,7 +1538,7 @@ async fn token_disallowed_grant_is_unauthorized_client() {
 }
 
 #[tokio::test]
-async fn token_unrelated_error_is_not_relabeled_as_invalid_client() {
+async fn token_unsupported_grant_type_uses_rfc_error_code() {
     let (app, token_path, _, db) = setup().await;
     let response = post_form(
         app,
@@ -1549,9 +1549,59 @@ async fn token_unrelated_error_is_not_relabeled_as_invalid_client() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_no_store_headers(&response);
     let body = json_body(response).await;
-    assert_eq!(body["error"], "bad request: unsupported grant_type");
+    assert_eq!(body["error"], "unsupported_grant_type");
     assert_ne!(body["error"], "invalid_client");
-    assert!(body.get("error_description").is_none());
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_missing_client_id_is_invalid_request() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=client_credentials&client_secret=secret",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_exchange_missing_subject_token_is_invalid_request() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
     assert!(body.get("access_token").is_none());
 
     db.close().await;

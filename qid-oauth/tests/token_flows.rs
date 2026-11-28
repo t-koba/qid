@@ -1351,13 +1351,7 @@ async fn token_exchange_rejects_scope_outside_subject_token_scopes() {
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = json_body(response).await;
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap()
-            .contains("subject_token scopes"),
-        "{body}"
-    );
+    assert_eq!(body["error"], "invalid_scope", "{body}");
     assert!(body.get("access_token").is_none());
 }
 
@@ -3158,6 +3152,8 @@ async fn refresh_preserves_original_scope_ceiling() {
         .unwrap();
     let exceed_response = app.clone().oneshot(exceed_request).await.unwrap();
     assert_eq!(exceed_response.status(), StatusCode::BAD_REQUEST);
+    let exceed_json = json_body(exceed_response).await;
+    assert_eq!(exceed_json["error"], "invalid_scope", "{exceed_json}");
 
     let retry_request = Request::builder()
         .method(Method::POST)

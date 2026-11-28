@@ -37,13 +37,30 @@ pub async fn token<R: Repository>(
     response
 }
 
-/// Client-authentication failures at the token endpoint use stable OAuth
-/// error values. Every other failure keeps qid's ordinary error response.
+/// A small, explicit set of token endpoint failures uses stable OAuth error
+/// values. Every other failure keeps qid's ordinary error response.
 enum TokenEndpointError {
     InvalidClient(QidError),
     InvalidRequest(QidError),
+    MalformedRequest(QidError),
     UnauthorizedClient(QidError),
+    UnsupportedGrantType(QidError),
+    InvalidScope(QidError),
     Other(QidError),
+}
+
+impl TokenEndpointError {
+    fn malformed(message: impl Into<String>) -> Self {
+        Self::MalformedRequest(QidError::BadRequest {
+            message: message.into(),
+        })
+    }
+
+    fn unsupported_grant_type() -> Self {
+        Self::UnsupportedGrantType(QidError::BadRequest {
+            message: "unsupported grant_type".to_string(),
+        })
+    }
 }
 
 impl From<QidError> for TokenEndpointError {
@@ -91,9 +108,9 @@ async fn token_response<R: Repository>(
     }
 }
 
-/// Map an endpoint error to its wire response. Only client-auth outcomes are
-/// relabeled; the shared error response still owns every other category and
-/// its 401 Bearer challenge.
+/// Map an endpoint error to its wire response. The shared error response
+/// still owns every category outside the explicit endpoint-local mapping,
+/// including its 401 Bearer challenge.
 fn token_error_response<R: Repository>(
     state: &SharedState<R>,
     headers: &HeaderMap,
@@ -125,11 +142,35 @@ fn token_error_response<R: Repository>(
             None,
             diagnostic,
         ),
+        TokenEndpointError::MalformedRequest(diagnostic) => categorical_token_error(
+            nonce.as_deref(),
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "The request is missing a required parameter or is otherwise malformed.",
+            None,
+            diagnostic,
+        ),
         TokenEndpointError::UnauthorizedClient(diagnostic) => categorical_token_error(
             nonce.as_deref(),
             StatusCode::BAD_REQUEST,
             "unauthorized_client",
             "The client is not authorized to use the requested grant type.",
+            None,
+            diagnostic,
+        ),
+        TokenEndpointError::UnsupportedGrantType(diagnostic) => categorical_token_error(
+            nonce.as_deref(),
+            StatusCode::BAD_REQUEST,
+            "unsupported_grant_type",
+            "The requested grant type is not supported.",
+            None,
+            diagnostic,
+        ),
+        TokenEndpointError::InvalidScope(diagnostic) => categorical_token_error(
+            nonce.as_deref(),
+            StatusCode::BAD_REQUEST,
+            "invalid_scope",
+            "The requested scope exceeds the scope allowed for this grant.",
             None,
             diagnostic,
         ),
@@ -215,16 +256,10 @@ async fn handle_token<R: Repository>(
         .or(inferred_client_id.as_deref())
         .unwrap_or("");
     if effective_client_id.is_empty() {
-        return Err(QidError::BadRequest {
-            message: "client_id required".to_string(),
-        }
-        .into());
+        return Err(TokenEndpointError::malformed("client_id required"));
     }
     if !is_supported_grant_type(&req.grant_type) {
-        return Err(QidError::BadRequest {
-            message: "unsupported grant_type".to_string(),
-        }
-        .into());
+        return Err(TokenEndpointError::unsupported_grant_type());
     }
     let client = super::find_client_across_realms(state, effective_client_id)
         .await
@@ -346,7 +381,41 @@ async fn handle_token<R: Repository>(
         )
         .increment(1);
     }
-    result.map_err(TokenEndpointError::Other)
+    result.map_err(categorize_grant_error)
+}
+
+/// Translate only the grant errors whose message has an unambiguous RFC 6749
+/// §5.2 code. Grant validity, expiry, revocation and policy failures keep
+/// qid's existing response rather than being guessed from a message.
+fn categorize_grant_error(err: QidError) -> TokenEndpointError {
+    let QidError::BadRequest { message } = &err else {
+        return TokenEndpointError::Other(err);
+    };
+    if message == "unsupported grant_type" {
+        return TokenEndpointError::UnsupportedGrantType(err);
+    }
+    if message == "requested scope is outside subject_token scopes"
+        || message.ends_with(" exceeds granted scope")
+    {
+        return TokenEndpointError::InvalidScope(err);
+    }
+    let malformed_parameter = matches!(
+        message.as_str(),
+        "assertion required"
+            | "subject_token required for token exchange"
+            | "subject_token_type required for token exchange"
+            | "actor_token required when actor_token_type is present"
+            | "actor_token_type required when actor_token is present"
+            | "only access_token requested_token_type is supported"
+            | "only jwt subject_token_type is supported for jwt bearer"
+            | "only saml2 subject_token_type is supported for saml2 bearer"
+    ) || message.starts_with("unsupported advanced grant: ")
+        || message.starts_with("unsupported subject_token_type: ")
+        || message.starts_with("unsupported actor_token_type: ");
+    if malformed_parameter {
+        return TokenEndpointError::MalformedRequest(err);
+    }
+    TokenEndpointError::Other(err)
 }
 
 fn metric_grant_type_label(grant_type: &str) -> &'static str {

@@ -85,9 +85,12 @@ registered for the requested grant type). An `invalid_client` response to a
 request with one usable `Authorization` header challenges with that header's
 scheme (`Basic realm="qid"` for Basic); a missing, duplicated or malformed
 header yields no challenge, and no Bearer invalid-token challenge is emitted
-here. All other token errors keep qid's existing error values, and DPoP-Nonce
-challenges are unchanged. This is scoped §5.2 behavior only, not a broader RFC
-6749 conformance claim.
+here. The same §5.2 vocabulary is used for a small set of unambiguous token
+errors: `unsupported_grant_type` for an unknown grant, `invalid_request` for a
+missing or malformed token parameter, and `invalid_scope` when a requested
+scope exceeds the grant's ceiling. Errors outside this explicit mapping keep
+qid's existing values, and DPoP-Nonce challenges are unchanged. This is scoped
+§5.2 behavior only, not a broader RFC 6749 conformance claim.
 
 An explicit `audience` or `resource` at the token endpoint must match a
 registered `protocols.oauth.resource_servers` target. A realm without resource

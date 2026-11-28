@@ -1420,6 +1420,67 @@ async fn token_exchange_cannot_widen_audience_on_a_second_hop() {
 }
 
 #[tokio::test]
+async fn token_exchange_bounds_multi_audience_subject_to_requester_authorized_audience() {
+    let mut config = test_helpers::test_config();
+    let mut authorized = test_server("api://exchange-target", &["read"], "introspection-client");
+    authorized.token_exchange_requester_client_ids = vec!["exchange-client".to_string()];
+    // The second audience is registered but does not authorize this requester.
+    let unauthorized = test_server("api://second-target", &["read"], "introspection-client");
+    config.realms[0].protocols.oauth.resource_servers = vec![authorized, unauthorized];
+    let (app, token_path, state) = setup_with_config(config).await;
+
+    // Mint one subject token that explicitly names both audiences.
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        &format!(
+            "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=read&audience={}",
+            urlencoding::encode("api://exchange-target api://second-target")
+        ),
+    )
+    .await;
+    let subject_claims = decode_claims(&state, &subject_token);
+    assert_eq!(subject_claims.extra["client_id"], "service-client");
+    assert_eq!(
+        subject_claims.audiences(),
+        ["api://exchange-target", "api://second-target"]
+    );
+
+    let exchange_body = |audience: &str| {
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience={}&scope=read",
+            urlencoding::encode(&subject_token),
+            urlencoding::encode(audience)
+        )
+    };
+
+    let json = post_token_json(
+        app.clone(),
+        &token_path,
+        exchange_body("api://exchange-target"),
+    )
+    .await;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
+    assert_eq!(claims.aud_primary(), Some("api://exchange-target"));
+    assert_eq!(claims.extra["client_id"], "exchange-client");
+
+    // The same subject token cannot reach the audience whose resource server
+    // does not authorize exchange-client, despite the broad subject `aud`.
+    let response = post_form(app, &token_path, exchange_body("api://second-target")).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("requested audience is not authorized"),
+        "{body}"
+    );
+    assert!(body.get("access_token").is_none());
+}
+
+#[tokio::test]
 async fn token_exchange_requires_explicit_requester_grant_for_cross_client_subject() {
     let mut config = test_helpers::test_config();
     let mut target = test_server(

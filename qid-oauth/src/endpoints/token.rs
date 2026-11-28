@@ -377,8 +377,10 @@ async fn advanced_subject_grant<R: Repository>(
         })?;
     let mut subject_token_scopes: Option<Vec<String>> = None;
     // Every audience of an access-token subject is a ceiling on the exchanged
-    // token, including for self-exchange. `None` means the subject is not an
-    // access token and has no audience ceiling.
+    // token, including for self-exchange. Cross-client exchange is bounded to
+    // the subject audiences whose resource servers explicitly authorize the
+    // requester. `None` means the subject is not an access token and has no
+    // audience ceiling.
     let mut subject_audience_ceiling: Option<Vec<String>> = None;
     let mut subject_user = User {
         id: format!(
@@ -414,30 +416,38 @@ async fn advanced_subject_grant<R: Repository>(
                         message: "subject_token realm does not match client realm".to_string(),
                     });
                 }
-                subject_audience_ceiling = Some(decoded.aud.clone());
-                if decoded.client_id != client.client_id {
-                    // An additional cross-client gate: at least one subject
-                    // audience must belong to a resource server that lists
-                    // this requester.
-                    let requester_is_allowed = decoded.aud.iter().any(|audience| {
-                        realm_config
-                            .protocols
-                            .oauth
-                            .resource_servers
-                            .iter()
-                            .any(|server| {
-                                audience == &server.audience
-                                    && server
-                                        .token_exchange_requester_client_ids
-                                        .iter()
-                                        .any(|client_id| client_id == &client.client_id)
-                            })
-                    });
-                    if !requester_is_allowed {
+                if decoded.client_id == client.client_id {
+                    // Self-exchange inherits the full subject audience set so a
+                    // delegated token cannot broaden its target on a later hop.
+                    subject_audience_ceiling = Some(decoded.aud.clone());
+                } else {
+                    // Cross-client exchange may use only subject audiences whose
+                    // resource server explicitly authorizes this requester.
+                    let allowed_audiences = decoded
+                        .aud
+                        .iter()
+                        .filter(|audience| {
+                            realm_config
+                                .protocols
+                                .oauth
+                                .resource_servers
+                                .iter()
+                                .any(|server| {
+                                    *audience == &server.audience
+                                        && server
+                                            .token_exchange_requester_client_ids
+                                            .iter()
+                                            .any(|client_id| client_id == &client.client_id)
+                                })
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if allowed_audiences.is_empty() {
                         return Err(QidError::BadRequest {
                             message: "subject_token is not owned by the exchange client or targeted to a resource server authorizing this requester for token exchange".to_string(),
                         });
                     }
+                    subject_audience_ceiling = Some(allowed_audiences);
                 }
                 subject_token_scopes = Some(
                     decoded

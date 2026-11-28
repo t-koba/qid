@@ -1,7 +1,10 @@
 use axum::{
     Form, Json,
     extract::State,
-    http::{HeaderMap, header::AUTHORIZATION},
+    http::{
+        HeaderMap, HeaderValue,
+        header::{AUTHORIZATION, CACHE_CONTROL, PRAGMA},
+    },
     response::{IntoResponse, Response},
 };
 use base64::Engine;
@@ -27,19 +30,34 @@ pub async fn token<R: Repository>(
     headers: HeaderMap,
     Form(req): Form<TokenRequest>,
 ) -> Response {
-    let dpop_header = super::error_response_or_return!(crate::dpop::extract_dpop_header(&headers));
+    let mut response = token_response(&state, &headers, &req).await;
+    let response_headers = response.headers_mut();
+    response_headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response_headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+/// Token responses carry tokens, credentials or their failure diagnostics, so
+/// every outcome is non-cacheable. Wrap all handler exits here rather than in
+/// the shared error response, which other endpoints also use.
+async fn token_response<R: Repository>(
+    state: &SharedState<R>,
+    headers: &HeaderMap,
+    req: &TokenRequest,
+) -> Response {
+    let dpop_header = super::error_response_or_return!(crate::dpop::extract_dpop_header(headers));
     let should_challenge_dpop_nonce = dpop_header.is_some()
         && state
             .config
             .realms
             .iter()
             .any(|realm| realm.protocols.oauth.dpop.nonce);
-    let basic_client_auth = super::error_response_or_return!(extract_basic_client_auth(&headers));
+    let basic_client_auth = super::error_response_or_return!(extract_basic_client_auth(headers));
     let mtls_x5t_s256 =
-        super::error_response_or_return!(super::extract_mtls_client_thumbprint(&state, &headers));
-    match handle_token(&state, &req, dpop_header, mtls_x5t_s256, basic_client_auth).await {
+        super::error_response_or_return!(super::extract_mtls_client_thumbprint(state, headers));
+    match handle_token(state, req, dpop_header, mtls_x5t_s256, basic_client_auth).await {
         Ok(resp) => Json(resp).into_response(),
-        Err(e) if should_challenge_dpop_nonce => token_error_with_fresh_dpop_nonce(&state, e),
+        Err(e) if should_challenge_dpop_nonce => token_error_with_fresh_dpop_nonce(state, e),
         Err(e) => qid_http::error_response(e),
     }
 }

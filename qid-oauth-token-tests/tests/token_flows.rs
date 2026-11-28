@@ -44,6 +44,11 @@ async fn post_form(
     app.oneshot(request).await.unwrap()
 }
 
+fn assert_no_store_headers(response: &axum::response::Response) {
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["pragma"], "no-cache");
+}
+
 async fn mint_access_token(app: Router, token_path: &str, form_body: &str) -> String {
     let response = post_form(app, token_path, form_body.to_string()).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1356,5 +1361,38 @@ async fn token_exchange_rejects_non_object_subject_act() {
             .is_some_and(|error| error.contains("act claim must be a JSON object")),
         "{body}"
     );
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_success_response_disables_caching() {
+    let (app, token_path, _, db) = setup().await;
+
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_no_store_headers(&response);
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_error_response_disables_caching() {
+    let (app, token_path, _, db) = setup().await;
+
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=wrong",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_no_store_headers(&response);
+    assert!(response.headers().contains_key("www-authenticate"));
+
     db.close().await;
 }

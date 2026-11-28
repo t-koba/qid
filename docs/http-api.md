@@ -71,6 +71,12 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | `/oauth2/challenge` | OAuth challenge helper. |
 | `POST` | configurable `par`, default `/oauth2/par` | Pushed Authorization Request, installed when PAR is enabled. |
 
+Every response from the token endpoint, successful or erroneous, carries
+`Cache-Control: no-store` and `Pragma: no-cache`. Other response headers, such
+as `WWW-Authenticate` on 401 and `DPoP-Nonce` on DPoP challenges, are unchanged.
+This describes qid's header behavior only; no broader RFC 6749 conformance is
+claimed.
+
 An explicit `audience` or `resource` at the token endpoint must match a
 registered `protocols.oauth.resource_servers` target. A realm without resource
 servers has no registered targets: untargeted grants keep the client-id

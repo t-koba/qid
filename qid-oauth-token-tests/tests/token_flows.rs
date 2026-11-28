@@ -229,8 +229,16 @@ fn refresh_token_with_unknown_family(
     state: &Arc<SharedState<SqlRepository>>,
     client_id: &str,
 ) -> String {
+    refresh_token_with_claims(state, client_id, |_| {})
+}
+
+fn refresh_token_with_claims(
+    state: &Arc<SharedState<SqlRepository>>,
+    client_id: &str,
+    mutate: impl FnOnce(&mut JwtClaims),
+) -> String {
     let now = util::now_seconds() as usize;
-    let claims = JwtClaims {
+    let mut claims = JwtClaims {
         iss: Some("https://id.example.com".to_string()),
         sub: Some("user-1".to_string()),
         aud: Some(Audience::single(client_id)),
@@ -243,6 +251,7 @@ fn refresh_token_with_unknown_family(
             serde_json::Value::String("missing-family".to_string()),
         )]),
     };
+    mutate(&mut claims);
     state.signer.sign(&claims).unwrap()
 }
 
@@ -1675,6 +1684,46 @@ async fn token_invalid_refresh_token_uses_invalid_grant() {
             .is_some_and(|text| !text.is_empty())
     );
     assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_malformed_refresh_token_uses_invalid_grant() {
+    let (app, token_path, state, db) = setup_with_invalid_grant_client().await;
+    let tokens = [
+        "not-a-refresh-token".to_string(),
+        refresh_token_with_claims(&state, "invalid-grant-client", |claims| {
+            claims.aud = None;
+        }),
+        refresh_token_with_claims(&state, "invalid-grant-client", |claims| {
+            claims.jti = None;
+        }),
+        refresh_token_with_claims(&state, "invalid-grant-client", |claims| {
+            claims.extra.clear();
+        }),
+    ];
+    for token in tokens {
+        let refresh_token = urlencoding::encode(&token);
+        let response = post_form(
+            app.clone(),
+            &token_path,
+            format!(
+                "grant_type=refresh_token&client_id=invalid-grant-client&client_secret=secret&refresh_token={refresh_token}"
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_no_store_headers(&response);
+        let body = json_body(response).await;
+        assert_eq!(body["error"], "invalid_grant", "token: {token}");
+        assert!(
+            body["error_description"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+        );
+        assert!(body.get("access_token").is_none());
+    }
 
     db.close().await;
 }

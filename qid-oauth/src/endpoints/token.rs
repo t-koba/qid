@@ -419,10 +419,19 @@ fn categorize_grant_error(err: QidError) -> TokenEndpointError {
         "refresh token family session ended",
         "refresh token user realm mismatch",
     ];
-    if matches!(
-        &err,
-        QidError::Unauthorized { message } if INVALID_GRANT_MESSAGES.contains(&message.as_str())
-    ) {
+    let malformed_refresh_token = match &err {
+        QidError::Unauthorized { message } => {
+            INVALID_GRANT_MESSAGES.contains(&message.as_str())
+                || message == "refresh token missing aud claim"
+        }
+        QidError::Crypto { message } => {
+            message.starts_with("failed to decode refresh token: ")
+                || message == "refresh token missing jti"
+        }
+        QidError::BadRequest { message } => message == "refresh token missing family_id",
+        _ => false,
+    };
+    if malformed_refresh_token {
         return TokenEndpointError::InvalidGrant(err);
     }
     let QidError::BadRequest { message } = &err else {

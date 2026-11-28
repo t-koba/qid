@@ -714,18 +714,111 @@ fn selects_name_id_and_builds_saml_response() {
 }
 
 #[test]
-fn persistent_name_id_uses_stable_subject_id_and_rejects_missing_email() {
+fn name_id_value_rejects_persistent_without_derivation_context() {
     let subject = SamlSubject {
         user_id: "user-stable".to_string(),
         email: None,
         display_name: None,
         groups: vec![],
     };
-    assert_eq!(
-        name_id_value(&subject, PERSISTENT_NAME_ID_FORMAT).unwrap(),
-        "user-stable"
-    );
+    assert_bad_request(name_id_value(&subject, PERSISTENT_NAME_ID_FORMAT));
     assert_bad_request(name_id_value(&subject, EMAIL_NAME_ID_FORMAT));
+}
+
+fn name_id_element_value(xml: &str) -> Option<String> {
+    roxmltree::Document::parse(xml)
+        .unwrap()
+        .descendants()
+        .find(|node| node.has_tag_name(("urn:oasis:names:tc:SAML:2.0:assertion", "NameID")))
+        .and_then(|node| node.text().map(str::to_string))
+}
+
+fn persistent_request(sp: &SamlServiceProviderMetadata) -> SamlAssertionRequest {
+    let mut request = test_assertion_request(sp, test_subject(None, &[]));
+    request.name_id_format = PERSISTENT_NAME_ID_FORMAT.to_string();
+    request
+}
+
+#[test]
+fn persistent_name_id_is_pairwise_secret_keyed_and_not_the_user_id() {
+    let sp = import_sp_metadata(&sp_metadata()).unwrap();
+    let request = persistent_request(&sp);
+    let secret = test_pairwise_secret();
+    let derived = persistent_name_id_value(
+        &request.issuer,
+        &request.subject.user_id,
+        &request.sp_entity_id,
+        Some(&secret),
+    )
+    .unwrap();
+    assert!(derived.len() <= 256);
+    assert_ne!(derived, request.subject.user_id);
+    let issued = build_saml_response(&request, Some(&secret)).unwrap();
+    assert_eq!(
+        name_id_element_value(&issued.xml).as_deref(),
+        Some(derived.as_str())
+    );
+    // A separate domain label keeps it distinct from the pairwise-id attribute.
+    assert_ne!(
+        pairwise_attribute(&issued.xml).as_deref(),
+        Some(derived.as_str())
+    );
+
+    let same = persistent_name_id_value(
+        &request.issuer,
+        &request.subject.user_id,
+        &request.sp_entity_id,
+        Some(&secret),
+    )
+    .unwrap();
+    assert_eq!(derived, same);
+    let other_sp = persistent_name_id_value(
+        &request.issuer,
+        &request.subject.user_id,
+        "https://other.example.com/metadata",
+        Some(&secret),
+    )
+    .unwrap();
+    assert_ne!(derived, other_sp);
+    let other_issuer = persistent_name_id_value(
+        "https://idp.example.com/realms/other",
+        &request.subject.user_id,
+        &request.sp_entity_id,
+        Some(&secret),
+    )
+    .unwrap();
+    assert_ne!(derived, other_issuer);
+    let other_secret = PairwiseSubjectSecret::new("fedcba9876543210fedcba9876543210");
+    let other_secret_value = persistent_name_id_value(
+        &request.issuer,
+        &request.subject.user_id,
+        &request.sp_entity_id,
+        Some(&other_secret),
+    )
+    .unwrap();
+    assert_ne!(derived, other_secret_value);
+}
+
+#[test]
+fn persistent_name_id_fails_closed_without_usable_secret() {
+    let sp = import_sp_metadata(&sp_metadata()).unwrap();
+    let request = persistent_request(&sp);
+    for secret in [None, Some(&PairwiseSubjectSecret::new("too-short"))] {
+        let err = build_saml_response(&request, secret).unwrap_err();
+        assert!(matches!(err, QidError::Config { .. }), "{err:?}");
+        let message = err.to_string();
+        assert!(message.contains("pairwise_subject_secret"), "{message}");
+        assert!(message.contains(&request.issuer), "{message}");
+        assert!(!message.contains("too-short"), "{message}");
+    }
+    // Email NameIDs are unchanged and need no secret when pairwise-id is excluded.
+    let mut email_request = test_assertion_request(&sp, test_subject(None, &[]));
+    email_request.attribute_release_policy = vec!["email".to_string(), "subject-id".to_string()];
+    let issued = build_saml_response(&email_request, None).unwrap();
+    assert_eq!(
+        name_id_element_value(&issued.xml).as_deref(),
+        Some("alice@example.com")
+    );
 }
 
 #[test]

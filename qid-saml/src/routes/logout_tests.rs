@@ -10,6 +10,24 @@ use qid_core::{
 };
 use tower::ServiceExt;
 
+const LOGOUT_REALM_ISSUER: &str = "https://id.example.com";
+const LOGOUT_SP: &str = "https://sp.example.com";
+const LOGOUT_PAIRWISE_SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+fn persistent_name_id_for(user_id: &str, sp_entity_id: &str) -> String {
+    let value = persistent_name_id_value(
+        LOGOUT_REALM_ISSUER,
+        user_id,
+        sp_entity_id,
+        Some(&PairwiseSubjectSecret::new(LOGOUT_PAIRWISE_SECRET)),
+    )
+    .unwrap();
+    format!(
+        r#"<s:NameID Format="{}">{}</s:NameID>"#,
+        PERSISTENT_NAME_ID_FORMAT, value
+    )
+}
+
 async fn logout_app() -> (
     tempfile::TempDir,
     Arc<qid_storage::FileRepository>,
@@ -36,9 +54,8 @@ async fn logout_app_with_key(
     );
     let mut config = test_config();
     config.realms[0].protocols.saml.enabled = true;
-    config.realms[0].pairwise_subject_secret = Some(PairwiseSubjectSecret::new(
-        "0123456789abcdef0123456789abcdef",
-    ));
+    config.realms[0].pairwise_subject_secret =
+        Some(PairwiseSubjectSecret::new(LOGOUT_PAIRWISE_SECRET));
     let key_path = directory.path().join("idp.key");
     std::fs::write(&key_path, TEST_SP_KEY_PEM).unwrap();
     config.realms[0].protocols.saml.idp_signing_key_pem_path =
@@ -289,13 +306,18 @@ async fn signed_logout_binds_every_selected_session_to_the_name_id_subject() {
         r#"<s:NameID Format="{}">a@example.com</s:NameID>"#,
         EMAIL_NAME_ID_FORMAT
     );
-    let persistent_a = format!(
+    let persistent_a = persistent_name_id_for("user-a", LOGOUT_SP);
+    let raw_persistent_a = format!(
         r#"<s:NameID Format="{}">user-a</s:NameID>"#,
-        crate::PERSISTENT_NAME_ID_FORMAT
+        PERSISTENT_NAME_ID_FORMAT
     );
+    let other_sp_persistent_a = persistent_name_id_for("user-a", "https://other-sp.example.com");
+    let persistent_b = persistent_name_id_for("user-b", LOGOUT_SP);
     for name in [
         email_a.as_str(),
-        persistent_a.as_str(),
+        raw_persistent_a.as_str(),
+        other_sp_persistent_a.as_str(),
+        persistent_b.as_str(),
         "<s:NameID>user-a</s:NameID>",
         "", // A signed request without NameID cannot authorize revocation.
         "<s:NameID/>",
@@ -344,10 +366,6 @@ async fn signed_logout_binds_every_selected_session_to_the_name_id_subject() {
             assert_eq!(take_logout_revoke_scopes(), vec![Some("test".to_owned())]);
         }
     }
-    let persistent_b = format!(
-        r#"<s:NameID Format="{}">user-b</s:NameID>"#,
-        crate::PERSISTENT_NAME_ID_FORMAT
-    );
     let (status, body) = post_logout(&app, &persistent_b, &[&index_b]).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["revoked_sessions"], serde_json::json!(["session-b"]));
@@ -359,6 +377,63 @@ async fn signed_logout_binds_every_selected_session_to_the_name_id_subject() {
             .revoked
     );
     assert_eq!(take_logout_revoke_scopes(), vec![Some("test".to_owned())]);
+}
+
+#[tokio::test]
+async fn persistent_name_id_slo_revokes_only_its_pairwise_subject_sessions() {
+    let (_directory, repo, app, _cookie_name) = logout_app().await;
+    create_user(&repo, "user", "user@example.com").await;
+    for id in ["session-a", "session-b"] {
+        create_session(&repo, id, "test", "user").await;
+    }
+    let session_ids = ["session-a", "session-b"];
+    let indexes: Vec<String> = session_ids
+        .map(|id| bind_session_index_to_sp(id, LOGOUT_SP, TEST_SP_KEY_PEM.as_bytes()).unwrap())
+        .into();
+    let selected: Vec<&str> = indexes.iter().map(String::as_str).collect();
+    let mut before = Vec::new();
+    for id in session_ids {
+        before.push(serde_json::to_value(repo.get_session(id).await.unwrap()).unwrap());
+    }
+
+    // The public user id is correlatable and must not authorize logout.
+    let raw = format!(
+        r#"<s:NameID Format="{}">user</s:NameID>"#,
+        PERSISTENT_NAME_ID_FORMAT
+    );
+    let (status, body) = post_logout(&app, &raw, &selected).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_saml_logout_subject");
+    assert!(take_logout_revoke_scopes().is_empty());
+
+    let derived = persistent_name_id_for("user", LOGOUT_SP);
+    assert!(!derived.contains("user"));
+    let (status, body) = post_logout(&app, &derived, &selected).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["revoked_sessions"],
+        serde_json::json!(["session-a", "session-b"])
+    );
+    for (id, before) in session_ids.into_iter().zip(before) {
+        let after = serde_json::to_value(repo.get_session(id).await.unwrap()).unwrap();
+        assert_ne!(after, before);
+        assert_eq!(after["revoked"], true);
+    }
+    assert_eq!(
+        take_logout_revoke_scopes(),
+        vec![Some("test".to_owned()), Some("test".to_owned())]
+    );
+
+    // The same user's value for a different SP, or no sessions at all, cannot
+    // be replayed against this SP's logout endpoint.
+    let other_sp = persistent_name_id_for("user", "https://other-sp.example.com");
+    let (status, body) = post_logout(&app, &other_sp, &selected[..1]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_saml_logout_subject");
+    let (status, body) = post_logout(&app, &derived, &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_saml_logout_subject");
+    assert!(take_logout_revoke_scopes().is_empty());
 }
 
 async fn sso_session_index(app: &Router, cookie_name: &str, session: &str, issuer: &str) -> String {

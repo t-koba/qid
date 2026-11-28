@@ -533,7 +533,7 @@ Optional realm fields include:
 - `sessions`
 - `pep_registrations`
 - `policy`
-- `pairwise_subject_secret`: provider-held secret that keys pairwise subject identifiers for clients with `subject_type: pairwise` and SAML `pairwise-id` attributes released by the realm's SP attribute policy. It is absent by default; when present it must be at least 32 bytes. A pairwise client in a realm without the secret fails closed at token issuance, and a SAML response releasing `pairwise-id` fails closed without the secret; public-subject clients and SAML responses excluding `pairwise-id` need no configuration. Changing this secret changes every pairwise subject and SAML pairwise-id already issued in that realm.
+- `pairwise_subject_secret`: provider-held secret that keys pairwise subject identifiers for clients with `subject_type: pairwise`, SAML `pairwise-id` attributes released by the realm's SP attribute policy and SAML persistent NameIDs. It is absent by default; when present it must be at least 32 bytes. A pairwise client in a realm without the secret fails closed at token issuance; SAML responses releasing `pairwise-id` or requesting persistent NameID fail closed without a usable secret, and persistent NameID is omitted from metadata. Public-subject clients and SAML responses using only email NameID need no configuration. Persistent NameID is a 22-character pairwise value bound to the realm issuer, user and requesting SP; SP-initiated SLO resolves the signed SessionIndexes first and verifies that value against their subject, so the raw user id cannot be used. Changing this secret changes every pairwise subject, SAML pairwise-id and persistent NameID already issued in that realm.
 
 When multiple realms are configured, each issuer must match:
 

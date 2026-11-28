@@ -503,11 +503,58 @@ pub fn name_id_value(subject: &SamlSubject, format: &str) -> QidResult<String> {
         EMAIL_NAME_ID_FORMAT => subject.email.clone().ok_or_else(|| QidError::BadRequest {
             message: "SAML email NameID requires subject email".to_string(),
         }),
-        PERSISTENT_NAME_ID_FORMAT => Ok(subject.user_id.clone()),
+        PERSISTENT_NAME_ID_FORMAT => Err(QidError::BadRequest {
+            message: "SAML persistent NameID requires realm issuer, subject, SP entity ID and pairwise secret; use persistent_name_id_value".to_string(),
+        }),
         _ => Err(QidError::BadRequest {
             message: format!("unsupported SAML NameID format {format}"),
         }),
     }
+}
+
+/// Derive a non-public pairwise NameID per SAML Core §8.3.7 with Errata E86.
+///
+/// The provider-held realm secret keys the value, which is bound to the
+/// realm issuer, user and requesting SP. It has no discernible correspondence
+/// with the user id and cannot be reversed without the secret; SLO therefore
+/// verifies it against the subject derived from the signed SessionIndexes.
+pub fn persistent_name_id_value(
+    issuer: &str,
+    user_id: &str,
+    sp_entity_id: &str,
+    pairwise_secret: Option<&qid_core::config::PairwiseSubjectSecret>,
+) -> QidResult<String> {
+    let secret = pairwise_secret.ok_or_else(|| QidError::Config {
+        message: format!(
+            "SAML realm {issuer}: persistent NameID requires realms[].pairwise_subject_secret with at least {} bytes",
+            qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+        ),
+    })?;
+    if secret.as_bytes().len() < qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES {
+        return Err(QidError::Config {
+            message: format!(
+                "SAML realm {issuer}: realms[].pairwise_subject_secret must be at least {} bytes",
+                qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+            ),
+        });
+    }
+    let name_id = qid_core::compute_pairwise_identifier(
+        user_id,
+        sp_entity_id,
+        issuer,
+        secret.as_bytes(),
+        b"qid-saml-nameid-v1:",
+    );
+    // The primitive yields 16 base64url bytes (22 characters); keep the
+    // bound explicit so a future change cannot exceed 256 characters.
+    if name_id.is_empty() || name_id.len() > 256 {
+        return Err(QidError::Config {
+            message: format!(
+                "SAML realm {issuer}: derived persistent NameID has an invalid length"
+            ),
+        });
+    }
+    Ok(name_id)
 }
 
 /// Derive a pairwise-id from the realm's provider-held secret. The SAML
@@ -547,7 +594,17 @@ pub fn build_saml_response(
     );
     let issue_instant = saml_time(req.issued_at);
     let not_on_or_after = saml_time(req.not_on_or_after);
-    let name_id = xml_escape(&name_id_value(&req.subject, &req.name_id_format)?);
+    let name_id = if req.name_id_format == PERSISTENT_NAME_ID_FORMAT {
+        persistent_name_id_value(
+            &req.issuer,
+            &req.subject.user_id,
+            &req.sp_entity_id,
+            pairwise_secret,
+        )?
+    } else {
+        name_id_value(&req.subject, &req.name_id_format)?
+    };
+    let name_id = xml_escape(&name_id);
     let name_id_format = xml_escape(&req.name_id_format);
     let issuer = xml_escape(&req.issuer);
     let sp_entity_id = xml_escape(&req.sp_entity_id);

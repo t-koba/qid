@@ -306,8 +306,13 @@ Installed when any realm enables SAML; each endpoint also checks that the reques
 
 SP-initiated SLO requires a signed LogoutRequest from a configured realm-local
 SP and a nonempty NameID resolving to a user in that realm. Email-format NameIDs
-resolve by email; persistent and unformatted NameIDs resolve by user ID. Other
-formats are rejected. SSO issues encrypted, SP-bound SessionIndexes using
+resolve by email; unformatted NameIDs resolve by user ID. Persistent NameIDs are
+non-public, secret-keyed pairwise values bound to the realm issuer, user and
+requesting SP, so they are not invertible: the subject comes from the signed,
+SP-bound, same-realm SessionIndexes (at least one is required) and the supplied
+value is compared to the subject's derived persistent NameID in constant time.
+Raw user IDs, values derived for another SP or secret, and requests without a
+usable `pairwise_subject_secret` are rejected. Other formats are rejected. SSO issues encrypted, SP-bound SessionIndexes using
 AES-256-GCM and key material derived from the realm's IdP signing private key
 PEM. SSO and SP-initiated SLO require a readable
 `protocols.saml.idp_signing_key_pem_path`, even when response signing is disabled;
@@ -322,6 +327,8 @@ session selected by a bound index must belong to the NameID user; a missing,
 unknown or mismatched subject also rejects with `400`. The entire selection is
 validated before any revocation. Missing and foreign-realm sessions referenced
 by valid bound indexes are ignored, and repeating a valid logout is idempotent.
+For persistent NameID the selected sessions themselves identify the subject, so
+sessions belonging to different users are rejected before any revocation.
 
 ### AttributeQuery subset
 

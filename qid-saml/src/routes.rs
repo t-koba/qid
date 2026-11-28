@@ -5,7 +5,11 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use qid_core::{config::SamlServiceProviderConfig, models::Session, state::SharedState};
+use qid_core::{
+    config::{PairwiseSubjectSecret, SamlServiceProviderConfig},
+    models::Session,
+    state::SharedState,
+};
 use qid_http::extract_cookie;
 use qid_storage::prelude::*;
 use serde::Deserialize;
@@ -16,7 +20,7 @@ use crate::{
     SamlPostBindingForm, SamlRelayStatePolicy, bind_session_index_to_sp,
     build_assertion_request_from_authn, build_saml_logout_post_response,
     build_saml_logout_response, build_saml_post_response, build_saml_response,
-    parse_post_binding_authn_request, parse_post_binding_logout_request,
+    parse_post_binding_authn_request, parse_post_binding_logout_request, persistent_name_id_value,
     resolve_session_index_for_sp, service_provider_from_config, subject_from_browser_session,
     validate_authn_request_for_sp, validate_logout_request_for_sp,
 };
@@ -43,14 +47,23 @@ async fn revoke_logout_session<R: SessionRepository>(
 }
 
 /// NameID formats advertised in realm metadata. Email is always supported;
-/// persistent is advertised when any configured SP can request it.
-fn metadata_name_id_formats(providers: &[SamlServiceProviderConfig]) -> Vec<&'static str> {
+/// persistent is advertised when a configured SP can request it and the realm
+/// has a usable secret to key the pairwise value.
+fn metadata_name_id_formats(
+    providers: &[SamlServiceProviderConfig],
+    pairwise_secret: Option<&PairwiseSubjectSecret>,
+) -> Vec<&'static str> {
     let mut formats = vec![EMAIL_NAME_ID_FORMAT];
-    if providers.iter().any(|sp| {
-        sp.name_id_formats
-            .iter()
-            .any(|format| format == PERSISTENT_NAME_ID_FORMAT)
-    }) {
+    let persistent_supported = pairwise_secret.is_some_and(|secret| {
+        secret.as_bytes().len() >= qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+    });
+    if persistent_supported
+        && providers.iter().any(|sp| {
+            sp.name_id_formats
+                .iter()
+                .any(|format| format == PERSISTENT_NAME_ID_FORMAT)
+        })
+    {
         formats.push(PERSISTENT_NAME_ID_FORMAT);
     }
     formats
@@ -84,11 +97,14 @@ async fn metadata<R: Repository>(
         urlencoding::encode(&realm),
     );
     let metadata_id = format!("metadata-{}", ulid::Ulid::new());
-    let name_id_formats = metadata_name_id_formats(&realm_config.protocols.saml.service_providers)
-        .iter()
-        .map(|format| format!("    <NameIDFormat>{format}</NameIDFormat>"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let name_id_formats = metadata_name_id_formats(
+        &realm_config.protocols.saml.service_providers,
+        realm_config.pairwise_subject_secret.as_ref(),
+    )
+    .iter()
+    .map(|format| format!("    <NameIDFormat>{format}</NameIDFormat>"))
+    .collect::<Vec<_>>()
+    .join("\n");
     let mut xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" ID="{metadata_id}" entityID="{entity_id}">
@@ -573,32 +589,10 @@ async fn slo<R: Repository>(
         return invalid_subject();
     };
     let realm_id = qid_core::tenant::RealmId::from(realm.as_str());
-    // Match the assertion subject mapping: email NameIDs carry email, persistent
-    // NameIDs carry the user ID. Unformatted NameIDs retain the ID lookup.
-    let user = match req.name_id_format.as_deref() {
-        Some(EMAIL_NAME_ID_FORMAT) => state.repo.get_user_by_email(&realm_id, name_id).await,
-        Some(crate::PERSISTENT_NAME_ID_FORMAT) | None => {
-            state.repo.get_user_by_id_in_realm(&realm_id, name_id).await
-        }
-        Some(_) => return invalid_subject(),
-    };
-    let user = match user {
-        Ok(Some(user)) if user.realm_id == realm => user,
-        Ok(_) => return invalid_subject(),
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "saml_logout_lookup_failed",
-                    "message": err.to_string(),
-                })),
-            )
-                .into_response();
-        }
-    };
-    // Preflight the entire selection before mutating any session: a later
-    // mismatched subject or SP binding must not leave earlier sessions revoked.
-    let mut revoked_sessions = Vec::new();
+    // A persistent NameID is not invertible. Resolve the signed, SP-bound
+    // SessionIndexes first so the subject comes from the selected sessions,
+    // never from a scan of realm users or from the NameID text itself.
+    let mut selected_sessions = Vec::new();
     for session_index in &req.session_indexes {
         let Some(session_id) =
             resolve_session_index_for_sp(session_index, &sp.entity_id, &private_key_pem)
@@ -614,10 +608,13 @@ async fn slo<R: Repository>(
         };
         match state.repo.get_session(&session_id).await {
             Ok(Some(session)) if session.realm_id == realm => {
-                if session.user_id != user.id {
+                if selected_sessions
+                    .first()
+                    .is_some_and(|(_, user_id): &(String, String)| *user_id != session.user_id)
+                {
                     return invalid_subject();
                 }
-                revoked_sessions.push(session_id);
+                selected_sessions.push((session_id, session.user_id));
             }
             Ok(_) => {}
             Err(err) => {
@@ -632,8 +629,58 @@ async fn slo<R: Repository>(
             }
         }
     }
-    for session_index in &revoked_sessions {
-        if let Err(err) = revoke_logout_session(state.repo.as_ref(), session_index, &realm).await {
+    if req.name_id_format.as_deref() == Some(crate::PERSISTENT_NAME_ID_FORMAT) {
+        // Every selected session belongs to one subject; its pairwise value
+        // must equal the supplied NameID, compared without early exit.
+        let Some((_, user_id)) = selected_sessions.first() else {
+            return invalid_subject();
+        };
+        let expected = match persistent_name_id_value(
+            &realm_config.issuer,
+            user_id,
+            &sp.entity_id,
+            realm_config.pairwise_subject_secret.as_ref(),
+        ) {
+            Ok(expected) => expected,
+            Err(err) => return saml_config_error(&err.to_string()),
+        };
+        if !qid_core::util::constant_time_eq(name_id.as_bytes(), expected.as_bytes()) {
+            return invalid_subject();
+        }
+    } else {
+        // Email NameIDs carry email; unformatted NameIDs carry the user id.
+        let user = match req.name_id_format.as_deref() {
+            Some(EMAIL_NAME_ID_FORMAT) => state.repo.get_user_by_email(&realm_id, name_id).await,
+            None => state.repo.get_user_by_id_in_realm(&realm_id, name_id).await,
+            Some(_) => return invalid_subject(),
+        };
+        let user = match user {
+            Ok(Some(user)) if user.realm_id == realm => user,
+            Ok(_) => return invalid_subject(),
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "saml_logout_lookup_failed",
+                        "message": err.to_string(),
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        if selected_sessions
+            .iter()
+            .any(|(_, user_id)| *user_id != user.id)
+        {
+            return invalid_subject();
+        }
+    }
+    let revoked_sessions: Vec<String> = selected_sessions
+        .into_iter()
+        .map(|(session_id, _)| session_id)
+        .collect();
+    for session_id in &revoked_sessions {
+        if let Err(err) = revoke_logout_session(state.repo.as_ref(), session_id, &realm).await {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -1026,28 +1073,48 @@ mod tests {
 
     #[test]
     fn metadata_advertises_formats_the_realm_can_issue() {
+        let secret =
+            qid_core::config::PairwiseSubjectSecret::new("0123456789abcdef0123456789abcdef");
+        let persistent_sp = sp_with_formats(&[super::PERSISTENT_NAME_ID_FORMAT]);
         assert_eq!(
-            super::metadata_name_id_formats(&[]),
+            super::metadata_name_id_formats(&[], Some(&secret)),
             vec![super::EMAIL_NAME_ID_FORMAT]
         );
         assert_eq!(
-            super::metadata_name_id_formats(&[sp_with_formats(&[super::EMAIL_NAME_ID_FORMAT])]),
+            super::metadata_name_id_formats(
+                &[sp_with_formats(&[super::EMAIL_NAME_ID_FORMAT])],
+                Some(&secret)
+            ),
+            vec![super::EMAIL_NAME_ID_FORMAT]
+        );
+        // Without a usable secret the realm cannot issue a pairwise NameID.
+        assert_eq!(
+            super::metadata_name_id_formats(std::slice::from_ref(&persistent_sp), None),
+            vec![super::EMAIL_NAME_ID_FORMAT]
+        );
+        let short_secret = qid_core::config::PairwiseSubjectSecret::new("too-short");
+        assert_eq!(
+            super::metadata_name_id_formats(
+                std::slice::from_ref(&persistent_sp),
+                Some(&short_secret)
+            ),
             vec![super::EMAIL_NAME_ID_FORMAT]
         );
         assert_eq!(
-            super::metadata_name_id_formats(&[sp_with_formats(&[
-                super::PERSISTENT_NAME_ID_FORMAT
-            ])]),
+            super::metadata_name_id_formats(&[persistent_sp], Some(&secret)),
             vec![
                 super::EMAIL_NAME_ID_FORMAT,
                 super::PERSISTENT_NAME_ID_FORMAT
             ]
         );
         assert_eq!(
-            super::metadata_name_id_formats(&[
-                sp_with_formats(&[super::EMAIL_NAME_ID_FORMAT]),
-                sp_with_formats(&[super::PERSISTENT_NAME_ID_FORMAT]),
-            ]),
+            super::metadata_name_id_formats(
+                &[
+                    sp_with_formats(&[super::EMAIL_NAME_ID_FORMAT]),
+                    sp_with_formats(&[super::PERSISTENT_NAME_ID_FORMAT]),
+                ],
+                Some(&secret)
+            ),
             vec![
                 super::EMAIL_NAME_ID_FORMAT,
                 super::PERSISTENT_NAME_ID_FORMAT

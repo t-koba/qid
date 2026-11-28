@@ -706,6 +706,8 @@ mod tests {
     ) -> RealmConfig {
         RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "test".to_string(),
             issuer: "https://id.example.com".to_string(),
             display_name: None,

@@ -1261,6 +1261,43 @@ fn token_endpoint_url_for_realm<R: Repository>(state: &SharedState<R>, realm_id:
     format!("{issuer}{}", state.paths.token)
 }
 
+/// Resolve the pairwise `sub` override for a client, if it uses pairwise
+/// subjects. A realm without a configured secret fails closed rather than
+/// deriving a PPID from the public issuer.
+pub(super) fn pairwise_sub_override(
+    realm: &qid_core::config::RealmConfig,
+    client: &Client,
+    user_id: &str,
+) -> QidResult<Option<String>> {
+    if client.subject_type.as_deref() != Some("pairwise") {
+        return Ok(None);
+    }
+    let secret = realm
+        .pairwise_subject_secret
+        .as_ref()
+        .ok_or_else(|| QidError::Config {
+            message: format!(
+                "realm {} pairwise_subject_secret is required for pairwise subject_type",
+                realm.id
+            ),
+        })?;
+    if secret.as_bytes().len() < qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES {
+        return Err(QidError::Config {
+            message: format!(
+                "realm {} pairwise_subject_secret must be at least {} bytes",
+                realm.id,
+                qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+            ),
+        });
+    }
+    Ok(Some(qid_core::compute_pairwise_sub(
+        user_id,
+        &qid_core::sector_identifier_for_client(client),
+        &realm.issuer,
+        secret.as_bytes(),
+    )))
+}
+
 pub(super) fn oauth_realm_config<'a, R: Repository>(
     state: &'a SharedState<R>,
     realm_id: &str,

@@ -58,6 +58,8 @@ fn test_state() -> qid_core::state::SharedState<()> {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,

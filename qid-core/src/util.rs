@@ -91,13 +91,26 @@ pub fn client_secret_hash(secret: &str) -> String {
 }
 
 /// Compute a pairwise subject identifier per OIDC Core §8.1.
+///
+/// The key comes from the provider-held realm secret, not from the public
+/// issuer: anyone can observe the issuer, but only the provider can derive
+/// the PPID. The issuer is still part of the message, so a change of realm
+/// issuer changes the identifier even when the secret is reused.
 #[allow(clippy::expect_used)]
-pub fn compute_pairwise_sub(public_sub: &str, sector_identifier: &str, issuer: &str) -> String {
+pub fn compute_pairwise_sub(
+    public_sub: &str,
+    sector_identifier: &str,
+    issuer: &str,
+    pairwise_secret: &[u8],
+) -> String {
+    let mut key = b"qid-pairwise-v1:".to_vec();
+    key.extend_from_slice(pairwise_secret);
     // HMAC accepts keys of any length; construction failure would indicate a library invariant change.
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(issuer.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("HMAC accepts any key length");
+    mac.update(issuer.as_bytes());
+    mac.update(b"\x00");
     mac.update(public_sub.as_bytes());
-    mac.update(b"|");
+    mac.update(b"\x00");
     mac.update(sector_identifier.as_bytes());
     let result = mac.finalize().into_bytes();
     URL_SAFE_NO_PAD.encode(&result[..16])
@@ -149,6 +162,43 @@ mod hex_tests {
         assert_eq!(
             sha256_hex("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pairwise_subject_tests {
+    use super::compute_pairwise_sub;
+
+    const SECRET_A: &[u8] = b"0123456789abcdef0123456789abcdef";
+    const SECRET_B: &[u8] = b"fedcba9876543210fedcba9876543210";
+    const ISSUER: &str = "https://id.example.com/realms/corp";
+
+    fn sub(user: &str, sector: &str, issuer: &str, secret: &[u8]) -> String {
+        compute_pairwise_sub(user, sector, issuer, secret)
+    }
+
+    #[test]
+    fn pairwise_subject_is_stable_and_bound_to_secret_user_sector_and_issuer() {
+        let ppid = sub("alice", "rp.example.com", ISSUER, SECRET_A);
+        assert_eq!(ppid, sub("alice", "rp.example.com", ISSUER, SECRET_A));
+        assert_eq!(ppid.len(), 22);
+        assert!(
+            ppid.bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        );
+
+        assert_ne!(ppid, sub("alice", "rp.example.com", ISSUER, SECRET_B));
+        assert_ne!(ppid, sub("bob", "rp.example.com", ISSUER, SECRET_A));
+        assert_ne!(ppid, sub("alice", "other.example.com", ISSUER, SECRET_A));
+        assert_ne!(
+            ppid,
+            sub(
+                "alice",
+                "rp.example.com",
+                "https://id.example.com/realms/other",
+                SECRET_A
+            )
         );
     }
 }

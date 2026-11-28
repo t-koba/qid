@@ -447,6 +447,14 @@ pub(crate) async fn ciba_grant<R: Repository>(
         &grant.scopes,
         cnf,
     )?;
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from(grant.realm_id.clone()), &grant.client_id)
+        .await?
+        .ok_or_else(|| QidError::NotFound {
+            resource: format!("client {}", grant.client_id),
+        })?;
+    let sub_override = super::token::pairwise_sub_override(realm_config, &client, &user.id)?;
     state
         .repo
         .consume_backchannel_authentication_grant(&auth_req_id_hash)
@@ -476,22 +484,6 @@ pub(crate) async fn ciba_grant<R: Repository>(
         },
     )
     .await?;
-    let client = state
-        .repo
-        .get_client_by_client_id(&RealmId::from(grant.realm_id.clone()), &grant.client_id)
-        .await?
-        .ok_or_else(|| QidError::NotFound {
-            resource: format!("client {}", grant.client_id),
-        })?;
-    let sub_override = if client.subject_type.as_deref() == Some("pairwise") {
-        Some(qid_core::compute_pairwise_sub(
-            &user.id,
-            &qid_core::sector_identifier_for_client(&client),
-            &realm.issuer,
-        ))
-    } else {
-        None
-    };
 
     Ok(TokenResponse {
         access_token: pair.access_token,

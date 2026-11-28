@@ -533,6 +533,7 @@ Optional realm fields include:
 - `sessions`
 - `pep_registrations`
 - `policy`
+- `pairwise_subject_secret`: provider-held secret that keys pairwise subject identifiers for clients with `subject_type: pairwise`. It is absent by default; when present it must be at least 32 bytes. A pairwise client in a realm without the secret fails closed at token issuance, while public-subject clients need no configuration. Changing this secret changes every pairwise subject already issued in that realm.
 
 When multiple realms are configured, each issuer must match:
 

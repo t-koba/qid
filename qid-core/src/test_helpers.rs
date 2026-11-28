@@ -32,6 +32,8 @@ pub fn test_config() -> QidConfig {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "test".to_string(),
             issuer: "https://id.example.com".to_string(),
             display_name: Some("Test Realm".to_string()),

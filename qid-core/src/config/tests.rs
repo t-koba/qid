@@ -20,6 +20,8 @@ fn minimal_config() -> QidConfig {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -156,6 +158,8 @@ fn test_minimal_config_validation() {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -444,6 +448,8 @@ fn test_duplicate_realm_rejected() {
         realms: vec![
             RealmConfig {
                 client_callback_destinations: Default::default(),
+                pairwise_subject_secret: None,
+
                 id: "corp".to_string(),
                 issuer: "https://id.example.com/realms/corp".to_string(),
                 display_name: None,
@@ -457,6 +463,8 @@ fn test_duplicate_realm_rejected() {
             },
             RealmConfig {
                 client_callback_destinations: Default::default(),
+                pairwise_subject_secret: None,
+
                 id: "corp".to_string(),
                 issuer: "https://id.example.com/realms/corp".to_string(),
                 display_name: None,
@@ -525,6 +533,8 @@ fn test_issuer_url_validation() {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "test".to_string(),
             issuer: "not-a-valid-url".to_string(),
             display_name: None,
@@ -590,6 +600,8 @@ fn multi_realm_issuer_must_match_realm_scoped_discovery_route() {
     let mut config = minimal_config();
     config.realms.push(RealmConfig {
         client_callback_destinations: Default::default(),
+        pairwise_subject_secret: None,
+
         id: "retail".to_string(),
         issuer: "https://retail.example.com".to_string(),
         display_name: None,
@@ -629,6 +641,8 @@ fn ops_config_rejects_incomplete_cache_and_multi_region() {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -1240,6 +1254,8 @@ fn saml_service_provider_config_validates_trust_material() {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -1318,6 +1334,8 @@ fn saml_service_provider_config_rejects_duplicates_and_missing_encryption() {
         crypto: CryptoConfig::default(),
         realms: vec![RealmConfig {
             client_callback_destinations: Default::default(),
+            pairwise_subject_secret: None,
+
             id: "corp".to_string(),
             issuer: "https://id.example.com/realms/corp".to_string(),
             display_name: None,
@@ -4343,4 +4361,70 @@ fn enabled_social_provider_aliases_must_be_exact_and_callback_safe() {
             )
         });
     }
+}
+
+#[test]
+fn pairwise_subject_secret_requires_32_bytes_and_redacts_debug() {
+    let mut config = minimal_config();
+    config.realms[0].pairwise_subject_secret = Some(PairwiseSubjectSecret::new("too-short"));
+    let message = config.validate().unwrap_err().message();
+    assert!(
+        message.contains("realm corp")
+            && message.contains("pairwise_subject_secret")
+            && message.contains("32 bytes")
+            && !message.contains("too-short"),
+        "validation must name the realm and field without the secret: {message}"
+    );
+
+    let secret = "0123456789abcdef0123456789abcdef";
+    config.realms[0].pairwise_subject_secret = Some(PairwiseSubjectSecret::new(secret));
+    config.validate().expect("32-byte secret is valid");
+    let debug = format!("{:?}", config.realms[0]);
+    assert!(!debug.contains(secret));
+    assert!(debug.contains("redacted"));
+}
+
+#[test]
+fn pairwise_subject_secret_defaults_to_absent_in_config_files() {
+    let secret = "0123456789abcdef0123456789abcdef";
+    let path = temp_config_path("pairwise.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+server:
+  listen: "127.0.0.1:8443"
+  public_base_url: "https://id.example.com"
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    pairwise_subject_secret: "{secret}"
+"#
+        ),
+    )
+    .expect("write config with pairwise secret");
+    let parsed = QidConfig::from_file(path.to_str().unwrap()).expect("parse pairwise secret");
+    assert_eq!(
+        parsed.realms[0]
+            .pairwise_subject_secret
+            .as_ref()
+            .expect("configured secret")
+            .as_bytes(),
+        secret.as_bytes()
+    );
+
+    std::fs::write(
+        &path,
+        r#"
+server:
+  listen: "127.0.0.1:8443"
+  public_base_url: "https://id.example.com"
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+"#,
+    )
+    .expect("write config without pairwise secret");
+    let parsed = QidConfig::from_file(path.to_str().unwrap()).expect("parse config without secret");
+    assert!(parsed.realms[0].pairwise_subject_secret.is_none());
 }

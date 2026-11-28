@@ -101,6 +101,7 @@ pub async fn authorization_code_grant<R: Repository>(
     let issuer = realm.issuer.clone();
     let audiences =
         qid_core::oauth::resolve_token_audience(realm, &[], &auth_code.resource, &scopes, cnf)?;
+    let sub_override = super::token::pairwise_sub_override(realm, client, &user.id)?;
     let pair = issue_token_pair(
         state,
         &issuer,
@@ -127,18 +128,6 @@ pub async fn authorization_code_grant<R: Repository>(
     .await?;
 
     log_token_issued(&auth_code.realm_id, &user.id);
-
-    // The code names the client the grant already resolved, so it is not
-    // read again.
-    let sub_override = if client.subject_type.as_deref() == Some("pairwise") {
-        Some(qid_core::compute_pairwise_sub(
-            &user.id,
-            &qid_core::sector_identifier_for_client(client),
-            &issuer,
-        ))
-    } else {
-        None
-    };
 
     Ok(TokenResponse {
         access_token: pair.access_token.clone(),

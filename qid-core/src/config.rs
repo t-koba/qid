@@ -1302,6 +1302,34 @@ mod security;
 mod outbound;
 pub use outbound::*;
 
+/// Minimum length of a configured pairwise-subject secret.
+pub const PAIRWISE_SUBJECT_SECRET_MIN_BYTES: usize = 32;
+
+/// Provider-held secret used to key pairwise subject identifiers. Its value
+/// is redacted in `Debug`; configuration validation enforces its minimum
+/// length.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct PairwiseSubjectSecret(String);
+
+impl PairwiseSubjectSecret {
+    /// Wrap a configured secret value. Length is checked at realm validation.
+    pub fn new(secret: impl Into<String>) -> Self {
+        Self(secret.into())
+    }
+
+    /// Secret bytes used as the pairwise-subject HMAC key material.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl std::fmt::Debug for PairwiseSubjectSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PairwiseSubjectSecret(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RealmConfig {
@@ -1309,6 +1337,10 @@ pub struct RealmConfig {
     pub client_callback_destinations: ClientCallbackDestinationsConfig,
     pub id: String,
     pub issuer: String,
+    /// Secret that keys pairwise subjects. Absent means this realm cannot
+    /// issue pairwise subjects; public subjects are unaffected.
+    #[serde(default)]
+    pub pairwise_subject_secret: Option<PairwiseSubjectSecret>,
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
@@ -1502,6 +1534,16 @@ impl RealmConfig {
         if let Err(e) = url::Url::parse(&self.issuer) {
             return Err(QidError::Config {
                 message: format!("realm {} issuer is not a valid URL: {e}", self.id),
+            });
+        }
+        if let Some(secret) = &self.pairwise_subject_secret
+            && secret.as_bytes().len() < PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+        {
+            return Err(QidError::Config {
+                message: format!(
+                    "realm {} pairwise_subject_secret must be at least {} bytes",
+                    self.id, PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+                ),
             });
         }
         if self

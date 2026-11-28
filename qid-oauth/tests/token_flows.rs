@@ -9,7 +9,10 @@ use base64::Engine;
 use http_body_util::BodyExt;
 use qid_core::{
     config::{OAuthProtocolConfig, OAuthResourceServerConfig, PepRegistrationConfig, QidConfig},
-    models::{AccessToken, AuthorizationCode, Client, ClientType, TokenFormat, User},
+    models::{
+        AccessToken, AuthorizationCode, BackchannelAuthenticationGrant, Client, ClientType,
+        TokenFormat, User,
+    },
     state::SharedState,
     tenant::RealmId,
     test_helpers, util,
@@ -8348,4 +8351,208 @@ async fn dpop_only_cnf_still_accepts_valid_proof() {
         &decoded,
     )
     .expect("a DPoP-only token must still be accepted with a valid proof");
+}
+
+const PAIRWISE_TEST_SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+/// Redeem an authorization code with the seeded public client, optionally
+/// marked as a pairwise client with a sector identifier.
+async fn pairwise_code_token(
+    config: QidConfig,
+    pairwise: bool,
+    sector: Option<&str>,
+) -> (axum::response::Response, Arc<SharedState<SqlRepository>>) {
+    let (app, token_path, state) = setup_with_config(config).await;
+    if pairwise {
+        let mut client = state
+            .repo
+            .get_client_by_client_id(&RealmId::from("test"), "test-client")
+            .await
+            .unwrap()
+            .unwrap();
+        client.subject_type = Some("pairwise".to_string());
+        client.sector_identifier_uri = sector.map(|host| format!("https://{host}/callback"));
+        state.repo.update_client(&client).await.unwrap();
+    }
+    let verifier = "9102a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8";
+    create_user_with_code(
+        &state,
+        "pairwise-user",
+        "pairwise-code",
+        verifier,
+        vec!["openid".to_string()],
+        None,
+        None,
+        vec![],
+        vec![],
+    )
+    .await;
+    let response = post_form(
+        app,
+        &token_path,
+        format!(
+            "grant_type=authorization_code&code=pairwise-code&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=test-client&code_verifier={verifier}"
+        ),
+    )
+    .await;
+    (response, state)
+}
+
+#[tokio::test]
+async fn pairwise_client_without_realm_secret_fails_closed_at_token_issuance() {
+    let (response, state) =
+        pairwise_code_token(test_helpers::test_config(), true, Some("rp.example.com")).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("pairwise_subject_secret"),
+        "failure must name the missing realm field: {body}"
+    );
+    assert!(body.get("access_token").is_none());
+    assert!(body.get("id_token").is_none());
+    assert!(
+        state
+            .repo
+            .list_token_families("test", Some("pairwise-user"), None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no token family may be issued without a pairwise secret"
+    );
+}
+
+#[tokio::test]
+async fn public_client_does_not_require_a_pairwise_secret() {
+    let (response, state) = pairwise_code_token(test_helpers::test_config(), false, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let claims = decode_claims(&state, body["id_token"].as_str().unwrap());
+    assert_eq!(claims.sub.as_deref(), Some("pairwise-user"));
+}
+
+#[tokio::test]
+async fn pairwise_subject_at_token_issuance_is_keyed_by_the_realm_secret() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].pairwise_subject_secret = Some(qid_core::config::PairwiseSubjectSecret::new(
+        PAIRWISE_TEST_SECRET,
+    ));
+    let (response, state) = pairwise_code_token(config, true, Some("rp.example.com")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let claims = decode_claims(&state, body["id_token"].as_str().unwrap());
+    let expected = qid_core::compute_pairwise_sub(
+        "pairwise-user",
+        "rp.example.com",
+        &state.config.realms[0].issuer,
+        PAIRWISE_TEST_SECRET.as_bytes(),
+    );
+    assert_eq!(claims.sub.as_deref(), Some(expected.as_str()));
+    assert_ne!(claims.sub.as_deref(), Some("pairwise-user"));
+}
+
+async fn pairwise_ciba_token(
+    secret: Option<&str>,
+) -> (axum::response::Response, Arc<SharedState<SqlRepository>>) {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.ciba.enabled = true;
+    if let Some(secret) = secret {
+        config.realms[0].pairwise_subject_secret =
+            Some(qid_core::config::PairwiseSubjectSecret::new(secret));
+    }
+    let (app, token_path, state) = setup_with_config(config).await;
+    let mut client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "ciba-client")
+        .await
+        .unwrap()
+        .unwrap();
+    client.subject_type = Some("pairwise".to_string());
+    client.sector_identifier_uri = Some("https://rp.example.com/callback".to_string());
+    state.repo.update_client(&client).await.unwrap();
+    state
+        .repo
+        .create_user(&User {
+            id: "ciba-pairwise-user".to_string(),
+            realm_id: "test".to_string(),
+            email: Some("ciba-pairwise@example.com".to_string()),
+            email_verified: true,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .unwrap();
+    let now = util::now_seconds();
+    state
+        .repo
+        .store_backchannel_authentication_grant(&BackchannelAuthenticationGrant {
+            auth_req_id_hash: util::sha256_base64url("ciba-pairwise-request"),
+            client_id: "ciba-client".to_string(),
+            realm_id: "test".to_string(),
+            login_hint: "ciba-pairwise@example.com".to_string(),
+            binding_message: None,
+            scopes: vec!["openid".to_string()],
+            resource: vec![],
+            audience: vec![],
+            user_id: Some("ciba-pairwise-user".to_string()),
+            expires_at: now + 300,
+            approved_at: Some(now),
+            consumed: false,
+            last_poll_at: None,
+            poll_interval_seconds: 5,
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=urn:openid:params:grant-type:ciba&client_id=ciba-client&client_secret=secret&auth_req_id=ciba-pairwise-request",
+    )
+    .await;
+    (response, state)
+}
+
+#[tokio::test]
+async fn ciba_pairwise_client_requires_the_realm_secret() {
+    let (denied, state) = pairwise_ciba_token(None).await;
+    assert_eq!(denied.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = json_body(denied).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("pairwise_subject_secret")
+    );
+    assert!(
+        !state
+            .repo
+            .get_backchannel_authentication_grant(&util::sha256_base64url("ciba-pairwise-request"))
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed,
+        "missing secret must not consume the grant"
+    );
+
+    let (issued, state) = pairwise_ciba_token(Some(PAIRWISE_TEST_SECRET)).await;
+    assert_eq!(issued.status(), StatusCode::OK);
+    let body = json_body(issued).await;
+    let claims = decode_claims(&state, body["id_token"].as_str().unwrap());
+    assert_eq!(
+        claims.sub.as_deref(),
+        Some(
+            qid_core::compute_pairwise_sub(
+                "ciba-pairwise-user",
+                "rp.example.com",
+                &state.config.realms[0].issuer,
+                PAIRWISE_TEST_SECRET.as_bytes(),
+            )
+            .as_str()
+        )
+    );
 }

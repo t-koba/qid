@@ -17,6 +17,8 @@ use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Barrier;
 
 #[path = "sqlite_schema.rs"]
 mod sqlite_schema;
@@ -4433,6 +4435,74 @@ where
     assert_eq!(stored.user_code, grant.user_code);
     assert_eq!(stored.user_id.as_deref(), Some("device-approval-first"));
     assert_eq!(stored.approved_at, Some(1200));
+    assert!(!stored.consumed);
+
+    // A second, still-pending grant is approved by two users at the same
+    // time. The barrier releases both futures before either reaches the
+    // repository, so an atomic one-time approval must still yield one winner
+    // and one conflict regardless of which future is polled first.
+    let concurrent_grant = DeviceAuthorizationGrant {
+        resource: Vec::new(),
+        audience: Vec::new(),
+        device_code_hash: "device-approval-contract-concurrent-hash".into(),
+        user_code: "DEVICE-APPROVAL-CONCURRENT-CONTRACT".into(),
+        client_id: "device-approval-contract-client".into(),
+        realm_id: realm.0.clone(),
+        scopes: vec!["read".to_string()],
+        user_id: None,
+        expires_at: 3000,
+        approved_at: None,
+        consumed: false,
+        last_poll_at: None,
+        poll_interval_seconds: 5,
+        created_at: 2,
+    };
+    repo.store_device_authorization_grant(&concurrent_grant)
+        .await
+        .expect("store concurrent pending device grant");
+    let barrier = Arc::new(Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let second_barrier = Arc::clone(&barrier);
+    let (first, second) = tokio::join!(
+        async {
+            first_barrier.wait().await;
+            repo.approve_device_authorization_grant(
+                &concurrent_grant.user_code,
+                "device-approval-first",
+                2200,
+            )
+            .await
+        },
+        async {
+            second_barrier.wait().await;
+            repo.approve_device_authorization_grant(
+                &concurrent_grant.user_code,
+                "device-approval-second",
+                2300,
+            )
+            .await
+        },
+    );
+    let (winner, loser) = match (first, second) {
+        (Ok(()), Err(error)) => (("device-approval-first", 2200), error),
+        (Err(error), Ok(())) => (("device-approval-second", 2300), error),
+        (first, second) => {
+            panic!("expected exactly one overlapping approval to win: {first:?} vs {second:?}")
+        }
+    };
+    assert!(
+        matches!(loser, QidError::Conflict { .. }),
+        "losing overlapping approval returned {loser:?}"
+    );
+    let stored = repo
+        .get_device_authorization_grant_by_user_code(&concurrent_grant.user_code)
+        .await
+        .expect("get concurrently approved device grant")
+        .expect("concurrently approved device grant missing");
+    assert_eq!(stored.device_code_hash, concurrent_grant.device_code_hash);
+    assert_eq!(stored.user_code, concurrent_grant.user_code);
+    assert_eq!(stored.user_id.as_deref(), Some(winner.0));
+    assert_eq!(stored.approved_at, Some(winner.1));
     assert!(!stored.consumed);
 
     let error = repo

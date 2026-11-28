@@ -1584,6 +1584,52 @@ async fn token_disallowed_grant_is_unauthorized_client() {
 }
 
 #[tokio::test]
+async fn token_missing_code_uses_invalid_request() {
+    let (app, token_path, _, db) = setup_with_invalid_grant_client().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=authorization_code&client_id=invalid-grant-client&client_secret=secret&redirect_uri=https%3A%2F%2Fclient.example%2Fcb",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_missing_refresh_token_uses_invalid_request() {
+    let (app, token_path, _, db) = setup_with_invalid_grant_client().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=refresh_token&client_id=invalid-grant-client&client_secret=secret",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
 async fn token_invalid_authorization_code_uses_invalid_grant() {
     let (app, token_path, _, db) = setup_with_invalid_grant_client().await;
     let response = post_form(

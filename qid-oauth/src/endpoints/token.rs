@@ -438,7 +438,10 @@ fn categorize_grant_error(err: QidError) -> TokenEndpointError {
     }
     let malformed_parameter = matches!(
         message.as_str(),
-        "assertion required"
+        "code required"
+            | "redirect_uri required"
+            | "refresh_token required"
+            | "assertion required"
             | "subject_token required for token exchange"
             | "subject_token_type required for token exchange"
             | "actor_token required when actor_token_type is present"

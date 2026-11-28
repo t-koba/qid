@@ -1537,3 +1537,11 @@ async fn file_legacy_cross_tenant_app_catalog_reference_blocks_connector_delete(
     drop(repo);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test]
+async fn client_delete_ends_refresh_families_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_client_delete_ends_refresh_families(&sql).await;
+    let file = support::file_repo("ownership-contract-client-delete-refresh").await;
+    support::assert_client_delete_ends_refresh_families(&file).await;
+}

@@ -76,11 +76,20 @@ impl ClientRepository for FileRepository {
 
     async fn delete_client(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
         self.map_write(|store| {
-            if store
+            // Refresh families name the public client id, not the record ID.
+            // Take the binding from the registration being removed so a missing
+            // or foreign delete cannot end another client's grants.
+            let client_id = store
                 .clients
                 .get(id)
-                .is_some_and(|client| client.realm_id.as_str() == realm_id.as_str())
-            {
+                .filter(|client| client.realm_id.as_str() == realm_id.as_str())
+                .map(|client| client.client_id.clone());
+            if let Some(client_id) = client_id {
+                for family in store.token_families.values_mut() {
+                    // Revocation is monotonic; other realms and clients stay live.
+                    family.revoked |=
+                        family.realm_id == realm_id.as_str() && family.client_id == client_id;
+                }
                 store.clients.remove(id);
             }
         })

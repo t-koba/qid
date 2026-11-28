@@ -179,12 +179,33 @@ impl ClientRepository for SqlRepository {
     }
 
     async fn delete_client(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
-        sqlx::query("DELETE FROM clients WHERE realm_id = ? AND id = ?")
+        let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
+        // Refresh families carry the public client id, so read it from the
+        // registration being removed. A missing or foreign ID changes nothing.
+        let client_id: Option<String> =
+            sqlx::query_scalar("SELECT client_id FROM clients WHERE realm_id = $1 AND id = $2")
+                .bind(realm_id.as_str())
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage_to_qid_error)?;
+        if let Some(client_id) = client_id {
+            sqlx::query(
+                "UPDATE token_families SET revoked = 1 WHERE realm_id = $1 AND client_id = $2",
+            )
             .bind(realm_id.as_str())
-            .bind(id)
-            .execute(&self.pool)
+            .bind(client_id)
+            .execute(&mut *tx)
             .await
             .map_err(storage_to_qid_error)?;
+        }
+        sqlx::query("DELETE FROM clients WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id.as_str())
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_to_qid_error)?;
+        tx.commit().await.map_err(storage_to_qid_error)?;
         Ok(())
     }
 }

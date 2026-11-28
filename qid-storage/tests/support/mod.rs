@@ -10,8 +10,8 @@ use qid_core::models::{
     IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
     IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
     MarketplaceConnector, MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle,
-    RelationshipTuple, ServiceAccount, Session, TotpCredential, UsageBillingEvent, User,
-    VcCredentialStatusRecord, WebAuthnCredential, WorkloadCertificate, WorkloadIdentity,
+    RelationshipTuple, ServiceAccount, Session, TokenFamily, TotpCredential, UsageBillingEvent,
+    User, VcCredentialStatusRecord, WebAuthnCredential, WorkloadCertificate, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -6174,4 +6174,226 @@ where
         stored.source_session_id, None,
         "storage must not invent source-session provenance"
     );
+}
+
+/// Deleting a registration ends only the refresh families bound to its public
+/// client id in its realm, so recreating that id cannot revive old grants.
+pub async fn assert_client_delete_ends_refresh_families<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + ClientRepository + TokenRepository,
+{
+    let realm = RealmId::from("realm-client-delete-refresh");
+    let other_realm = RealmId::from("realm-client-delete-refresh-other");
+    for (owner, id, issuer) in [
+        (
+            "tenant-client-delete-refresh",
+            &realm,
+            "https://client-delete-refresh.example.com",
+        ),
+        (
+            "tenant-client-delete-refresh-other",
+            &other_realm,
+            "https://client-delete-refresh-other.example.com",
+        ),
+    ] {
+        repo.create_realm(&TenantId::from(owner), id, issuer, None)
+            .await
+            .expect("create client refresh delete realm failed");
+    }
+    let user = User {
+        id: "client-delete-refresh-user".into(),
+        realm_id: realm.0.clone(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        failed_login_attempts: 0,
+        locked_until: None,
+        org: None,
+    };
+    repo.create_user(&user)
+        .await
+        .expect("create refresh delete user failed");
+
+    let old = sample_cross_realm_client("client-delete-refresh-old", realm.as_str(), "reused-app");
+    let neighbour = sample_cross_realm_client(
+        "client-delete-refresh-neighbour",
+        realm.as_str(),
+        "other-app",
+    );
+    let across = sample_cross_realm_client(
+        "client-delete-refresh-across",
+        other_realm.as_str(),
+        "reused-app",
+    );
+    for client in [&old, &neighbour, &across] {
+        repo.create_client(client)
+            .await
+            .expect("create client for refresh delete contract failed");
+    }
+
+    fn family(id: &str, realm: &str, client_id: &str, hash: &str) -> TokenFamily {
+        TokenFamily {
+            id: id.into(),
+            user_id: "client-delete-refresh-user".into(),
+            client_id: client_id.into(),
+            realm_id: realm.into(),
+            current_refresh_hash: hash.into(),
+            scopes: vec!["read".into()],
+            auth_time: Some(100),
+            acr: None,
+            amr: Vec::new(),
+            audience: Vec::new(),
+            resource: Vec::new(),
+            authorization_details: None,
+            sender_constraint: None,
+            issued_at: 100,
+            refresh_expires_at: Some(200),
+            session_id: None,
+            revoked: false,
+        }
+    }
+
+    let old_family = family(
+        "client-delete-refresh-old-family",
+        realm.as_str(),
+        "reused-app",
+        "old",
+    );
+    let neighbour_family = family(
+        "client-delete-refresh-neighbour-family",
+        realm.as_str(),
+        "other-app",
+        "neighbour",
+    );
+    let across_family = family(
+        "client-delete-refresh-across-family",
+        other_realm.as_str(),
+        "reused-app",
+        "across",
+    );
+    for family in [&old_family, &neighbour_family, &across_family] {
+        repo.create_token_family(family)
+            .await
+            .expect("create refresh family failed");
+    }
+    // The old family is live before the registration is deleted.
+    repo.update_token_family_refresh_hash(
+        &old_family.id,
+        realm.as_str(),
+        "old",
+        "old-rotated",
+        200,
+    )
+    .await
+    .expect("rotate live family before delete failed");
+
+    // Neither a foreign realm nor a missing record ID ends any family.
+    repo.delete_client(&other_realm, &old.id)
+        .await
+        .expect("foreign-realm client delete must be a no-op");
+    repo.delete_client(&realm, "missing-client-delete-refresh")
+        .await
+        .expect("missing client delete must be a no-op");
+    assert!(
+        !repo
+            .get_token_family(&old_family.id)
+            .await
+            .expect("get family after no-op deletes failed")
+            .expect("old family must survive no-op deletes")
+            .revoked,
+        "a no-op delete must not revoke families"
+    );
+
+    repo.delete_client(&realm, &old.id)
+        .await
+        .expect("delete client registration failed");
+    let replacement =
+        sample_cross_realm_client("client-delete-refresh-new", realm.as_str(), "reused-app");
+    repo.create_client(&replacement)
+        .await
+        .expect("recreate client with the same public id failed");
+    assert_eq!(
+        repo.get_client_by_client_id(&realm, "reused-app")
+            .await
+            .expect("look up replacement client failed")
+            .expect("replacement client must exist")
+            .id,
+        replacement.id,
+        "the public client id must now name the replacement registration"
+    );
+
+    let err = repo
+        .update_token_family_refresh_hash(
+            &old_family.id,
+            realm.as_str(),
+            "old-rotated",
+            "after-delete",
+            200,
+        )
+        .await
+        .expect_err("a deleted client's refresh credential must stay invalid");
+    assert!(
+        matches!(err, QidError::Conflict { .. }),
+        "old family rotation must be a revocation conflict, got: {}",
+        err.message()
+    );
+    let ended = repo
+        .get_token_family(&old_family.id)
+        .await
+        .expect("get deleted client's family failed")
+        .expect("deletion must keep the family record for revocation history");
+    assert!(ended.revoked, "deleted client's family must be revoked");
+    assert_eq!(
+        ended.current_refresh_hash, "old-rotated",
+        "refused rotation must not change the old family"
+    );
+
+    // A fresh grant of the same user under the recreated client works.
+    let fresh = family(
+        "client-delete-refresh-fresh",
+        realm.as_str(),
+        "reused-app",
+        "fresh",
+    );
+    repo.create_token_family(&fresh)
+        .await
+        .expect("create fresh family failed");
+    repo.update_token_family_refresh_hash(&fresh.id, realm.as_str(), "fresh", "fresh-rotated", 200)
+        .await
+        .expect("fresh family of the recreated client must rotate");
+    assert!(
+        !repo
+            .get_token_family(&fresh.id)
+            .await
+            .expect("get fresh family failed")
+            .expect("fresh family must exist")
+            .revoked,
+        "the fresh grant must stay live"
+    );
+
+    // An unrelated client in the same realm and the same public id in another
+    // realm keep their grants.
+    for (family, realm_id, expected_hash) in [
+        (&neighbour_family, &realm, "neighbour-rotated"),
+        (&across_family, &other_realm, "across-rotated"),
+    ] {
+        let old_hash = family.current_refresh_hash.as_str();
+        repo.update_token_family_refresh_hash(
+            &family.id,
+            realm_id.as_str(),
+            old_hash,
+            expected_hash,
+            200,
+        )
+        .await
+        .expect("unrelated family must keep rotating after client deletion");
+        assert_eq!(
+            repo.get_token_family(&family.id)
+                .await
+                .expect("get unrelated family failed")
+                .expect("unrelated family must exist")
+                .current_refresh_hash,
+            expected_hash
+        );
+    }
 }

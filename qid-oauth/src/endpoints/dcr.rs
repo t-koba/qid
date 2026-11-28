@@ -64,13 +64,16 @@ pub struct DynamicClientRegistrationRequest {
 #[derive(Debug, Serialize)]
 pub struct DynamicClientRegistrationResponse {
     pub client_id: String,
-    pub client_id_issued_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id_issued_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registration_access_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registration_client_uri: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret_expires_at: Option<u64>,
     pub redirect_uris: Vec<String>,
     pub grant_types: Vec<String>,
     pub token_endpoint_auth_method: String,
@@ -339,6 +342,7 @@ pub async fn dynamic_client_registration<R: Repository>(
             &realm.issuer,
             DynamicClientRegistrationResponseInput {
                 client_id,
+                client_id_issued_at: Some(qid_core::util::now_seconds()),
                 client_record_id: client.id.clone(),
                 client_secret: generated_secret,
                 redirect_uris: req.redirect_uris,
@@ -372,6 +376,7 @@ pub async fn dynamic_client_registration<R: Repository>(
 
 struct DynamicClientRegistrationResponseInput {
     client_id: String,
+    client_id_issued_at: Option<u64>,
     client_record_id: String,
     client_secret: Option<String>,
     redirect_uris: Vec<String>,
@@ -407,12 +412,14 @@ fn build_dynamic_client_registration_response<R: Repository>(
         &input.client_record_id,
         &registration_client_uri,
     )?;
+    let client_secret_expires_at = input.client_secret.as_ref().map(|_| 0);
     Ok(DynamicClientRegistrationResponse {
         client_id: input.client_id,
-        client_id_issued_at: qid_core::util::now_seconds(),
+        client_id_issued_at: input.client_id_issued_at,
         registration_access_token: Some(registration_access_token),
         registration_client_uri: Some(registration_client_uri),
         client_secret: input.client_secret,
+        client_secret_expires_at,
         redirect_uris: input.redirect_uris,
         grant_types: input.grant_types,
         token_endpoint_auth_method: input.token_endpoint_auth_method,
@@ -795,6 +802,7 @@ pub async fn dynamic_client_registration_get<R: Repository>(
             DynamicClientRegistrationResponseInput {
                 client_record_id: client.id.clone(),
                 client_id: client.client_id.clone(),
+                client_id_issued_at: None,
                 client_secret: None,
                 redirect_uris: client.redirect_uris,
                 grant_types: client.grant_types,
@@ -930,6 +938,7 @@ pub async fn dynamic_client_registration_update<R: Repository>(
             DynamicClientRegistrationResponseInput {
                 client_record_id: updated.id.clone(),
                 client_id,
+                client_id_issued_at: None,
                 client_secret: generated_secret,
                 redirect_uris: req.redirect_uris,
                 grant_types: metadata.grant_types,

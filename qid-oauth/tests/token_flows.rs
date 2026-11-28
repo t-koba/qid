@@ -4610,6 +4610,107 @@ async fn dynamic_client_registration_management_updates_client() {
     assert!(get_json.get("client_secret").is_none());
 }
 
+fn dcr_open_config() -> QidConfig {
+    let mut config = test_helpers::test_config();
+    let dcr = &mut config.realms[0].protocols.oauth.dynamic_client_registration;
+    dcr.enabled = true;
+    dcr.allow_open_registration = true;
+    config
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_reports_secret_expiry_and_issued_at() {
+    let (app, _, state) = setup_with_config(dcr_open_config()).await;
+    let path = state.paths.dynamic_client_registration.clone();
+    let json = register_dcr_client(
+        &app,
+        &path,
+        r#"{"client_id":"dcr-expiry-client","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"client_secret_basic"}"#,
+    )
+    .await;
+    assert!(
+        json["client_secret"]
+            .as_str()
+            .unwrap()
+            .starts_with("secret_")
+    );
+    assert_eq!(json["client_secret_expires_at"].as_u64(), Some(0));
+    assert!(json["client_id_issued_at"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_public_client_omits_secret_expiry() {
+    let (app, _, state) = setup_with_config(dcr_open_config()).await;
+    let path = state.paths.dynamic_client_registration.clone();
+    let json = register_dcr_client(
+        &app,
+        &path,
+        r#"{"client_id":"dcr-public-expiry-client","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none"}"#,
+    )
+    .await;
+    assert!(json.get("client_secret").is_none());
+    assert!(json.get("client_secret_expires_at").is_none());
+    assert!(json["client_id_issued_at"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_management_omits_client_id_issued_at() {
+    const CLIENT_ID: &str = "dcr-issued-at-client";
+    let (app, _, state) = setup_with_config(dcr_open_config()).await;
+    let register_path = state.paths.dynamic_client_registration.clone();
+    let management_path = state
+        .paths
+        .dynamic_client_registration_management
+        .replace(":client_id", CLIENT_ID);
+    let metadata = format!(
+        r#"{{"client_id":"{CLIENT_ID}","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"client_secret_basic"}}"#
+    );
+    let registration = register_dcr_client(&app, &register_path, &metadata).await;
+    assert!(registration["client_id_issued_at"].as_u64().is_some());
+    let rat = registration["registration_access_token"].as_str().unwrap();
+
+    let update_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(&management_path)
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {rat}"))
+                .body(Body::from(metadata))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let update_json = json_body(update_response).await;
+    assert!(update_json.get("client_id_issued_at").is_none());
+    assert!(update_json.get("client_secret_expires_at").is_none());
+
+    let get_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(&management_path)
+                .header("Authorization", format!("Bearer {rat}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = json_body(get_response).await;
+    assert!(get_json.get("client_id_issued_at").is_none());
+    assert!(get_json.get("client_secret_expires_at").is_none());
+    assert!(
+        get_json["registration_access_token"]
+            .as_str()
+            .unwrap()
+            .len()
+            > 20
+    );
+}
+
 async fn register_dcr_client(app: &Router, path: &str, metadata: &str) -> serde_json::Value {
     let response = app
         .clone()

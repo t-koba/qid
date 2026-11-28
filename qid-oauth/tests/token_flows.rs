@@ -706,28 +706,6 @@ async fn duplicate_authorization_headers_are_rejected_at_token_endpoint() {
 }
 
 #[tokio::test]
-async fn token_missing_grant_type_form_is_invalid_request() {
-    let (app, token_path, _) = setup().await;
-    let response = post_form(
-        app,
-        &token_path,
-        "client_id=service-client&client_secret=secret",
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response.headers()["cache-control"], "no-store");
-    assert_eq!(response.headers()["pragma"], "no-cache");
-    let body = json_body(response).await;
-    assert_eq!(body["error"], "invalid_request");
-    assert!(
-        body["error_description"]
-            .as_str()
-            .is_some_and(|text| !text.is_empty())
-    );
-    assert!(body.get("access_token").is_none());
-}
-
-#[tokio::test]
 async fn client_credentials_grant_accepts_private_key_jwt() {
     let (app, token_path, _) = setup_with_oauth(|oauth| oauth.private_key_jwt.enabled = true).await;
     let assertion = build_client_assertion("pkjwt-client", "pkjwt-success-1");

@@ -4610,6 +4610,193 @@ async fn dynamic_client_registration_management_updates_client() {
     assert!(get_json.get("client_secret").is_none());
 }
 
+async fn register_dcr_client(app: &Router, path: &str, metadata: &str) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header("Content-Type", "application/json")
+                .body(Body::from(metadata.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await
+}
+
+#[tokio::test]
+async fn dynamic_client_registration_rat_is_bound_to_client_record() {
+    const PUBLIC_ID: &str = "dcr-rebound-client";
+    let mut config = test_helpers::test_config();
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .enabled = true;
+    config.realms[0]
+        .protocols
+        .oauth
+        .dynamic_client_registration
+        .allow_open_registration = true;
+    let (app, _, state) = setup_with_config(config).await;
+    let register_path = state.paths.dynamic_client_registration.clone();
+    let management_path = state
+        .paths
+        .dynamic_client_registration_management
+        .replace(":client_id", PUBLIC_ID);
+    let metadata = format!(
+        r#"{{"client_id":"{PUBLIC_ID}","redirect_uris":["https://app.example.com/cb"],"grant_types":["authorization_code"],"token_endpoint_auth_method":"none"}}"#
+    );
+    let management_request = |method: Method, token: &str, body: Option<&str>| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(&management_path)
+            .header("Authorization", format!("Bearer {token}"));
+        if let Some(body) = body {
+            builder = builder.header("Content-Type", "application/json");
+            builder.body(Body::from(body.to_string())).unwrap()
+        } else {
+            builder.body(Body::empty()).unwrap()
+        }
+    };
+
+    let registration_a = register_dcr_client(&app, &register_path, &metadata).await;
+    let rat_a = registration_a["registration_access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let client_a = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), PUBLIC_ID)
+        .await
+        .unwrap()
+        .unwrap();
+    // The claim is the storage-independent contract: every backend must bind
+    // the RAT to the internal record it was issued for, not just the public id.
+    let claims = decode_claims(&state, &rat_a);
+    assert_eq!(claims.sub.as_deref(), Some(PUBLIC_ID));
+    assert_eq!(
+        claims
+            .extra
+            .get("client_record_id")
+            .and_then(|id| id.as_str()),
+        Some(client_a.id.as_str())
+    );
+    let get_a = app
+        .clone()
+        .oneshot(management_request(Method::GET, &rat_a, None))
+        .await
+        .unwrap();
+    assert_eq!(get_a.status(), StatusCode::OK);
+
+    let delete_a = app
+        .clone()
+        .oneshot(management_request(Method::DELETE, &rat_a, None))
+        .await
+        .unwrap();
+    assert_eq!(delete_a.status(), StatusCode::NO_CONTENT);
+    assert!(
+        state
+            .repo
+            .get_client_by_client_id(&RealmId::from("test"), PUBLIC_ID)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let registration_b = register_dcr_client(&app, &register_path, &metadata).await;
+    let rat_b = registration_b["registration_access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let client_b = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), PUBLIC_ID)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(client_a.id, client_b.id);
+    assert_eq!(
+        decode_claims(&state, &rat_b)
+            .extra
+            .get("client_record_id")
+            .and_then(|id| id.as_str()),
+        Some(client_b.id.as_str())
+    );
+
+    for (method, body) in [
+        (Method::GET, None),
+        (Method::PUT, Some(metadata.as_str())),
+        (Method::DELETE, None),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(management_request(method.clone(), &rat_a, body))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} must reject the deleted client's RAT"
+        );
+    }
+    assert_eq!(
+        state
+            .repo
+            .get_client_by_client_id(&RealmId::from("test"), PUBLIC_ID)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        client_b.id
+    );
+
+    let now = util::now_seconds();
+    let rat_without_record = state
+        .signer
+        .sign(&JwtClaims {
+            iss: Some("https://id.example.com".to_string()),
+            sub: Some(PUBLIC_ID.to_string()),
+            aud: Some(Audience::single(management_path.clone())),
+            exp: Some((now + 3600) as usize),
+            nbf: Some(now as usize),
+            iat: Some(now as usize),
+            jti: Some("rat-without-record".to_string()),
+            extra: HashMap::new(),
+        })
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(management_request(Method::GET, &rat_without_record, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    for (method, body) in [(Method::GET, None), (Method::PUT, Some(metadata.as_str()))] {
+        let response = app
+            .clone()
+            .oneshot(management_request(method.clone(), &rat_b, body))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{method} must accept the current client's RAT"
+        );
+    }
+    // PUT replaced the RAT; deleting with the original one still works because
+    // the record id is unchanged.
+    let delete_b = app
+        .clone()
+        .oneshot(management_request(Method::DELETE, &rat_b, None))
+        .await
+        .unwrap();
+    assert_eq!(delete_b.status(), StatusCode::NO_CONTENT);
+}
+
 #[tokio::test]
 async fn dynamic_client_registration_management_rejects_client_id_mismatch() {
     let mut config = test_helpers::test_config();

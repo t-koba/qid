@@ -339,6 +339,7 @@ pub async fn dynamic_client_registration<R: Repository>(
             &realm.issuer,
             DynamicClientRegistrationResponseInput {
                 client_id,
+                client_record_id: client.id.clone(),
                 client_secret: generated_secret,
                 redirect_uris: req.redirect_uris,
                 grant_types: metadata.grant_types,
@@ -371,6 +372,7 @@ pub async fn dynamic_client_registration<R: Repository>(
 
 struct DynamicClientRegistrationResponseInput {
     client_id: String,
+    client_record_id: String,
     client_secret: Option<String>,
     redirect_uris: Vec<String>,
     grant_types: Vec<String>,
@@ -402,6 +404,7 @@ fn build_dynamic_client_registration_response<R: Repository>(
         state,
         issuer,
         &input.client_id,
+        &input.client_record_id,
         &registration_client_uri,
     )?;
     Ok(DynamicClientRegistrationResponse {
@@ -440,13 +443,26 @@ fn dcr_registration_client_uri<R: Repository>(state: &SharedState<R>, client_id:
     format!("{base}{path}")
 }
 
+/// Ties a registration access token to the internal record it was issued for.
+///
+/// A public `client_id` can be registered again after its client is deleted; the
+/// record id cannot, so management requests must present a token from the
+/// registration that currently holds the id.
+const DCR_CLIENT_RECORD_ID_CLAIM: &str = "client_record_id";
+
 fn sign_dcr_registration_access_token<R: Repository>(
     state: &SharedState<R>,
     issuer: &str,
     client_id: &str,
+    client_record_id: &str,
     registration_client_uri: &str,
 ) -> QidResult<String> {
     let now = qid_core::util::now_seconds();
+    let mut extra = std::collections::HashMap::new();
+    extra.insert(
+        DCR_CLIENT_RECORD_ID_CLAIM.to_string(),
+        serde_json::Value::String(client_record_id.to_string()),
+    );
     let claims = JwtClaims {
         iss: Some(issuer.to_string()),
         sub: Some(client_id.to_string()),
@@ -455,7 +471,7 @@ fn sign_dcr_registration_access_token<R: Repository>(
         nbf: Some(now as usize),
         iat: Some(now as usize),
         jti: Some(format!("rat_{}", ulid::Ulid::new())),
-        extra: std::collections::HashMap::new(),
+        extra,
     };
     state.signer.sign(&claims).map_err(|e| QidError::Crypto {
         message: format!("failed to sign DCR registration access token: {e}"),
@@ -649,15 +665,16 @@ async fn authenticate_dcr_management_client<R: Repository>(
     realm_id: &str,
     client_id: &str,
 ) -> QidResult<Client> {
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from(realm_id.to_string()), client_id)
+        .await?
+        .ok_or_else(|| QidError::Unauthorized {
+            message: "unknown client".to_string(),
+        })?;
     if let Some(token) = extract_bearer_token(headers)? {
-        validate_dcr_registration_access_token(state, token, client_id)?;
-        return state
-            .repo
-            .get_client_by_client_id(&RealmId::from(realm_id.to_string()), client_id)
-            .await?
-            .ok_or_else(|| QidError::Unauthorized {
-                message: "unknown client".to_string(),
-            });
+        validate_dcr_registration_access_token(state, token, client_id, &client.id)?;
+        return Ok(client);
     }
     let basic_client_auth =
         extract_basic_client_auth(headers)?.ok_or_else(|| QidError::Unauthorized {
@@ -668,13 +685,6 @@ async fn authenticate_dcr_management_client<R: Repository>(
             message: "DCR management client_id must match path".to_string(),
         });
     }
-    let client = state
-        .repo
-        .get_client_by_client_id(&RealmId::from(realm_id.to_string()), client_id)
-        .await?
-        .ok_or_else(|| QidError::Unauthorized {
-            message: "unknown client".to_string(),
-        })?;
     if client.client_type != ClientType::Confidential {
         return Err(QidError::Unauthorized {
             message: "DCR management requires a confidential client".to_string(),
@@ -699,6 +709,7 @@ fn validate_dcr_registration_access_token<R: Repository>(
     state: &SharedState<R>,
     token: &str,
     client_id: &str,
+    client_record_id: &str,
 ) -> QidResult<()> {
     let claims = state
         .signer
@@ -727,6 +738,16 @@ fn validate_dcr_registration_access_token<R: Repository>(
     if claims.nbf.is_some_and(|nbf| nbf as u64 > now + 60) {
         return Err(QidError::Unauthorized {
             message: "registration access token is not yet valid".to_string(),
+        });
+    }
+    if claims
+        .extra
+        .get(DCR_CLIENT_RECORD_ID_CLAIM)
+        .and_then(|id| id.as_str())
+        != Some(client_record_id)
+    {
+        return Err(QidError::Unauthorized {
+            message: "registration access token client record mismatch".to_string(),
         });
     }
     Ok(())
@@ -772,6 +793,7 @@ pub async fn dynamic_client_registration_get<R: Repository>(
             &state,
             &issuer,
             DynamicClientRegistrationResponseInput {
+                client_record_id: client.id.clone(),
                 client_id: client.client_id.clone(),
                 client_secret: None,
                 redirect_uris: client.redirect_uris,
@@ -906,6 +928,7 @@ pub async fn dynamic_client_registration_update<R: Repository>(
             &state,
             &issuer,
             DynamicClientRegistrationResponseInput {
+                client_record_id: updated.id.clone(),
                 client_id,
                 client_secret: generated_secret,
                 redirect_uris: req.redirect_uris,

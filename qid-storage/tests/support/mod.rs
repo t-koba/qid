@@ -3,15 +3,16 @@
 
 use qid_core::error::QidError;
 use qid_core::models::{
-    Admin, AdminApproval, AdminElevation, AuditEvent, AuditRetentionConfig,
+    AccessToken, Admin, AdminApproval, AdminElevation, AuditEvent, AuditRetentionConfig,
     BackchannelAuthenticationGrant, CiamBrand, CiamConsentGrant, CiamIdentityLink,
     CiamProgressiveProfile, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain,
     DelegatedTenantAdmin, Device, DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord,
     IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
     IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
     MarketplaceConnector, MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle,
-    RelationshipTuple, ServiceAccount, Session, TokenFamily, TotpCredential, UsageBillingEvent,
-    User, VcCredentialStatusRecord, WebAuthnCredential, WorkloadCertificate, WorkloadIdentity,
+    RelationshipTuple, ServiceAccount, Session, TokenFamily, TokenFormat, TotpCredential,
+    UsageBillingEvent, User, VcCredentialStatusRecord, WebAuthnCredential, WorkloadCertificate,
+    WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -6394,6 +6395,179 @@ where
                 .expect("unrelated family must exist")
                 .current_refresh_hash,
             expected_hash
+        );
+    }
+}
+/// Deleting a registration ends only the access tokens bound to its public
+/// client id in its realm. Records stay for audit history, and a recreated
+/// public id cannot inherit the old registration's revocation.
+pub async fn assert_client_delete_ends_access_tokens<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + ClientRepository + TokenRepository,
+{
+    let realm = RealmId::from("realm-client-delete-access");
+    let other_realm = RealmId::from("realm-client-delete-access-other");
+    for (owner, id, issuer) in [
+        (
+            "tenant-client-delete-access",
+            &realm,
+            "https://client-delete-access.example.com",
+        ),
+        (
+            "tenant-client-delete-access-other",
+            &other_realm,
+            "https://client-delete-access-other.example.com",
+        ),
+    ] {
+        repo.create_realm(&TenantId::from(owner), id, issuer, None)
+            .await
+            .expect("create client access delete realm failed");
+    }
+    for (id, realm_id) in [
+        ("client-delete-access-user", realm.as_str()),
+        ("client-delete-access-user-other", other_realm.as_str()),
+    ] {
+        repo.create_user(&User {
+            id: id.into(),
+            realm_id: realm_id.into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .expect("create access delete user failed");
+    }
+
+    let old = sample_cross_realm_client("client-delete-access-old", realm.as_str(), "reused-app");
+    let neighbour = sample_cross_realm_client(
+        "client-delete-access-neighbour",
+        realm.as_str(),
+        "other-app",
+    );
+    let across = sample_cross_realm_client(
+        "client-delete-access-across",
+        other_realm.as_str(),
+        "reused-app",
+    );
+    for client in [&old, &neighbour, &across] {
+        repo.create_client(client)
+            .await
+            .expect("create client for access delete contract failed");
+    }
+
+    fn access_token(jti: &str, realm_id: &str, client_id: &str, user_id: &str) -> AccessToken {
+        AccessToken {
+            jti: jti.into(),
+            family_id: None,
+            user_id: user_id.into(),
+            client_id: client_id.into(),
+            realm_id: realm_id.into(),
+            scopes: vec!["read".into()],
+            audience: Vec::new(),
+            resource: Vec::new(),
+            authorization_details: None,
+            cnf: None,
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
+            nonce: None,
+            sender_constraint: None,
+            token_format: TokenFormat::Jwt,
+            expires_at: 9_999_999_999,
+            revoked: false,
+            issued_at: 100,
+        }
+    }
+    async fn revoked<R: TokenRepository>(repo: &R, jti: &str) -> bool {
+        repo.get_access_token(jti)
+            .await
+            .expect("get access token failed")
+            .expect("access token must remain stored for audit history")
+            .revoked
+    }
+
+    let old_token = access_token(
+        "client-delete-access-old-token",
+        realm.as_str(),
+        "reused-app",
+        "client-delete-access-user",
+    );
+    let neighbour_token = access_token(
+        "client-delete-access-neighbour-token",
+        realm.as_str(),
+        "other-app",
+        "client-delete-access-user",
+    );
+    let across_token = access_token(
+        "client-delete-access-across-token",
+        other_realm.as_str(),
+        "reused-app",
+        "client-delete-access-user-other",
+    );
+    for token in [&old_token, &neighbour_token, &across_token] {
+        repo.create_access_token(token)
+            .await
+            .expect("create access token failed");
+    }
+    assert!(
+        !revoked(repo, &old_token.jti).await,
+        "the old client's access token is live before deletion"
+    );
+
+    // Neither a foreign realm nor a missing record ID ends any token.
+    repo.delete_client(&other_realm, &old.id)
+        .await
+        .expect("foreign-realm client delete must be a no-op");
+    repo.delete_client(&realm, "missing-client-delete-access")
+        .await
+        .expect("missing client delete must be a no-op");
+    for token in [&old_token, &neighbour_token, &across_token] {
+        assert!(
+            !revoked(repo, &token.jti).await,
+            "a no-op delete must not revoke access tokens"
+        );
+    }
+
+    repo.delete_client(&realm, &old.id)
+        .await
+        .expect("delete client registration failed");
+    let ended = repo
+        .get_access_token(&old_token.jti)
+        .await
+        .expect("get deleted client's access token failed")
+        .expect("deletion must keep the access token record for audit history");
+    assert!(
+        ended.revoked,
+        "deleted client's access token must be revoked"
+    );
+    assert_eq!(ended.client_id, "reused-app");
+    assert_eq!(ended.scopes, vec!["read"]);
+
+    let replacement =
+        sample_cross_realm_client("client-delete-access-new", realm.as_str(), "reused-app");
+    repo.create_client(&replacement)
+        .await
+        .expect("recreate client with the same public id failed");
+    let fresh = access_token(
+        "client-delete-access-fresh-token",
+        realm.as_str(),
+        "reused-app",
+        "client-delete-access-user",
+    );
+    repo.create_access_token(&fresh)
+        .await
+        .expect("create fresh access token failed");
+    assert!(
+        !revoked(repo, &fresh.jti).await,
+        "a fresh access token of the recreated client must stay live"
+    );
+    for token in [&neighbour_token, &across_token] {
+        assert!(
+            !revoked(repo, &token.jti).await,
+            "an unrelated access token must stay live after client deletion"
         );
     }
 }

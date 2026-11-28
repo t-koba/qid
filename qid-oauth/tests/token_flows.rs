@@ -918,6 +918,69 @@ async fn client_credentials_reuses_client_id_after_service_account_outlives_clie
     assert_ne!(service_a.id, service_b.id);
 }
 
+#[tokio::test]
+async fn deleting_client_makes_its_access_token_inactive_at_introspection() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+        "api://default",
+        &["api"],
+        "introspection-client",
+    )];
+    let (app, token_path, state) = setup_with_config(config).await;
+    let issued = post_token_json(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=api&resource=https%3A%2F%2Fapi.example.com%2Fdefault"
+            .to_string(),
+    )
+    .await;
+    let access_token = issued["access_token"].as_str().unwrap();
+    let jti = decode_claims(&state, access_token)
+        .jti
+        .expect("issued access token must carry a jti");
+    let introspect_form = format!(
+        "token={}&client_id=introspection-client&client_secret=secret",
+        urlencoding::encode(access_token)
+    );
+    assert_eq!(
+        post_introspect(
+            app.clone(),
+            &state.paths.introspect,
+            introspect_form.clone()
+        )
+        .await["active"],
+        true,
+        "the live client's access token introspects active"
+    );
+
+    let client = state
+        .repo
+        .get_client_by_client_id(&RealmId::from("test"), "service-client")
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .repo
+        .delete_client(&RealmId::from("test"), &client.id)
+        .await
+        .unwrap();
+    let stored = state
+        .repo
+        .get_access_token(&jti)
+        .await
+        .unwrap()
+        .expect("deletion must keep the access token record");
+    assert!(
+        stored.revoked,
+        "deleted client's access token must be revoked"
+    );
+    assert_eq!(
+        post_introspect(app, &state.paths.introspect, introspect_form).await["active"],
+        false,
+        "the deleted client's access token introspects inactive"
+    );
+}
+
 fn exchange_subject_form(subject_token: &str, scope: Option<&str>) -> String {
     let mut form = format!(
         "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}",

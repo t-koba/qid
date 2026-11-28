@@ -180,8 +180,8 @@ impl ClientRepository for SqlRepository {
 
     async fn delete_client(&self, realm_id: &RealmId, id: &str) -> QidResult<()> {
         let mut tx = self.pool.begin().await.map_err(storage_to_qid_error)?;
-        // Refresh families carry the public client id, so read it from the
-        // registration being removed. A missing or foreign ID changes nothing.
+        // Grants carry the public client id, so read it from the registration
+        // being removed. A missing or foreign ID changes nothing.
         let client_id: Option<String> =
             sqlx::query_scalar("SELECT client_id FROM clients WHERE realm_id = $1 AND id = $2")
                 .bind(realm_id.as_str())
@@ -190,14 +190,19 @@ impl ClientRepository for SqlRepository {
                 .await
                 .map_err(storage_to_qid_error)?;
         if let Some(client_id) = client_id {
-            sqlx::query(
+            // Revocation is monotonic and keeps the records for audit history;
+            // only this realm's grants under the removed public ID are ended.
+            for statement in [
                 "UPDATE token_families SET revoked = 1 WHERE realm_id = $1 AND client_id = $2",
-            )
-            .bind(realm_id.as_str())
-            .bind(client_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_to_qid_error)?;
+                "UPDATE access_tokens SET revoked = 1 WHERE realm_id = $1 AND client_id = $2",
+            ] {
+                sqlx::query(statement)
+                    .bind(realm_id.as_str())
+                    .bind(&client_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage_to_qid_error)?;
+            }
         }
         sqlx::query("DELETE FROM clients WHERE realm_id = $1 AND id = $2")
             .bind(realm_id.as_str())

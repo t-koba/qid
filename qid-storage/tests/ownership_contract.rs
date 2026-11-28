@@ -1545,3 +1545,11 @@ async fn client_delete_ends_refresh_families_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-client-delete-refresh").await;
     support::assert_client_delete_ends_refresh_families(&file).await;
 }
+
+#[tokio::test]
+async fn client_delete_ends_access_tokens_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_client_delete_ends_access_tokens(&sql).await;
+    let file = support::file_repo("ownership-contract-client-delete-access").await;
+    support::assert_client_delete_ends_access_tokens(&file).await;
+}

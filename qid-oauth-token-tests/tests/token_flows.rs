@@ -35,14 +35,32 @@ async fn post_form(
     uri: &str,
     form_body: impl Into<String>,
 ) -> axum::response::Response {
-    let request = Request::builder()
+    post_form_with_authorization(app, uri, form_body, None).await
+}
+
+async fn post_form_with_authorization(
+    app: Router,
+    uri: &str,
+    form_body: impl Into<String>,
+    authorization: Option<&str>,
+) -> axum::response::Response {
+    let mut builder = Request::builder()
         .method(Method::POST)
         .uri(uri)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(Body::from(form_body.into()))
-        .unwrap();
+        .header("Content-Type", "application/x-www-form-urlencoded");
+    if let Some(authorization) = authorization {
+        builder = builder.header("Authorization", authorization);
+    }
+    let request = builder.body(Body::from(form_body.into())).unwrap();
     app.oneshot(request).await.unwrap()
 }
+
+/// Base64 of `basic-client:wrong` for the registered client_secret_basic client.
+const WRONG_BASIC_CREDENTIALS: &str = "YmFzaWMtY2xpZW50Ondyb25n";
+/// Base64 of `basic-client:secret`.
+const VALID_BASIC_CREDENTIALS: &str = "YmFzaWMtY2xpZW50OnNlY3JldA==";
+/// Base64 of `unknown-client:wrong`.
+const UNKNOWN_BASIC_CREDENTIALS: &str = "dW5rbm93bi1jbGllbnQ6d3Jvbmc=";
 
 fn assert_no_store_headers(response: &axum::response::Response) {
     assert_eq!(response.headers()["cache-control"], "no-store");
@@ -118,6 +136,20 @@ fn dpop_private_pem_and_jwk() -> (String, Jwk) {
     .clone()
 }
 
+fn dpop_proof(jti: &str, nonce: Option<&str>, token_path: &str) -> String {
+    let (private_pem, jwk) = dpop_private_pem_and_jwk();
+    let mut payload = serde_json::json!({
+        "jti": jti,
+        "htm": "POST",
+        "htu": format!("https://id.example.com{token_path}"),
+        "iat": util::now_seconds(),
+    });
+    if let Some(nonce) = nonce {
+        payload["nonce"] = serde_json::json!(nonce);
+    }
+    sign_es256_jwt_with_jwk_header(private_pem.as_bytes(), &jwk, "dpop+jwt", &payload).unwrap()
+}
+
 fn private_key_jwt_jwks() -> serde_json::Value {
     let (_, jwk) = dpop_private_pem_and_jwk();
     serde_json::json!({ "keys": [serde_json::to_value(jwk).expect("JWK serialization failed")] })
@@ -156,6 +188,7 @@ async fn setup_with_config(
     let state = Arc::new(SharedState::new(config, repo, signer, jwks).unwrap());
     for client in [
         client_credentials_client("service-client", "client_secret_post"),
+        client_credentials_client("basic-client", "client_secret_basic"),
         client_credentials_client("introspection-client", "client_secret_post"),
         token_exchange_client("exchange-client"),
         saml_bearer_client("saml-bearer-client"),
@@ -1392,7 +1425,233 @@ async fn token_error_response_disables_caching() {
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_no_store_headers(&response);
-    assert!(response.headers().contains_key("www-authenticate"));
+    assert!(
+        !response.headers().contains_key("www-authenticate"),
+        "with no Authorization header there is no client scheme to challenge"
+    );
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_basic_auth_failure_uses_invalid_client_and_scheme_challenge() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form_with_authorization(
+        app,
+        &token_path,
+        "grant_type=client_credentials",
+        Some(&format!("Basic {WRONG_BASIC_CREDENTIALS}")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_no_store_headers(&response);
+    let challenge = response.headers()["www-authenticate"].to_str().unwrap();
+    assert!(challenge.starts_with("Basic"), "{challenge}");
+    assert!(!challenge.to_ascii_lowercase().contains("bearer"));
+    assert!(!challenge.contains("invalid_token"));
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_client");
+    assert_eq!(body["error_description"], "Client authentication failed.");
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_wrong_form_secret_keeps_scheme_from_authorization_header() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form_with_authorization(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=wrong",
+        Some("Bearer opaque-value"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_no_store_headers(&response);
+    let challenge = response.headers()["www-authenticate"].to_str().unwrap();
+    assert!(challenge.starts_with("Bearer realm=\"qid\""), "{challenge}");
+    assert!(!challenge.contains("invalid_token"));
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_client");
+    assert_eq!(body["error_description"], "Client authentication failed.");
+
+    // A scheme outside the RFC 7230 token alphabet must never be reflected.
+    let malformed = post_form_with_authorization(
+        app,
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=wrong",
+        Some("Bad@Scheme opaque-value"),
+    )
+    .await;
+    assert_eq!(malformed.status(), StatusCode::UNAUTHORIZED);
+    assert!(!malformed.headers().contains_key("www-authenticate"));
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_multiple_client_authentication_methods_are_invalid_request() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form_with_authorization(
+        app,
+        &token_path,
+        "grant_type=client_credentials&client_secret=secret",
+        Some(&format!("Basic {VALID_BASIC_CREDENTIALS}")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_disallowed_grant_is_unauthorized_client() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=service-client&client_secret=secret",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "unauthorized_client");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_unrelated_error_is_not_relabeled_as_invalid_client() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "grant_type=not-a-grant&client_id=service-client&client_secret=secret",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "bad request: unsupported grant_type");
+    assert_ne!(body["error"], "invalid_client");
+    assert!(body.get("error_description").is_none());
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_invalid_client_keeps_fresh_dpop_nonce_in_nonce_realm() {
+    let mut config = test_helpers::test_config();
+    config.realms[0].protocols.oauth.dpop.enabled = true;
+    config.realms[0].protocols.oauth.dpop.nonce = true;
+    let (app, token_path, _, db) = setup_with_config(config).await;
+    let body = "grant_type=client_credentials&client_id=service-client&client_secret=secret";
+
+    let first_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header(
+            "DPoP",
+            dpop_proof("dpop-nonce-client-auth-first", None, &token_path),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let first = app.clone().oneshot(first_request).await.unwrap();
+    assert_eq!(first.status(), StatusCode::BAD_REQUEST);
+    let nonce = first
+        .headers()
+        .get("DPoP-Nonce")
+        .and_then(|value| value.to_str().ok())
+        .expect("nonce realm must challenge a proof without a nonce")
+        .to_string();
+    assert!(nonce.starts_with("dpop_nonce_"));
+
+    let second_request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Authorization", format!("Basic {WRONG_BASIC_CREDENTIALS}"))
+        .header(
+            "DPoP",
+            dpop_proof("dpop-nonce-client-auth-second", Some(&nonce), &token_path),
+        )
+        .body(Body::from("grant_type=client_credentials"))
+        .unwrap();
+    let second = app.oneshot(second_request).await.unwrap();
+    assert_eq!(second.status(), StatusCode::UNAUTHORIZED);
+    assert_no_store_headers(&second);
+    assert!(
+        second.headers().contains_key("DPoP-Nonce"),
+        "categorical client-auth errors must keep the fresh nonce"
+    );
+    let second_body = json_body(second).await;
+    assert_eq!(second_body["error"], "invalid_client");
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_unknown_basic_client_uses_invalid_client_and_scheme_challenge() {
+    let (app, token_path, _, db) = setup().await;
+    let credentials = UNKNOWN_BASIC_CREDENTIALS;
+    let response = post_form_with_authorization(
+        app,
+        &token_path,
+        "grant_type=client_credentials",
+        Some(&format!("Basic {credentials}")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_no_store_headers(&response);
+    let challenge = response.headers()["www-authenticate"].to_str().unwrap();
+    assert!(challenge.starts_with("Basic"), "{challenge}");
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_client");
+    assert_eq!(body["error_description"], "Client authentication failed.");
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn token_duplicate_authorization_is_invalid_request() {
+    let (app, token_path, _, db) = setup().await;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&token_path)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Authorization", format!("Basic {WRONG_BASIC_CREDENTIALS}"))
+        .header("Authorization", format!("Basic {VALID_BASIC_CREDENTIALS}"))
+        .body(Body::from("grant_type=client_credentials"))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
 
     db.close().await;
 }

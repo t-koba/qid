@@ -72,10 +72,22 @@ Routes below are installed for OAuth. When `server.http_message_signatures.enabl
 | `POST` | configurable `par`, default `/oauth2/par` | Pushed Authorization Request, installed when PAR is enabled. |
 
 Every response from the token endpoint, successful or erroneous, carries
-`Cache-Control: no-store` and `Pragma: no-cache`. Other response headers, such
-as `WWW-Authenticate` on 401 and `DPoP-Nonce` on DPoP challenges, are unchanged.
-This describes qid's header behavior only; no broader RFC 6749 conformance is
-claimed.
+`Cache-Control: no-store` and `Pragma: no-cache`. DPoP-Nonce challenges keep
+their existing semantics; the client-authentication error values and
+`WWW-Authenticate` behavior are described below.
+
+For client-authentication failures at the token endpoint only, qid uses the
+stable error values of RFC 6749 §5.2: `invalid_client` (HTTP 401, with the fixed
+description `Client authentication failed.`), `invalid_request` (HTTP 400, when
+more than one client authentication method is presented), and
+`unauthorized_client` (HTTP 400, when the authenticated client is not
+registered for the requested grant type). An `invalid_client` response to a
+request with one usable `Authorization` header challenges with that header's
+scheme (`Basic realm="qid"` for Basic); a missing, duplicated or malformed
+header yields no challenge, and no Bearer invalid-token challenge is emitted
+here. All other token errors keep qid's existing error values, and DPoP-Nonce
+challenges are unchanged. This is scoped §5.2 behavior only, not a broader RFC
+6749 conformance claim.
 
 An explicit `audience` or `resource` at the token endpoint must match a
 registered `protocols.oauth.resource_servers` target. A realm without resource

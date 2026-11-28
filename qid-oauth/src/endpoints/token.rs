@@ -2,8 +2,8 @@ use axum::{
     Form, Json,
     extract::State,
     http::{
-        HeaderMap, HeaderValue,
-        header::{AUTHORIZATION, CACHE_CONTROL, PRAGMA},
+        HeaderMap, HeaderValue, StatusCode,
+        header::{AUTHORIZATION, CACHE_CONTROL, PRAGMA, WWW_AUTHENTICATE},
     },
     response::{IntoResponse, Response},
 };
@@ -37,6 +37,21 @@ pub async fn token<R: Repository>(
     response
 }
 
+/// Client-authentication failures at the token endpoint use stable OAuth
+/// error values. Every other failure keeps qid's ordinary error response.
+enum TokenEndpointError {
+    InvalidClient(QidError),
+    InvalidRequest(QidError),
+    UnauthorizedClient(QidError),
+    Other(QidError),
+}
+
+impl From<QidError> for TokenEndpointError {
+    fn from(err: QidError) -> Self {
+        Self::Other(err)
+    }
+}
+
 /// Token responses carry tokens, credentials or their failure diagnostics, so
 /// every outcome is non-cacheable. Wrap all handler exits here rather than in
 /// the shared error response, which other endpoints also use.
@@ -45,21 +60,129 @@ async fn token_response<R: Repository>(
     headers: &HeaderMap,
     req: &TokenRequest,
 ) -> Response {
-    let dpop_header = super::error_response_or_return!(crate::dpop::extract_dpop_header(headers));
+    let dpop_header = match crate::dpop::extract_dpop_header(headers) {
+        Ok(header) => header,
+        Err(err) => return token_error_response(state, headers, err.into(), false),
+    };
     let should_challenge_dpop_nonce = dpop_header.is_some()
         && state
             .config
             .realms
             .iter()
             .any(|realm| realm.protocols.oauth.dpop.nonce);
-    let basic_client_auth = super::error_response_or_return!(extract_basic_client_auth(headers));
-    let mtls_x5t_s256 =
-        super::error_response_or_return!(super::extract_mtls_client_thumbprint(state, headers));
+    let basic_client_auth = match extract_basic_client_auth(headers) {
+        Ok(auth) => auth,
+        Err(err) => {
+            return token_error_response(
+                state,
+                headers,
+                TokenEndpointError::InvalidRequest(err),
+                false,
+            );
+        }
+    };
+    let mtls_x5t_s256 = match super::extract_mtls_client_thumbprint(state, headers) {
+        Ok(thumbprint) => thumbprint,
+        Err(err) => return token_error_response(state, headers, err.into(), false),
+    };
     match handle_token(state, req, dpop_header, mtls_x5t_s256, basic_client_auth).await {
         Ok(resp) => Json(resp).into_response(),
-        Err(e) if should_challenge_dpop_nonce => token_error_with_fresh_dpop_nonce(state, e),
-        Err(e) => qid_http::error_response(e),
+        Err(err) => token_error_response(state, headers, err, should_challenge_dpop_nonce),
     }
+}
+
+/// Map an endpoint error to its wire response. Only client-auth outcomes are
+/// relabeled; the shared error response still owns every other category and
+/// its 401 Bearer challenge.
+fn token_error_response<R: Repository>(
+    state: &SharedState<R>,
+    headers: &HeaderMap,
+    error: TokenEndpointError,
+    challenge_dpop_nonce: bool,
+) -> Response {
+    let nonce = challenge_dpop_nonce
+        .then(|| {
+            state
+                .dpop_state
+                .issue_nonce(qid_core::util::now_seconds())
+                .ok()
+        })
+        .flatten();
+    match error {
+        TokenEndpointError::InvalidClient(diagnostic) => categorical_token_error(
+            nonce.as_deref(),
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "Client authentication failed.",
+            authorization_challenge(headers),
+            diagnostic,
+        ),
+        TokenEndpointError::InvalidRequest(diagnostic) => categorical_token_error(
+            nonce.as_deref(),
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "The request is malformed or uses more than one client authentication method.",
+            None,
+            diagnostic,
+        ),
+        TokenEndpointError::UnauthorizedClient(diagnostic) => categorical_token_error(
+            nonce.as_deref(),
+            StatusCode::BAD_REQUEST,
+            "unauthorized_client",
+            "The client is not authorized to use the requested grant type.",
+            None,
+            diagnostic,
+        ),
+        TokenEndpointError::Other(err) if challenge_dpop_nonce => {
+            qid_http::dpop_nonce_error_response(err, nonce.as_deref())
+        }
+        TokenEndpointError::Other(err) => qid_http::error_response(err),
+    }
+}
+
+fn categorical_token_error(
+    nonce: Option<&str>,
+    status: StatusCode,
+    error: &'static str,
+    description: &'static str,
+    challenge: Option<String>,
+    diagnostic: QidError,
+) -> Response {
+    tracing::debug!(error = %diagnostic, oauth_error = error, "token request rejected");
+    let mut response = qid_http::oauth_error_response_with_description(status, error, description);
+    if let Some(challenge) = challenge
+        && let Ok(value) = HeaderValue::from_str(&challenge)
+    {
+        response.headers_mut().insert(WWW_AUTHENTICATE, value);
+    }
+    if let Some(nonce) = nonce
+        && let Ok(value) = HeaderValue::from_str(nonce)
+    {
+        response.headers_mut().insert("DPoP-Nonce", value);
+    }
+    response
+}
+
+/// Challenge with the scheme actually presented by the client, never with a
+/// Bearer resource-server challenge. An ambiguous or malformed Authorization
+/// field yields no challenge at all.
+fn authorization_challenge(headers: &HeaderMap) -> Option<String> {
+    let value = qid_http::sole_header_value(headers, &AUTHORIZATION).ok()??;
+    let value = value.trim_ascii_start();
+    let end = value
+        .bytes()
+        .position(|byte| byte.is_ascii_whitespace())
+        .unwrap_or(value.len());
+    let scheme = &value[..end];
+    if !qid_core::util::is_cookie_name_token(scheme) {
+        return None;
+    }
+    let scheme = if scheme.eq_ignore_ascii_case("Basic") {
+        "Basic"
+    } else {
+        scheme
+    };
+    Some(format!("{scheme} realm=\"qid\""))
 }
 
 async fn handle_token<R: Repository>(
@@ -68,11 +191,12 @@ async fn handle_token<R: Repository>(
     dpop_header: Option<String>,
     mtls_x5t_s256: Option<String>,
     basic_client_auth: Option<BasicClientAuth>,
-) -> QidResult<TokenResponse> {
+) -> Result<TokenResponse, TokenEndpointError> {
     let assertion_client_id = client_assertion_client_id(
         req.client_assertion.as_deref(),
         req.client_assertion_type.as_deref(),
-    )?;
+    )
+    .map_err(TokenEndpointError::InvalidClient)?;
     let credentials = ClientCredentials {
         client_assertion: req.client_assertion.as_deref(),
         asserted_client_id: assertion_client_id.as_deref(),
@@ -93,20 +217,28 @@ async fn handle_token<R: Repository>(
     if effective_client_id.is_empty() {
         return Err(QidError::BadRequest {
             message: "client_id required".to_string(),
-        });
+        }
+        .into());
     }
     if !is_supported_grant_type(&req.grant_type) {
         return Err(QidError::BadRequest {
             message: "unsupported grant_type".to_string(),
-        });
+        }
+        .into());
     }
-    let client = super::find_client_across_realms(state, effective_client_id).await?;
+    let client = super::find_client_across_realms(state, effective_client_id)
+        .await
+        .map_err(|err| match err {
+            QidError::Unauthorized { .. } => TokenEndpointError::InvalidClient(err),
+            other => TokenEndpointError::Other(other),
+        })?;
     let realm_config = oauth_realm_config(state, &client.realm_id)?;
     let dpop_jkt = if let Some(ref dpop) = dpop_header {
         if !realm_config.protocols.oauth.dpop.enabled {
             return Err(QidError::BadRequest {
                 message: "DPoP is disabled for client realm".to_string(),
-            });
+            }
+            .into());
         }
         let token = crate::dpop::extract_dpop_jkt(dpop)?;
         let htu = state.plan.public_base_url.trim_end_matches('/').to_string();
@@ -214,7 +346,7 @@ async fn handle_token<R: Repository>(
         )
         .increment(1);
     }
-    result
+    result.map_err(TokenEndpointError::Other)
 }
 
 fn metric_grant_type_label(grant_type: &str) -> &'static str {
@@ -243,17 +375,6 @@ fn required_dpop_nonce_for_realm(
             message: "DPoP proof nonce is required".to_string(),
         })?;
     Ok(Some(nonce))
-}
-
-fn token_error_with_fresh_dpop_nonce<R: Repository>(
-    state: &SharedState<R>,
-    err: QidError,
-) -> Response {
-    let nonce = state
-        .dpop_state
-        .issue_nonce(qid_core::util::now_seconds())
-        .ok();
-    qid_http::dpop_nonce_error_response(err, nonce.as_deref())
 }
 
 fn oauth_saml_subject_id(
@@ -1202,33 +1323,40 @@ fn validate_client_auth_method<R: Repository>(
     req: &TokenRequest,
     client: &Client,
     credentials: &ClientCredentials<'_>,
-) -> QidResult<()> {
+) -> Result<(), TokenEndpointError> {
     if client.client_id.is_empty() {
-        return Err(QidError::BadRequest {
+        return Err(TokenEndpointError::InvalidRequest(QidError::BadRequest {
             message: "client_id required".to_string(),
-        });
+        }));
     }
     if !client
         .grant_types
         .iter()
         .any(|grant| grant == &req.grant_type)
     {
-        return Err(QidError::Unauthorized {
-            message: "grant type not allowed for client".to_string(),
-        });
+        return Err(TokenEndpointError::UnauthorizedClient(
+            QidError::Unauthorized {
+                message: "grant type not allowed for client".to_string(),
+            },
+        ));
     }
-    let used_auth_method = credentials.used_auth_method(client);
-    if req.client_secret.is_some() && used_auth_method == "client_secret_basic" {
-        return Err(QidError::Unauthorized {
+    let multiple_methods = (credentials.basic.is_some() && req.client_secret.is_some())
+        || req.client_assertion.is_some()
+            && (credentials.basic.is_some()
+                || req.client_secret.is_some()
+                || credentials.mtls_x5t_s256.is_some());
+    if multiple_methods {
+        return Err(TokenEndpointError::InvalidRequest(QidError::BadRequest {
             message: "multiple client authentication methods are not allowed".to_string(),
-        });
+        }));
     }
-    if req.client_assertion.is_some() && used_auth_method != "private_key_jwt" {
-        return Err(QidError::Unauthorized {
+    if req.client_assertion.is_some() && client.token_endpoint_auth_method != "private_key_jwt" {
+        return Err(TokenEndpointError::InvalidClient(QidError::Unauthorized {
             message: "invalid client assertion authentication".to_string(),
-        });
+        }));
     }
     validate_client_authentication(state, client, credentials)
+        .map_err(TokenEndpointError::InvalidClient)
 }
 
 /// Validate OAuth SAML inputs only against the issuer-bound inbound federation trust

@@ -701,10 +701,7 @@ async fn duplicate_authorization_headers_are_rejected_at_token_endpoint() {
     let duplicate_response = app.oneshot(duplicate).await.unwrap();
     assert_eq!(duplicate_response.status(), StatusCode::BAD_REQUEST);
     let json = json_body(duplicate_response).await;
-    assert_eq!(
-        json["error"],
-        "bad request: multiple authorization headers are not allowed"
-    );
+    assert_eq!(json["error"], "invalid_request");
     assert!(json.get("access_token").is_none());
 }
 
@@ -755,22 +752,22 @@ async fn private_key_jwt_requires_only_the_client_realm_issuer() {
         (
             "pkjwt-client",
             serde_json::json!("https://id.example.com/oauth2/token"),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
         ),
         (
             "pkjwt-client",
             serde_json::json!(["https://id.example.com", "https://attacker.example"]),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
         ),
         (
             "pkjwt-client",
             serde_json::json!(["https://id.example.com", "https://id.example.com"]),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
         ),
         (
             "other-pkjwt",
             serde_json::json!("https://id.example.com"),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
         ),
         (
             "other-pkjwt",
@@ -780,7 +777,7 @@ async fn private_key_jwt_requires_only_the_client_realm_issuer() {
         (
             "other-pkjwt",
             serde_json::json!("https://other.example.com/realm"),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
         ),
     ]
     .into_iter()
@@ -833,7 +830,8 @@ async fn client_credentials_grant_rejects_private_key_jwt_when_disabled() {
         "grant_type=client_credentials&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={assertion}&scope=api"
     );
     let response = post_form(app, &token_path, body).await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(response).await["error"], "invalid_client");
 }
 
 #[tokio::test]
@@ -2312,7 +2310,8 @@ async fn public_client_credentials_grant_is_rejected() {
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["error"], "unauthorized_client");
 }
 
 #[tokio::test]

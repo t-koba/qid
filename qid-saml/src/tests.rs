@@ -2,7 +2,7 @@ use super::*;
 use crate::routes::is_active_session_for_realm;
 use axum::http::{HeaderMap, header};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use qid_core::config::SamlServiceProviderConfig;
+use qid_core::config::{PairwiseSubjectSecret, SamlServiceProviderConfig};
 use qid_core::models::{Session, User};
 use qid_http::extract_cookie;
 
@@ -64,6 +64,10 @@ fn test_subject(display_name: Option<&str>, groups: &[&str]) -> SamlSubject {
         display_name: display_name.map(str::to_string),
         groups: groups.iter().map(|group| (*group).to_string()).collect(),
     }
+}
+
+fn test_pairwise_secret() -> PairwiseSubjectSecret {
+    PairwiseSubjectSecret::new("0123456789abcdef0123456789abcdef")
 }
 
 fn test_assertion_request(
@@ -453,7 +457,7 @@ fn builds_assertion_request_from_valid_authn_request() {
     assert_eq!(assertion_req.acs_url, sp.acs_url);
     assert_eq!(assertion_req.name_id_format, EMAIL_NAME_ID_FORMAT);
     assert_eq!(assertion_req.not_on_or_after, 1_300);
-    let issued = build_saml_response(&assertion_req).unwrap();
+    let issued = build_saml_response(&assertion_req, Some(&test_pairwise_secret())).unwrap();
     assert!(issued.xml.contains("InResponseTo=\"req-123\""));
     assert!(issued.xml.contains("SessionIndex=\"session-1\""));
 }
@@ -684,7 +688,7 @@ fn selects_name_id_and_builds_saml_response() {
     );
     request.name_id_format = name_id_format;
     request.session_index = Some("session-1".to_string());
-    let issued = build_saml_response(&request).unwrap();
+    let issued = build_saml_response(&request, Some(&test_pairwise_secret())).unwrap();
 
     let profile = inspect_saml_response_profile(&issued.xml).unwrap();
     assert_eq!(
@@ -728,7 +732,7 @@ fn persistent_name_id_uses_stable_subject_id_and_rejects_missing_email() {
 fn plans_response_and_assertion_signatures() {
     let sp = import_sp_metadata(&sp_metadata()).unwrap();
     let request = test_assertion_request(&sp, test_subject(None, &[]));
-    let issued = build_saml_response(&request).unwrap();
+    let issued = build_saml_response(&request, Some(&test_pairwise_secret())).unwrap();
 
     let plan = plan_saml_signatures(
         &issued,
@@ -764,7 +768,7 @@ fn signature_plan_rejects_unsigned_saml_response_policy() {
     sp.want_assertions_signed = false;
     let mut request = test_assertion_request(&sp, test_subject(None, &[]));
     request.request_id = None;
-    let issued = build_saml_response(&request).unwrap();
+    let issued = build_saml_response(&request, Some(&test_pairwise_secret())).unwrap();
     assert_bad_request(plan_saml_signatures(
         &issued,
         &sp,
@@ -779,7 +783,7 @@ fn signature_plan_rejects_unsigned_saml_response_policy() {
 fn plans_and_applies_encrypted_assertion() {
     let sp = import_sp_metadata(&sp_metadata()).unwrap();
     let request = test_assertion_request(&sp, test_subject(None, &[]));
-    let issued = build_saml_response(&request).unwrap();
+    let issued = build_saml_response(&request, Some(&test_pairwise_secret())).unwrap();
 
     let plan = plan_saml_encryption(
         &issued,
@@ -811,7 +815,7 @@ fn encryption_plan_rejects_missing_sp_certificate() {
     sp.encryption_certificates.clear();
     let mut request = test_assertion_request(&sp, test_subject(None, &[]));
     request.request_id = None;
-    let issued = build_saml_response(&request).unwrap();
+    let issued = build_saml_response(&request, Some(&test_pairwise_secret())).unwrap();
 
     assert_bad_request(plan_saml_encryption(
         &issued,
@@ -872,7 +876,7 @@ fn encrypt_decrypt_saml_response_roundtrip() {
     let sp = import_sp_metadata(&sp_metadata()).unwrap();
     let mut request = test_assertion_request(&sp, test_subject(None, &[]));
     request.request_id = Some("req-1".to_string());
-    let issued = build_saml_response(&request).unwrap();
+    let issued = build_saml_response(&request, Some(&test_pairwise_secret())).unwrap();
 
     let encrypted = encrypt_saml_response(&issued, &test_sp_cert_body()).unwrap();
     assert!(encrypted.xml.contains("EncryptedAssertion"));
@@ -970,4 +974,105 @@ fn xsw_namespace_prefix_trick_does_not_bypass_sibling_check() {
         &xml,
         "namespace-prefixed forbidden sibling must be rejected",
     );
+}
+
+fn pairwise_attribute(xml: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    doc.descendants()
+        .find(|node| {
+            node.has_tag_name(("urn:oasis:names:tc:SAML:2.0:assertion", "Attribute"))
+                && node.attribute("Name") == Some("urn:oasis:names:tc:SAML:attribute:pairwise-id")
+        })
+        .and_then(|node| {
+            node.children()
+                .find(|child| {
+                    child.has_tag_name(("urn:oasis:names:tc:SAML:2.0:assertion", "AttributeValue"))
+                })
+                .and_then(|value| value.text().map(str::to_string))
+        })
+}
+
+fn pairwise_id_for(
+    request: &SamlAssertionRequest,
+    secret: &PairwiseSubjectSecret,
+) -> Option<String> {
+    let issued = build_saml_response(request, Some(secret)).unwrap();
+    pairwise_attribute(&issued.xml)
+}
+
+#[test]
+fn pairwise_id_is_stable_and_bound_to_issuer_user_sp_and_secret() {
+    let sp = import_sp_metadata(&sp_metadata()).unwrap();
+    let mut request = test_assertion_request(&sp, test_subject(None, &[]));
+    let secret = test_pairwise_secret();
+    let pairwise_id = pairwise_id_for(&request, &secret).unwrap();
+    assert_eq!(pairwise_id, pairwise_id_for(&request, &secret).unwrap());
+    assert_eq!(pairwise_id.len(), 22);
+    assert!(
+        pairwise_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    );
+
+    request.sp_entity_id = "https://other.example.com/metadata".to_string();
+    assert_ne!(pairwise_id, pairwise_id_for(&request, &secret).unwrap());
+    request.sp_entity_id = sp.entity_id.clone();
+    request.issuer = "https://idp.example.com/realms/other".to_string();
+    assert_ne!(pairwise_id, pairwise_id_for(&request, &secret).unwrap());
+    request.issuer = "https://idp.example.com/realms/corp".to_string();
+    request.subject.user_id = "user-2".to_string();
+    assert_ne!(pairwise_id, pairwise_id_for(&request, &secret).unwrap());
+    request.subject.user_id = "user-1".to_string();
+    let other_secret = PairwiseSubjectSecret::new("fedcba9876543210fedcba9876543210");
+    assert_ne!(
+        pairwise_id,
+        pairwise_id_for(&request, &other_secret).unwrap()
+    );
+}
+
+#[test]
+fn saml_pairwise_id_differs_from_oidc_ppid_for_same_inputs() {
+    let sp = import_sp_metadata(&sp_metadata()).unwrap();
+    let request = test_assertion_request(&sp, test_subject(None, &[]));
+    let secret = test_pairwise_secret();
+    let saml_id = pairwise_id_for(&request, &secret).unwrap();
+    let oidc_ppid = qid_core::util::compute_pairwise_sub(
+        &request.subject.user_id,
+        &request.sp_entity_id,
+        &request.issuer,
+        secret.as_bytes(),
+    );
+    assert_ne!(saml_id, oidc_ppid);
+}
+
+#[test]
+fn pairwise_id_release_fails_closed_without_usable_secret() {
+    let sp = import_sp_metadata(&sp_metadata()).unwrap();
+    let request = test_assertion_request(&sp, test_subject(None, &[]));
+    let err = build_saml_response(&request, None).unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }), "{err:?}");
+    let message = err.to_string();
+    assert!(message.contains("pairwise_subject_secret"), "{message}");
+    assert!(message.contains(&request.issuer), "{message}");
+    assert!(message.contains("req-123"), "{message}");
+
+    let short_secret = PairwiseSubjectSecret::new("too-short");
+    let err = build_saml_response(&request, Some(&short_secret)).unwrap_err();
+    assert!(matches!(err, QidError::Config { .. }), "{err:?}");
+    assert!(!err.to_string().contains("too-short"), "{err:?}");
+}
+
+#[test]
+fn pairwise_id_excluded_from_release_needs_no_secret() {
+    let sp = import_sp_metadata(&sp_metadata()).unwrap();
+    let mut request = test_assertion_request(&sp, test_subject(None, &[]));
+    request.attribute_release_policy = vec!["subject-id".to_string(), "email".to_string()];
+    let issued = build_saml_response(&request, None).unwrap();
+    assert!(pairwise_attribute(&issued.xml).is_none());
+    assert!(
+        issued
+            .xml
+            .contains("urn:oasis:names:tc:SAML:attribute:subject-id")
+    );
+    assert!(issued.xml.contains("alice@example.com"));
 }

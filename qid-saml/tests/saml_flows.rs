@@ -7,6 +7,10 @@ use qid_saml::{
     validate_authn_request_for_sp,
 };
 
+fn test_pairwise_secret() -> qid_core::config::PairwiseSubjectSecret {
+    qid_core::config::PairwiseSubjectSecret::new("0123456789abcdef0123456789abcdef")
+}
+
 fn sp_metadata() -> String {
     include_str!("fixtures/sp-metadata-flow-test.xml")
         .replace("{name_id_format}", EMAIL_NAME_ID_FORMAT)
@@ -50,7 +54,7 @@ fn sp_metadata_authn_request_and_response_round_trip() -> anyhow::Result<()> {
         300,
         Some("sid-123".to_string()),
     )?;
-    let issued = build_saml_response(&assertion_request)?;
+    let issued = build_saml_response(&assertion_request, Some(&test_pairwise_secret()))?;
     let profile = inspect_saml_response_profile(&issued.xml)?;
     assert_eq!(
         profile.response_id.as_deref(),
@@ -147,23 +151,26 @@ fn public_saml_entrypoints_reject_xsw_attack_patterns() -> anyhow::Result<()> {
         );
     }
 
-    let issued = build_saml_response(&SamlAssertionRequest {
-        issuer: "https://idp.example.com/saml/corp".to_string(),
-        sp_entity_id: "https://sp.example.com/metadata".to_string(),
-        acs_url: "https://sp.example.com/acs".to_string(),
-        request_id: Some("req-123".to_string()),
-        subject: SamlSubject {
-            user_id: "user-123".to_string(),
-            email: Some("alice@example.com".to_string()),
-            display_name: None,
-            groups: vec![],
+    let issued = build_saml_response(
+        &SamlAssertionRequest {
+            issuer: "https://idp.example.com/saml/corp".to_string(),
+            sp_entity_id: "https://sp.example.com/metadata".to_string(),
+            acs_url: "https://sp.example.com/acs".to_string(),
+            request_id: Some("req-123".to_string()),
+            subject: SamlSubject {
+                user_id: "user-123".to_string(),
+                email: Some("alice@example.com".to_string()),
+                display_name: None,
+                groups: vec![],
+            },
+            name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
+            issued_at: 1_735_689_600,
+            not_on_or_after: 1_735_689_900,
+            session_index: None,
+            attribute_release_policy: Vec::new(),
         },
-        name_id_format: EMAIL_NAME_ID_FORMAT.to_string(),
-        issued_at: 1_735_689_600,
-        not_on_or_after: 1_735_689_900,
-        session_index: None,
-        attribute_release_policy: Vec::new(),
-    })?
+        Some(&test_pairwise_secret()),
+    )?
     .xml;
     let response_attacks = [
         (

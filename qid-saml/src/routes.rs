@@ -312,7 +312,10 @@ async fn sso<R: Repository>(
                     .into_response();
             }
         };
-        let issued = match build_saml_response(&assertion_req) {
+        let issued = match build_saml_response(
+            &assertion_req,
+            realm_config.pairwise_subject_secret.as_ref(),
+        ) {
             Ok(issued) => {
                 metrics::counter!("qid_saml_assertions_issued_total").increment(1);
                 issued

@@ -3,6 +3,7 @@ use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, Payload},
 };
+use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -510,20 +511,33 @@ pub fn name_id_value(subject: &SamlSubject, format: &str) -> QidResult<String> {
     }
 }
 
-/// Compute a pairwise-id per SAML Subject Identifier Attributes Profile.
-/// Uses SHA-256 of (user_id, "@", sp_entity_id) truncated to a base64
-/// string, ensuring the identifier is unique per SP but not correlatable.
-fn compute_pairwise_id(user_id: &str, sp_entity_id: &str) -> String {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(user_id.as_bytes());
-    hasher.update(b"@");
-    hasher.update(sp_entity_id.as_bytes());
-    let hash = hasher.finalize();
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&hash[..16])
+/// Derive a pairwise-id from the realm's provider-held secret. The SAML
+/// domain-separated key keeps this value distinct from the OIDC PPID derived
+/// from the same secret; the NUL-separated message binds realm, user and SP.
+fn compute_pairwise_id(
+    issuer: &str,
+    user_id: &str,
+    sp_entity_id: &str,
+    pairwise_secret: &qid_core::config::PairwiseSubjectSecret,
+) -> QidResult<String> {
+    let mut key = b"qid-saml-pairwise-v1:".to_vec();
+    key.extend_from_slice(pairwise_secret.as_bytes());
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key).map_err(|_| QidError::Crypto {
+        message: "failed to initialize SAML pairwise-id HMAC".to_string(),
+    })?;
+    mac.update(issuer.as_bytes());
+    mac.update(b"\x00");
+    mac.update(user_id.as_bytes());
+    mac.update(b"\x00");
+    mac.update(sp_entity_id.as_bytes());
+    let hash = mac.finalize().into_bytes();
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&hash[..16]))
 }
 
-pub fn build_saml_response(req: &SamlAssertionRequest) -> QidResult<SamlIssuedResponse> {
+pub fn build_saml_response(
+    req: &SamlAssertionRequest,
+    pairwise_secret: Option<&qid_core::config::PairwiseSubjectSecret>,
+) -> QidResult<SamlIssuedResponse> {
     if req.not_on_or_after <= req.issued_at {
         return Err(QidError::BadRequest {
             message: "SAML assertion expiry must be after issue time".to_string(),
@@ -554,13 +568,38 @@ pub fn build_saml_response(req: &SamlAssertionRequest) -> QidResult<SamlIssuedRe
         .as_ref()
         .map(|id| format!(r#" SessionIndex="{}""#, xml_escape(id)))
         .unwrap_or_default();
-    let pairwise_id = compute_pairwise_id(&req.subject.user_id, &req.sp_entity_id);
     let allowed = |name: &str| -> bool {
         req.attribute_release_policy.is_empty()
             || req.attribute_release_policy.contains(&name.to_string())
     };
+    let pairwise_id = if allowed("pairwise-id") {
+        let secret = pairwise_secret.ok_or_else(|| QidError::Config {
+            message: format!(
+                "SAML realm {} request {:?}: pairwise-id requires realms[].pairwise_subject_secret with at least {} bytes",
+                req.issuer, req.request_id, qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+            ),
+        })?;
+        if secret.as_bytes().len() < qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES {
+            return Err(QidError::Config {
+                message: format!(
+                    "SAML realm {} request {:?}: realms[].pairwise_subject_secret must be at least {} bytes",
+                    req.issuer,
+                    req.request_id,
+                    qid_core::config::PAIRWISE_SUBJECT_SECRET_MIN_BYTES
+                ),
+            });
+        }
+        Some(compute_pairwise_id(
+            &req.issuer,
+            &req.subject.user_id,
+            &req.sp_entity_id,
+            secret,
+        )?)
+    } else {
+        None
+    };
     let mut attributes = String::new();
-    // SAML Subject Identifier Attributes Profile (subject-id / pairwise-id)
+    // SAML subject identifier attributes (subject-id / pairwise-id)
     if allowed("subject-id") {
         push_attribute(
             &mut attributes,
@@ -568,7 +607,7 @@ pub fn build_saml_response(req: &SamlAssertionRequest) -> QidResult<SamlIssuedRe
             &req.subject.user_id,
         );
     }
-    if allowed("pairwise-id") {
+    if let Some(pairwise_id) = pairwise_id {
         push_attribute(
             &mut attributes,
             "urn:oasis:names:tc:SAML:attribute:pairwise-id",

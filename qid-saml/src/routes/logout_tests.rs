@@ -3,7 +3,11 @@ use super::*;
 use crate::test_support::{TEST_SP_KEY_PEM, sign_test_document, test_sp_cert_body};
 use axum::{body::Body, http::Request};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use qid_core::{config::SamlServiceProviderConfig, models::User, test_helpers::test_config};
+use qid_core::{
+    config::{PairwiseSubjectSecret, SamlServiceProviderConfig},
+    models::User,
+    test_helpers::test_config,
+};
 use tower::ServiceExt;
 
 async fn logout_app() -> (
@@ -32,6 +36,9 @@ async fn logout_app_with_key(
     );
     let mut config = test_config();
     config.realms[0].protocols.saml.enabled = true;
+    config.realms[0].pairwise_subject_secret = Some(PairwiseSubjectSecret::new(
+        "0123456789abcdef0123456789abcdef",
+    ));
     let key_path = directory.path().join("idp.key");
     std::fs::write(&key_path, TEST_SP_KEY_PEM).unwrap();
     config.realms[0].protocols.saml.idp_signing_key_pem_path =

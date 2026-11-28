@@ -21,7 +21,7 @@ pub mod web;
 #[cfg(feature = "test-utils")]
 pub mod test_helpers;
 
-pub use util::{compute_pairwise_sub, sector_identifier_for_client};
+pub use util::{compute_pairwise_identifier, compute_pairwise_sub, sector_identifier_for_client};
 
 #[cfg(feature = "redis-cache")]
 pub use cache::redis_cache;

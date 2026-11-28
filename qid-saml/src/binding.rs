@@ -3,7 +3,6 @@ use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, Payload},
 };
-use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -512,26 +511,21 @@ pub fn name_id_value(subject: &SamlSubject, format: &str) -> QidResult<String> {
 }
 
 /// Derive a pairwise-id from the realm's provider-held secret. The SAML
-/// domain-separated key keeps this value distinct from the OIDC PPID derived
-/// from the same secret; the NUL-separated message binds realm, user and SP.
+/// domain label keeps this value distinct from the OIDC PPID derived from
+/// the same secret; the core primitive binds realm, user and SP.
 fn compute_pairwise_id(
     issuer: &str,
     user_id: &str,
     sp_entity_id: &str,
     pairwise_secret: &qid_core::config::PairwiseSubjectSecret,
-) -> QidResult<String> {
-    let mut key = b"qid-saml-pairwise-v1:".to_vec();
-    key.extend_from_slice(pairwise_secret.as_bytes());
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key).map_err(|_| QidError::Crypto {
-        message: "failed to initialize SAML pairwise-id HMAC".to_string(),
-    })?;
-    mac.update(issuer.as_bytes());
-    mac.update(b"\x00");
-    mac.update(user_id.as_bytes());
-    mac.update(b"\x00");
-    mac.update(sp_entity_id.as_bytes());
-    let hash = mac.finalize().into_bytes();
-    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&hash[..16]))
+) -> String {
+    qid_core::compute_pairwise_identifier(
+        user_id,
+        sp_entity_id,
+        issuer,
+        pairwise_secret.as_bytes(),
+        b"qid-saml-pairwise-v1:",
+    )
 }
 
 pub fn build_saml_response(
@@ -594,7 +588,7 @@ pub fn build_saml_response(
             &req.subject.user_id,
             &req.sp_entity_id,
             secret,
-        )?)
+        ))
     } else {
         None
     };

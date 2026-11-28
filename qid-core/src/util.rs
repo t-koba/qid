@@ -96,14 +96,35 @@ pub fn client_secret_hash(secret: &str) -> String {
 /// issuer: anyone can observe the issuer, but only the provider can derive
 /// the PPID. The issuer is still part of the message, so a change of realm
 /// issuer changes the identifier even when the secret is reused.
-#[allow(clippy::expect_used)]
 pub fn compute_pairwise_sub(
     public_sub: &str,
     sector_identifier: &str,
     issuer: &str,
     pairwise_secret: &[u8],
 ) -> String {
-    let mut key = b"qid-pairwise-v1:".to_vec();
+    compute_pairwise_identifier(
+        public_sub,
+        sector_identifier,
+        issuer,
+        pairwise_secret,
+        b"qid-pairwise-v1:",
+    )
+}
+
+/// Domain-separated pairwise identifier primitive shared by OIDC and SAML.
+///
+/// `domain_label` keeps identifiers for the same realm, subject and party
+/// distinct across protocols. The message binds issuer, subject and party
+/// with unambiguous separators; the output is 16 base64url bytes.
+#[allow(clippy::expect_used)]
+pub fn compute_pairwise_identifier(
+    public_sub: &str,
+    sector_identifier: &str,
+    issuer: &str,
+    pairwise_secret: &[u8],
+    domain_label: &[u8],
+) -> String {
+    let mut key = domain_label.to_vec();
     key.extend_from_slice(pairwise_secret);
     // HMAC accepts keys of any length; construction failure would indicate a library invariant change.
     let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("HMAC accepts any key length");

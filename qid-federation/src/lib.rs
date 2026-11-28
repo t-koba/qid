@@ -363,24 +363,21 @@ pub fn apply_metadata_policy(
         .collect();
     let mut redirect_uris = Vec::new();
     for redirect_uri in &metadata.redirect_uris {
-        if let Err(reason) = qid_core::oauth::validate_redirect_uri(redirect_uri) {
-            let code = match reason {
-                qid_core::oauth::RedirectUriError::InsecureScheme => {
-                    "redirect_uri_scheme_not_allowed"
-                }
-                _ => "invalid_redirect_uri",
-            };
-            return Err(error(
-                code,
-                &format!("redirect_uri {redirect_uri} rejected: {reason:?}"),
-            ));
-        }
-        let parsed = url::Url::parse(redirect_uri).map_err(|_| {
-            error(
-                "invalid_redirect_uri",
-                &format!("redirect_uri {redirect_uri} has no valid URL"),
-            )
-        })?;
+        let parsed = match qid_core::oauth::validate_redirect_uri_url(redirect_uri) {
+            Ok(parsed) => parsed,
+            Err(reason) => {
+                let code = match reason {
+                    qid_core::oauth::RedirectUriError::InsecureScheme => {
+                        "redirect_uri_scheme_not_allowed"
+                    }
+                    _ => "invalid_redirect_uri",
+                };
+                return Err(error(
+                    code,
+                    &format!("redirect_uri {redirect_uri} rejected: {reason:?}"),
+                ));
+            }
+        };
         if !allowed.is_empty() {
             let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
             if !allowed.contains(&host) {

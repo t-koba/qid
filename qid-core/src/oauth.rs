@@ -52,6 +52,13 @@ const RESERVED_REDIRECT_QUERY_KEYS: [&str; 6] = [
 /// a fragment, no reserved response parameter in its query, and HTTPS except
 /// for true loopback HTTP (`localhost`, `127.0.0.0/8`, or `::1`).
 pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError> {
+    validate_redirect_uri_url(redirect_uri).map(|_| ())
+}
+
+/// Validate a redirect URI and return the checked URL so callers can apply
+/// further policy without parsing the same string twice. The original text
+/// remains available to the caller for storage and exact comparison.
+pub fn validate_redirect_uri_url(redirect_uri: &str) -> Result<url::Url, RedirectUriError> {
     if redirect_uri.contains('*') {
         return Err(RedirectUriError::Wildcard);
     }
@@ -93,10 +100,10 @@ pub fn validate_redirect_uri(redirect_uri: &str) -> Result<(), RedirectUriError>
         ));
     }
     if parsed.scheme() == "https" {
-        return Ok(());
+        return Ok(parsed);
     }
     if parsed.scheme() == "http" && is_loopback_host(parsed.host()) {
-        return Ok(());
+        return Ok(parsed);
     }
     Err(RedirectUriError::InsecureScheme)
 }

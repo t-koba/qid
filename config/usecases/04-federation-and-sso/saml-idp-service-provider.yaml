@@ -22,6 +22,8 @@ crypto:
 realms:
   - id: workforce
     issuer: "https://id.example.com/realms/workforce"
+    # Replace with a random provider-held secret.
+    pairwise_subject_secret: "change-me-pairwise-subject-secret-replace-with-random-secret"
     display_name: "Workforce SAML IdP"
     clients:
       - client_id: "employee-portal"

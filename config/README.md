@@ -8,7 +8,7 @@ be loaded with `qidc --config <file> check`.
 
 - Start with `config/usecases/01-getting-started/`.
 - Move to the directory that matches the deployment goal.
-- Replace hostnames, listen addresses, storage URLs, credentials, and key paths.
+- Replace hostnames, listen addresses, storage URLs, credentials, key paths, and `realms[].pairwise_subject_secret` used by SAML persistent NameID.
 - Most samples use the file-backed JSON repository and write per-sample state
   under `config/usecases/data/runtime/` so different use cases do not collide
   when `qidd` seeds realms, clients, and policy bundles.

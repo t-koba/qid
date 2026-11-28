@@ -4428,3 +4428,42 @@ realms:
     let parsed = QidConfig::from_file(path.to_str().unwrap()).expect("parse config without secret");
     assert!(parsed.realms[0].pairwise_subject_secret.is_none());
 }
+
+#[test]
+fn saml_persistent_nameid_samples_have_pairwise_secrets() {
+    const PERSISTENT_NAMEID: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let samples = [
+        "config/usecases/04-federation-and-sso/saml-idp-service-provider.yaml",
+        "config/usecases/04-federation-and-sso/saml-to-oidc-migration.yaml",
+        "config/usecases/05-lifecycle-and-provisioning/enterprise-workforce-suite.yaml",
+    ];
+
+    for sample in samples {
+        let path = root.join(sample);
+        let config = QidConfig::from_file(path.to_str().expect("sample path is UTF-8"))
+            .unwrap_or_else(|err| panic!("{sample} must load: {err}"));
+        let mut realms_checked = 0;
+        for realm in &config.realms {
+            let persistent = realm.protocols.saml.service_providers.iter().any(|sp| {
+                sp.name_id_formats
+                    .iter()
+                    .any(|format| format == PERSISTENT_NAMEID)
+            });
+            if !persistent {
+                continue;
+            }
+            realms_checked += 1;
+            let secret = realm
+                .pairwise_subject_secret
+                .as_ref()
+                .unwrap_or_else(|| panic!("{sample}: realm {} needs a pairwise secret", realm.id));
+            assert!(
+                secret.as_bytes().len() >= PAIRWISE_SUBJECT_SECRET_MIN_BYTES,
+                "{sample}: realm {} needs a secret of at least {PAIRWISE_SUBJECT_SECRET_MIN_BYTES} bytes",
+                realm.id
+            );
+        }
+        assert!(realms_checked > 0, "{sample}: no persistent NameID SP");
+    }
+}

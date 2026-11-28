@@ -376,6 +376,9 @@ async fn advanced_subject_grant<R: Repository>(
             resource: format!("realm {}", realm.id),
         })?;
     let mut subject_token_scopes: Option<Vec<String>> = None;
+    // Audiences of an access-token subject whose resource server explicitly
+    // authorizes the requesting client. `None` keeps self-exchange unrestricted.
+    let mut exchange_allowed_audiences: Option<Vec<String>> = None;
     let mut subject_user = User {
         id: format!(
             "{}:{}",
@@ -410,19 +413,32 @@ async fn advanced_subject_grant<R: Repository>(
                         message: "subject_token realm does not match client realm".to_string(),
                     });
                 }
-                if decoded.client_id != client.client_id
-                    && !decoded.aud.iter().any(|audience| {
-                        realm_config
-                            .protocols
-                            .oauth
-                            .resource_servers
-                            .iter()
-                            .any(|server| audience == &server.audience)
-                    })
-                {
-                    return Err(QidError::BadRequest {
-                        message: "subject_token is not owned by the exchange client or targeted to a registered resource server".to_string(),
-                    });
+                if decoded.client_id != client.client_id {
+                    let allowed_audiences = decoded
+                        .aud
+                        .iter()
+                        .filter(|audience| {
+                            realm_config
+                                .protocols
+                                .oauth
+                                .resource_servers
+                                .iter()
+                                .any(|server| {
+                                    *audience == &server.audience
+                                        && server
+                                            .token_exchange_requester_client_ids
+                                            .iter()
+                                            .any(|client_id| client_id == &client.client_id)
+                                })
+                        })
+                        .map(|audience| audience.to_string())
+                        .collect::<Vec<_>>();
+                    if allowed_audiences.is_empty() {
+                        return Err(QidError::BadRequest {
+                            message: "subject_token is not owned by the exchange client or targeted to a resource server authorizing this requester for token exchange".to_string(),
+                        });
+                    }
+                    exchange_allowed_audiences = Some(allowed_audiences);
                 }
                 subject_token_scopes = Some(
                     decoded
@@ -608,6 +624,15 @@ async fn advanced_subject_grant<R: Repository>(
         &scopes,
         token_cnf,
     )?;
+    if let Some(allowed_audiences) = &exchange_allowed_audiences
+        && audiences
+            .iter()
+            .any(|audience| !allowed_audiences.contains(audience))
+    {
+        return Err(QidError::BadRequest {
+            message: "requested audience is not authorized for this token exchange".to_string(),
+        });
+    }
     let (access_token, expires_in) = issue_access_token(
         state,
         &realm.issuer,

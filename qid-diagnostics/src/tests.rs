@@ -229,6 +229,7 @@ fn check_report_covers_policy_pep_metrics_and_keyrings() {
         resources: vec!["https://api.example.com/payments".to_string()],
         scopes: vec!["payments".to_string()],
         introspection_client_ids: vec!["payments-gateway".to_string()],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: true,
         high_risk: true,
     }];
@@ -279,6 +280,7 @@ fn check_report_warns_for_resource_server_policy_gaps() {
             resources: vec!["https://api.example.com/open".to_string()],
             scopes: Vec::new(),
             introspection_client_ids: Vec::new(),
+            token_exchange_requester_client_ids: Vec::new(),
             require_sender_constraint: false,
             high_risk: false,
         },
@@ -287,6 +289,7 @@ fn check_report_warns_for_resource_server_policy_gaps() {
             resources: vec!["https://api.example.com/payments".to_string()],
             scopes: vec!["payments".to_string()],
             introspection_client_ids: Vec::new(),
+            token_exchange_requester_client_ids: Vec::new(),
             require_sender_constraint: false,
             high_risk: true,
         },
@@ -605,6 +608,7 @@ fn high_risk_mfa_requires_an_enabled_factor() {
             resources: vec!["https://api.example.com/payments".to_string()],
             scopes: vec!["payments".to_string()],
             introspection_client_ids: Vec::new(),
+            token_exchange_requester_client_ids: Vec::new(),
             require_sender_constraint: false,
             high_risk: true,
         }];

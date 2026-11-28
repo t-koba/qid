@@ -98,6 +98,7 @@ fn test_server(
         resources: vec![format!("https://api.example.com/{name}")],
         scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
         introspection_client_ids: vec![introspection_client.to_string()],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: false,
         high_risk: false,
     }

@@ -186,6 +186,7 @@ fn explain_json_includes_client_token_pep_claim_and_audit_fields() {
         resources: vec!["https://api.example.com/payments".to_string()],
         scopes: vec!["payments".to_string()],
         introspection_client_ids: vec!["payments-gateway".to_string()],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: true,
         high_risk: true,
     }];
@@ -376,6 +377,7 @@ fn explain_json_reports_fapi_profile_obligations_and_realm_status() {
         resources: vec!["https://api.example.com/payments".to_string()],
         scopes: vec!["payments".to_string()],
         introspection_client_ids: vec!["payments-gateway".to_string()],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: true,
         high_risk: true,
     }];

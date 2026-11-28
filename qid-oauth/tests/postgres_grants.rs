@@ -96,6 +96,7 @@ async fn grant_flow(repo: Arc<SqlRepository>, ciba: bool) {
         resources: vec!["https://api.example.com/bound".into()],
         scopes: vec!["read".into(), "openid".into()],
         introspection_client_ids: vec![],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: true,
         high_risk: false,
     }];

@@ -893,6 +893,7 @@ fn oauth_resource_server_config_rejects_duplicates() {
             resources: vec!["https://api.example.com/payments".to_string()],
             scopes: vec!["payments".to_string()],
             introspection_client_ids: Vec::new(),
+            token_exchange_requester_client_ids: Vec::new(),
             require_sender_constraint: true,
             high_risk: true,
         },
@@ -901,6 +902,7 @@ fn oauth_resource_server_config_rejects_duplicates() {
             resources: vec!["https://api.example.com/refunds".to_string()],
             scopes: vec!["refunds".to_string()],
             introspection_client_ids: Vec::new(),
+            token_exchange_requester_client_ids: Vec::new(),
             require_sender_constraint: false,
             high_risk: false,
         },
@@ -923,6 +925,29 @@ fn oauth_resource_server_config_rejects_duplicates() {
         vec!["gateway".to_string(), "gateway".to_string()];
     let err = config.validate().unwrap_err();
     assert!(err.message().contains("duplicate introspection client id"));
+}
+
+#[test]
+fn oauth_resource_server_requester_allowlist_defaults_to_empty() {
+    let yaml = r#"
+server:
+  listen: "127.0.0.1:8443"
+  public_base_url: "https://id.example.com"
+realms:
+  - id: corp
+    issuer: "https://id.example.com/realms/corp"
+    protocols:
+      oauth:
+        resource_servers:
+          - audience: "api://payments"
+"#;
+    let config: QidConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
+    config.validate().unwrap();
+    assert!(
+        config.realms[0].protocols.oauth.resource_servers[0]
+            .token_exchange_requester_client_ids
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1051,6 +1076,7 @@ fn deployment_profiles_enforce_required_capabilities() {
         resources: vec!["https://api.example.com/payments".to_string()],
         scopes: vec!["payments".to_string()],
         introspection_client_ids: vec!["payments-gateway".to_string()],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: true,
         high_risk: true,
     }];
@@ -3154,6 +3180,7 @@ fn vc_profile_requires_issuer_key_reference_without_capability_switches() {
         resources: vec!["https://id.example.com/vc/v1".into()],
         scopes: vec!["qid_identity".into()],
         introspection_client_ids: Vec::new(),
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: true,
         high_risk: false,
     }];

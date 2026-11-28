@@ -232,6 +232,7 @@ fn test_server(
         resources: vec![format!("https://api.example.com/{name}")],
         scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
         introspection_client_ids: vec![introspection_client.to_string()],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: false,
         high_risk: false,
     }
@@ -243,6 +244,7 @@ fn unrestricted_server(audience: &str, resources: &[&str]) -> OAuthResourceServe
         resources: resources.iter().map(|value| (*value).to_string()).collect(),
         scopes: Vec::new(),
         introspection_client_ids: Vec::new(),
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: false,
         high_risk: false,
     }
@@ -1298,11 +1300,15 @@ async fn token_exchange_rejects_scope_outside_subject_token_scopes() {
 #[tokio::test]
 async fn token_exchange_accepts_subject_targeted_to_registered_resource_server() {
     let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers = vec![test_server(
+    // Cross-client exchange requires an explicit requester grant on the
+    // subject token's resource server, not just audience registration.
+    let mut target = test_server(
         "api://exchange-target",
         &["read", "write"],
         "introspection-client",
-    )];
+    );
+    target.token_exchange_requester_client_ids = vec!["exchange-client".to_string()];
+    config.realms[0].protocols.oauth.resource_servers = vec![target];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let subject_token = mint_access_token(
@@ -1332,10 +1338,140 @@ async fn token_exchange_accepts_subject_targeted_to_registered_resource_server()
 }
 
 #[tokio::test]
+async fn token_exchange_requires_explicit_requester_grant_for_cross_client_subject() {
+    let mut config = test_helpers::test_config();
+    let mut target = test_server(
+        "api://exchange-target",
+        &["read", "write"],
+        "introspection-client",
+    );
+    target.token_exchange_requester_client_ids = vec!["exchange-client".to_string()];
+    config.realms[0].protocols.oauth.resource_servers = vec![target];
+    let (app, token_path, state) = setup_with_config(config).await;
+    state
+        .repo
+        .create_client(&token_exchange_client("unauthorized-exchange-client"))
+        .await
+        .unwrap();
+
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=read%20write&resource=https%3A%2F%2Fapi.example.com%2Fexchange-target",
+    )
+    .await;
+    let subject_claims = decode_claims(&state, &subject_token);
+    assert_eq!(subject_claims.aud_primary(), Some("api://exchange-target"));
+
+    // The same subject token and audience: a client with the token-exchange
+    // grant but no requester allowlist entry cannot use it.
+    let response = post_form(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=unauthorized-exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://exchange-target&scope=read",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("authorizing this requester"),
+        "{body}"
+    );
+
+    // The explicitly granted requester succeeds with the same input.
+    let json = post_token_json(
+        app,
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://exchange-target&scope=read",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    let claims = decode_claims(&state, json["access_token"].as_str().unwrap());
+    assert_eq!(claims.sub.as_deref(), Some("service:service-client"));
+    assert_eq!(claims.aud_primary(), Some("api://exchange-target"));
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_audience_broadening_by_authorized_requester() {
+    let mut config = test_helpers::test_config();
+    let mut target = test_server("api://exchange-target", &["read"], "introspection-client");
+    let mut other = test_server(
+        "api://unauthorized-target",
+        &["read"],
+        "introspection-client",
+    );
+    for server in [&mut target, &mut other] {
+        server.token_exchange_requester_client_ids = vec!["exchange-client".to_string()];
+    }
+    config.realms[0].protocols.oauth.resource_servers = vec![target, other];
+    let (app, token_path, _) = setup_with_config(config).await;
+
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=read&resource=https%3A%2F%2Fapi.example.com%2Fexchange-target",
+    )
+    .await;
+
+    // Requesting an audience not carried by the subject token fails even
+    // though this requester is allowlisted for both resource servers.
+    let response = post_form(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api%3A%2F%2Funauthorized-target&scope=read",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("requested audience is not authorized"),
+        "{body}"
+    );
+
+    // A resource indicator resolves to the extra audience after audience
+    // resolution, so it must not widen the grant either.
+    let response = post_form(
+        app,
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&resource=https%3A%2F%2Fapi.example.com%2Funauthorized-target&scope=read",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("requested audience is not authorized"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn token_exchange_with_actor_token_emits_actor_claim() {
     let mut config = test_helpers::test_config();
-    config.realms[0].protocols.oauth.resource_servers =
-        vec![test_server("api://delegated", &[], "introspection-client")];
+    let mut delegated = test_server("api://delegated", &[], "introspection-client");
+    // The subject token belongs to service-client; exchange-client needs an
+    // explicit grant for this audience.
+    delegated.token_exchange_requester_client_ids = vec!["exchange-client".to_string()];
+    config.realms[0].protocols.oauth.resource_servers = vec![delegated];
     let (app, token_path, state) = setup_with_config(config).await;
 
     let subject_request = Request::builder()
@@ -1515,6 +1651,7 @@ async fn client_credentials_rejects_scope_outside_any_target_ceiling() {
                 resources: Vec::new(),
                 scopes: vec!["read".to_string()],
                 introspection_client_ids: Vec::new(),
+                token_exchange_requester_client_ids: Vec::new(),
                 require_sender_constraint: false,
                 high_risk: false,
             },
@@ -1523,6 +1660,7 @@ async fn client_credentials_rejects_scope_outside_any_target_ceiling() {
                 resources: Vec::new(),
                 scopes: vec!["admin".to_string()],
                 introspection_client_ids: Vec::new(),
+                token_exchange_requester_client_ids: Vec::new(),
                 require_sender_constraint: false,
                 high_risk: false,
             },

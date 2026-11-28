@@ -87,6 +87,7 @@ async fn bearer_access_requests_require_the_realm_audience_and_exact_scope_befor
             resources: vec![],
             scopes: vec![SCOPE.into()],
             introspection_client_ids: vec![],
+            token_exchange_requester_client_ids: Vec::new(),
             require_sender_constraint: false,
             high_risk: false,
         }];
@@ -230,6 +231,7 @@ async fn authorization_code_user_token_can_request_iga_access() {
         resources: vec![AUDIENCE.into()],
         scopes: vec![SCOPE.into()],
         introspection_client_ids: vec![],
+        token_exchange_requester_client_ids: Vec::new(),
         require_sender_constraint: false,
         high_risk: false,
     }];

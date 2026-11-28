@@ -76,6 +76,8 @@ realms:
             introspection_client_ids:
               - frontdoor-api
               - orders-worker
+            token_exchange_requester_client_ids:
+              - frontdoor-api
             require_sender_constraint: true
     policy:
       default_decision: deny

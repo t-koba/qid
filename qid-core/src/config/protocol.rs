@@ -272,6 +272,10 @@ pub struct OAuthResourceServerConfig {
     pub scopes: Vec<String>,
     #[serde(default)]
     pub introspection_client_ids: Vec<String>,
+    /// Clients explicitly allowed to exchange access tokens targeted to this
+    /// audience. Defaults to an empty allowlist (no cross-client exchange).
+    #[serde(default)]
+    pub token_exchange_requester_client_ids: Vec<String>,
     #[serde(default)]
     pub require_sender_constraint: bool,
     #[serde(default)]

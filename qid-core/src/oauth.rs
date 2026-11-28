@@ -450,6 +450,7 @@ mod tests {
                 resources: vec!["https://api.example.com/payments".to_string()],
                 scopes: vec!["payments".to_string()],
                 introspection_client_ids: Vec::new(),
+                token_exchange_requester_client_ids: Vec::new(),
                 require_sender_constraint: false,
                 high_risk: true,
             },
@@ -458,6 +459,7 @@ mod tests {
                 resources: vec!["https://api.example.com/profile".to_string()],
                 scopes: vec!["profile".to_string()],
                 introspection_client_ids: Vec::new(),
+                token_exchange_requester_client_ids: Vec::new(),
                 require_sender_constraint: false,
                 high_risk: false,
             },
@@ -576,6 +578,7 @@ mod tests {
             resources: Vec::new(),
             scopes: scopes.into_iter().map(str::to_string).collect(),
             introspection_client_ids: Vec::new(),
+            token_exchange_requester_client_ids: Vec::new(),
             require_sender_constraint: false,
             high_risk: false,
         }

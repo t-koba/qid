@@ -1,6 +1,6 @@
 use axum::{
     Form, Json,
-    extract::State,
+    extract::{State, rejection::FormRejection},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{AUTHORIZATION, CACHE_CONTROL, PRAGMA, WWW_AUTHENTICATE},
@@ -28,9 +28,17 @@ use super::{
 pub async fn token<R: Repository>(
     State(state): State<Arc<SharedState<R>>>,
     headers: HeaderMap,
-    Form(req): Form<TokenRequest>,
+    form: Result<Form<TokenRequest>, FormRejection>,
 ) -> Response {
-    let mut response = token_response(&state, &headers, &req).await;
+    let mut response = match form {
+        Ok(Form(req)) => token_response(&state, &headers, &req).await,
+        Err(_) => token_error_response(
+            &state,
+            &headers,
+            TokenEndpointError::malformed("token form extraction failed"),
+            false,
+        ),
+    };
     let response_headers = response.headers_mut();
     response_headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response_headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));

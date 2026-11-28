@@ -1562,6 +1562,29 @@ async fn token_unsupported_grant_type_uses_rfc_error_code() {
 }
 
 #[tokio::test]
+async fn token_missing_grant_type_form_is_invalid_request() {
+    let (app, token_path, _, db) = setup().await;
+    let response = post_form(
+        app,
+        &token_path,
+        "client_id=service-client&client_secret=secret",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_no_store_headers(&response);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(body.get("access_token").is_none());
+
+    db.close().await;
+}
+
+#[tokio::test]
 async fn token_missing_client_id_is_invalid_request() {
     let (app, token_path, _, db) = setup().await;
     let response = post_form(

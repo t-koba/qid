@@ -1553,3 +1553,11 @@ async fn client_delete_ends_access_tokens_holds_in_both_backends() {
     let file = support::file_repo("ownership-contract-client-delete-access").await;
     support::assert_client_delete_ends_access_tokens(&file).await;
 }
+
+#[tokio::test]
+async fn client_delete_ends_pending_grants_holds_in_both_backends() {
+    let sql = support::sql_repo().await;
+    support::assert_client_delete_ends_pending_grants(&sql).await;
+    let file = support::file_repo("ownership-contract-client-delete-pending").await;
+    support::assert_client_delete_ends_pending_grants(&file).await;
+}

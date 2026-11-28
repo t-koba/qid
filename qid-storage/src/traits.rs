@@ -167,10 +167,12 @@ pub trait ClientRepository: Send + Sync + 'static {
         offset: usize,
         limit: usize,
     ) -> QidResult<Vec<Client>>;
-    /// Delete only a client in this realm and revoke the refresh families and
-    /// access tokens that use its public client id in the same realm; records
-    /// stay for audit. A missing or foreign ID is a no-op that leaves those
-    /// credentials live. Other clients, realms and later grants are unaffected.
+    /// Delete only a client in this realm and end the credentials and pending
+    /// grants that use its public client id in the same realm: refresh families
+    /// and access tokens are revoked, while authorization codes and PAR requests
+    /// are marked used and device and CIBA grants are marked consumed. Records
+    /// stay for audit. A missing or foreign ID is a no-op that leaves them live.
+    /// Other clients, realms and later grants are unaffected.
     async fn delete_client(&self, realm_id: &RealmId, id: &str) -> QidResult<()>;
 }
 

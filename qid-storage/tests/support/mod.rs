@@ -4,15 +4,15 @@
 use qid_core::error::QidError;
 use qid_core::models::{
     AccessToken, Admin, AdminApproval, AdminElevation, AuditEvent, AuditRetentionConfig,
-    BackchannelAuthenticationGrant, CiamBrand, CiamConsentGrant, CiamIdentityLink,
-    CiamProgressiveProfile, CiamVerificationChallengeRecord, Client, ClientType, CustomDomain,
-    DelegatedTenantAdmin, Device, DeviceAuthorizationGrant, FedCmIdentity, IgaAccessGrantRecord,
-    IgaAccessRequestRecord, IgaAccessReviewCampaignRecord, IgaAccessReviewDecisionRecord,
-    IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord, IgaJitPrivilegeGrantRecord,
-    MarketplaceConnector, MarketplaceConnectorType, ParRequest, PasswordResetToken, PolicyBundle,
-    RelationshipTuple, ServiceAccount, Session, TokenFamily, TokenFormat, TotpCredential,
-    UsageBillingEvent, User, VcCredentialStatusRecord, WebAuthnCredential, WorkloadCertificate,
-    WorkloadIdentity,
+    AuthorizationCode, BackchannelAuthenticationGrant, CiamBrand, CiamConsentGrant,
+    CiamIdentityLink, CiamProgressiveProfile, CiamVerificationChallengeRecord, Client, ClientType,
+    CustomDomain, DelegatedTenantAdmin, Device, DeviceAuthorizationGrant, FedCmIdentity,
+    IgaAccessGrantRecord, IgaAccessRequestRecord, IgaAccessReviewCampaignRecord,
+    IgaAccessReviewDecisionRecord, IgaApprovalRecord, IgaCertificationRecord, IgaFindingRecord,
+    IgaJitPrivilegeGrantRecord, MarketplaceConnector, MarketplaceConnectorType, ParRequest,
+    PasswordResetToken, PolicyBundle, RelationshipTuple, ServiceAccount, Session, TokenFamily,
+    TokenFormat, TotpCredential, UsageBillingEvent, User, VcCredentialStatusRecord,
+    WebAuthnCredential, WorkloadCertificate, WorkloadIdentity,
 };
 use qid_core::tenant::{RealmId, TenantId};
 use qid_storage::{FileRepository, SqlRepository, SsfStreamRecord, prelude::*};
@@ -6568,6 +6568,407 @@ where
         assert!(
             !revoked(repo, &token.jti).await,
             "an unrelated access token must stay live after client deletion"
+        );
+    }
+}
+
+/// Deleting a registration ends only the pending grants and PAR requests
+/// bound to its public client id in its realm. Records stay for audit, and a
+/// recreated public id cannot inherit the old registration's used state.
+pub async fn assert_client_delete_ends_pending_grants<R>(repo: &R)
+where
+    R: RealmRepository + UserRepository + ClientRepository + TokenRepository,
+{
+    let realm = RealmId::from("realm-client-delete-pending");
+    let other_realm = RealmId::from("realm-client-delete-pending-other");
+    for (owner, id, issuer) in [
+        (
+            "tenant-client-delete-pending",
+            &realm,
+            "https://client-delete-pending.example.com",
+        ),
+        (
+            "tenant-client-delete-pending-other",
+            &other_realm,
+            "https://client-delete-pending-other.example.com",
+        ),
+    ] {
+        repo.create_realm(&TenantId::from(owner), id, issuer, None)
+            .await
+            .expect("create pending grant delete realm failed");
+    }
+    for (id, realm_id) in [
+        ("client-delete-pending-user", realm.as_str()),
+        ("client-delete-pending-user-other", other_realm.as_str()),
+    ] {
+        repo.create_user(&User {
+            id: id.into(),
+            realm_id: realm_id.into(),
+            email: None,
+            email_verified: false,
+            display_name: None,
+            failed_login_attempts: 0,
+            locked_until: None,
+            org: None,
+        })
+        .await
+        .expect("create pending grant delete user failed");
+    }
+
+    let old = sample_cross_realm_client(
+        "client-delete-pending-old",
+        realm.as_str(),
+        "reused-pending-app",
+    );
+    let neighbour = sample_cross_realm_client(
+        "client-delete-pending-neighbour",
+        realm.as_str(),
+        "other-pending-app",
+    );
+    let across = sample_cross_realm_client(
+        "client-delete-pending-across",
+        other_realm.as_str(),
+        "reused-pending-app",
+    );
+    for client in [&old, &neighbour, &across] {
+        repo.create_client(client)
+            .await
+            .expect("create client for pending grant delete contract failed");
+    }
+
+    fn code(hash: &str, realm_id: &str, client_id: &str, user_id: &str) -> AuthorizationCode {
+        AuthorizationCode {
+            code_hash: hash.into(),
+            client_id: client_id.into(),
+            user_id: user_id.into(),
+            realm_id: realm_id.into(),
+            redirect_uri: "https://app.example.com/callback".into(),
+            state: None,
+            nonce: None,
+            auth_time: None,
+            acr: None,
+            amr: Vec::new(),
+            code_challenge: None,
+            code_challenge_method: None,
+            scopes: vec!["openid".into()],
+            resource: Vec::new(),
+            authorization_details: None,
+            expires_at: 9_999_999_999,
+            used: false,
+            created_at: 100,
+            session_id: None,
+        }
+    }
+    fn device(
+        hash: &str,
+        realm_id: &str,
+        client_id: &str,
+        user_id: &str,
+    ) -> DeviceAuthorizationGrant {
+        DeviceAuthorizationGrant {
+            device_code_hash: hash.into(),
+            user_code: hash.into(),
+            client_id: client_id.into(),
+            realm_id: realm_id.into(),
+            scopes: vec!["openid".into()],
+            resource: Vec::new(),
+            audience: Vec::new(),
+            user_id: Some(user_id.into()),
+            expires_at: 9_999_999_999,
+            approved_at: Some(100),
+            consumed: false,
+            last_poll_at: None,
+            poll_interval_seconds: 5,
+            created_at: 100,
+        }
+    }
+    fn ciba(
+        hash: &str,
+        realm_id: &str,
+        client_id: &str,
+        user_id: &str,
+    ) -> BackchannelAuthenticationGrant {
+        BackchannelAuthenticationGrant {
+            auth_req_id_hash: hash.into(),
+            client_id: client_id.into(),
+            realm_id: realm_id.into(),
+            login_hint: user_id.into(),
+            binding_message: None,
+            scopes: vec!["openid".into()],
+            resource: Vec::new(),
+            audience: Vec::new(),
+            user_id: Some(user_id.into()),
+            expires_at: 9_999_999_999,
+            approved_at: Some(100),
+            consumed: false,
+            last_poll_at: None,
+            poll_interval_seconds: 5,
+            created_at: 100,
+        }
+    }
+    fn par(uri: &str, realm_id: &str, client_id: &str) -> ParRequest {
+        ParRequest {
+            request_uri: uri.into(),
+            client_id: client_id.into(),
+            realm_id: realm_id.into(),
+            params_json: serde_json::json!({"scope": "openid"}),
+            expires_at: 9_999_999_999,
+            used: false,
+            created_at: 100,
+        }
+    }
+
+    // Each bundle holds (authorization code, device grant, CIBA grant, PAR).
+    let old_grants = (
+        code(
+            "code-client-delete-pending-old",
+            realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user",
+        ),
+        device(
+            "device-client-delete-pending-old",
+            realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user",
+        ),
+        ciba(
+            "ciba-client-delete-pending-old",
+            realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user",
+        ),
+        par(
+            "urn:qid:par:client-delete-pending-old",
+            realm.as_str(),
+            "reused-pending-app",
+        ),
+    );
+    let neighbour_grants = (
+        code(
+            "code-client-delete-pending-neighbour",
+            realm.as_str(),
+            "other-pending-app",
+            "client-delete-pending-user",
+        ),
+        device(
+            "device-client-delete-pending-neighbour",
+            realm.as_str(),
+            "other-pending-app",
+            "client-delete-pending-user",
+        ),
+        ciba(
+            "ciba-client-delete-pending-neighbour",
+            realm.as_str(),
+            "other-pending-app",
+            "client-delete-pending-user",
+        ),
+        par(
+            "urn:qid:par:client-delete-pending-neighbour",
+            realm.as_str(),
+            "other-pending-app",
+        ),
+    );
+    let across_grants = (
+        code(
+            "code-client-delete-pending-across",
+            other_realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user-other",
+        ),
+        device(
+            "device-client-delete-pending-across",
+            other_realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user-other",
+        ),
+        ciba(
+            "ciba-client-delete-pending-across",
+            other_realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user-other",
+        ),
+        par(
+            "urn:qid:par:client-delete-pending-across",
+            other_realm.as_str(),
+            "reused-pending-app",
+        ),
+    );
+    for bundle in [&old_grants, &neighbour_grants, &across_grants] {
+        repo.create_authorization_code(&bundle.0)
+            .await
+            .expect("store authorization code failed");
+        repo.store_device_authorization_grant(&bundle.1)
+            .await
+            .expect("store device grant failed");
+        repo.store_backchannel_authentication_grant(&bundle.2)
+            .await
+            .expect("store CIBA grant failed");
+        repo.store_par_request(&bundle.3)
+            .await
+            .expect("store PAR request failed");
+    }
+
+    async fn used<R: TokenRepository>(
+        repo: &R,
+        bundle: &(
+            AuthorizationCode,
+            DeviceAuthorizationGrant,
+            BackchannelAuthenticationGrant,
+            ParRequest,
+        ),
+    ) -> [bool; 4] {
+        [
+            repo.get_authorization_code(&bundle.0.code_hash)
+                .await
+                .expect("get authorization code failed")
+                .expect("authorization code must remain stored")
+                .used,
+            repo.get_device_authorization_grant(&bundle.1.device_code_hash)
+                .await
+                .expect("get device grant failed")
+                .expect("device grant must remain stored")
+                .consumed,
+            repo.get_backchannel_authentication_grant(&bundle.2.auth_req_id_hash)
+                .await
+                .expect("get CIBA grant failed")
+                .expect("CIBA grant must remain stored")
+                .consumed,
+            repo.get_par_request(&bundle.3.request_uri)
+                .await
+                .expect("get PAR request failed")
+                .expect("PAR request must remain stored")
+                .used,
+        ]
+    }
+
+    for (name, bundle) in [
+        ("old", &old_grants),
+        ("neighbour", &neighbour_grants),
+        ("across", &across_grants),
+    ] {
+        assert_eq!(
+            used(repo, bundle).await,
+            [false; 4],
+            "{name} pending grants must be live before deletion"
+        );
+    }
+
+    // A registration under a different realm, or no registration at all,
+    // cannot end another client's pending grants.
+    repo.delete_client(&other_realm, &old.id)
+        .await
+        .expect("foreign-realm client delete must be a no-op");
+    repo.delete_client(&realm, "missing-client-delete-pending")
+        .await
+        .expect("missing client delete must be a no-op");
+    for (name, bundle) in [
+        ("old", &old_grants),
+        ("neighbour", &neighbour_grants),
+        ("across", &across_grants),
+    ] {
+        assert_eq!(
+            used(repo, bundle).await,
+            [false; 4],
+            "a no-op delete must not end {name} pending grants"
+        );
+    }
+
+    repo.delete_client(&realm, &old.id)
+        .await
+        .expect("delete client registration failed");
+    assert_eq!(
+        used(repo, &old_grants).await,
+        [true; 4],
+        "deletion must end the old client's pending grants and PAR"
+    );
+    // The records themselves, including their bindings and scopes, survive.
+    let retained = repo
+        .get_authorization_code(&old_grants.0.code_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.realm_id, realm.as_str());
+    assert_eq!(retained.client_id, "reused-pending-app");
+    assert_eq!(retained.scopes, vec!["openid"]);
+    let retained = repo
+        .get_device_authorization_grant(&old_grants.1.device_code_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.realm_id, realm.as_str());
+    assert_eq!(retained.client_id, "reused-pending-app");
+    let retained = repo
+        .get_backchannel_authentication_grant(&old_grants.2.auth_req_id_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.realm_id, realm.as_str());
+    assert_eq!(retained.client_id, "reused-pending-app");
+    let retained = repo
+        .get_par_request(&old_grants.3.request_uri)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.realm_id, realm.as_str());
+    assert_eq!(retained.client_id, "reused-pending-app");
+
+    let replacement = sample_cross_realm_client(
+        "client-delete-pending-new",
+        realm.as_str(),
+        "reused-pending-app",
+    );
+    repo.create_client(&replacement)
+        .await
+        .expect("recreate client with the same public id failed");
+    let fresh = (
+        code(
+            "code-client-delete-pending-fresh",
+            realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user",
+        ),
+        device(
+            "device-client-delete-pending-fresh",
+            realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user",
+        ),
+        ciba(
+            "ciba-client-delete-pending-fresh",
+            realm.as_str(),
+            "reused-pending-app",
+            "client-delete-pending-user",
+        ),
+        par(
+            "urn:qid:par:client-delete-pending-fresh",
+            realm.as_str(),
+            "reused-pending-app",
+        ),
+    );
+    for bundle in [&fresh] {
+        repo.create_authorization_code(&bundle.0)
+            .await
+            .expect("store fresh authorization code failed");
+        repo.store_device_authorization_grant(&bundle.1)
+            .await
+            .expect("store fresh device grant failed");
+        repo.store_backchannel_authentication_grant(&bundle.2)
+            .await
+            .expect("store fresh CIBA grant failed");
+        repo.store_par_request(&bundle.3)
+            .await
+            .expect("store fresh PAR request failed");
+    }
+    for (name, bundle) in [
+        ("fresh", &fresh),
+        ("neighbour", &neighbour_grants),
+        ("across", &across_grants),
+    ] {
+        assert_eq!(
+            used(repo, bundle).await,
+            [false; 4],
+            "{name} pending grants must stay live after deletion"
         );
     }
 }

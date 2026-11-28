@@ -195,6 +195,10 @@ impl ClientRepository for SqlRepository {
             for statement in [
                 "UPDATE token_families SET revoked = 1 WHERE realm_id = $1 AND client_id = $2",
                 "UPDATE access_tokens SET revoked = 1 WHERE realm_id = $1 AND client_id = $2",
+                "UPDATE authorization_codes SET used = 1 WHERE realm_id = $1 AND client_id = $2",
+                "UPDATE device_authorization_grants SET consumed = 1 WHERE realm_id = $1 AND client_id = $2",
+                "UPDATE backchannel_authentication_grants SET consumed = 1 WHERE realm_id = $1 AND client_id = $2",
+                "UPDATE par_requests SET used = 1 WHERE realm_id = $1 AND client_id = $2",
             ] {
                 sqlx::query(statement)
                     .bind(realm_id.as_str())

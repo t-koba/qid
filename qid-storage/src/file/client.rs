@@ -95,6 +95,20 @@ impl ClientRepository for FileRepository {
                     token.revoked |=
                         token.realm_id == realm_id.as_str() && token.client_id == client_id;
                 }
+                for code in store.authorization_codes.values_mut() {
+                    code.used |= code.realm_id == realm_id.as_str() && code.client_id == client_id;
+                }
+                for grant in store.device_authorization_grants.values_mut() {
+                    grant.consumed |=
+                        grant.realm_id == realm_id.as_str() && grant.client_id == client_id;
+                }
+                for grant in store.backchannel_authentication_grants.values_mut() {
+                    grant.consumed |=
+                        grant.realm_id == realm_id.as_str() && grant.client_id == client_id;
+                }
+                for par in store.par_requests.values_mut() {
+                    par.used |= par.realm_id == realm_id.as_str() && par.client_id == client_id;
+                }
                 store.clients.remove(id);
             }
         })

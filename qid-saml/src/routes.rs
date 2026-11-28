@@ -5,17 +5,18 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use qid_core::{models::Session, state::SharedState};
+use qid_core::{config::SamlServiceProviderConfig, models::Session, state::SharedState};
 use qid_http::extract_cookie;
 use qid_storage::prelude::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
-    ARTIFACT_BINDING, EMAIL_NAME_ID_FORMAT, SamlBrowserSubject, SamlPostBindingForm,
-    SamlRelayStatePolicy, bind_session_index_to_sp, build_assertion_request_from_authn,
-    build_saml_logout_post_response, build_saml_logout_response, build_saml_post_response,
-    build_saml_response, parse_post_binding_authn_request, parse_post_binding_logout_request,
+    ARTIFACT_BINDING, EMAIL_NAME_ID_FORMAT, PERSISTENT_NAME_ID_FORMAT, SamlBrowserSubject,
+    SamlPostBindingForm, SamlRelayStatePolicy, bind_session_index_to_sp,
+    build_assertion_request_from_authn, build_saml_logout_post_response,
+    build_saml_logout_response, build_saml_post_response, build_saml_response,
+    parse_post_binding_authn_request, parse_post_binding_logout_request,
     resolve_session_index_for_sp, service_provider_from_config, subject_from_browser_session,
     validate_authn_request_for_sp, validate_logout_request_for_sp,
 };
@@ -39,6 +40,20 @@ async fn revoke_logout_session<R: SessionRepository>(
     #[cfg(test)]
     logout_tests::record_revoke_scope(realm_scope);
     repo.revoke_session(session_id, realm_scope).await
+}
+
+/// NameID formats advertised in realm metadata. Email is always supported;
+/// persistent is advertised when any configured SP can request it.
+fn metadata_name_id_formats(providers: &[SamlServiceProviderConfig]) -> Vec<&'static str> {
+    let mut formats = vec![EMAIL_NAME_ID_FORMAT];
+    if providers.iter().any(|sp| {
+        sp.name_id_formats
+            .iter()
+            .any(|format| format == PERSISTENT_NAME_ID_FORMAT)
+    }) {
+        formats.push(PERSISTENT_NAME_ID_FORMAT);
+    }
+    formats
 }
 
 async fn metadata<R: Repository>(
@@ -69,11 +84,16 @@ async fn metadata<R: Repository>(
         urlencoding::encode(&realm),
     );
     let metadata_id = format!("metadata-{}", ulid::Ulid::new());
+    let name_id_formats = metadata_name_id_formats(&realm_config.protocols.saml.service_providers)
+        .iter()
+        .map(|format| format!("    <NameIDFormat>{format}</NameIDFormat>"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" ID="{metadata_id}" entityID="{entity_id}">
   <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol" WantAuthnRequestsSigned="true">
-    <NameIDFormat>{EMAIL_NAME_ID_FORMAT}</NameIDFormat>
+{name_id_formats}
     <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{sso_url}"/>
     <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Artifact" Location="{sso_url}"/>
     <SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{slo_url}"/>
@@ -990,7 +1010,50 @@ fn artifact_error_soap(in_response_to: &str, issuer: &str, error_message: String
 
 #[cfg(test)]
 mod tests {
-    use qid_core::jwt::{JwtClaims, Signer, TokenData};
+    use qid_core::{
+        config::SamlServiceProviderConfig,
+        jwt::{JwtClaims, Signer, TokenData},
+    };
+
+    fn sp_with_formats(formats: &[&str]) -> SamlServiceProviderConfig {
+        SamlServiceProviderConfig {
+            entity_id: "https://sp.example".to_string(),
+            acs_url: "https://sp.example/acs".to_string(),
+            name_id_formats: formats.iter().map(|format| (*format).to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn metadata_advertises_formats_the_realm_can_issue() {
+        assert_eq!(
+            super::metadata_name_id_formats(&[]),
+            vec![super::EMAIL_NAME_ID_FORMAT]
+        );
+        assert_eq!(
+            super::metadata_name_id_formats(&[sp_with_formats(&[super::EMAIL_NAME_ID_FORMAT])]),
+            vec![super::EMAIL_NAME_ID_FORMAT]
+        );
+        assert_eq!(
+            super::metadata_name_id_formats(&[sp_with_formats(&[
+                super::PERSISTENT_NAME_ID_FORMAT
+            ])]),
+            vec![
+                super::EMAIL_NAME_ID_FORMAT,
+                super::PERSISTENT_NAME_ID_FORMAT
+            ]
+        );
+        assert_eq!(
+            super::metadata_name_id_formats(&[
+                sp_with_formats(&[super::EMAIL_NAME_ID_FORMAT]),
+                sp_with_formats(&[super::PERSISTENT_NAME_ID_FORMAT]),
+            ]),
+            vec![
+                super::EMAIL_NAME_ID_FORMAT,
+                super::PERSISTENT_NAME_ID_FORMAT
+            ]
+        );
+    }
 
     pub(super) struct TestSigner;
 

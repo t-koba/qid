@@ -376,9 +376,10 @@ async fn advanced_subject_grant<R: Repository>(
             resource: format!("realm {}", realm.id),
         })?;
     let mut subject_token_scopes: Option<Vec<String>> = None;
-    // Audiences of an access-token subject whose resource server explicitly
-    // authorizes the requesting client. `None` keeps self-exchange unrestricted.
-    let mut exchange_allowed_audiences: Option<Vec<String>> = None;
+    // Every audience of an access-token subject is a ceiling on the exchanged
+    // token, including for self-exchange. `None` means the subject is not an
+    // access token and has no audience ceiling.
+    let mut subject_audience_ceiling: Option<Vec<String>> = None;
     let mut subject_user = User {
         id: format!(
             "{}:{}",
@@ -413,32 +414,30 @@ async fn advanced_subject_grant<R: Repository>(
                         message: "subject_token realm does not match client realm".to_string(),
                     });
                 }
+                subject_audience_ceiling = Some(decoded.aud.clone());
                 if decoded.client_id != client.client_id {
-                    let allowed_audiences = decoded
-                        .aud
-                        .iter()
-                        .filter(|audience| {
-                            realm_config
-                                .protocols
-                                .oauth
-                                .resource_servers
-                                .iter()
-                                .any(|server| {
-                                    *audience == &server.audience
-                                        && server
-                                            .token_exchange_requester_client_ids
-                                            .iter()
-                                            .any(|client_id| client_id == &client.client_id)
-                                })
-                        })
-                        .map(|audience| audience.to_string())
-                        .collect::<Vec<_>>();
-                    if allowed_audiences.is_empty() {
+                    // An additional cross-client gate: at least one subject
+                    // audience must belong to a resource server that lists
+                    // this requester.
+                    let requester_is_allowed = decoded.aud.iter().any(|audience| {
+                        realm_config
+                            .protocols
+                            .oauth
+                            .resource_servers
+                            .iter()
+                            .any(|server| {
+                                audience == &server.audience
+                                    && server
+                                        .token_exchange_requester_client_ids
+                                        .iter()
+                                        .any(|client_id| client_id == &client.client_id)
+                            })
+                    });
+                    if !requester_is_allowed {
                         return Err(QidError::BadRequest {
                             message: "subject_token is not owned by the exchange client or targeted to a resource server authorizing this requester for token exchange".to_string(),
                         });
                     }
-                    exchange_allowed_audiences = Some(allowed_audiences);
                 }
                 subject_token_scopes = Some(
                     decoded
@@ -624,10 +623,10 @@ async fn advanced_subject_grant<R: Repository>(
         &scopes,
         token_cnf,
     )?;
-    if let Some(allowed_audiences) = &exchange_allowed_audiences
+    if let Some(subject_audiences) = &subject_audience_ceiling
         && audiences
             .iter()
-            .any(|audience| !allowed_audiences.contains(audience))
+            .any(|audience| !subject_audiences.contains(audience))
     {
         return Err(QidError::BadRequest {
             message: "requested audience is not authorized for this token exchange".to_string(),

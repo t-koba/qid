@@ -1338,6 +1338,88 @@ async fn token_exchange_accepts_subject_targeted_to_registered_resource_server()
 }
 
 #[tokio::test]
+async fn token_exchange_cannot_widen_audience_on_a_second_hop() {
+    let mut config = test_helpers::test_config();
+    let mut first_server = test_server("api://exchange-target", &["read"], "introspection-client");
+    first_server.token_exchange_requester_client_ids = vec!["exchange-client".to_string()];
+    // The second audience is registered and usable by exchange-client, but it
+    // does not allow cross-client exchange of another client's token.
+    let second_server = test_server("api://second-target", &["read"], "introspection-client");
+    config.realms[0].protocols.oauth.resource_servers = vec![first_server, second_server];
+    let (app, token_path, state) = setup_with_config(config).await;
+
+    let subject_token = mint_access_token(
+        app.clone(),
+        &token_path,
+        "grant_type=client_credentials&client_id=service-client&client_secret=secret&scope=read&resource=https%3A%2F%2Fapi.example.com%2Fexchange-target",
+    )
+    .await;
+    let subject_claims = decode_claims(&state, &subject_token);
+    assert_eq!(subject_claims.aud_primary(), Some("api://exchange-target"));
+    assert_eq!(subject_claims.extra["client_id"], "service-client");
+
+    let first_hop = post_form(
+        app.clone(),
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://exchange-target&scope=read",
+            urlencoding::encode(&subject_token)
+        ),
+    )
+    .await;
+    assert_eq!(first_hop.status(), StatusCode::OK);
+    let delegated = json_body(first_hop).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let delegated_claims = decode_claims(&state, &delegated);
+    assert_eq!(
+        delegated_claims.sub.as_deref(),
+        Some("service:service-client")
+    );
+    assert_eq!(
+        delegated_claims.aud_primary(),
+        Some("api://exchange-target")
+    );
+    // The delegated token is now owned by the requester, so the second hop
+    // takes the self-exchange branch. It must still inherit the first token's
+    // audience as its ceiling.
+    assert_eq!(delegated_claims.extra["client_id"], "exchange-client");
+
+    // Prove the second hop really targets a usable audience: exchange-client
+    // can obtain a fresh token for it directly.
+    assert_eq!(
+        post_token_status(
+            app.clone(),
+            &token_path,
+            "grant_type=client_credentials&client_id=exchange-client&client_secret=secret&scope=read&resource=https%3A%2F%2Fapi.example.com%2Fsecond-target".to_string(),
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    let second_hop = post_form(
+        app,
+        &token_path,
+        format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=exchange-client&client_secret=secret&subject_token_type=urn:ietf:params:oauth:token-type:access_token&subject_token={}&audience=api://second-target&scope=read",
+            urlencoding::encode(&delegated)
+        ),
+    )
+    .await;
+    assert_eq!(second_hop.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(second_hop).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("requested audience is not authorized"),
+        "{body}"
+    );
+    assert!(body.get("access_token").is_none());
+}
+
+#[tokio::test]
 async fn token_exchange_requires_explicit_requester_grant_for_cross_client_subject() {
     let mut config = test_helpers::test_config();
     let mut target = test_server(

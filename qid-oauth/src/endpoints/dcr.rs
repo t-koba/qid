@@ -16,7 +16,7 @@ use qid_core::{
 };
 use qid_storage::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use super::{extract_basic_client_auth, oauth_feature_enabled, verify_client_secret};
 
@@ -487,9 +487,10 @@ fn sign_dcr_registration_access_token<R: Repository>(
 
 /// Both registered redirect URIs and post-logout return URIs become browser
 /// navigation targets, so registration applies one shared syntax policy to both.
-fn validate_registered_redirect_uri(uri: &str, field: &str) -> QidResult<()> {
-    match qid_core::oauth::validate_redirect_uri(uri) {
-        Ok(()) => Ok(()),
+/// The checked URL is returned so callers can apply policy without reparsing.
+fn validate_registered_redirect_uri(uri: &str, field: &str) -> QidResult<url::Url> {
+    match qid_core::oauth::validate_redirect_uri_url(uri) {
+        Ok(parsed) => Ok(parsed),
         Err(qid_core::oauth::RedirectUriError::Wildcard) => Err(QidError::BadRequest {
             message: format!("{field} {uri} must not contain wildcards"),
         }),
@@ -505,11 +506,37 @@ fn validate_registered_redirect_uri(uri: &str, field: &str) -> QidResult<()> {
     }
 }
 
+/// OIDC Core §8.1 requires a sector URI for pairwise clients with redirect
+/// URIs on several hosts. qid only checks local syntax: it never fetches the
+/// sector document, so no redirect-URI inclusion or host control is claimed.
+fn validate_sector_identifier_uri(uri: &str) -> QidResult<()> {
+    let parsed = url::Url::parse(uri).map_err(|_| QidError::BadRequest {
+        message: "sector_identifier_uri is not a valid URL".to_string(),
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(QidError::BadRequest {
+            message: "sector_identifier_uri must use https".to_string(),
+        });
+    }
+    if parsed.host().is_none() {
+        return Err(QidError::BadRequest {
+            message: "sector_identifier_uri must have a host".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_dynamic_client_metadata(
     req: &DynamicClientRegistrationRequest,
 ) -> QidResult<DynamicClientMetadata> {
+    let mut redirect_hosts = BTreeSet::new();
     for redirect_uri in &req.redirect_uris {
-        validate_registered_redirect_uri(redirect_uri, "redirect_uri")?;
+        redirect_hosts.insert(
+            validate_registered_redirect_uri(redirect_uri, "redirect_uri")?
+                .host_str()
+                .unwrap_or_default()
+                .to_owned(),
+        );
     }
     for redirect_uri in &req.post_logout_redirect_uris {
         validate_registered_redirect_uri(redirect_uri, "post_logout_redirect_uri")?;
@@ -577,6 +604,13 @@ fn validate_dynamic_client_metadata(
     {
         return Err(QidError::BadRequest {
             message: "unsupported subject_type".to_string(),
+        });
+    }
+    if let Some(uri) = req.sector_identifier_uri.as_deref() {
+        validate_sector_identifier_uri(uri)?;
+    } else if req.subject_type.as_deref() == Some("pairwise") && redirect_hosts.len() > 1 {
+        return Err(QidError::BadRequest {
+            message: "sector_identifier_uri is required for pairwise clients with multiple redirect URI hosts".to_string(),
         });
     }
     Ok(DynamicClientMetadata {
@@ -1142,6 +1176,96 @@ mod tests {
     fn dcr_accepts_public_pairwise_and_default_subject_type() {
         for subject_type in [None, Some("public"), Some("pairwise")] {
             let req = dcr_request_with_subject_type(subject_type);
+            validate_dynamic_client_metadata(&req).unwrap();
+        }
+    }
+
+    fn dcr_request_with_sector_metadata(
+        subject_type: Option<&str>,
+        sector_identifier_uri: Option<&str>,
+        redirect_uris: &[&str],
+    ) -> DynamicClientRegistrationRequest {
+        serde_json::from_value(serde_json::json!({
+            "redirect_uris": redirect_uris,
+            "subject_type": subject_type,
+            "sector_identifier_uri": sector_identifier_uri,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dcr_accepts_https_sector_identifier_uri() {
+        let req = dcr_request_with_sector_metadata(
+            Some("pairwise"),
+            Some("https://sector.example.net/sector.json"),
+            &["https://client.example.com/cb"],
+        );
+        validate_dynamic_client_metadata(&req).unwrap();
+    }
+
+    #[test]
+    fn dcr_rejects_malformed_and_non_https_sector_identifier_uri() {
+        for uri in [
+            "::not-a-url::",
+            "http://sector.example.net/sector.json",
+            "https://",
+        ] {
+            let req = dcr_request_with_sector_metadata(
+                Some("public"),
+                Some(uri),
+                &["https://client.example.com/cb"],
+            );
+            let err = validate_dynamic_client_metadata(&req).unwrap_err();
+            assert!(
+                err.to_string().contains("sector_identifier_uri"),
+                "{uri}: {err}"
+            );
+            assert!(!err.to_string().contains(uri), "{uri}: {err}");
+        }
+    }
+
+    #[test]
+    fn dcr_requires_sector_uri_for_multi_host_pairwise() {
+        let req = dcr_request_with_sector_metadata(
+            Some("pairwise"),
+            None,
+            &["https://one.example.com/cb", "https://two.example.org/cb"],
+        );
+        let err = validate_dynamic_client_metadata(&req).unwrap_err();
+        assert!(err.to_string().contains("sector_identifier_uri"), "{err}");
+        assert!(err.to_string().contains("required"), "{err}");
+    }
+
+    #[test]
+    fn dcr_accepts_multi_host_pairwise_with_valid_sector_uri() {
+        let req = dcr_request_with_sector_metadata(
+            Some("pairwise"),
+            Some("https://sector.example.net/sector.json"),
+            &["https://one.example.com/cb", "https://two.example.org/cb"],
+        );
+        validate_dynamic_client_metadata(&req).unwrap();
+    }
+
+    #[test]
+    fn dcr_allows_multi_host_public_and_single_host_pairwise_without_sector_uri() {
+        for (subject_type, redirect_uris) in [
+            (
+                None,
+                &["https://one.example.com/cb", "https://two.example.org/cb"][..],
+            ),
+            (
+                Some("public"),
+                &["https://one.example.com/cb", "https://two.example.org/cb"][..],
+            ),
+            (
+                Some("pairwise"),
+                &[
+                    "https://client.example.com/cb",
+                    "https://client.example.com/other",
+                ][..],
+            ),
+        ] {
+            let req = dcr_request_with_sector_metadata(subject_type, None, redirect_uris);
             validate_dynamic_client_metadata(&req).unwrap();
         }
     }

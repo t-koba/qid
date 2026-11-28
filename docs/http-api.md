@@ -347,9 +347,14 @@ same verified node. The verified Issuer must equal the SP owning the verifying
 configured key. Duplicate/decoy queries, ID aliases and wrapped targets fail
 closed. No arbitrary XMLDSig or generic-SP interoperability is claimed.
 
-Email-format NameIDs use realm-local email lookup; other formats (including
-absent Format) use realm-local user ID lookup. Foreign-realm and missing subjects
-both return `UnknownPrincipal` without attributes. The existing SP
+Email-format NameIDs use realm-local email lookup; unformatted and other
+non-persistent formats use realm-local user ID lookup. The persistent NameID
+format is rejected after request authentication, before any user lookup, with
+HTTP 403 `RequestDenied`: its opaque pairwise value is one-way and this endpoint
+has no SP-bound session/index or reverse index to resolve it, and realm users
+are never enumerated. Email and unformatted ID lookup remain supported.
+Foreign-realm and missing subjects both return `UnknownPrincipal` without
+attributes. The existing SP
 `attribute_release_policy` applies to `email` and `displayName`: a nonempty list
 releases only listed names; an empty list releases both available attributes.
 This does not alter SSO attribute-release behavior. Successful SOAP Responses

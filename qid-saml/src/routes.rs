@@ -971,6 +971,12 @@ async fn attribute_query<R: Repository>(
     let Some((query, sp)) = authenticated else {
         return error(StatusCode::FORBIDDEN, "RequestDenied", "request denied");
     };
+    if query.name_id_format.as_deref() == Some(PERSISTENT_NAME_ID_FORMAT) {
+        // Persistent NameIDs are one-way pairwise values: this endpoint has no
+        // SP-bound session/index or reverse index to resolve them without
+        // enumerating realm users, so reject before any user lookup.
+        return error(StatusCode::FORBIDDEN, "RequestDenied", "request denied");
+    }
     let realm_id = qid_core::tenant::RealmId(realm);
     // Preserve lookup normalization while returning the exact verified NameID.
     let subject_lookup = query.name_id.trim();

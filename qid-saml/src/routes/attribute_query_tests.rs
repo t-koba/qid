@@ -250,17 +250,27 @@ async fn route_regressions<R: Repository>(repo: R) {
         .unwrap(),
     );
     let app = saml_routes::<R>().with_state(state);
-    let unsigned = query(A, "local-id", crate::PERSISTENT_NAME_ID_FORMAT);
+    // An empty Format remains a realm-local user ID lookup.
+    let unsigned = query(A, "local-id", "");
     let signed = sign(&unsigned);
-    for format in [crate::PERSISTENT_NAME_ID_FORMAT, ""] {
-        let (status, body) = post_query(&app, "test", &sign(&query(A, "local-id", format))).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_attribute_result(&body, "local-id", Some(format), &[("email", LOCAL_EMAIL)]);
+    let (status, body) = post_query(&app, "test", &signed).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_attribute_result(&body, "local-id", Some(""), &[("email", LOCAL_EMAIL)]);
+    // Opaque pairwise persistent NameIDs have no reverse mapping here: both a
+    // raw user ID and an opaque value fail closed with no lookup or leak.
+    for subject in ["local-id", "h8fZ0wLq9xN2sR4tV6bY7c"] {
+        let (status, body) = post_query(
+            &app,
+            "test",
+            &sign(&query(A, subject, crate::PERSISTENT_NAME_ID_FORMAT)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("RequestDenied"));
+        assert_no_attributes(&body);
+        assert!(!body.contains(subject), "failure leaked {subject}");
     }
-    let without_format = unsigned.replace(
-        &format!(" Format=\"{}\"", crate::PERSISTENT_NAME_ID_FORMAT),
-        "",
-    );
+    let without_format = unsigned.replace(" Format=\"\"", "");
     let (status, body) = post_query(&app, "test", &sign(&without_format)).await;
     assert_eq!(status, StatusCode::OK);
     assert_attribute_result(&body, "local-id", None, &[("email", LOCAL_EMAIL)]);
@@ -284,18 +294,14 @@ async fn route_regressions<R: Repository>(repo: R) {
     let (status, body) = post_query(
         &app,
         "test",
-        &sign(&query(
-            "https://all.example.com/saml",
-            "local-id",
-            crate::PERSISTENT_NAME_ID_FORMAT,
-        )),
+        &sign(&query("https://all.example.com/saml", "local-id", "")),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_attribute_result(
         &body,
         "local-id",
-        Some(crate::PERSISTENT_NAME_ID_FORMAT),
+        Some(""),
         &[("email", LOCAL_EMAIL), ("displayName", PRIVATE_NAME)],
     );
 
@@ -325,10 +331,7 @@ async fn route_regressions<R: Repository>(repo: R) {
     // The same embedded certificate must not create trust in another realm.
     for (realm, xml) in [
         ("test", unsigned.replace("<!--SIGNATURE-->", "")),
-        (
-            "test",
-            sign(&query(B, "local-id", crate::PERSISTENT_NAME_ID_FORMAT)),
-        ),
+        ("test", sign(&query(B, "local-id", ""))),
         ("other", with_matching_key),
         ("test", signed.replace("local-id", "foreign-id")),
         (
@@ -344,8 +347,8 @@ async fn route_regressions<R: Repository>(repo: R) {
         assert_no_attributes(&body);
     }
     for (subject, format) in [
-        ("foreign-id", crate::PERSISTENT_NAME_ID_FORMAT),
-        ("missing-id", crate::PERSISTENT_NAME_ID_FORMAT),
+        ("foreign-id", ""),
+        ("missing-id", ""),
         (FOREIGN_EMAIL, EMAIL_NAME_ID_FORMAT),
         ("missing@example.com", EMAIL_NAME_ID_FORMAT),
     ] {
